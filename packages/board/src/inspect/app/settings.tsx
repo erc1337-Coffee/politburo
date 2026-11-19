@@ -2,9 +2,11 @@ import { RefreshCw } from 'lucide-react'
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import type { InboxEntry } from '../../api/routes.ts'
+import { compileAccess } from '../../server/access.ts'
 import * as board from './board.ts'
+import { buttonSoundsEnabled, setButtonSounds } from './button-feedback.ts'
 import { Access } from './grants.tsx'
-import { Ago, here, Link, SECTIONS, type Section, type Where } from './nav.tsx'
+import { Ago, channelPath, here, Link, SECTIONS, type Section, type Where } from './nav.tsx'
 import { Schemas } from './schemas.tsx'
 import { nameOf, type State, type Viewer } from './store.ts'
 import { Header, nativeMenu, Unlisted } from './ui.tsx'
@@ -24,11 +26,23 @@ export function Actions({ children }: { children: ReactNode }) {
 export function Settings(props: { state: State; viewer: Viewer; now: number; lead: ReactNode; where: Where; section: Section; open: string | null }) {
   const { state, viewer, section } = props
   const [slot, setSlot] = useState<HTMLElement | null>(null)
+  const [sounds, setSounds] = useState(buttonSoundsEnabled)
+  const canSync = !!state.me && compileAccess(state.me.can).anywhere('sync')
+  const syncAvailable = canSync && Boolean(state.discovery?.sync.length)
+  const sections = SECTIONS.filter((name) => name === 'sync' ? syncAvailable : name !== 'watchers' || viewer.manages || section === 'watchers')
   return (
     <>
-      <Header title="settings" lead={props.lead} flat />
+      <Header title="settings" lead={props.lead} flat>
+        <label className="button-sounds">
+          <input type="checkbox" checked={sounds} onChange={(event) => {
+            setButtonSounds(event.target.checked)
+            setSounds(event.target.checked)
+          }} />
+          button sounds
+        </label>
+      </Header>
       <nav className="tabs">
-        {SECTIONS.map((name) => (
+        {sections.map((name) => (
           <Link key={name} to={`/settings/${name}`} className="tab" current={name === section}>
             {name}
           </Link>
@@ -41,7 +55,7 @@ export function Settings(props: { state: State; viewer: Viewer; now: number; lea
           {section === 'schemas' && <Schemas state={state} viewer={viewer} selected={props.open} />}
           {section === 'schedules' && <Schedules state={state} viewer={viewer} now={props.now} all={props.where.params.get('show') === 'all'} />}
           {section === 'watchers' && <Watchers state={state} />}
-          {section === 'sync' && <Sync state={state} entry={props.open} />}
+          {section === 'sync' && (syncAvailable ? <Sync state={state} entry={props.open} /> : <p className="empty">{canSync ? 'this board has no configured sync entries' : 'sync inbox unavailable for this account'}</p>)}
         </div>
       </ActionsSlot.Provider>
     </>
@@ -76,7 +90,7 @@ function Schedules({ state, viewer, now, all }: { state: State; viewer: Viewer; 
             <span className="faint">{cadence(schedule)}</span>
             <span className="sched-text">{firstLine(schedule.text) || 'files only'}</span>
             {schedule.re === null ? (
-              <Link to={`/c/${schedule.channel}`} className="text-link">
+              <Link to={channelPath(schedule.channel)} className="text-link">
                 #{schedule.channel}
               </Link>
             ) : (
@@ -140,7 +154,7 @@ function Watchers({ state }: { state: State }) {
 /** The board's sync entries, and each one's raw inbox: what the platform sent, newest first. Not on the board's log, so not live. */
 function Sync({ state, entry }: { state: State; entry: string | null }) {
   const entries = state.discovery?.sync ?? []
-  const key = entry ?? entries[0]?.key ?? null
+  const key = entry === null ? entries[0]?.key ?? null : entries.find((one) => one.key === entry)?.key ?? null
   const [events, setEvents] = useState<InboxEntry[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const load = () => {
@@ -152,7 +166,7 @@ function Sync({ state, entry }: { state: State; entry: string | null }) {
     setEvents(null)
     load()
   }, [key])
-  if (entries.length === 0 || key === null) return <p className="empty">this board syncs nothing</p>
+  if (entries.length === 0 || key === null) return <p className="empty">no such sync entry · <Link to="/settings/sync" className="text-link">all sync entries</Link></p>
   return (
     <>
       <Actions>

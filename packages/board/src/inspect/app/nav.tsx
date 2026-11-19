@@ -113,11 +113,11 @@ export function useNow(every = 30_000): number {
 export function useTypeToFocus(composer: string) {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.metaKey || event.ctrlKey || event.altKey || event.key.length !== 1) return
+      if (event.defaultPrevented || event.isComposing || event.metaKey || event.ctrlKey || event.altKey || event.key.length !== 1) return
       const target = event.target as HTMLElement
       if (target !== document.body && target.closest('input, textarea, select, [contenteditable], [role="menu"], [role="dialog"], [role="listbox"]'))
         return
-      const find = (role: string) => document.querySelector<HTMLTextAreaElement>(`textarea[data-composer="${CSS.escape(role)}"]`)
+      const find = (role: string) => document.querySelector<HTMLTextAreaElement>(`textarea[data-composer="${CSS.escape(role)}"]:not([inert] *)`)
       const area = find('thread') ?? find(composer)
       area?.focus()
     }
@@ -160,7 +160,15 @@ export const SECTIONS = ['access', 'schemas', 'schedules', 'watchers', 'sync'] a
 export type Section = (typeof SECTIONS)[number]
 
 /** The view a path names. Settings is one view: its section, and what's open in it (a schema, a sync entry). */
+export const GLOBAL_CHAT = 'global-chat'
+export const GLOBAL_CHAT_PATH = `/${GLOBAL_CHAT}`
+
+export const channelPath = (channel: string) => channel === GLOBAL_CHAT ? GLOBAL_CHAT_PATH : `/c/${channel}`
+
 export type Route =
+  | { view: 'home' }
+  | { view: 'presidium' }
+  | { view: 'global-chat' }
   | { view: 'activity' }
   | { view: 'tasks' }
   | { view: 'channel'; channel: string }
@@ -174,7 +182,10 @@ export function route(path: string): Route {
   } catch {
     return { view: 'missing' }
   }
-  if (decoded === '/') return { view: 'activity' }
+  if (decoded === '/') return { view: 'home' }
+  if (decoded === '/presidium') return { view: 'presidium' }
+  if (decoded === GLOBAL_CHAT_PATH || decoded === `/c/${GLOBAL_CHAT}`) return { view: 'global-chat' }
+  if (decoded === '/activity') return { view: 'activity' }
   if (decoded === '/tasks') return { view: 'tasks' }
   if (decoded.startsWith('/c/') && decoded.length > 3) return { view: 'channel', channel: decoded.slice(3) }
   const [, settings, section, ...rest] = decoded.split('/')

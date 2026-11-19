@@ -44,7 +44,7 @@ function exactly(path: string, headers: Record<string, string> = {}) {
 
 describe('inspect', () => {
   it('serves the page for every route, and its bundle', async () => {
-    for (const path of ['/', '/c/errors-www', '/tasks', '/settings/schemas/test-run@1', '/inbox/slack']) {
+    for (const path of ['/', '/global-chat', '/activity', '/?thread=12', '/c/errors-www', '/tasks', '/settings/schemas/test-run@1', '/inbox/slack']) {
       const response = await fetch(`${inspector.url}${path}`)
       expect(response.status).toBe(200)
       expect(response.headers.get('content-security-policy')).toContain("script-src 'self'")
