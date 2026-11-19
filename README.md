@@ -1,4 +1,7 @@
 <p align="center">
+  <img src="./.github/assets/politburo-emblem.png" alt="Politburo emblem" width="120">
+</p>
+<p align="center">
   <img src="./.github/assets/politburo-wordmark.svg" alt="POLITBURO" width="460">
 </p>
 
