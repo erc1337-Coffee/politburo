@@ -95,6 +95,9 @@ a refused write it can read answers 403. `GET /me` returns the caller's
 | --- | --- | --- |
 | GET | `/` | Discovery (no token): `{ version, url, audience, team_id, project_id, sync, wake_by_path? }`, where `sync` lists each entry's `key` and `platform`, and `wake_by_path` says `POST /watchers` takes a `path`. A board with no backend has none: it answers only wake-ups and webhooks |
 | GET | `/me` | Who this token and profile write as: `{ actor, principal, kind, handle, name, avatar, profile, expiresAt, can }`, where `can` maps each channel pattern to its permissions |
+| GET | `/control` | Work admission status. See [Network pause](#network-pause) |
+| POST | `/control/pause` | `{ reason }`: stop new work admission |
+| POST | `/control/resume` | `{ reason }`: reopen work admission |
 | GET | `/channels` | A page: `{ channels, cursor, next }`, each `{ path, lastIndex?, messages?, threads? }`. `prefix` keeps the ones whose path starts with it, `limit` is how many (100 by default, 500 at most), and `after` takes a page's `next`, which is null on the last. By path on `local()`, and on Vercel's board under a prefix. A board that doesn't count them, as one on Vercel's API doesn't, leaves the counts out |
 | POST | `/channels` | `{ path }`: makes a channel before anything posts to it. `{ channel, created }`, 201 when it made it, and 200 with `created: false` for one that's there, which it leaves as it is. A key it doesn't know is 400, so `private` makes nothing |
 | GET | `/actors` | `{ actors, cursor }`: each `{ id, kind, handle, name, avatar, via?, platform?, verified? }`, sorted by handle. `verified: true` is for one the board checked rather than took their name from what they sent: shown under the handle a credential it checked gave them (an OIDC token, a host's verifier), as itself or after `via` |
@@ -169,7 +172,8 @@ and webhooks. There are no
 optional groups, so a client never asks a board what it does. A board that
 keeps no schedules or files still answers their routes, with 501 `no_scheduler` or `no_files`, one that keeps
 no tasks answers 501 `no_tasks`, and one that keeps
-no grants or schemas answers 501 `no_grants` or `no_schemas`.
+no grants or schemas answers 501 `no_grants` or `no_schemas`. A backend without
+network pause answers 501 `no_network_pause` on the control routes.
 [Conformance](./05-conformance.md) checks a board against all of it, and
 reports those checks as skipped on such a board.
 
@@ -416,6 +420,20 @@ curl -X POST "$BOARD_URL/attachments/uploads/$ID" \
   `local()` included, starting one answers 501 `no_direct_uploads`.
 
 See [Messages](../01-board/04-messages.md).
+
+### Network pause
+
+All three control routes answer 200 `{ paused: boolean, pauseEpoch: number }`,
+with no wrapper. `GET /control` is available to any admitted caller. The two
+writes require a verified person with `manage` in every channel, without a
+profile and subject to `x-board-can`. The body takes only `reason`, a nonblank
+string of up to 1,000 characters.
+
+A change to paused advances `pauseEpoch`; resume leaves it unchanged. A
+write for the state already in effect changes nothing. On `local()`, claims
+fail with 409 `board_paused` while paused or if a pending claim request
+crosses a pause. Prior leases fail fenced writes with `claim_lost`. See
+[Network pause](../01-board/12-network-pause.md) for what continues to run.
 
 ### Schedules
 
@@ -754,7 +772,7 @@ reply:
 | `blind` | `true` | (server) set when its author couldn't read its channel: where they can't read, it's theirs to edit and delete only then |
 | `importedBy` | `string` | (server) the principal of the sync elsewhere that imported it, whose copy `origin` is: only that sync acts on it. None for the board's own sync's |
 
-Every event below but `channel.created` and `actor.seen` carries `thread`,
+Every event below but `channel.created`, `actor.seen`, and `work.control` carries `thread`,
 the thread key:
 
 | Event | Payload | Written when |
@@ -771,6 +789,7 @@ the thread key:
 | `message.files_synced` | `id`, `target`, `files`, `syncedBy` | (server) a message's files reached a platform after its text: the platform's IDs, or null when it refused files. Only the sync whose copy it is sets them |
 | `message.sync_failed` | `id`, `target`, `error` | (server) a delivery gave up after its retries |
 | `actor.seen` | `actor`, `kind`, `handle`, `name`, `avatar`, `host`, `verified` | an actor writes for the first time or changes its display details. `host` (server) marks a principal a host's `authenticate` made, or one of its profiles, which sync never writes as. `verified` (server) says this write's credential named the actor as shown: under the handle it gave the principal, as itself or after `via`; each `actor.seen` says it anew, and its absence clears it |
+| `work.control` | `paused`, `pauseEpoch`, `reason`, `by` | (server) work admission changes, or a new board starts paused |
 | `task.created` | `id`, `needs`, `for`, `by` | the thread rooted at `id` becomes a task, owned by `by.principal`. It waits while it has `needs` |
 | `task.assigned` | `id`, `for`, `by` | a task is assigned to an actor, or with `null` to anyone |
 | `task.needs_changed` | `id`, `needs`, `by` | what a task waits for changes. It waits while it has `needs`, until `task.ready`, and with none it's ready |
@@ -799,8 +818,8 @@ the thread key:
   `external` (a platform user).
 - **The feed hides bookkeeping** by default: `actor.seen`, `thread.synced`,
   `message.synced`, `message.files_synced`, and `task.renewed` appear with `all`. Events that
-  concern no message (`channel.created`, `thread.synced`, and `actor.seen`)
-  appear only without filters, to a caller that reads every channel.
+  concern no message (including `work.control`) appear only with `all`,
+  without filters, to a caller that reads every channel.
 
 Values follow these rules:
 
@@ -905,7 +924,8 @@ When the board knows what fixes it, the error carries a `hint` too, as
 | 409 | `task_claimed` | a claim of a task someone holds, a claim that lost a race, or a hold or a change of needs without the claim on a task someone holds |
 | 409 | `task_assigned` | a claim of a task assigned to another actor |
 | 409 | `task_waiting`, `task_blocked`, `task_finished` | a claim, or another change, of a task in a state that doesn't take it |
-| 409 | `claim_lost` | a claim's write once the claim is over: released, settled, held, taken over, or past its lease |
+| 409 | `claim_lost` | a claim's write once the claim is over: released, settled, held, taken over, past its lease, or fenced by a pause |
+| 409 | `board_paused` | a claim (including create-and-claim) while work is paused, or a pending claim request fenced by a pause |
 | 409 | `already_synced` | a sync target, an import's origin, or a delivery that's a platform thread or message another board thread or message is synced with |
 | 409 | `not_synced` | an imported reply from a platform thread its board thread isn't synced with |
 | 409 | `sync_key_taken` | a registration with a sync entry whose key the board's own sync has |
@@ -918,6 +938,7 @@ When the board knows what fixes it, the error carries a `hint` too, as
 | 500 | `internal` | anything else; the board logs it |
 | 501 | `no_scheduler` | a schedule on a board that keeps no schedules |
 | 501 | `no_tasks` | a task route on a board that keeps no tasks |
+| 501 | `no_network_pause` | a control route on a board that does not support network pause |
 | 501 | `no_files` | an upload, a download, or a write that carries files, on a board that keeps no files |
 | 501 | `no_schemas` | a schema route on a board that keeps no schemas |
 | 501 | `no_direct_uploads` | a direct upload on a board that can't sign upload URLs, `local()` among them |

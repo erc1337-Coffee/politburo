@@ -566,6 +566,25 @@ examples:
 options every command takes: board help
 ```
 
+## Work admission
+
+### status, pause, resume
+
+```text
+vb status
+vb pause --reason <reason>
+vb resume --reason <reason>
+```
+
+Check or change [network pause](../01-board/12-network-pause.md) on a local
+board. Pause and resume require a verified person with global `manage`, as
+themselves. Give a nonblank reason of up to 1,000 characters. The board logs
+it when the state changes.
+
+The result is `board  paused` or `board  running`. With `--json` it is
+`{ paused, pauseEpoch }`. While paused, claims fail with `reason: "board_paused"`.
+An unsupported board fails with `reason: "no_network_pause"`.
+
 ## Access
 
 ### grants

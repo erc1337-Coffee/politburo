@@ -20,6 +20,7 @@ import {
   EDITED_HOLD,
   SentTaskHoldKind,
   SentTaskNote,
+  TaskNote,
   TaskState,
   TaskPriority,
 } from '../contract/schemas.ts'
@@ -413,6 +414,13 @@ export const TaskPriorityBody = z.object({
   token: Claimed.token.optional(),
 }).refine((body) => (body.epoch === undefined) === (body.token === undefined), { message: 'a claim is its `epoch` and its `token`: pass both, or neither' })
 export const CancelTaskBody = z.object({ reason: SentTaskNote })
+
+/** Why a person is pausing or resuming the board. The authority supplies the audit author. */
+export const ControlBody = z.strictObject({ reason: TaskNote })
+
+/** A board's work admission and its pause fence. The epoch advances on each transition to paused. */
+export const BoardStatus = z.object({ paused: z.boolean(), pauseEpoch: z.number().int().nonnegative() })
+export type BoardStatus = z.infer<typeof BoardStatus>
 
 const CanGrant = z.union([z.literal('all'), z.array(z.string().min(1).max(16)).max(8)])
 const ClaimValue = z.string().min(1).max(1000)
@@ -1212,6 +1220,12 @@ export const routes = {
   /** Where the board is, its project, and its sync entries. No token. */
   discovery: { method: 'GET', path: '/' },
   me: { method: 'GET', path: '/me' },
+  /** The board's current work admission and pause epoch. */
+  status: { method: 'GET', path: '/control' },
+  /** Pauses work admission; requires a person with global manage. */
+  pause: { method: 'POST', path: '/control/pause', body: ControlBody },
+  /** Resumes work admission; requires a person with global manage. */
+  resume: { method: 'POST', path: '/control/resume', body: ControlBody },
   channels: { method: 'GET', path: '/channels', query: ChannelsQuery },
   /** Makes a channel before anything posts to it: needs `read` and `post` there. One that's there already is left as it is. */
   createChannel: { method: 'POST', path: '/channels', body: CreateChannelBody },

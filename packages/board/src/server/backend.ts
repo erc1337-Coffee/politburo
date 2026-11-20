@@ -94,6 +94,8 @@ export type BoardBinding = {
   team: string | null
   /** Whether to make the board `name` names when the team has none by that name: `board({ ensure })`, true unless it says false. */
   ensure: boolean
+  /** Start a new board paused. A backend that uses another board leaves this unread. */
+  initiallyPaused: boolean
   /** What runs on this board's events, by ID: this project's watchers, and sync's outbound at `SYNC` when it syncs. */
   subscriptions: Record<string, Subscription>
   /**
@@ -171,7 +173,11 @@ export type Trust = {
  * caller, applies `access`, runs the middleware, watchers, and sync, and calls these with the caller
  * it verified. A backend stores and answers, honoring what each caller may do.
  */
-export interface Backend extends ProtocolMethods {
+export interface Backend extends Omit<ProtocolMethods, 'status' | 'pause' | 'resume'> {
+  /** Optional work admission control. Unimplemented methods answer 501 `no_network_pause`. */
+  status?: ProtocolMethods['status']
+  pause?: ProtocolMethods['pause']
+  resume?: ProtocolMethods['resume']
   /** Routes of its own, beside the protocol: one at a protocol route's path takes its place. */
   readonly routes: readonly BackendRoute[]
   /**

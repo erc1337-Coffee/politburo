@@ -1,4 +1,4 @@
-import { routes, type Discovery, type EventsPage } from '../api/routes.ts'
+import { BoardStatus, routes, type Discovery, type EventsPage } from '../api/routes.ts'
 import type { Method, Protocol } from '../api/protocol.ts'
 import { BoardError, createBoardClient, type BoardClient, type ProfileOption } from '../client/client.ts'
 import { DERIVED_ID, keyId } from '../client/ids.ts'
@@ -237,7 +237,14 @@ export function createHttp(url: string | undefined, options: HttpOptions, enviro
     if ((method === 'post' || method === 'posted' || method === 'createTask' || method === 'createTasks' || method === 'createdTasks') && 'self' in caller && typeof input.id === 'string' && DERIVED_ID.test(input.id))
       input = { ...input, id: await ownKey(input.id).catch(rethrow) }
     const response = await call(client, method, input, signal)
-    return method === 'attachment' ? attachmentOf(String(input.id), response) : response.json()
+    if (method === 'attachment') return attachmentOf(String(input.id), response)
+    if (method === 'status' || method === 'pause' || method === 'resume') {
+      // An older mount can answer an unknown GET with discovery, not a control state.
+      const status = BoardStatus.safeParse(await response.json().catch(() => null))
+      if (!status.success) throw new HttpError(502, 'remote_error', 'the remote board did not answer with a control status')
+      return status.data
+    }
+    return response.json()
   }
 
   const methods: ProtocolMethods = {

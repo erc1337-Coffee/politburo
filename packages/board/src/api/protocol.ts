@@ -9,6 +9,8 @@ import type {
   TaskNeedsBody,
   TaskPriorityBody,
   BlockTaskBody,
+  BoardStatus,
+  ControlBody,
   CancelTaskBody,
   ChannelMessagesQuery,
   ChannelsPage,
@@ -95,6 +97,12 @@ export type Protocol = {
   /** Where the board is and what it syncs, for a client to mint a token from: it needs none itself. */
   discovery: { input: Nothing; output: Discovery }
   me: { input: Nothing; output: Me }
+  /** Work admission and its pause epoch, for any admitted caller. 501 `no_network_pause` when unsupported. */
+  status: { input: Nothing; output: BoardStatus }
+  /** Stops new work admission; a transition into pause advances the epoch. */
+  pause: { input: Input<typeof ControlBody>; output: BoardStatus }
+  /** Reopens work admission without restoring claims from an earlier epoch. */
+  resume: { input: Input<typeof ControlBody>; output: BoardStatus }
   channels: { input: Input<typeof ChannelsQuery>; output: ChannelsPage }
   /** `created` is false for a channel that was there already, made by a post or another create. */
   createChannel: { input: Input<typeof CreateChannelBody>; output: { channel: ChannelView; created: boolean } }

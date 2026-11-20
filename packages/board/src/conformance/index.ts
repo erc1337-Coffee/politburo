@@ -17,7 +17,7 @@ import type { Board } from '../server/board.ts'
  */
 
 /** What a check is about, for the report's headings. */
-export type CheckGroup = 'core' | 'paging' | 'search' | 'schedules' | 'tasks' | 'grants' | 'schemas' | 'attachments' | 'watchers' | 'sync'
+export type CheckGroup = 'core' | 'paging' | 'search' | 'schedules' | 'tasks' | 'network-pause' | 'grants' | 'schemas' | 'attachments' | 'watchers' | 'sync'
 
 export type CheckResult = {
   group: CheckGroup
@@ -37,6 +37,8 @@ export type ConformanceReport = {
 export type ConformanceOptions = {
   /** Where it posts. Default `conformance`. */
   channel?: string
+  /** Also check network pause. Use an isolated, running board: a pause fences all existing claims. */
+  networkPause?: boolean
   /**
    * The same board, with this run's credential and an `x-board-can` header that narrows it to
    * `can` (`conformance=read`), as a proxy holding the credential sends it: the checks of a
@@ -451,6 +453,48 @@ function lostRace(racing: PromiseSettledResult<unknown>[]) {
     const error = result.reason as unknown
     check(error instanceof BoardError && error.status === 409 && error.code === 'task_claimed', `a claim that lost the race should be 409 task_claimed, got ${error instanceof BoardError ? `${error.status} ${error.code}` : String(error)}`)
   }
+}
+
+const NETWORK_PAUSE: Check = {
+  group: 'network-pause',
+  name: 'pauses claims without stopping collaboration, and resumes without reviving old claims',
+  async run(ctx) {
+    const board = ctx.board
+    const start = await board.status().catch((error: unknown) => {
+      if (error instanceof BoardError && error.status === 501 && error.code === 'no_network_pause') return null
+      throw error
+    })
+    if (start === null) return 'not kept here: this board does not support network pause'
+    check(start.paused === false && Number.isSafeInteger(start.pauseEpoch) && start.pauseEpoch >= 0, 'network pause checks need a running board with a valid pause epoch')
+    const { task: held } = await task(ctx, 'conformance: claimed before the pause')
+    const old = await board.tasks.claim(held.id)
+    const labels = { ...ctx.labels, queue: 'network-pause' }
+    try {
+      const paused = await board.pause('conformance: check the network pause')
+      same(paused.paused, true, 'status returned by pause')
+      same(paused.pauseEpoch, start.pauseEpoch + 1, 'pause epoch after pause')
+      const read = await board.status()
+      same(read.paused, true, 'status read while paused')
+      same(read.pauseEpoch, paused.pauseEpoch, 'pause epoch read while paused')
+      const { task: queued } = await task(ctx, 'conformance: queued during the pause', { labels })
+      const note = await reply(ctx, queued.id, 'conformance: human replies still land')
+      const thread = await board.thread(queued.id)
+      same(thread.message.id, queued.id, 'task read while paused')
+      check(thread.replies.some((message) => message.id === note.id), 'a human reply should be visible while paused')
+      await rejects(board.tasks.claim(queued.id), 409, 'board_paused', 'claiming by ID while paused')
+      await rejects(board.tasks.claim({ channel: ctx.channel, label: labels }), 409, 'board_paused', 'claiming the next task while paused')
+      await rejects(task(ctx, 'conformance: cannot create and claim during the pause', { claim: true }), 409, 'board_paused', 'creating and claiming while paused')
+      const resumed = await board.resume('conformance: check resuming')
+      same(resumed.paused, false, 'status returned by resume')
+      same(resumed.pauseEpoch, paused.pauseEpoch, 'pause epoch after resume')
+      await rejects(old.complete(), 409, 'claim_lost', 'settling with the pre-pause claim after resume')
+      const fresh = await board.tasks.claim({ channel: ctx.channel, label: labels })
+      same(fresh?.task.id, queued.id, 'a fresh claim after resume')
+      await fresh?.release()
+    } finally {
+      if ((await board.status()).paused) await board.resume('conformance: restore the running board')
+    }
+  },
 }
 
 const CHECKS: Check[] = [
@@ -2579,7 +2623,8 @@ export async function conformance(board: Board, options: ConformanceOptions = {}
     team: (discovery as { team_id?: string | null }).team_id ?? null,
   }
   try {
-    for (const { group, name, run } of CHECKS) {
+    const selected = options.networkPause ? [NETWORK_PAUSE, ...CHECKS] : CHECKS
+    for (const { group, name, run } of selected) {
       try {
         const skipped = await run(ctx)
         checks.push(skipped ? { group, name, status: 'skipped', detail: skipped } : { group, name, status: 'passed' })

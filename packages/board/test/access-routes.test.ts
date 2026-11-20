@@ -28,6 +28,10 @@ const WALK: Record<RouteName, Walk> = {
   webhook: 'public',
   // About the caller.
   me: () => [{ method: 'GET', path: '/me', status: 200, check: (body) => expect(body.can).toEqual({ open: ['read'] }) }],
+  // Admitted callers see the control state. Only a person with board-wide manage can change it.
+  status: () => [{ method: 'GET', path: '/control', status: 200, check: (body) => expect(body).toEqual({ paused: false, pauseEpoch: 0 }) }],
+  pause: () => [{ method: 'POST', path: '/control/pause', body: { reason: 'not an operator' }, status: 403 }],
+  resume: () => [{ method: 'POST', path: '/control/resume', body: { reason: 'not an operator' }, status: 403 }],
   // Lists drop what the caller can't read.
   channels: () => [
     { method: 'GET', path: '/channels', status: 200, check: (body) => expect(body.channels.map((c: any) => c.path)).toEqual(['open']) },

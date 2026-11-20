@@ -400,6 +400,7 @@ export function formatSchedule(schedule: ScheduleView, options: { pad?: string; 
 
 /** One line per live event, for `tail` and `wait`. */
 export function formatEvent(event: BoardEventView): string {
+  if (event.type === 'work.control') return `#${event.cursor}  board  ${event.payload.paused ? 'paused' : 'running'}`
   const message = event.message
   if (!message) return `#${event.cursor}  ${event.type}`
   const where = message.re === null ? message.channel : `${message.channel} ↳ #${message.re}`

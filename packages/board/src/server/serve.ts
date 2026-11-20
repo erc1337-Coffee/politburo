@@ -9,6 +9,7 @@ import {
   ClaimReadyTaskBody,
   ClaimTaskBody,
   CompleteTaskBody,
+  ControlBody,
   CreateTaskBody,
   CreateTasksBody,
   CreatedTasksQuery,
@@ -81,6 +82,7 @@ import { VERSION } from '../version.ts'
 
 /** The methods whose answer is something new. */
 const CREATED = new Set<Method>(['post', 'schedule', 'createTask', 'createTasks', 'upload', 'uploadFinish'])
+const CONTROL = new Set<Method>(['status', 'pause', 'resume'])
 
 /**
  * Refuses a label write under `board.`: those keys are the board's own, which only its task writes
@@ -128,7 +130,11 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
     case 'watchers':
     case 'grants':
     case 'schemas':
+    case 'status':
       return {}
+    case 'pause':
+    case 'resume':
+      return ControlBody.parse(await body())
     case 'message':
       return { id, ...ThreadQuery.parse(queryObject(url)) }
     case 'posted':
@@ -961,6 +967,13 @@ export async function createServe(context: BoardContext): Promise<Serve> {
         ownLabels(body.labels)
         // A thread that's there becomes a task as it is: nothing is posted, so the middleware has nothing to see.
         if (body.channel === undefined) return backend.createTask(caller, body, signal)
+        // A local claim must not cross a pause while the root is validated or screened. The epoch
+        // comes from the authority here, not the request, and the backend compares it at append.
+        if (body.claim && backend.keeps && backend.status) {
+          const status = await backend.status(caller, {}, signal)
+          if (status.paused) throw new HttpError(409, 'board_paused', 'the board is paused')
+          caller = { ...caller, origin: { ...caller.origin, claimEpoch: status.pauseEpoch } }
+        }
         // A new one's root is a post: its blocks are checked and the middleware sees it, as any post's.
         const { channel, labels, noSync, attachments, id } = body
         // It may be empty when the root has files, as a post's may.
@@ -1046,7 +1059,10 @@ export async function createServe(context: BoardContext): Promise<Serve> {
       }
       default: {
         const method = backend[name] as unknown
-        if (typeof method !== 'function') throw notFound(`no route: ${name}`)
+        if (typeof method !== 'function') {
+          if (CONTROL.has(name)) throw new HttpError(501, 'no_network_pause', 'this board does not support network pause')
+          throw notFound(`no route: ${name}`)
+        }
         return (method as (caller: Caller, input: unknown, signal: AbortSignal) => Promise<unknown>).call(backend, caller, input, signal)
       }
     }
@@ -1187,7 +1203,7 @@ export async function createServe(context: BoardContext): Promise<Serve> {
       // uses another board's doesn't serve. Nothing runs for one before that.
       if (!injected && !policy.open) throw servesOnly()
       if (!injected && target.kind === 'protocol' && target.name === 'discovery') return json(await discovery(request, audienceOf(at), request.signal))
-      if (target.kind === 'protocol' && typeof (backend[target.name] as unknown) !== 'function') throw notFound(`no route: ${request.method} ${url.pathname}`)
+      if (target.kind === 'protocol' && !CONTROL.has(target.name) && typeof backend[target.name] !== 'function') throw notFound(`no route: ${request.method} ${url.pathname}`)
       // A sync callback's client does everything but its own writes as sync.
       const own = injected && 'platform' in injected ? engine!.caller : injected
       const asked = own ? null : requestOf(request, at)

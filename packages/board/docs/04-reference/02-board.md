@@ -127,6 +127,21 @@ fetch(request: Request): Promise<Response>
 The board's HTTP handler, on any backend: what a route exports as `GET` and
 `POST`, or what a runtime that takes one function calls.
 
+## Work admission
+
+### status, pause, resume
+
+`status()` reads [network pause](../01-board/12-network-pause.md).
+`pause(reason)` and `resume(reason)` change it. All three return
+`Promise<BoardStatus>`, with `BoardStatus` exported from `@vercel/board`
+as `{ paused: boolean; pauseEpoch: number }`. A control write needs a verified
+person with `manage` everywhere and no profile, and a nonblank reason of up
+to 1,000 characters. The local in-process identity is not a person.
+
+An unsupported backend throws `BoardError` with status 501 and code
+`no_network_pause`. A pause or resume does not change other parts of the
+board's access policy.
+
 ## Writing
 
 ### post

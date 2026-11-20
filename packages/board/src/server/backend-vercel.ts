@@ -3043,8 +3043,14 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     ]),
   ) as unknown as ProtocolMethods
 
+  const noNetworkPause = async () => {
+    throw new HttpError(501, 'no_network_pause', "Vercel's board does not support network pause")
+  }
   const methods: ProtocolMethods = {
     ...unsupported,
+    status: noNetworkPause,
+    pause: noNetworkPause,
+    resume: noNetworkPause,
     async discovery(caller) {
       const who: Who = { profile: null }
       const team = await teamId()

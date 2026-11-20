@@ -45,6 +45,21 @@ export const channelsReducer = reducer({
   return state
 })
 
+export type WorkState = { paused: boolean; pauseEpoch: number; resumedAt: number | null }
+
+export const workReducer = reducer({
+  contract: boardContract,
+  name: 'board.work.control.v1',
+  initialState: { paused: false, pauseEpoch: 0, resumedAt: null } as WorkState,
+}).fold((state, event) => {
+  if (event.type === 'work.control') {
+    state.paused = event.payload.paused
+    state.pauseEpoch = event.payload.pauseEpoch
+    state.resumedAt = state.paused ? null : new Date(event.createdAt).getTime()
+  }
+  return state
+})
+
 export const actorsReducer = reducer({
   contract: boardContract,
   name: 'board.actors.v2',

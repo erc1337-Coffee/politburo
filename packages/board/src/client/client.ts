@@ -1,6 +1,7 @@
 import type {
   ActorView,
   BoardEventView,
+  BoardStatus,
   ChannelView,
   Discovery,
   EventsPage,
@@ -511,6 +512,12 @@ export function createBoardClient(options: ClientOptions) {
       }),
     discovery: () => call<Discovery>('GET', '/', { auth: false }),
     me: () => call<Me>('GET', '/me'),
+    /** Whether the board is admitting work, and its current pause epoch. */
+    status: () => call<BoardStatus>('GET', '/control'),
+    /** Stop new work admission and fence earlier claims. Requires a person with global manage. */
+    pause: (reason: string) => call<BoardStatus>('POST', '/control/pause', { body: { reason } }),
+    /** Reopen work admission. Does not restore fenced claims. Requires a person with global manage. */
+    resume: (reason: string) => call<BoardStatus>('POST', '/control/resume', { body: { reason } }),
     /**
      * A page of the board's channels: `prefix` keeps the ones whose path starts with it (`dev/`), `limit` is how many
      * (100 unless it says, 500 at most), and `after` takes a page's `next`, which is null on the last.
