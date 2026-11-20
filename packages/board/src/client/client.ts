@@ -28,7 +28,10 @@ import type {
   RegistrationView,
   ScheduleView,
   SchedulesQueryInput,
+  TaskBindingInput,
   TaskClaim,
+  TaskHandoffInput,
+  TaskHandoffWrite,
   TasksPage,
   TasksQueryInput,
   GrantInput,
@@ -45,6 +48,7 @@ import type {
   ThreadView,
   TypingResult,
 } from '../api/routes.ts'
+import { boundTaskPaths } from '../api/task-authority.ts'
 import type { Actor } from '../contract/folds.ts'
 import type { Mentioned } from '../contract/mentions.ts'
 import { ATTACHMENT_BYTES_MAX, DIRECT_UPLOAD_BYTES_MAX, typeOf } from '../contract/files.ts'
@@ -177,7 +181,11 @@ export type TaskOptions = {
   claim?: boolean
   lease?: number
   token?: string
+  binding?: TaskBindingInput
 }
+
+type ClaimOptions = Pick<TaskOptions, 'lease' | 'token' | 'binding'>
+type ClaimNext = ClaimOptions & { channel: string; label?: Record<string, string>; from?: string[]; wait?: number }
 
 /** A new thread that's a task: its root's text, labels, `noSync`, `attachments`, and `id`, as a post takes them, and what makes it a task. */
 export type NewTaskOptions = TaskOptions & Pick<PostOptions, 'text' | 'labels' | 'noSync' | 'attachments' | 'id'>
@@ -207,6 +215,8 @@ export type HeldTask = {
   fail(reason: string): Promise<MessageView>
   /** Holds the task for a person, which ends the claim: `kind` says what for (`needs_input`, `awaiting_approval`). */
   block(reason: string, opts?: { kind?: string }): Promise<MessageView>
+  /** Records packet metadata without settling the claim or verifying the packet. */
+  handoff(packet: TaskHandoffInput): Promise<MessageView>
 }
 
 /**
@@ -405,12 +415,14 @@ export function createBoardClient(options: ClientOptions) {
     return {
       async renew(lease) {
         const { task, until } = await call<{ task: MessageView; until: string }>('POST', `/tasks/${path(id)}/renew`, { body: { epoch, token, ...(lease !== undefined ? { lease } : {}) } })
-        return claimed(task, { epoch, token, until })
+        const binding = task.task?.claim?.binding
+        return claimed(task, { epoch, token, until, ...(binding ? { binding } : {}) })
       },
       release: () => taskWrite(id, 'release', { epoch, token }),
       complete: (result) => taskWrite(id, 'complete', { epoch, token, ...(result !== undefined ? { result } : {}) }),
       fail: (reason) => taskWrite(id, 'fail', { epoch, token, reason }),
       block: (reason, opts = {}) => taskWrite(id, 'block', { epoch, token, reason, ...opts }),
+      handoff: (packet) => taskWrite(id, 'handoff', { ...packet, epoch, token }),
     }
   }
 
@@ -428,7 +440,8 @@ export function createBoardClient(options: ClientOptions) {
     const where = typeof target === 'string' ? { channel: target } : { re: target.re }
     // A new thread's root takes files as a post does: uploads, or their IDs.
     const made = typeof input === 'string' ? { text: input } : 'attachments' in input && input.attachments?.length ? { ...input, attachments: input.attachments.map((file) => (typeof file === 'string' ? file : file.id)) } : input
-    const { task, claim, mentions } = await call<{ task: MessageView; claim?: TaskClaim; mentions?: Mentioned[] }>('POST', '/tasks', { body: { ...where, ...made } })
+    const route = 'binding' in made && made.binding !== undefined ? boundTaskPaths.createTask : '/tasks'
+    const { task, claim, mentions } = await call<{ task: MessageView; claim?: TaskClaim; mentions?: Mentioned[] }>('POST', route, { body: { ...where, ...made } })
     return { task, ...(claim ? { claim: claimed(task, claim) } : {}), ...(mentions ? { mentions } : {}) }
   }
 
@@ -454,25 +467,27 @@ export function createBoardClient(options: ClientOptions) {
    * is how long you hold it, in seconds, the board's default without one: a board says how short
    * and how long one may be, and the claim's `until` says what it gave.
    */
-  async function claimTask(target: string, opts?: { lease?: number; token?: string; signal?: AbortSignal }): Promise<ClaimedTask>
-  async function claimTask(target: { channel: string; label?: Record<string, string>; from?: string[]; wait?: number; lease?: number; token?: string }, opts?: { signal?: AbortSignal }): Promise<ClaimedTask | null>
+  async function claimTask(target: string, opts?: ClaimOptions & { signal?: AbortSignal }): Promise<ClaimedTask>
+  async function claimTask(target: ClaimNext, opts?: { signal?: AbortSignal }): Promise<ClaimedTask | null>
   async function claimTask(
-    target: string | { channel: string; label?: Record<string, string>; from?: string[]; wait?: number; lease?: number; token?: string },
-    opts: { lease?: number; token?: string; signal?: AbortSignal } = {},
+    target: string | ClaimNext,
+    opts: ClaimOptions & { signal?: AbortSignal } = {},
   ): Promise<ClaimedTask | null> {
-    const signal = opts.signal ? { signal: opts.signal } : {}
+    const { signal: abort, ...body } = opts
+    const signal = abort ? { signal: abort } : {}
     if (typeof target === 'string') {
-      const body = { ...(opts.lease !== undefined ? { lease: opts.lease } : {}), ...(opts.token !== undefined ? { token: opts.token } : {}) }
-      const { task, claim } = await call<{ task: MessageView; claim: TaskClaim }>('POST', `/tasks/${path(target)}/claim`, { body, ...signal })
+      const route = body.binding !== undefined ? boundTaskPaths.claimTask.replace(':id', () => path(target)) : `/tasks/${path(target)}/claim`
+      const { task, claim } = await call<{ task: MessageView; claim: TaskClaim }>('POST', route, { body, ...signal })
       return claimed(task, claim)
     }
     const { wait, ...ready } = target
+    const route = ready.binding !== undefined ? boundTaskPaths.claimReadyTask : '/tasks/claim'
     const deadline = Date.now() + (wait ?? 0) * 1000
     for (;;) {
       const asked = Date.now()
       // The board holds each request up to its own limit: it asks again until `wait` runs out.
       const hold = Math.max(0, Math.min(CLAIM_WAIT_S, (deadline - asked) / 1000))
-      const answer = await call<{ task: MessageView; claim: TaskClaim } | { task: null }>('POST', '/tasks/claim', { body: { ...ready, ...(hold > 0 ? { wait: hold } : {}) }, ...signal })
+      const answer = await call<{ task: MessageView; claim: TaskClaim } | { task: null }>('POST', route, { body: { ...ready, ...(hold > 0 ? { wait: hold } : {}) }, ...signal })
       if (answer.task) return claimed(answer.task, answer.claim)
       if (Date.now() >= deadline || opts.signal?.aborted) return null
       // A board that answered at once instead of holding isn't asked again right away.
@@ -679,6 +694,12 @@ export function createBoardClient(options: ClientOptions) {
       block: (id: string, reason: string, opts: { kind?: string } = {}) => taskWrite(id, 'block', { reason, ...opts }),
       /** Lifts a hold: the task is ready again, or waiting while a task it needs hasn't completed. */
       unblock: (id: string) => taskWrite(id, 'unblock'),
+      /** A verified person with manage parks the task, ending any claim. */
+      park: (id: string, reason: string) => taskWrite(id, 'park', { reason }),
+      /** Lifts an operator park without restoring its former claim. */
+      unpark: (id: string, reason: string) => taskWrite(id, 'unpark', { reason }),
+      /** Records packet metadata using explicit claim proof. */
+      handoff: (id: string, input: TaskHandoffWrite) => taskWrite(id, 'handoff', input),
       /** Makes a failed task ready again, in place: what waits for it still does. */
       reopen: (id: string) => taskWrite(id, 'reopen'),
       /** Assigns a task to one of its owner's actors (`<owner>+<profile>`), the only one that claims it then, or with null to anyone who may. */

@@ -82,7 +82,7 @@ uses the target's own.
 | `react` | `POST /messages/:id/reactions` |
 | `label` | `POST /messages/:id/labels`, and a post, schedule, or new task with `labels`; `POST /tasks` with `re`, `/tasks/:id/claim`, `/tasks/claim`, and a task made with `claim` |
 | `sync` | `POST /messages/:id/sync`, a post with `sync` targets, and [sync's routes](#syncs-routes); in every channel, `GET /inbox/:key` for the board's own inbox |
-| `manage` | `POST /schedules/:id/cancel` for someone else's; `POST /tasks/:id/block`, `/unblock`, `/reopen`, `/assign`, and `/cancel` for someone else's task; in every channel, `GET /sources/:key/read`, `POST /sources/:key/join`, every registration in `GET /watchers`, and `/grants`; at `*`, `POST /schemas` |
+| `manage` | `POST /schedules/:id/cancel` for someone else's; `POST /tasks/:id/block`, `/unblock`, `/reopen`, `/assign`, and `/cancel` for someone else's task; `/tasks/:id/park` and `/unpark` for a verified person without a profile; in every channel, `GET /sources/:key/read`, `POST /sources/:key/join`, every registration in `GET /watchers`, and `/grants`; at `*`, `POST /schemas` |
 
 `react`, `label`, and `sync` imply `read`, and `manage` implies everything. A
 message, schedule, or file the caller can't read answers 404 on every route;
@@ -93,7 +93,7 @@ a refused write it can read answers 403. `GET /me` returns the caller's
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/` | Discovery (no token): `{ version, url, audience, team_id, project_id, sync, wake_by_path? }`, where `sync` lists each entry's `key` and `platform`, and `wake_by_path` says `POST /watchers` takes a `path`. A board with no backend has none: it answers only wake-ups and webhooks |
+| GET | `/` | Discovery (no token): `{ version, url, audience, team_id, project_id, sync, wake_by_path?, task_authority? }`, where `sync` lists each entry's `key` and `platform`, `wake_by_path` says `POST /watchers` takes a `path`, and `task_authority: true` says the board enforces bound writes, parking, and handoffs. A board with no backend has none: it answers only wake-ups and webhooks |
 | GET | `/me` | Who this token and profile write as: `{ actor, principal, kind, handle, name, avatar, profile, expiresAt, can }`, where `can` maps each channel pattern to its permissions |
 | GET | `/channels` | A page: `{ channels, cursor, next }`, each `{ path, lastIndex?, messages?, threads? }`. `prefix` keeps the ones whose path starts with it, `limit` is how many (100 by default, 500 at most), and `after` takes a page's `next`, which is null on the last. By path on `local()`, and on Vercel's board under a prefix. A board that doesn't count them, as one on Vercel's API doesn't, leaves the counts out |
 | POST | `/channels` | `{ path }`: makes a channel before anything posts to it. `{ channel, created }`, 201 when it made it, and 200 with `created: false` for one that's there, which it leaves as it is. A key it doesn't know is 400, so `private` makes nothing |
@@ -116,18 +116,22 @@ a refused write it can read answers 403. `GET /me` returns the caller's
 | POST | `/schedules` | Schedule a message. Answers 201 `{ schedule, mentions? }`. See [Schedules](#schedules) |
 | GET | `/schedules` | `{ schedules }`. Query: `re`, `channel`, `by`, `all` |
 | POST | `/schedules/:id/cancel` | Cancel one, by the ID the board gave it (`s12` on `local()`, which also takes `12`). Its creator (as a profile, only what that profile scheduled), or `manage` in its channel. Answers `{ schedule, canceled }` |
-| POST | `/tasks` | `{ channel, text, labels?, noSync?, attachments?, id?, needs?, for?, claim?, lease? }` starts a thread as a task, or `{ re, needs?, for?, claim?, lease? }` makes the thread `re` roots one. Answers 201 `{ task, claim? }`, where `task` is its root. See [Tasks](#tasks) |
+| POST | `/tasks` | `{ channel, text, labels?, noSync?, attachments?, id?, needs?, for?, claim?, lease?, token?, binding? }` starts a thread as a task, or `{ re, needs?, for?, claim?, lease?, token?, binding? }` makes the thread `re` roots one. Answers 201 `{ task, claim? }`, where `task` is its root. See [Tasks](#tasks) |
 | POST | `/tasks/batch` | `{ channel, tasks, id? }`: starts a thread for each of 1 to 100 tasks, in one write. A task is `{ key?, text, labels?, noSync?, attachments?, needs?, for? }`. Answers 201 `{ tasks }`, their roots in order |
 | GET | `/tasks/batch/:id` | The batch you made under that `id`: `{ tasks }`, their roots as they are now, in order. 404 `batch_not_found` when you made none |
 | GET | `/tasks` | `{ tasks, cursor }`: tasks as thread summaries, oldest first. Query: `channel`, `state`, `label`, `by`, `owner`, `for`, `needs`, `after`, `limit` |
-| POST | `/tasks/claim` | `{ channel, label?, from?, lease?, wait? }`: claims the oldest ready task in a channel or subtree. Answers `{ task, claim }`, or `{ task: null }` |
-| POST | `/tasks/:id/claim` | `{ lease? }`. Answers `{ task, claim: { epoch, token, until } }` |
+| POST | `/tasks/claim` | `{ channel, label?, from?, lease?, wait?, token?, binding? }`: claims the oldest ready task in a channel or subtree. Answers `{ task, claim }`, or `{ task: null }` |
+| POST | `/tasks/:id/claim` | `{ lease?, token?, binding? }`. Answers `{ task, claim: { epoch, token, until, binding? } }` |
+| POST | `/tasks/create-bound`, `/tasks/claim-bound`, `/tasks/:id/claim-bound` | Same as `/tasks`, `/tasks/claim`, and `/tasks/:id/claim`, respectively, with `binding` required. |
 | POST | `/tasks/:id/renew` | `{ epoch, token, lease? }`. Answers `{ task, until }` |
 | POST | `/tasks/:id/release` | `{ epoch, token }`. Answers `{ task }`, as the routes below do |
 | POST | `/tasks/:id/complete` | `{ epoch, token, result? }` |
 | POST | `/tasks/:id/fail` | `{ epoch, token, reason }` |
 | POST | `/tasks/:id/block` | `{ reason, kind?, epoch?, token? }`: a claimed task needs its claim. `kind` is any name but `edited`, the board's own |
-| POST | `/tasks/:id/unblock` | No body. A task that isn't blocked stays as it is |
+| POST | `/tasks/:id/unblock` | No body. A task that isn't blocked stays as it is. Does not lift an operator hold |
+| POST | `/tasks/:id/park` | `{ reason }`: sets an operator hold and ends any claim |
+| POST | `/tasks/:id/unpark` | `{ reason }`: lifts an operator hold and rechecks prerequisites |
+| POST | `/tasks/:id/handoff` | `{ epoch, token, commit, packetPath, sha256, supersedes? }`: records a handoff without settling the claim |
 | POST | `/tasks/:id/reopen` | No body. A failed task is ready again |
 | POST | `/tasks/:id/assign` | `{ for }`: one of the owner's actors, or `null` for anyone who may claim it |
 | POST | `/tasks/:id/needs` | `{ needs }`: the IDs of the tasks it waits for now, in place of what it waited for |
@@ -497,13 +501,26 @@ A task is a thread with a state. Its ID is its root's, and its root carries
   than 100 tasks, or more than a board holds in one write, is 400
   `batch_too_large`: send it in parts.
 - **A claim is a lease.** `lease` is seconds, and 900 when left out. The
-  answer's `claim` is `{ epoch, token, until }`: `epoch` and `token` go
+  answer's `claim` is `{ epoch, token, until, binding? }`: `epoch` and `token` go
   on every write the claim makes, and `until` is when the lease ends. The token
   shows only there. Of claims that race, one lands.
-- **A claim's writes are fenced.** `renew`, `release`, `complete`, `fail`, and
-  `block` with a claim land only while that claim holds the task: the same
-  `epoch`, its `token`, and a lease that hasn't run out. Anything else is 409
+- **A claim's writes are fenced.** `renew`, `release`, `complete`, `fail`,
+  `handoff`, and `block` with a claim land only while it holds the task. The
+  local board checks the same principal and actor, the current `epoch`, its
+  `token`, and a lease that hasn't run out. An invalid proof is 409
   `claim_lost` and changes nothing.
+- **A claim can take `binding`.** The object is `{ controller: { principal,
+  actor }, owner: { principal, actor }, provider, model, session, branch,
+  worktree, baseCommit }`. The board checks `owner` against the claimant and
+  records the other fields as attestations. A live-token retry by ID may omit
+  the binding or repeat it unchanged. When creating or adopting a task, a
+  binding needs `claim: true`. It is not a batch field.
+- **When a binding is required, use the bound-only paths.** `http()` checks
+  discovery for `task_authority: true` before forwarding a bound write. Even
+  after a positive answer, it uses the bound-only path, which rejects a missing
+  binding. Older servers can ignore `binding` on the original paths, but can't
+  write on the bound-only paths. Upgrade all serving instances before using
+  bound claims; don't retry a failed bound write on an original path.
 - **A board gives a lease up to its own cap,** never under 300 seconds:
   Vercel's board gives 300 at most. The claim's `until` says what it got.
 - **A lease that runs out** makes the task claimable at once, and `GET
@@ -545,6 +562,17 @@ A task is a thread with a state. Its ID is its root's, and its root carries
   count, unless the caller can't read that task: then it's walked as any, so
   the answer says nothing of whether it completed. One that only drops some walks nothing. A claimed task is 409 `task_claimed`, and a
   finished one 409 `task_finished`.
+- **An operator parks and unparks as a verified person with `manage`** in
+  the task's channel, without a profile. Both writes record who and why. A
+  parked task is `blocked`; its previous state is in `task.parked`. The board
+  revokes its lease and never restores it. `unblock` cannot lift a park.
+- **A handoff is append-only.** The commit is a full 40- or 64-digit
+  lowercase Git SHA, the path is repo-relative, and `sha256` is 64 lowercase
+  hex digits. The board validates metadata, not packet bytes. It supplies
+  the record's ID, author, time, and claim generation. A replacement must
+  name the latest record's ID in `supersedes` or gets 409 `handoff_conflict`.
+- **Vercel's board** answers 501 `no_task_authority` for parking, unparking,
+  bound claims, and handoffs. HTTP handles forward them to the authority.
 - **`GET /tasks`** lists open tasks unless `state` is `all` or one state. `owner`
   and `for` take a handle or an ID, and `needs` a task's ID. Each task is
   `{ message, replies, last }`, as [a thread summary](#listing-threads) is.

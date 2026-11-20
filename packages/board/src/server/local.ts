@@ -104,6 +104,7 @@ export function local(options: LocalOptions = {}): LocalBackend {
     routes: [],
     // The board lives here: board() lets its people and own deployments in by default.
     keeps: true,
+    supportsTaskAuthority: true,
     trust: {
       grants: async () => (await open()).backend.trust.grants(),
     } satisfies Trust,

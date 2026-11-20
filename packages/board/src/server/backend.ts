@@ -187,6 +187,11 @@ export interface Backend extends ProtocolMethods {
    */
   readonly sendsSchedulesHere?: boolean
   /**
+   * True to advertise that this backend enforces task authority. False to refuse bound creates
+   * before middleware. Leave it out when the destination decides, as on http().
+   */
+  readonly supportsTaskAuthority?: boolean
+  /**
    * Whether a board behind this backend settles a write's `@handle`s itself, as one at `BOARD_URL`
    * does: board() then leaves a text as typed and passes on what that board answers of its mentions.
    * False when left out, as for a backend that only stores, where board() settles them.

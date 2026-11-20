@@ -20,10 +20,12 @@ import {
   EDITED_HOLD,
   SentTaskHoldKind,
   SentTaskNote,
+  TaskNote,
   TaskState,
 } from '../contract/schemas.ts'
 import { ExternalAuthor, ExternalEvent, ExternalTarget, Link as LinkSchema, LINKS_PER_MESSAGE_MAX, MENTIONED_PER_MESSAGE_MAX, Origin } from '../contract/external.ts'
 import type { BoardEvent } from '../contract/events.ts'
+import { TaskBinding, TaskPacket } from '../contract/task-authority.ts'
 import type { Link } from '../contract/external.ts'
 import type { Actor, Channel, ExternalCopy, Message, Task } from '../contract/folds.ts'
 import type { Via } from '../contract/profiles.ts'
@@ -280,6 +282,7 @@ export const CreateTaskBody = z
     claim: z.boolean().optional(),
     lease: Lease.optional(),
     ...ClaimToken,
+    binding: TaskBinding.optional(),
     id: z.string().min(1).max(200).refine(storable, 'id has a NUL character or a lone surrogate').optional(),
   })
   .refine((body) => (body.channel === undefined) !== (body.re === undefined), {
@@ -292,6 +295,7 @@ export const CreateTaskBody = z
   })
   .refine((body) => body.lease === undefined || body.claim === true, { message: '`lease` goes with `claim`', path: ['lease'] })
   .refine((body) => body.token === undefined || body.claim === true, { message: '`token` goes with `claim`', path: ['token'] })
+  .refine((body) => body.binding === undefined || body.claim === true, { message: '`binding` goes with `claim`', path: ['binding'] })
 
 /** A digest of what a batch asks for: what tells the same request under an `id` from another. */
 const BatchRequest = z.string().min(1).max(64)
@@ -368,7 +372,7 @@ export const TasksQuery = z.object({
 })
 
 
-export const ClaimTaskBody = z.object({ lease: Lease.optional(), ...ClaimToken }).optional()
+export const ClaimTaskBody = z.object({ lease: Lease.optional(), binding: TaskBinding.optional(), ...ClaimToken }).optional()
 
 /**
  * Claims the oldest ready task in `channel` that has every label in `label`: one assigned to the
@@ -382,6 +386,7 @@ export const ClaimReadyTaskBody = z.object({
   from: z.array(z.string().min(1).max(256)).optional(),
   lease: Lease.optional(),
   wait: z.number().min(0).max(300).optional(),
+  binding: TaskBinding.optional(),
   ...ClaimToken,
 })
 
@@ -403,6 +408,8 @@ export const AssignTaskBody = z.object({ for: ActorId.nullable() })
 /** The tasks it waits for now, in place of what it waited for: none, for a task that waits for nothing. How many it may wait for is the backend's to say. */
 export const TaskNeedsBody = z.object({ needs: z.array(Ref) })
 export const CancelTaskBody = z.object({ reason: SentTaskNote })
+export const ParkTaskBody = z.strictObject({ reason: TaskNote })
+export const HandoffTaskBody = TaskPacket.extend(Claimed)
 
 const CanGrant = z.union([z.literal('all'), z.array(z.string().min(1).max(16)).max(8)])
 const ClaimValue = z.string().min(1).max(1000)
@@ -910,11 +917,17 @@ export type TaskView = Omit<Task, 'needs' | 'claim'> & {
   /** The tasks it waits for, by their IDs. */
   needs: string[]
   /** Who holds it. One whose `until` has passed is over: the task is claimable, and `ready` once the board says so. */
-  claim: { actor: string; until: string } | null
+  claim: { actor: string; until: string; binding?: TaskBinding } | null
 }
 
-/** What a claim answers, once: `epoch` and `token` go on every write the claim makes, until `until`. */
-export type TaskClaim = { epoch: number; token: string; until: string }
+/** Assignment metadata attested by a claimant, not a grant of authority. */
+export type TaskBindingInput = z.input<typeof TaskBinding>
+export type TaskHandoffInput = z.input<typeof TaskPacket>
+export type TaskHandoffWrite = z.input<typeof HandoffTaskBody>
+export type { TaskBinding, TaskHandoff, TaskPark } from '../contract/task-authority.ts'
+
+/** What a claim answers: `epoch` and `token` go on every write the claim makes, until `until`. */
+export type TaskClaim = { epoch: number; token: string; until: string; binding?: TaskBinding }
 
 /**
  * `kind` says who wrote it: a `person` or a platform user (`external`), an agent (`profile`), or a deployment or workflow.
@@ -1012,6 +1025,8 @@ export type Discovery = {
    * through its Deployment Protection. A board that can't find a project's deployments leaves it out.
    */
   wake_by_path?: boolean
+  /** True when the board enforces bound claims, parking, and handoffs. */
+  task_authority?: boolean
 }
 
 /**
@@ -1249,6 +1264,11 @@ export const routes = {
   blockTask: { method: 'POST', path: '/tasks/:id/block', body: BlockTaskBody },
   /** What a task's owner does, or `manage` in its channel. */
   unblockTask: { method: 'POST', path: '/tasks/:id/unblock' },
+  /** A verified person with manage parks or unparks a task. A park ends its claim. */
+  parkTask: { method: 'POST', path: '/tasks/:id/park', body: ParkTaskBody },
+  unparkTask: { method: 'POST', path: '/tasks/:id/unpark', body: ParkTaskBody },
+  /** Records a packet reference and hash under a live claim; it verifies no external bytes. */
+  handoffTask: { method: 'POST', path: '/tasks/:id/handoff', body: HandoffTaskBody },
   reopenTask: { method: 'POST', path: '/tasks/:id/reopen' },
   assignTask: { method: 'POST', path: '/tasks/:id/assign', body: AssignTaskBody },
   /** Replaces what a task waits for, while no one holds it and it isn't finished. */

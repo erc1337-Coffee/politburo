@@ -23,6 +23,7 @@ import {
   TaskNote,
 } from './schemas.ts'
 import { ExternalEvent, ExternalTarget, Link, LINKS_PER_MESSAGE_MAX, Origin } from './external.ts'
+import { TaskBinding, TaskHandoff, TaskPark } from './task-authority.ts'
 
 /** The sync key a write came from, or null when it was written on the board. */
 const From = z.string().nullable()
@@ -163,7 +164,7 @@ export const boardEvents = {
     /** (server) Every task it needs has completed. */
     'task.ready': z.object(Task),
     /** (server) `by` holds it until `until`. `token` is the SHA-256 of the claim's secret, hex: no view shows it. */
-    'task.claimed': z.object({ ...Task, epoch: Epoch, until: Until, token: z.string().regex(/^[0-9a-f]{64}$/), by: Author }),
+    'task.claimed': z.object({ ...Task, epoch: Epoch, until: Until, token: z.string().regex(/^[0-9a-f]{64}$/), by: Author, binding: TaskBinding.optional() }),
     'task.renewed': z.object({ ...Task, epoch: Epoch, until: Until, by: Author }),
     'task.released': z.object({ ...Task, epoch: Epoch, by: Author }),
     /** (server) Its lease ran out. */
@@ -173,6 +174,9 @@ export const boardEvents = {
     /** Held for a person, which ends any claim. Kind `edited` is the board's: `by` edited its root, and isn't its owner. */
     'task.blocked': z.object({ ...Task, kind: TaskHoldKind.nullable(), reason: TaskNote, by: Author }),
     'task.unblocked': z.object({ ...Task, by: Author }),
+    'task.parked': z.object({ ...Task, ...TaskPark.shape }),
+    'task.unparked': z.object({ ...Task, reason: TaskNote, by: Author }),
+    'task.handoff': z.object({ ...Task, handoff: TaskHandoff }),
     /** Reason `deleted` when its root was. */
     'task.canceled': z.object({ ...Task, reason: TaskNote, by: Author }),
     /** A failed task is ready again. */

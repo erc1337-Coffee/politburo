@@ -116,12 +116,14 @@ export const indexOf = (value: string): number | null => (/^(0|[1-9]\d{0,15})$/.
 
 /** A task as every reader sees it: the tasks it waits for as refs, and its claim without the token, hashed or not. */
 export function taskView(task: Task): TaskView {
-  const { needs, claim, ...shown } = task
+  const { needs, claim, handoff, parked, ...shown } = task
   return {
     ...shown,
     needs: needs.map(ref),
-    claim: claim && { actor: claim.actor, until: claim.until },
+    claim: claim && { actor: claim.actor, until: claim.until, ...(claim.binding ? { binding: structuredClone(claim.binding) } : {}) },
     blocked: task.blocked && { ...task.blocked },
+    ...(parked !== undefined ? { parked: parked && { ...parked, by: authorView(parked.by) } } : {}),
+    ...(handoff ? { handoff: { ...handoff, by: authorView(handoff.by) } } : {}),
   }
 }
 
@@ -336,9 +338,14 @@ export function foldEvent(messages: MessagesState, actors: ActorsState, event: B
   return { id, before, after }
 }
 
+/** The writer's actor, if this event has one. */
+export const eventActor = (event: BoardEvent) => event.type === 'task.handoff'
+  ? event.payload.handoff.by.actor
+  : (event.payload as { by?: { actor?: string } }).by?.actor
+
 /** An event as subscribers receive it, with its message as it is afterwards. */
 export function eventView(event: BoardEvent, after: Message | undefined, actors: ActorsState, reader: Reader): BoardEventView {
-  const by = (event.payload as { by?: { actor?: string } }).by?.actor
+  const by = eventActor(event)
   const actor = by ? own(actors.byId, by) : undefined
   const { links } = event.payload as { links?: Link[] }
   // `type` and `payload` come from the same event, so they still match; TypeScript
@@ -347,14 +354,15 @@ export function eventView(event: BoardEvent, after: Message | undefined, actors:
     cursor: ref(event.index),
     type: event.type,
     createdAt: iso(event.createdAt),
-    payload: payloadView(event.payload as Record<string, unknown>, links ? readableLinks(links, reader) : undefined),
+    payload: payloadView(event, links ? readableLinks(links, reader) : undefined),
     ...(after ? { message: view(after, actors, reader) } : {}),
     ...(actor ? { actor: { id: actor.id, ...actorView(actors, actor.id)! } } : {}),
   } as BoardEventView
 }
 
 /** An event's payload as clients see it: the message IDs in it are refs, and a claim's token is left out. */
-function payloadView(payload: Record<string, unknown>, links: LinkView[] | undefined): Record<string, unknown> {
+function payloadView(event: BoardEvent, links: LinkView[] | undefined): Record<string, unknown> {
+  const payload = event.payload as Record<string, unknown>
   // Only `task.claimed` carries a `token`: its hash is the board's to check claims against, and no reader's.
   // A post or an edit from before mentions were text alone carries the actor IDs they resolved to.
   // A post's `along` is the board's own count of what its append carried.
@@ -362,6 +370,10 @@ function payloadView(payload: Record<string, unknown>, links: LinkView[] | undef
   for (const key of ['id', 're', 'replyTo'] as const) if (typeof shown[key] === 'number') shown[key] = ref(shown[key])
   if (Array.isArray(shown.needs)) shown.needs = (shown.needs as number[]).map(ref)
   if (typeof shown.by === 'object' && shown.by !== null) shown.by = authorView(shown.by as Author)
+  if (event.type === 'task.handoff') {
+    const { handoff } = event.payload
+    shown.handoff = { ...handoff, by: authorView(handoff.by) }
+  }
   const schedule = shown.schedule as { id: number; n: number } | undefined
   if (schedule) shown.schedule = { id: scheduleRef(schedule.id), n: schedule.n }
   if (links) shown.links = links

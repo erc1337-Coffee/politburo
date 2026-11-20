@@ -511,6 +511,10 @@ const TASK_EVENTS: Record<string, BoardEventView['type']> = {
   'task.reopened': 'task.reopened',
 }
 /** The API's codes for a task that can't change as asked, each a 409 on a board. */
+function noTaskAuthority(): never {
+  throw new HttpError(501, 'no_task_authority', "Vercel's board does not support task parking, bindings, or handoffs")
+}
+
 const TASK_CONFLICTS = new Set(['already_a_task', 'task_claimed', 'task_assigned', 'task_waiting', 'task_blocked', 'task_finished', 'claim_lost'])
 
 /** A grant as the API answers it, its `at` in milliseconds, as the protocol has it: an ISO string. */
@@ -3728,6 +3732,9 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
       const who = whoOf(caller)
       return { task: await rootOf(who, await taskWrite(who, `${await taskPath(who, id, signal)}/unblock`, {}, { id, signal })) }
     },
+    parkTask: async () => noTaskAuthority(),
+    unparkTask: async () => noTaskAuthority(),
+    handoffTask: async () => noTaskAuthority(),
     async reopenTask(caller, { id }, signal) {
       const who = whoOf(caller)
       return { task: await rootOf(who, await taskWrite(who, `${await taskPath(who, id, signal)}/reopen`, {}, { id, signal })) }
@@ -3932,7 +3939,10 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
       name,
       (caller: Caller, ...args: unknown[]) => {
         if ('identity' in caller) throw servesNone()
-        if (binding) waitUntil(start())
+        // Refuse unsupported authority operations before starting any background upstream calls.
+        if ((name === 'createTask' || name === 'claimTask' || name === 'claimReadyTask') &&
+            (args[0] as { binding?: unknown } | undefined)?.binding !== undefined) noTaskAuthority()
+        if (name !== 'parkTask' && name !== 'unparkTask' && name !== 'handoffTask' && binding) waitUntil(start())
         return (method as (...input: unknown[]) => unknown)(caller, ...args)
       },
     ]),
@@ -3970,6 +3980,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     },
     // Vercel's API posts each send, so board()'s middleware screens a schedule when it's made.
     sendsSchedulesHere: false,
+    supportsTaskAuthority: false,
     // One deployment of a project holds each of its sync keys, as Vercel's API says when it registers.
     syncedHere: holds,
     bind(next: BoardBinding) {

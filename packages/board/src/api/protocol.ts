@@ -20,6 +20,8 @@ import type {
   CreateTasksBody,
   CreatedTasksQuery,
   FailTaskBody,
+  HandoffTaskBody,
+  ParkTaskBody,
   ReleaseTaskBody,
   RenewTaskBody,
   TaskClaim,
@@ -140,6 +142,9 @@ export type Protocol = {
   blockTask: { input: Id & Input<typeof BlockTaskBody>; output: { task: MessageView } }
   /** A task that isn't blocked is left as it is. */
   unblockTask: { input: Id; output: { task: MessageView } }
+  parkTask: { input: Id & Input<typeof ParkTaskBody>; output: { task: MessageView } }
+  unparkTask: { input: Id & Input<typeof ParkTaskBody>; output: { task: MessageView } }
+  handoffTask: { input: Id & Input<typeof HandoffTaskBody>; output: { task: MessageView } }
   /** A failed task is ready again; one that's open is left as it is. */
   reopenTask: { input: Id; output: { task: MessageView } }
   assignTask: { input: Id & Input<typeof AssignTaskBody>; output: { task: MessageView } }

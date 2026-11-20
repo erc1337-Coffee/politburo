@@ -4,6 +4,7 @@
 // doesn't depend on the SDK: what it returns is one, and `Sandbox.create({ networkPolicy })` takes it.
 
 import { routes } from '../api/routes.ts'
+import { boundTaskPaths } from '../api/task-authority.ts'
 import { canText, compileAccess, parseCan, type Can } from './access.ts'
 import { DEFAULT_CAN } from './auth.ts'
 import { HttpError } from './errors.ts'
@@ -127,7 +128,10 @@ const SEGMENT = "(?:[A-Za-z0-9_.@~:+=,!$&'*-]|%[0-9A-Fa-f]{2})+"
  * named whole, because a board mounted without a `basePath` matches a route as the end of a path, and
  * `/api/board/x/grants` would be its `/grants` under `/api/board/x`.
  */
-export const PROTOCOL_ROUTES: readonly SandboxRoute[] = (Object.values(routes) as SandboxRoute[])
+export const PROTOCOL_ROUTES: readonly SandboxRoute[] = [
+  ...Object.values(routes),
+  ...Object.values(boundTaskPaths).map((path) => ({ method: 'POST', path })),
+]
   .filter(({ path }) => !WITHHELD.includes(path.split('/').filter(Boolean)[0] ?? ''))
   .map(({ method, path }) => ({ method, path: path === '/' ? '' : path }))
 

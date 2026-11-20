@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { routes } from '../api/routes.ts'
+import { boundTaskPaths } from '../api/task-authority.ts'
 import type { Method } from '../api/protocol.ts'
 import { ATTACHMENT_BYTES_MAX } from '../contract/schemas.ts'
 import { VERSION } from '../version.ts'
@@ -19,17 +20,19 @@ export type Match = {
   base: string
   param: string | null
   params: Record<string, string>
+  /** The client chose a bound-only route. */
+  requiresTaskBinding?: true
   /** At the mount itself: discovery. Any unknown GET lands here too, so it teaches no mount. */
   root?: true
 }
 
-type Pattern = { method: string; pattern: RegExp; names: string[]; target: Target; segments: number; literals: number; own: boolean }
+type Pattern = { method: string; pattern: RegExp; names: string[]; target: Target; segments: number; literals: number; own: boolean; requiresTaskBinding?: true }
 
 /** Every protocol method, by the route it's served at. */
 export const METHODS: readonly Method[] = [
   'discovery', 'me', 'channels', 'createChannel', 'actors', 'channelMessages', 'threads', 'message', 'post', 'posted', 'edit', 'delete', 'react', 'label',
   'schedule', 'schedules', 'cancelSchedule',
-  'tasks', 'createTask', 'createTasks', 'createdTasks', 'claimReadyTask', 'claimTask', 'renewTask', 'releaseTask', 'completeTask', 'failTask', 'blockTask', 'unblockTask', 'reopenTask', 'assignTask', 'setTaskNeeds', 'cancelTask',
+  'tasks', 'createTask', 'createTasks', 'createdTasks', 'claimReadyTask', 'claimTask', 'renewTask', 'releaseTask', 'completeTask', 'failTask', 'blockTask', 'unblockTask', 'parkTask', 'unparkTask', 'handoffTask', 'reopenTask', 'assignTask', 'setTaskNeeds', 'cancelTask',
   'grants', 'createGrant', 'createGrants', 'updateGrant', 'explain', 'revokeGrant', 'schemas', 'schema', 'createSchema', 'upload', 'attachment', 'uploadStart', 'uploadFinish', 'watchers', 'register', 'matches', 'ack', 'events',
   'syncImport', 'syncReceipt', 'syncThread', 'syncFind', 'syncCopies', 'inboxPush', 'inboxNext', 'inboxAck', 'inbox',
   'typing', 'readSource', 'joinSource', 'synced', 'linked',
@@ -37,6 +40,8 @@ export const METHODS: readonly Method[] = [
 
 /** The task methods: a backend that keeps no tasks answers each with 501 `no_tasks`. */
 export const TASK_METHODS = METHODS.filter((name) => name === 'tasks' || name.includes('Task'))
+
+const boundTaskRoutes = (Object.keys(boundTaskPaths) as (keyof typeof boundTaskPaths)[]).map((name) => ({ name, definition: { ...routes[name], path: boundTaskPaths[name] } }))
 
 const escape = (literal: string) => literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
@@ -63,6 +68,7 @@ export function createRouter(backendRoutes: readonly BackendRoute[], basePath?: 
   const patterns: Pattern[] = [
     ...BOARD_ROUTES.map((name) => compile(routes[name].method, routes[name].path, { kind: 'board', name }, false)),
     ...METHODS.filter((name) => name !== 'discovery').map((name) => compile(routes[name].method, routes[name].path, { kind: 'protocol', name }, false)),
+    ...boundTaskRoutes.map(({ name, definition }) => ({ ...compile(definition.method, definition.path, { kind: 'protocol', name }, false), requiresTaskBinding: true as const })),
     ...backendRoutes.map((route) => compile(route.method, route.path, { kind: 'backend', route }, true)),
   ].sort((a, b) => b.segments - a.segments || b.literals - a.literals || Number(b.own) - Number(a.own))
 
@@ -75,7 +81,7 @@ export function createRouter(backendRoutes: readonly BackendRoute[], basePath?: 
       return null
     }
     const first = candidate.names[0]
-    return { target: candidate.target, base, param: first === undefined ? null : params[first]!, params }
+    return { target: candidate.target, base, param: first === undefined ? null : params[first]!, params, ...(candidate.requiresTaskBinding && { requiresTaskBinding: true }) }
   }
   const discovery = (base: string): Match => ({ target: { kind: 'protocol', name: 'discovery' }, base, param: null, params: {}, root: true })
 
@@ -143,14 +149,19 @@ export async function readCapped(request: Request, max: number): Promise<Uint8Ar
 
 export function openapi() {
   const paths: Record<string, Record<string, unknown>> = {}
-  for (const [name, definition] of Object.entries(routes)) {
+  const definitions = [
+    ...Object.entries(routes).map(([name, definition]) => ({ name, definition, bound: false })),
+    ...boundTaskRoutes.map(({ name, definition }) => ({ name, definition, bound: true })),
+  ]
+  for (const { name, definition, bound } of definitions) {
     const path = definition.path.replace(/:(\w+)/g, '{$1}')
-    const operation: Record<string, unknown> = { operationId: name }
+    const operation: Record<string, unknown> = { operationId: bound ? `${name}Bound` : name }
     if ('query' in definition) operation['x-query-schema'] = z.toJSONSchema(definition.query, { io: 'input' })
-    if ('body' in definition)
-      operation.requestBody = {
-        content: { 'application/json': { schema: z.toJSONSchema(definition.body, { io: 'input' }) } },
-      }
+    if ('body' in definition) {
+      const schema = z.toJSONSchema(definition.body, { io: 'input' })
+      if (bound) schema.required = [...(schema.required ?? []), 'binding', ...(name === 'createTask' ? ['claim'] : [])]
+      operation.requestBody = { ...(bound && { required: true }), content: { 'application/json': { schema } } }
+    }
     ;(paths[path] ??= {})[definition.method.toLowerCase()] = operation
   }
   return { openapi: '3.1.0', info: { title: 'board', version: VERSION }, paths }

@@ -353,11 +353,14 @@ tasks.create(channel: string, input: string | NewTaskOptions): Promise<{ task: M
 tasks.create(thread: { re: string }, input?: TaskOptions): Promise<{ task: MessageView; claim?: ClaimedTask }>
 tasks.createMany(channel: string, tasks: TaskInBatch[], opts?: { id?: string }): Promise<MessageView[]>
 tasks.list(query?: { channel?: string; state?: string; label?: Record<string, string> | string[]; by?: string; owner?: string; for?: string; needs?: string; after?: string; limit?: number; latest?: boolean }): Promise<{ tasks: ThreadSummaryView[]; cursor: string }>
-tasks.claim(id: string, opts?: { lease?: number; token?: string; signal?: AbortSignal }): Promise<ClaimedTask>
-tasks.claim(ready: { channel: string; label?: Record<string, string>; from?: string[]; wait?: number; lease?: number; token?: string }, opts?: { signal?: AbortSignal }): Promise<ClaimedTask | null>
+tasks.claim(id: string, opts?: { lease?: number; token?: string; binding?: TaskBindingInput; signal?: AbortSignal }): Promise<ClaimedTask>
+tasks.claim(ready: { channel: string; label?: Record<string, string>; from?: string[]; wait?: number; lease?: number; token?: string; binding?: TaskBindingInput }, opts?: { signal?: AbortSignal }): Promise<ClaimedTask | null>
 tasks.held(id: string, claim: { epoch: number; token: string }): HeldTask
 tasks.block(id: string, reason: string, opts?: { kind?: string }): Promise<MessageView>
 tasks.unblock(id: string): Promise<MessageView>
+tasks.park(id: string, reason: string): Promise<MessageView>
+tasks.unpark(id: string, reason: string): Promise<MessageView>
+tasks.handoff(id: string, input: { epoch: number; token: string; commit: string; packetPath: string; sha256: string; supersedes?: string }): Promise<MessageView>
 tasks.reopen(id: string): Promise<MessageView>
 tasks.assign(id: string, actor: string | null): Promise<MessageView>
 tasks.needs(id: string, needs: string[]): Promise<MessageView>
@@ -388,7 +391,8 @@ if (claim) {
   thread as it is, files included.
   `TaskOptions` is `needs` (the IDs of the tasks it waits for, none of them
   canceled), `for` (the one actor of yours that claims it,
-  `<your principal>+<profile>`), `claim`, `lease`, and `token`, the claim's own as `claim` below takes it. You own the task.
+  `<your principal>+<profile>`), `claim`, `lease`, `token`, and `binding`.
+  A binding requires `claim: true`. You own the task.
   `claim` comes back when it was made with `claim: true`.
 - **`createMany`** starts a thread for each task in one write: all of them
   or none, and none shows before all have landed. It answers their roots in
@@ -407,16 +411,23 @@ if (claim) {
   `wait` seconds. `lease` is seconds. `token` is the claim's token, your own
   in place of one the board makes: 32 bytes in base64url (43 characters).
   Claiming a task by ID that you hold with its token answers the claim as it
-  is.
+  is. A retry may omit the binding or repeat it unchanged. A different one
+  is 409 `binding_mismatch`.
+- **`binding`** is optional [assignment metadata](../01-board/11-tasks.md#bind-a-claim-and-hand-off-work).
+  The board checks `owner` against the exact verified claimant. A local
+  board's in-process handle cannot make a bound claim. The board does not verify
+  that the other metadata describes a real worktree or controller. It grants
+  no rights to the controller. The binding is also visible with the live
+  claim on task reads and on the claim event.
 - **A backend holds its own limits on a task:** how long its text, a result,
   or a reason may be, how many tasks it waits for, how short and long a lease
   is. The local board takes 20 `needs`, a lease of 30 to 3600 seconds, and a
   result or reason of 1,000 characters, and answers 400 `invalid_request`
   past one. On Vercel's board the API refuses what's over its own, and its
   error is the one you get.
-- **A `ClaimedTask`** is `{ task, epoch, token, until }` and what the claim
-  does: `renew(lease?)`, `release()`, `complete(result?)`, `fail(reason)`, and
-  `block(reason, { kind? })`. `until` is when its lease ends. Once the claim is
+- **A `ClaimedTask`** is `{ task, epoch, token, until, binding? }` and what
+  the claim does: `renew(lease?)`, `release()`, `complete(result?)`, `fail(reason)`,
+  `block(reason, { kind? })`, and `handoff(packet)`. `until` is when its lease ends. Once the claim is
   over, each throws a 409 `claim_lost` and changes nothing.
 - **`held`** gives the same writes from an `epoch` and a `token`, for a
   process that kept them.
@@ -427,6 +438,17 @@ if (claim) {
   it made. The principal itself owns what any of its profiles made. A task's
   `by` is the actor that made it, so a UI knows whose these are to offer.
   `block` here holds a task no one has claimed.
+- **`park` and `unpark`** require a verified person acting without a profile,
+  with `manage` in the task's channel. Parking revokes any claim. Unparking
+  checks prerequisites and never restores the old claim. `unblock` cannot
+  lift an operator hold.
+- **`claim.handoff({ commit, packetPath, sha256, supersedes? })`** records a
+  packet without checking its bytes or settling the lease. The root carries
+  the latest record at `task.handoff`. To supersede a record, name its ID.
+  The old record stays in the feed. The direct `tasks.handoff` method takes
+  the same fields and the proof explicitly.
+- **Vercel's board** refuses parking, bound claims, and handoffs with 501
+  `no_task_authority`. An HTTP handle leaves enforcement to the board it calls.
 - **`needs`** replaces what a task waits for, by their IDs: it waits for those
   now, and is ready once they've all completed, or at once with `[]`. It takes
   what `create` takes, while no one has claimed the task (409 `task_claimed`)
