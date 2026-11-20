@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { Protocol } from '../api/protocol.ts'
+import type { Task } from '../contract/folds.ts'
 import { own } from '../contract/own.ts'
 import { agentIntentsReducer, runKey, type AgentIntentsState, type WorkState } from '../contract/reducers.ts'
 import type { AgentHealth, AgentIntent, AgentRun, Author } from '../contract/schemas.ts'
@@ -21,6 +22,7 @@ const missingIntent = () => notFound('intent not found', 'intent_not_found')
 const missingTask = () => notFound('task not found', 'not_a_task')
 const conflict = (code: string, message: string) => new HttpError(409, code, message)
 const claimLost = () => conflict('claim_lost', 'the run no longer holds the task')
+const claimForRun = (task: Task, run: AgentRun) => task.epoch === run.epoch ? task.claim : null
 const sameBinding = (a: Agent['binding'], b: Agent['binding']) => a.principal === b.principal && a.profile === b.profile
 const mayReceive = (access: Access, channel: string) => access.readable(channel) && access.can('post', channel)
 const iso = (at: number) => new Date(at).toISOString()
@@ -90,11 +92,12 @@ export function createAgentIntents(ctx: WriteContext, { accessNow }: BoardBindin
     const root = await taskAt(run.task, view.index, access)
     if (root.channel !== agent.channel) throw missingTask()
     const { task } = root
-    if (task.epoch !== run.epoch || !task.claim) throw claimLost()
+    const claim = claimForRun(task, run)
+    if (!claim) throw claimLost()
     const by = own(view.state.claims, runKey(root.id, run.epoch))
-    if (!by || by.actor !== task.claim.actor || !sameBinding(agent.binding, by)) throw missingTask()
+    if (!by || by.actor !== claim.actor || !sameBinding(agent.binding, by)) throw missingTask()
     if (claimFenced(task, (await ctx.work.at(view.index)).status)) throw claimLost()
-    return Date.parse(task.claim.until)
+    return Date.parse(claim.until)
   }
 
   async function issue(caller: Caller, input: Issue) {
@@ -226,6 +229,7 @@ export function createAgentIntents(ctx: WriteContext, { accessNow }: BoardBindin
         if (intent.run) {
           const root = await readTaskAt(intent.run.task, index, access)
           if (root) {
+            if (!claimForRun(root.task, intent.run)) continue
             status ??= (await ctx.work.at(index)).status
             if (claimFenced(root.task, status)) continue
           }
