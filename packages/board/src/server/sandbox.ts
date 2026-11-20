@@ -112,7 +112,8 @@ export function canHeader(can: Can | string | undefined): string {
  * platform or the board's own deployments call (webhooks, wake-ups), where the credential could speak
  * for them.
  */
-const WITHHELD = ['grants', 'watchers', 'wake', 'webhooks', 'sync', 'inbox', 'sources']
+// A sandbox shares its deployment's principal, so a profile can't isolate an operational inbox.
+const WITHHELD = ['grants', 'watchers', 'wake', 'webhooks', 'sync', 'inbox', 'operational-inbox', 'sources']
 
 const escaped = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 

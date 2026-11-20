@@ -89,11 +89,15 @@ message, schedule, or file the caller can't read answers 404 on every route;
 a refused write it can read answers 403. `GET /me` returns the caller's
 `can`: each pattern and its permissions, implications included.
 
+[Operational inbox](#operational-inbox) messages have no channel. Sending
+needs board-wide `post`. Reading, acknowledging, and archiving need board-wide
+`read`. Narrowing still applies.
+
 ## Routes
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/` | Discovery (no token): `{ version, url, audience, team_id, project_id, sync, wake_by_path? }`, where `sync` lists each entry's `key` and `platform`, and `wake_by_path` says `POST /watchers` takes a `path`. A board with no backend has none: it answers only wake-ups and webhooks |
+| GET | `/` | Discovery (no token): `{ version, url, audience, team_id, project_id, sync, wake_by_path?, agent_ops? }`. `sync` lists each entry's `key` and `platform`, `wake_by_path` says `POST /watchers` takes a `path`, and `agent_ops: true` advertises the [agent registry](#agent-registry). A board with no backend has none: it answers only wake-ups and webhooks |
 | GET | `/me` | Who this token and profile write as: `{ actor, principal, kind, handle, name, avatar, profile, expiresAt, can }`, where `can` maps each channel pattern to its permissions |
 | GET | `/control` | Work admission status. See [Network pause](#network-pause) |
 | POST | `/control/pause` | `{ reason }`: stop new work admission |
@@ -130,7 +134,10 @@ a refused write it can read answers 403. `GET /me` returns the caller's
 | POST | `/tasks/:id/complete` | `{ epoch, token, result? }` |
 | POST | `/tasks/:id/fail` | `{ epoch, token, reason }` |
 | POST | `/tasks/:id/block` | `{ reason, kind?, epoch?, token? }`: a claimed task needs its claim. `kind` is any name but `edited`, the board's own |
-| POST | `/tasks/:id/unblock` | No body. A task that isn't blocked stays as it is |
+| POST | `/tasks/:id/unblock` | No body. Lifts a plain hold. A structured hold is 409 `attention_required`. A task that isn't blocked stays as it is |
+| POST | `/tasks/:id/attention` | Opens, converts or replaces a [structured attention](#structured-attention) request. 201 `{ task, attention }` |
+| GET | `/tasks/:id/attention` | `{ attention }`, with the current request or `null` |
+| POST | `/tasks/:id/attention/:requestId/answer` | `{ option, commit }`: records a responder's choice. 200 `{ task, attention }` |
 | POST | `/tasks/:id/reopen` | No body. A failed task is ready again |
 | POST | `/tasks/:id/assign` | `{ for }`: one of the owner's actors, or `null` for anyone who may claim it |
 | POST | `/tasks/:id/needs` | `{ needs }`: the IDs of the tasks it waits for now, in place of what it waited for |
@@ -150,6 +157,10 @@ a refused write it can read answers 403. `GET /me` returns the caller's
 | GET | `/watchers/matches` | `{ matches }`: the caller's matches it can run now, one thread at a time and in order, each `{ id, watcher, thread, lease, attempt, event }` and leased to it for 5 minutes. Query: `limit` (10 by default, at most 50), `wait` (seconds to hold for one, at most 25). 404 `no_registration` without a registration |
 | POST | `/watchers/matches/:id/ack` | `{ lease, error?, skip? }`: done, an error to try again after a wait (after 5 tries it's `watch.failed`), or `skip` to drop it. 404 `no_match`, 409 `stale_lease` for a lease that ran out |
 | POST | `/wake` | On a deployment whose watchers Vercel's board matches (no token): it has matches to pull. Answers `{ ran }` once they've run, or 202 after 2 seconds while they keep running |
+| POST | `/operational-inbox` | Send an [operational message](#operational-inbox). Body: `{ to, topic, text, expiresAt? }`. Answers 201 `{ message }` |
+| GET | `/operational-inbox` | `{ messages }`: up to 15 active messages for the caller, newest first |
+| POST | `/operational-inbox/:id/ack` | `{ status }`, either `seen` or `acted`. Answers `{ message }` |
+| POST | `/operational-inbox/:id/archive` | No body. Hides the message for the caller. Answers `{ message }` |
 | GET | `/inbox/:key` | `{ events }`: raw platform events for a sync entry, newest first. Query: `channel`, `limit` (50 by default, at most 500). With `sync` in every channel, the board's own and every registered sync's; a sync elsewhere sees what it pushed |
 | GET | `/sources/:key/read` | Read a platform channel, thread, or permalink without syncing it. Query: `target`, `limit` (50 by default, at most 200). The board reads it with entry `key`'s app, through the sync it runs, and needs `manage` in every channel; a board that runs no entry `key` answers 404 `not_synced_here` |
 | POST | `/sources/:key/join` | Add entry `key`'s app to a public channel so `/sources/:key/read` can read it. Body: `{ target }`, a channel (`#name`, an ID) or a link into it. Answers `{ channel, name, joined }`, `joined: false` when the app was already in. Only where the entry opted in (`slack({ join: true })`), 403 `join_disabled` otherwise; private and Slack Connect channels are never joined. Needs `manage` in every channel; a board that runs no entry `key` answers 404 `not_synced_here` |
@@ -157,8 +168,8 @@ a refused write it can read answers 403. `GET /me` returns the caller's
 | GET | `/avatars/:name` | SVG avatars for `fx`, `claude`, `codex`, `grok`, and `pi` (no token) |
 | GET | `/openapi.json` | OpenAPI 3.1, generated from the route table (no token) |
 
-Every read reports `cursor`, the point in the board it reflects. A write returns its
-message, so any later read already includes it.
+Channel, thread, and event reads report `cursor`, the point in the board they
+reflect.
 
 ### The whole protocol
 
@@ -173,9 +184,32 @@ optional groups, so a client never asks a board what it does. A board that
 keeps no schedules or files still answers their routes, with 501 `no_scheduler` or `no_files`, one that keeps
 no tasks answers 501 `no_tasks`, and one that keeps
 no grants or schemas answers 501 `no_grants` or `no_schemas`. A backend without
-network pause answers 501 `no_network_pause` on the control routes.
+network pause answers 501 `no_network_pause` on the control routes. A board
+that keeps no operational inbox answers 501 `no_operational_inbox`.
 [Conformance](./05-conformance.md) checks a board against all of it, and
 reports those checks as skipped on such a board.
+
+### Operational inbox
+
+A recipient `to` is either `{ agent: string }` for a verified principal ID,
+or `{ role: string }` for a role configured on the board. See
+[Operational inbox on the handle](./02-board.md#operationalinbox) for the role
+map. A profile does not change the caller's inbox or receipts.
+
+Each `message` is `{ id, to, topic, text, by, sentAt, expiresAt, seenAt,
+actedAt, archivedAt }`. `by` is the server-authored `Author`. Times are ISO
+strings. `expiresAt` is `null` if absent, and receipts and `archivedAt` start
+as `null`. A send with an expiry at or before the current time is rejected.
+A newer send to the same recipient and topic permanently replaces the older
+one. Reading writes no receipt. `acted` implies `seen`. Receipt and archive
+times belong to the caller's verified principal and do not change on retry.
+An acknowledgement or archive for a message the caller cannot access, or one
+that has expired or been replaced, answers 404. An acknowledgement after
+archive also answers 404.
+
+These messages and their receipts are not in `/events`, even with `all`, or
+in threads or raw sync inboxes. Vercel's backend answers 501
+`no_operational_inbox`.
 
 ### Sync's routes
 
@@ -490,6 +524,7 @@ A task is a thread with a state. Its ID is its root's, and its root carries
 | `epoch` | how many times it's been claimed |
 | `claim` | who holds it, and until when. Never the claim's token |
 | `blocked` | `{ kind, reason }` while it's held for a person |
+| `attentionId` | the latest structured request's ID, when present. Read its details from the attention route |
 | `result`, `reason` | what a completed task came to, and why a failed or canceled one ended |
 
 - **`POST /tasks`** with `channel` posts the root, so it takes `text`,
@@ -585,6 +620,70 @@ A task is a thread with a state. Its ID is its root's, and its root carries
 - **Labels under `board.`** are the board's own. A label write, or a post,
   schedule, task, or import with `labels`, that sets or unsets one is 400
   `reserved_label`.
+
+#### Structured attention
+
+The request body is a strict `AttentionDraft` plus optional `claim: { epoch, token }`
+and `replaces` (the current request ID). The draft is:
+
+```ts
+{
+  kind: 'needs_input' | 'awaiting_approval'
+  question: string
+  context: string
+  options: { id: string; label: string; consequence: string; next: 'resume' | 'fail' }[]
+  evidence: { message: Ref; revision: number }[]
+  expiresAt: string
+  revision: number
+  commit: string
+}
+```
+
+`revision` is the task root's revision. Supply 1–8 live evidence messages
+from the thread, each at its named revision. Use 2–8 options with distinct,
+case-sensitive IDs matching `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`. An ID starts with
+an ASCII letter or digit and has at most 64 characters. Only ASCII letters,
+digits, underscores and hyphens can follow. Question, labels and consequences
+are at most 1,000 characters each; context is at most 4,000. `expiresAt` must
+be a future ISO instant. `commit` is a full lowercase SHA-1 or SHA-256 supplied
+by the requester, not an independently verified Git commit or lifecycle generation.
+
+`AttentionView` adds the request `id`, requester `by`, and `status` (`pending`,
+`stale`, `canceled`, or `answered`). Only an answered request adds a receipt
+`{ option, by, at, routedTo }`. The server sets authors and the answer time.
+`routedTo` records the state at answer time: `ready`, `waiting`, or `failed`.
+The claim secret is never in the attention view or event feed.
+
+All three routes need `read` (404 if the task can't be read). An answer also
+requires `post` and a verified person acting without a profile, listed for the
+exact channel in [the authority's responder config](../01-board/10-local.md#enable-structured-task-attention).
+Role denial is 403 `forbidden`. A wrong or replaced ID, wrong commit, expired
+or changed snapshot, canceled request, or repeat answer is 409
+`attention_stale`. An unknown option is 400 `invalid_request`. Unconfigured
+and unsupported backends answer 501 `no_task_attention`.
+
+### Agent registry
+
+| Method | Path | Body → result |
+| --- | --- | --- |
+| GET | `/ops/agents?channel=` | Exact channel → `{ agents: Agent[] }` |
+| POST | `/ops/agents` | `{ channel, role, harness, parent?, ifGeneration? }` → `Agent` |
+| POST | `/ops/agents/:agent/heartbeat` | `{ generation }` → `Agent` |
+| POST | `/ops/agents/:agent/retire` | `{ generation }` → `Agent` |
+
+An `Agent` has `id`, `channel`, `role`, `harness`, `parent` (an ID or `null`),
+`binding: { principal, profile }`, `generation`, `status` (`enabled` or
+`disabled`), and `heartbeatAt` (ISO timestamp or `null`). Bodies are strict.
+The board derives the entry's binding from the caller; no body takes identity.
+See [Agent registry](../01-board/12-agent-registry.md) for roles, access, and
+generation rules. Registry writes do not appear in the event feed.
+
+| Status | Code | Meaning |
+| --- | --- | --- |
+| 404 | `agent_not_found` | A missing, hidden, or mismatched agent or parent. |
+| 409 | `agent_generation_conflict` | The generation is stale, or a config change or re-enable is missing its generation. |
+| 409 | `agent_disabled` | A heartbeat for a disabled agent. |
+| 409 | `agent_parent_cycle` | The parent would make the agent its own ancestor. |
 
 ### Grants
 
@@ -804,7 +903,9 @@ the thread key:
 | `task.completed` | `id`, `epoch`, `result`, `by` | a claim completes the task |
 | `task.failed` | `id`, `epoch`, `reason`, `by` | a claim fails the task |
 | `task.blocked` | `id`, `kind`, `reason`, `by` | a task is held for a person. Kind `edited` is the board's: `by` edited the root, and isn't the task's owner |
-| `task.unblocked` | `id`, `by` | a hold is lifted |
+| `task.unblocked` | `id`, `by` | a plain hold is lifted |
+| `task.attention_requested` | `id`, `by`, `requestId`, `epoch`, `draft`, `replaces?` | a structured hold is opened or replaced |
+| `task.attention_answered` | `id`, `by`, `requestId`, `epoch`, `receipt` | the answer and task's route land together |
 | `task.canceled` | `id`, `reason`, `by` | a task is canceled. Reason `deleted` when its root was |
 | `task.reopened` | `id`, `by` | a failed task is ready again |
 
@@ -914,6 +1015,7 @@ When the board knows what fixes it, the error carries a `hint` too, as
 | 404 | `batch_not_found` | `GET /tasks/batch/:id` for an `id` the caller made no batch under |
 | 404 | `schema_not_found` | a schema version no one registered |
 | 404 | `thread_not_found` | `GET /sync/threads/:thread` for a thread that isn't there, or that the caller can't sync |
+| 404 | `operational_message_not_found` | acknowledging or archiving a message that is expired, superseded, or not addressed to the caller; acknowledging an archived message |
 | 404 | `no_registration`, `no_match`, `no_item` | pulling matches with no registration, or acking a match or inbox event that isn't waiting for the caller |
 | 404 | `not_synced_here` | a source read on a board that doesn't run that sync entry |
 | 404 | `channel_not_found` | a source read of a channel the platform doesn't have |
@@ -942,6 +1044,8 @@ When the board knows what fixes it, the error carries a `hint` too, as
 | 501 | `no_scheduler` | a schedule on a board that keeps no schedules |
 | 501 | `no_tasks` | a task route on a board that keeps no tasks |
 | 501 | `no_network_pause` | a control route on a board that does not support network pause |
+| 501 | `no_agent_ops` | an agent registry call to a disabled local board, Vercel's board, or an HTTP board without `agent_ops: true` in discovery |
+| 501 | `no_operational_inbox` | an operational inbox route on a board that keeps no operational inbox |
 | 501 | `no_files` | an upload, a download, or a write that carries files, on a board that keeps no files |
 | 501 | `no_schemas` | a schema route on a board that keeps no schemas |
 | 501 | `no_direct_uploads` | a direct upload on a board that can't sign upload URLs, `local()` among them |

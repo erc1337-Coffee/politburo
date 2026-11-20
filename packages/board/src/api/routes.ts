@@ -1,6 +1,9 @@
 import { z } from 'zod'
 import {
   ActorId,
+  AgentGeneration,
+  AgentHarness,
+  AgentRole,
   AttachmentId,
   ATTACHMENTS_PER_MESSAGE_MAX,
   CHANNEL_PATTERN_MAX,
@@ -13,6 +16,7 @@ import {
   NewLabels,
   MESSAGE_TEXT_MAX,
   MessageText,
+  Ref,
   SentText,
   platformAvatar,
   storable,
@@ -23,20 +27,35 @@ import {
   TaskNote,
   TaskState,
   TaskPriority,
+  type Author,
 } from '../contract/schemas.ts'
+import { AttentionAnswerBody, RequestAttentionBody } from '../contract/attention.ts'
 import { ExternalAuthor, ExternalEvent, ExternalTarget, Link as LinkSchema, LINKS_PER_MESSAGE_MAX, MENTIONED_PER_MESSAGE_MAX, Origin } from '../contract/external.ts'
-import type { BoardEvent } from '../contract/events.ts'
+import type { BoardEvent, PublicBoardEvent } from '../contract/events.ts'
+import { OperationalRecipient, OperationalStatus, OperationalTopic } from '../contract/operational-inbox.ts'
 import type { Link } from '../contract/external.ts'
 import type { Actor, Channel, ExternalCopy, Message, Task } from '../contract/folds.ts'
 import type { Via } from '../contract/profiles.ts'
 import type { AccessSummary, Permission, WrittenCan } from '../server/access.ts'
 
-/**
- * A message's, schedule's, or cursor's ID: a string clients pass back as they got it, and never
- * parse, compare, or count with. Each backend picks its own; a board on `local()` writes decimals,
- * and `s12` for a schedule.
- */
-export const Ref = z.string().min(1).max(128)
+export { Ref }
+export { AttentionAnswerBody, AttentionDraft, AttentionReceipt, AttentionView, RequestAttentionBody } from '../contract/attention.ts'
+export type { AgentRole } from '../contract/schemas.ts'
+
+export const ListOpsAgentsQuery = z.strictObject({ channel: ChannelPath })
+export const RegisterOpsAgentBody = z.strictObject({
+  channel: ChannelPath,
+  role: AgentRole,
+  parent: Ref.nullable().optional(),
+  harness: AgentHarness,
+  ifGeneration: AgentGeneration.optional(),
+})
+export const OpsAgentGenerationBody = z.strictObject({ generation: AgentGeneration })
+
+export type RegisterOpsAgentInput = z.input<typeof RegisterOpsAgentBody>
+export type OpsAgentGenerationInput = z.input<typeof OpsAgentGenerationBody>
+export type Agent = BoardEvent<'ops.agent_changed'>['payload']['agent']
+export type AgentView = Agent
 
 /** The message's `revision` as it was read: if it's been edited or deleted since, 409 `revision_conflict`. */
 const Revision = z.number().int().positive()
@@ -187,6 +206,31 @@ export const PostBody = z
 /** `30m`, `1d`: a number and a unit, `s`, `m`, `h`, or `d`. */
 const Duration = z.string().regex(/^\d+(\.\d+)?(s|m|h|d)$/, 'durations look like 30s, 30m, 12h, or 1d')
 const Instant = z.string().datetime({ offset: true })
+
+export const SendOperationalMessageBody = z.strictObject({
+  to: OperationalRecipient,
+  topic: OperationalTopic,
+  text: MessageText,
+  expiresAt: Instant.optional(),
+})
+export const AckOperationalMessageBody = z.strictObject({ status: OperationalStatus })
+
+export type SendOperationalMessageInput = z.input<typeof SendOperationalMessageBody>
+export type { OperationalRecipient, OperationalStatus }
+
+/** A private message and the calling principal's receipts for it. */
+export type OperationalMessage = {
+  id: string
+  to: OperationalRecipient
+  topic: string
+  text: string
+  by: Author
+  sentAt: string
+  expiresAt: string | null
+  seenAt: string | null
+  actedAt: string | null
+  archivedAt: string | null
+}
 
 /**
  * A message to post later, as the caller: once (`in` or `at`), or repeating
@@ -924,8 +968,10 @@ export type SchemaView = {
  * owner's actors made it one (`by`, who changes it as its owner), what it waits for, and who holds
  * it until when. A claim's token shows nowhere but in the answer that made it.
  */
-export type TaskView = Omit<Task, 'needs' | 'claim' | 'priority'> & {
+export type TaskView = Omit<Task, 'needs' | 'claim' | 'priority' | 'attention'> & {
   priority: TaskPriority
+  /** The current attention request, when the task has one. */
+  attentionId?: string
   /** The tasks it waits for, by their IDs. */
   needs: string[]
   /** Who holds it. One whose `until` has passed is over: the task is claimable, and `ready` once the board says so. */
@@ -1003,7 +1049,7 @@ type PayloadView<P> = {
 }
 
 /** A board event as subscribers get it. Checking `type` narrows `payload` to that event's. */
-export type BoardEventView = BoardEvent extends infer E
+export type BoardEventView = PublicBoardEvent extends infer E
   ? E extends { type: infer T; payload: infer P }
     ? {
         /** Where this event is in the board's order: pass it as `after` to read on from here. */
@@ -1037,6 +1083,10 @@ export type Discovery = {
    * through its Deployment Protection. A board that can't find a project's deployments leaves it out.
    */
   wake_by_path?: boolean
+  /** Whether this board is configured to keep structured task attention requests. */
+  task_attention?: true
+  /** This board opts into the fork's agent registry. */
+  agent_ops?: true
 }
 
 /**
@@ -1259,6 +1309,10 @@ export const routes = {
   schedules: { method: 'GET', path: '/schedules', query: SchedulesQuery },
   /** Its creator, or manage in its channel, may cancel a schedule. Canceling one that's done is a no-op. */
   cancelSchedule: { method: 'POST', path: '/schedules/:id/cancel' },
+  listOpsAgents: { method: 'GET', path: '/ops/agents', query: ListOpsAgentsQuery },
+  registerOpsAgent: { method: 'POST', path: '/ops/agents', body: RegisterOpsAgentBody },
+  heartbeatOpsAgent: { method: 'POST', path: '/ops/agents/:agent/heartbeat', body: OpsAgentGenerationBody },
+  retireOpsAgent: { method: 'POST', path: '/ops/agents/:agent/retire', body: OpsAgentGenerationBody },
   /** Tasks, oldest first: open ones unless `state` says otherwise. */
   tasks: { method: 'GET', path: '/tasks', query: TasksQuery },
   /** Starts a thread as a task (`post` there, and `label` for its labels), or makes the thread `re` roots one (`label` there). */
@@ -1278,6 +1332,9 @@ export const routes = {
   failTask: { method: 'POST', path: '/tasks/:id/fail', body: FailTaskBody },
   /** Holds a task for a person: its claim while it's claimed, its owner or `manage` in its channel otherwise. */
   blockTask: { method: 'POST', path: '/tasks/:id/block', body: BlockTaskBody },
+  requestTaskAttention: { method: 'POST', path: '/tasks/:id/attention', body: RequestAttentionBody },
+  taskAttention: { method: 'GET', path: '/tasks/:id/attention' },
+  answerTaskAttention: { method: 'POST', path: '/tasks/:id/attention/:requestId/answer', body: AttentionAnswerBody },
   /** What a task's owner does, or `manage` in its channel. */
   unblockTask: { method: 'POST', path: '/tasks/:id/unblock' },
   reopenTask: { method: 'POST', path: '/tasks/:id/reopen' },
@@ -1303,6 +1360,12 @@ export const routes = {
   createSchema: { method: 'POST', path: '/schemas', body: SchemaBody },
   /** The caller's own post with the client ID it gave: what `POST /messages` answered, for telling a retry before posting. */
   posted: { method: 'GET', path: '/posts/:id' },
+  /** Sends a private operational message. Requires board-wide post. */
+  sendOperationalMessage: { method: 'POST', path: '/operational-inbox', body: SendOperationalMessageBody },
+  /** The caller's latest active operational messages, newest first. Requires board-wide read. */
+  readOperationalInbox: { method: 'GET', path: '/operational-inbox' },
+  ackOperationalMessage: { method: 'POST', path: '/operational-inbox/:id/ack', body: AckOperationalMessageBody },
+  archiveOperationalMessage: { method: 'POST', path: '/operational-inbox/:id/archive' },
   /** Raw platform events in a sync key's inbox, newest first: the caller's own, and the board's with `sync` everywhere. */
   inbox: { method: 'GET', path: '/inbox/:key', query: InboxQuery },
   /** Pushes platform events into the caller's inbox for a sync key, deduplicated by their platform IDs. */

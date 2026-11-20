@@ -3,6 +3,8 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { BoardError, type Board } from '@vercel/board'
 import type { Harness, Result, RunRef, WorkSpec } from './harness.ts'
 import { checkedMs } from './process.ts'
+import type { CapacityKind, CapacityPolicy } from './capacity.ts'
+import type { UsageGuard } from './usage.ts'
 
 export type RunTaskOptions = {
   board: Board
@@ -16,6 +18,9 @@ export type RunTaskOptions = {
   /** Max delay between renewals; by default renew at a third of the time left on the lease. */
   renewEveryMs?: number
   pollMs?: number
+  usageGuard?: UsageGuard
+  /** Reserve a kind (worker by default) and, for heavy work, a machine slot. */
+  capacity?: { policy: CapacityPolicy; kind?: CapacityKind; heavy?: boolean }
 } & ({ taskId: string; selection?: never } | {
   taskId?: never
   /** Explicitly scoped ready selection using board's own eligibility rules. */
@@ -25,14 +30,32 @@ export type RunTaskOptions = {
 export type RunTaskOutcome =
   | { status: 'nothing_ready' }
   | { status: 'paused'; taskId?: string }
+  | { status: 'usage_blocked'; resetAt: number }
+  | { status: 'capacity_unavailable' }
   | { status: 'lease_lost'; taskId: string }
   | { status: 'released'; taskId: string; run: RunRef; result: Result }
 
 /** Run one claim, then release it and return the result. Never settle the task. */
 export async function runTask(options: RunTaskOptions): Promise<RunTaskOutcome> {
-  const { board, harness, work, provider, model, attemptId = randomUUID(), lease, pollMs = 100, renewEveryMs } = options
+  const { usageGuard, capacity, pollMs = 100, renewEveryMs } = options
   checkedMs(pollMs, 'pollMs')
   if (renewEveryMs !== undefined) checkedMs(renewEveryMs, 'renewEveryMs')
+  if (usageGuard) {
+    const decision = await usageGuard.check()
+    if (!decision.allowed) return { status: 'usage_blocked', resetAt: decision.resetAt }
+  }
+  if (!capacity) return runClaim(options, pollMs, false)
+  const reservation = await capacity.policy.tryReserve({ kind: capacity.kind ?? 'worker', heavy: capacity.heavy })
+  if (!reservation) return { status: 'capacity_unavailable' }
+  try {
+    return await runClaim(options, pollMs, true)
+  } finally {
+    await reservation.release()
+  }
+}
+
+async function runClaim(options: RunTaskOptions, pollMs: number, holdForLateStart: boolean): Promise<RunTaskOutcome> {
+  const { board, harness, work, provider, model, attemptId = randomUUID(), lease, renewEveryMs } = options
   const claim = await (options.taskId !== undefined
     ? board.tasks.claim(options.taskId, { lease })
     : board.tasks.claim({ ...options.selection, lease })).catch((error: unknown) => {
@@ -48,6 +71,7 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskOutcome> 
   const done = new AbortController()
   const renewals = new AbortController()
   let current = claim
+  let startRequested = false
   let run: RunRef | undefined
   let stopped: Stopped | undefined
   let watchdog: NodeJS.Timeout | undefined
@@ -128,6 +152,7 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskOutcome> 
       if (!stopped) void watchPause()
     }
     if (stopped) return stopped
+    startRequested = true
     const ref = await harness.start({ attemptId, taskId, claimEpoch: claim.epoch, work, provider, model })
     if (stopped) {
       // Start can answer after runTask has returned. Cancel as soon as we have the ref.
@@ -148,8 +173,9 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskOutcome> 
     return stopped
   }
 
+  const execution = execute()
   try {
-    const finished = await Promise.race([interrupted, execute()])
+    const finished = await Promise.race([interrupted, execution])
     if ('status' in finished) return finished
     // Serialize release with any renewal already in flight, still watching for pause.
     renewals.abort()
@@ -170,13 +196,19 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskOutcome> 
     }
     return { status: 'released', taskId, ...finished }
   } catch (error) {
+    if (stopped) return stopped
     // An uncertain start/observation is not a result. Leave the claim to expire.
-    if (!stopped && run !== undefined) await harness.cancel(run)
+    if (run !== undefined) await harness.cancel(run)
     throw error
   } finally {
     done.abort()
     renewals.abort()
     clearTimeout(watchdog)
     if (stopped && run !== undefined) await harness.cancel(run)
+    else if (stopped && holdForLateStart && startRequested) {
+      // Keep the slot until the pending start rejects or returns a ref and
+      // execute requests cancellation. The interruption still wins.
+      await execution.catch(() => {})
+    }
   }
 }

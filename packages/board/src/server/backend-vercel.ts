@@ -12,10 +12,10 @@ import { compileAccess, parseCan, parsePattern, PERMISSIONS, type AccessSummary,
 import { type Backend, type BackendRoute, type BoardBinding, type Caller, type ProtocolMethods } from './backend.ts'
 import { mediaType } from '../contract/files.ts'
 import { uploadName } from './file-names.ts'
-import { badRequest, duplicateId, HttpError, json, notFound } from './errors.ts'
+import { badRequest, duplicateId, HttpError, json, noAgentOps, notFound } from './errors.ts'
 import { carried } from './carried.ts'
 import { deployedOnVercel, registrant, wakePath, type WakeAt } from './registrant.ts'
-import { METHODS } from './routing.ts'
+import { isAgentOpsMethod, METHODS } from './routing.ts'
 import { compileWatcher } from './watch-spec.ts'
 import { tailWatchers } from './tails.ts'
 import { canonicalWatchers, type SyncEntrySpec, type WatcherSpec } from './watchers-hash.ts'
@@ -376,6 +376,7 @@ const TAGGED_MAX = 200
 
 /** What Vercel's boards don't do, and with `instead`, what to do there. */
 const notSupported = (what: string, instead?: string) => new HttpError(501, 'not_supported', `Vercel's boards don't support ${what} yet${instead ? `: ${instead}` : ''}`)
+const noTaskAttention = () => { throw new HttpError(501, 'no_task_attention', "Vercel's boards don't support task attention") }
 
 /** What credentials may do when the API doesn't say: read, post, react, and label everywhere, as any it lets in. */
 const DEFAULT_CAN: AccessSummary = { '*': ['read', 'post', 'react', 'label'] }
@@ -646,6 +647,10 @@ const authorOf = (actor: ApiActor): Author => ({
 
 /** Who cancels a schedule when no one did: the API, once its creator can no longer post it, as a local board's scheduler. */
 const SCHEDULER: Author = { actor: 'board:schedule', principal: 'board:schedule', profile: null }
+
+async function noOperationalInbox(): Promise<never> {
+  throw new HttpError(501, 'no_operational_inbox', 'this board keeps no operational inbox')
+}
 
 /**
  * An actor where the API doesn't name them: its handle is its profile, or a short form of its
@@ -3434,6 +3439,10 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
       const { schema, created } = await api<{ schema: ApiSchema; created: boolean }>(who, 'POST', '/schemas', { body: { operationId: operationId(), ...input }, ...(signal ? { signal } : {}) })
       return { schema: schemaFrom(schema), created }
     },
+    sendOperationalMessage: noOperationalInbox,
+    readOperationalInbox: noOperationalInbox,
+    ackOperationalMessage: noOperationalInbox,
+    archiveOperationalMessage: noOperationalInbox,
     async schedule(caller, input, signal) {
       if (input.attachments?.length) throw notSupported('files on scheduled messages')
       const who = whoOf(caller)
@@ -3739,6 +3748,10 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
       const body = { reason, ...(kind !== undefined ? { kind } : {}), ...proof }
       return { task: await rootOf(who, await taskWrite(who, `${await taskPath(who, id, signal)}/block`, body, { id, signal })) }
     },
+    requestTaskAttention: async () => noTaskAttention(),
+    taskAttention: async () => noTaskAttention(),
+    answerTaskAttention: async () => noTaskAttention(),
+
     async unblockTask(caller, { id }, signal) {
       const who = whoOf(caller)
       return { task: await rootOf(who, await taskWrite(who, `${await taskPath(who, id, signal)}/unblock`, {}, { id, signal })) }
@@ -3951,6 +3964,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     Object.entries(methods).map(([name, method]) => [
       name,
       (caller: Caller, ...args: unknown[]) => {
+        if (isAgentOpsMethod(name)) throw noAgentOps()
         if ('identity' in caller) throw servesNone()
         if (binding) waitUntil(start())
         return (method as (...input: unknown[]) => unknown)(caller, ...args)

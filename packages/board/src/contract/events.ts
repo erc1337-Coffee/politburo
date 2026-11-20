@@ -7,6 +7,9 @@ import {
   ATTACHMENTS_PER_MESSAGE_MAX,
   SeenActorKind,
   Author,
+  AgentGeneration,
+  AgentHarness,
+  AgentRole,
   ChannelPath,
   Emoji,
   Handle,
@@ -15,6 +18,7 @@ import {
   MessageId,
   MessageText,
   MESSAGE_TEXT_MAX,
+  Ref,
   RemoteWatcherId,
   CAN_MAX,
   storable,
@@ -24,6 +28,8 @@ import {
   TaskPriority,
 } from './schemas.ts'
 import { ExternalEvent, ExternalTarget, Link, LINKS_PER_MESSAGE_MAX, Origin } from './external.ts'
+import { AttentionDraft, AttentionReceipt } from './attention.ts'
+import { operationalEvents } from './operational-inbox.ts'
 
 /** The sync key a write came from, or null when it was written on the board. */
 const From = z.string().nullable()
@@ -38,11 +44,14 @@ export const ALONG_MAX = 3
 
 /** Which claim of a task this is: 1 for its first, one more for each after. A write that names an older one changes nothing. */
 const Epoch = z.number().int().positive()
+/** Attention can be requested before the task has ever been claimed. */
+const AttentionEpoch = z.number().int().nonnegative()
 /** When a claim's lease runs out, as an ISO time. */
 const Until = z.string().datetime()
 
 /** The board's one log. Every board fact is an event in session `board`. */
 export const boardEvents = {
+    ...operationalEvents,
     'message.posted': z.object({
       channel: ChannelPath,
       /** Empty only when the message has attachments. */
@@ -180,8 +189,25 @@ export const boardEvents = {
     'task.unblocked': z.object({ ...Task, by: Author }),
     /** Reason `deleted` when its root was. */
     'task.canceled': z.object({ ...Task, reason: TaskNote, by: Author }),
-    /** A failed task is ready again. */
-    'task.reopened': z.object({ ...Task, by: Author }),
+    /** A failed task reopens, waiting only if it failed on an attention hold before its needs completed. */
+    'task.reopened': z.object({ ...Task, by: Author, waiting: z.literal(true).optional() }),
+    // Request and answer each change the task state in the same event as their attention fact.
+    'task.attention_requested': z.object({ ...Task, requestId: Ref, epoch: AttentionEpoch, draft: AttentionDraft, by: Author, replaces: Ref.optional() }),
+    'task.attention_answered': z.object({ ...Task, requestId: Ref, epoch: AttentionEpoch, by: Author, receipt: AttentionReceipt }),
+    /** The private registry's current record after a register, heartbeat, or retire. */
+    'ops.agent_changed': z.object({
+      agent: z.object({
+        id: Ref,
+        channel: ChannelPath,
+        role: AgentRole,
+        parent: Ref.nullable(),
+        harness: AgentHarness,
+        binding: Author.pick({ principal: true, profile: true }),
+        generation: AgentGeneration,
+        status: z.enum(['enabled', 'disabled']),
+        heartbeatAt: Until.nullable(),
+      }),
+    }),
     'actor.seen': z.object({
       actor: ActorId,
       kind: SeenActorKind,
@@ -223,3 +249,8 @@ export type BoardEvent<K extends keyof BoardEvents & string = keyof BoardEvents 
     createdAt: Date
   }
 }[K]
+
+/** Registry and operational inbox records stay out of the generic feed, even with `all`. */
+export type PublicBoardEvent = Exclude<BoardEvent, { type: `ops.${string}` | keyof typeof operationalEvents }>
+export const isPublicBoardEvent = (event: BoardEvent): event is PublicBoardEvent =>
+  !event.type.startsWith('ops.') && !Object.hasOwn(operationalEvents, event.type)

@@ -373,6 +373,9 @@ tasks.claim(ready: { channel: string; label?: Record<string, string>; from?: str
 tasks.held(id: string, claim: { epoch: number; token: string }): HeldTask
 tasks.block(id: string, reason: string, opts?: { kind?: string }): Promise<MessageView>
 tasks.unblock(id: string): Promise<MessageView>
+tasks.ask(id: string, request: RequestAttentionBody): Promise<{ task: MessageView; attention: AttentionView }>
+tasks.attention(id: string): Promise<{ attention: AttentionView | null }>
+tasks.answer(id: string, requestId: string, answer: AttentionAnswerBody): Promise<{ task: MessageView; attention: AttentionView }>
 tasks.reopen(id: string): Promise<MessageView>
 tasks.assign(id: string, actor: string | null): Promise<MessageView>
 tasks.needs(id: string, needs: string[]): Promise<MessageView>
@@ -446,7 +449,14 @@ if (claim) {
   A handle that writes as a profile (`team.as('fixer')`) owns only the tasks
   it made. The principal itself owns what any of its profiles made. A task's
   `by` is the actor that made it, so a UI knows whose these are to offer.
-  `block` here holds a task no one has claimed.
+  `block` here holds a task no one has claimed. `unblock` does not lift a
+  structured hold (409 `attention_required`).
+- **`ask`, `attention`, and `answer`** open, read, and answer a
+  [structured request](./03-http.md#structured-attention). On a claimed task,
+  pass `{ claim: { epoch, token } }` as part of `ask`. `answer` requires the
+  request ID, option ID and matching commit; an old or already answered
+  request is 409 `attention_stale`. A backend without the feature returns
+  501 `no_task_attention`, with no fallback.
 - **`needs`** replaces what a task waits for, by their IDs: it waits for those
   now, and is ready once they've all completed, or at once with `[]`. It takes
   what `create` takes, while no one has claimed the task (409 `task_claimed`)
@@ -637,6 +647,31 @@ it gives:
 
 A board that keeps no tasks fails each with 501 `no_tasks`. See
 [Tasks](./03-http.md#tasks) for the routes and the `task` view.
+
+### agents
+
+```ts
+agents.list(channel: string): Promise<{ agents: Agent[] }>
+agents.register(input: { channel: string; role: AgentRole; harness: string; parent?: string | null; ifGeneration?: number }): Promise<Agent>
+agents.heartbeat(id: string, generation: number): Promise<Agent>
+agents.retire(id: string, generation: number): Promise<Agent>
+```
+
+The [agent registry](../01-board/12-agent-registry.md) is a fork-only local
+option. `as(profile)` supplies the profile for the caller's binding, not a
+field in `register`. To update or re-enable an entry, pass its current
+`generation` as `ifGeneration`. Mutations return the entry directly. Boards
+that do not enable the registry fail with `501 no_agent_ops`.
+
+```ts scripts/register.ts
+import { board } from '@vercel/board'
+import { local } from '@vercel/board/backend-local'
+
+const team = board({ backend: local({ agentOps: true }) })
+const worker = team.as('review-1')
+const agent = await worker.agents.register({ channel: 'work', role: 'reviewer', harness: 'codex' })
+await worker.agents.heartbeat(agent.id, agent.generation)
+```
 
 ### createGrant
 
@@ -869,6 +904,57 @@ refuses with `channel_granted`.
 
 `discovery()` is the backend's: on `local()`, the board's own, and with
 `BOARD_URL` set, the board at that URL's.
+
+### operationalInbox
+
+```ts scripts/inbox.ts
+import { board } from '@vercel/board'
+import { local } from '@vercel/board/backend-local'
+
+const team = board({
+  backend: local({ memory: true }),
+  inboxRoles: { reviewer: ['board:client'] },
+})
+await team.operationalInbox.send({
+  to: { role: 'reviewer' },
+  topic: 'release-review',
+  text: 'Review the release notes before publishing.',
+})
+const { messages } = await team.operationalInbox.read()
+const [message] = messages
+if (message) {
+  await team.operationalInbox.ack(message.id, 'seen')
+  // Review the release notes.
+  await team.operationalInbox.ack(message.id, 'acted')
+  await team.operationalInbox.archive(message.id)
+}
+```
+
+For a direct message, send to `{ agent: '<verified-principal-id>' }`.
+`(await team.me()).principal` is the ID to give a sender. The role map is
+configured on the board that keeps the log. A role message goes to each of its
+current members, and each member has their own receipts and archive state.
+Profiles of the same principal share one inbox.
+
+`send` needs board-wide `post`. `read`, `ack`, and `archive` need board-wide
+`read`. A narrowed handle still needs those permissions. Sending to an exact
+recipient and topic replaces the previous message for that pair, even if the
+replacement later expires or is archived. `expiresAt` is optional and must be
+a future ISO timestamp when supplied.
+
+`read()` returns `{ messages }` with up to 15 active messages, newest first,
+without marking any seen. `send`, `ack`, and `archive` return `{ message }`.
+The `OperationalMessage` type contains `id`, `to`, `topic`, `text`, `by`,
+`sentAt`, `expiresAt`, `seenAt`, `actedAt`, and `archivedAt`. The board sets
+`by` and the receipt times. The optional times are `null` until set. `acted`
+also marks the message seen. Repeating an acknowledgement keeps its original
+time. Archive hides the message only for you and can be repeated. An expired,
+replaced, or inaccessible message is not found. An archived message cannot be
+acknowledged.
+
+The operational inbox is separate from threads, sync, and `inbox(key)`.
+It works on `local()` and over HTTP to a board that keeps it. Vercel's board
+answers 501 `no_operational_inbox`.
 
 ### inbox and readSource
 

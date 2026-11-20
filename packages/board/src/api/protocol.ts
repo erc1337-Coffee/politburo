@@ -4,8 +4,18 @@ import type { Mentioned } from '../contract/mentions.ts'
 import type { Attachment } from '../contract/schemas.ts'
 import type {
   AckBody,
+  AckOperationalMessageBody,
+  OperationalMessage,
+  SendOperationalMessageBody,
   ActorView,
+  AgentView,
+  ListOpsAgentsQuery,
+  OpsAgentGenerationBody,
+  RegisterOpsAgentBody,
   AssignTaskBody,
+  AttentionAnswerBody,
+  AttentionView,
+  RequestAttentionBody,
   TaskNeedsBody,
   TaskPriorityBody,
   BlockTaskBody,
@@ -86,6 +96,7 @@ import type {
 
 type Input<S extends z.ZodType> = NonNullable<z.output<S>>
 type Id = { id: string }
+type OpsAgentId = { agent: string }
 type Key = { key: string }
 type Nothing = Record<string, never>
 
@@ -122,7 +133,12 @@ export type Protocol = {
   schedule: { input: Input<typeof ScheduleBody>; output: { schedule: ScheduleView; mentions?: Mentioned[] } }
   schedules: { input: Input<typeof SchedulesQuery>; output: { schedules: ScheduleView[] } }
   cancelSchedule: { input: Id; output: { schedule: ScheduleView; canceled: boolean } }
-  /** Tasks, oldest first, each as its thread's summary. 501 `no_tasks` where the board keeps none, as every task method answers there. */
+  /** Fork-only agent registry. 501 `no_agent_ops` on a board without it. */
+  listOpsAgents: { input: Input<typeof ListOpsAgentsQuery>; output: { agents: AgentView[] } }
+  registerOpsAgent: { input: Input<typeof RegisterOpsAgentBody>; output: AgentView }
+  heartbeatOpsAgent: { input: OpsAgentId & Input<typeof OpsAgentGenerationBody>; output: AgentView }
+  retireOpsAgent: { input: OpsAgentId & Input<typeof OpsAgentGenerationBody>; output: AgentView }
+  /** Tasks, oldest first, each as its thread's summary. 501 `no_tasks` where the board keeps none. */
   tasks: { input: Input<typeof TasksQuery>; output: TasksPage }
   /** `task` is the task's root. `claim` comes with a task made with `claim`; a retry of one that landed gets the task without it. */
   createTask: { input: Input<typeof CreateTaskBody>; output: { task: MessageView; claim?: TaskClaim; mentions?: Mentioned[] } }
@@ -147,6 +163,12 @@ export type Protocol = {
   completeTask: { input: Id & Input<typeof CompleteTaskBody>; output: { task: MessageView } }
   failTask: { input: Id & Input<typeof FailTaskBody>; output: { task: MessageView } }
   blockTask: { input: Id & Input<typeof BlockTaskBody>; output: { task: MessageView } }
+  /** Hold a task for a decision on a specific snapshot. 501 `no_task_attention` where unsupported. */
+  requestTaskAttention: { input: Id & RequestAttentionBody; output: { task: MessageView; attention: AttentionView } }
+  /** The current request, if any. */
+  taskAttention: { input: Id; output: { attention: AttentionView | null } }
+  /** Answer the current pending request and route the task in the same write. */
+  answerTaskAttention: { input: Id & { requestId: string } & AttentionAnswerBody; output: { task: MessageView; attention: AttentionView } }
   /** A task that isn't blocked is left as it is. */
   unblockTask: { input: Id; output: { task: MessageView } }
   /** A failed task is ready again; one that's open is left as it is. */
@@ -220,6 +242,11 @@ export type Protocol = {
   syncFind: { input: Input<typeof SyncFindQuery>; output: SyncFindView }
   /** Messages' copies on platforms that the caller's sync recorded, by target: another sync's never show. */
   syncCopies: { input: Input<typeof SyncCopiesQuery>; output: SyncCopiesView }
+  /** Private mail to a verified principal or a configured role. A board that keeps none answers 501 `no_operational_inbox`. */
+  sendOperationalMessage: { input: Input<typeof SendOperationalMessageBody>; output: { message: OperationalMessage } }
+  readOperationalInbox: { input: Nothing; output: { messages: OperationalMessage[] } }
+  ackOperationalMessage: { input: Id & Input<typeof AckOperationalMessageBody>; output: { message: OperationalMessage } }
+  archiveOperationalMessage: { input: Id; output: { message: OperationalMessage } }
   /** Platform events into the caller's inbox, deduplicated by their platform IDs. */
   inboxPush: { input: Key & Input<typeof InboxPushBody>; output: { ok: true } }
   /** The caller's next inbox events, leased, one platform thread at a time and in order. */

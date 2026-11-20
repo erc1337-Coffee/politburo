@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { readFile, stat, writeFile } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { parseArgs } from 'node:util'
-import { CHANNELS_LIMIT_MAX, GRANT_BATCH_MAX, THREADS_LIMIT_DEFAULT, THREADS_LIMIT_MAX, type GrantInput, type Me, type MessageView } from '../api/routes.ts'
+import { CHANNELS_LIMIT_MAX, GRANT_BATCH_MAX, THREADS_LIMIT_DEFAULT, THREADS_LIMIT_MAX, type AgentView, type GrantInput, type Me, type MessageView } from '../api/routes.ts'
 import { everyChannel } from '../client/channels.ts'
 import { withMentions } from '../api/tail.ts'
 import { BoardError, type ClaimedTask, type Filters, type ProfileOption, type TaskInBatch, type Written } from '../client/client.ts'
@@ -14,15 +14,16 @@ import { credentialed, credentialSource, handTeam, vercel } from '../backend-ver
 import { board as boardAt, type Board } from '../server/index.ts'
 import { isBoardName } from '../server/board.ts'
 import { isApiMessageId } from '../server/backend-vercel.ts'
+import { AttentionAnswerBody, AttentionAskFile } from '../contract/attention.ts'
 import { normalizeEmoji } from '../contract/emoji.ts'
-import { ATTACHMENTS_PER_MESSAGE_MAX, DIRECT_UPLOAD_BYTES_MAX, MESSAGE_TEXT_MAX, type Attachment, AttachmentId, TaskPriority } from '../contract/schemas.ts'
+import { AgentRole, ATTACHMENTS_PER_MESSAGE_MAX, DIRECT_UPLOAD_BYTES_MAX, MESSAGE_TEXT_MAX, type Attachment, AttachmentId, TaskPriority } from '../contract/schemas.ts'
 import { VERSION } from '../version.ts'
 import { conformance } from '../conformance/index.ts'
 import { explainPrincipalOf, explanationLine, GrantMisuse, grantCanOf, KINDS, patternsIn, principalsIn, type OptionToken } from './grants.ts'
 import { formatSchema, formatSchemas } from './schemas.ts'
 import { parseSchemaId } from '../contract/data-schemas.ts'
 import { block } from '../contract/blocks.ts'
-import { actorName, claimLine, formatAccess, formatConformance, formatEvent, formatGrants, grantRow, formatSchedule, formatTasks, mentionedIn, reactionNames, formatSourceRead, formatSynced, formatThreadSummaries, formatThreads, terminalText, who } from './format.ts'
+import { actorName, claimLine, formatAccess, formatAttention, formatConformance, formatEvent, formatGrants, grantRow, formatOperationalInbox, formatSchedule, formatTasks, lineText, mentionedIn, reactionNames, formatSourceRead, formatSynced, formatThreadSummaries, formatThreads, terminalText, who } from './format.ts'
 import { fileClaims, memoryClaims, tokenClaims, type Claims } from './claims.ts'
 import { runCommand } from './run.ts'
 import { AGENTS, allowRules, cliOf, disallow, installedHook, tilde, uninstallHook, type HookAgent } from './hooks.ts'
@@ -819,6 +820,10 @@ function doing(): string {
     case 'schedules':
     case 'actors':
       return `list ${command}`
+    case 'agents':
+      if (a === 'list' || a === 'register') return `${a === 'list' ? 'list agents' : 'register an agent'} in ${b ?? 'a channel'}`
+      if (a === 'heartbeat') return `record a heartbeat for agent ${b}`
+      return `retire agent ${b}`
     case 'tasks': {
       if (a === undefined || !TASK_VERBS.has(a)) return a === undefined ? 'list tasks' : `list tasks in ${a}`
       const one = b === undefined ? 'a task' : `task ${ref(b)}`
@@ -828,6 +833,9 @@ function doing(): string {
       if (a === 'create') return b !== undefined && isMessageRef(b) ? `make ${ref(b)} a task` : `create a task in ${b ?? 'a channel'}`
       if (a === 'renew') return `renew the claim on ${one}`
       if (a === 'needs') return `change what ${one} needs`
+      if (a === 'ask') return `request attention on ${one}`
+      if (a === 'attention') return `read the attention request on ${one}`
+      if (a === 'answer') return `answer the attention request on ${one}`
       return `${a} ${one}`
     }
     case 'grants':
@@ -839,7 +847,10 @@ function doing(): string {
     case 'download':
       return `download ${a ?? 'the attachment'}`
     case 'inbox':
-      return `read ${a}'s inbox`
+      if (a === 'read') return 'read your operational inbox'
+      if (a === 'ack') return `acknowledge inbox message ${b}`
+      if (a === 'archive') return `archive inbox message ${b}`
+      return `read ${a === 'raw' ? b : a}'s inbox`
     case 'tail':
       return `follow ${a ?? 'the board'}`
     case 'wait':
@@ -873,7 +884,9 @@ function missing(): string | undefined {
   if (command === 'tasks' && TASK_VERBS.has(a) && b !== undefined && isMessageRef(b)) return `message ${ref(b)}`
   if (command === 'grants' && (a === 'revoke' || a === 'update') && b !== undefined) return `grant ${b}`
   if (command === 'schemas' && a === 'inspect' && b !== undefined) return `schema ${b}`
+  if (command === 'agents' && (a === 'heartbeat' || a === 'retire') && b !== undefined) return `agent ${b}`
   if (command === 'download') return `attachment ${a}`
+  if (command === 'inbox' && (a === 'ack' || a === 'archive') && b !== undefined) return `inbox message ${b}`
   return undefined
 }
 
@@ -1033,6 +1046,14 @@ function failureOf(error: unknown): Failure {
   if (status === 409) {
     // A grant change this caller couldn't take back: it keeps itself in, or says to go ahead.
     if (code === 'grant_lockout' && current.command === 'grants') return theirs('conflict', code, `Can't ${doing()}: it would lock you out.`, lockoutRecoveries())
+    if (code === 'agent_generation_conflict' && current.command === 'agents') {
+      const channel = current.args[0] === 'register' ? current.args[1] : undefined
+      return theirs('conflict', code, `Can't ${doing()}.`, [
+        channel === undefined
+          ? { instruction: 'Check the current generation with agents list in its channel' }
+          : { instruction: 'Check the current generation', argv: [...cli(), 'agents', 'list', channel, ...onSameBoard()] },
+      ])
+    }
     // A reply's --after: what's newer is in its thread, after the message it named.
     const { args } = current
     const newer = code === 'newer_message' && flags.after !== undefined && args[0] !== undefined
@@ -1059,6 +1080,10 @@ function failureOf(error: unknown): Failure {
   if (status === 429)
     return theirs('rate_limit', 'rate_limited', `Can't ${doing()}. Too many requests to the board.`, [
       { instruction: wait !== undefined ? `Wait ${waitFor(wait)}, then run it again` : 'Wait a minute, then run it again' },
+    ])
+  if (status === 501 && code === 'no_agent_ops' && current.command === 'agents')
+    return theirs('platform', code, `Can't ${doing()}. This board doesn't keep an agent registry.`, [
+      { instruction: 'Use a local board started with vb serve --agent-ops' },
     ])
   if (status === 501) return theirs('platform', specific('not_supported'), `Can't ${doing()}. This board doesn't support it.`)
   if (code === 'unreachable') return theirs('network', 'network_error', "Couldn't reach the board.")
@@ -1882,10 +1907,33 @@ async function run(command: string | undefined, args: string[]): Promise<number>
     }
 
     case 'inbox': {
-      const key = args[0]
-      if (!key) throw usage('Missing the sync entry whose inbox to read, such as slack.', { reason: 'missing_arguments' })
+      const [verb, id, status, extra] = args
+      if (verb === 'read' || verb === 'ack' || verb === 'archive') {
+        if (flags.limit !== undefined) throw usage('--limit is for raw sync inboxes.', { reason: 'unknown_option' })
+        if (verb === 'read') {
+          if (args.length > 1) throw usage('inbox read takes no arguments.', { next: [{ instruction: 'For a sync key named read, use raw', argv: [...cli(), 'inbox', 'raw', 'read'] }] })
+          const read = await client().operationalInbox.read()
+          if (flags.json) return result(read), 0
+          return out(formatOperationalInbox(read.messages)), 0
+        }
+        if (!id) throw usage('Missing the message ID from inbox read.', { reason: 'missing_arguments' })
+        if (verb === 'archive') {
+          if (status !== undefined) throw usage('inbox archive takes one message ID.')
+          const archived = await client().operationalInbox.archive(id)
+          if (flags.json) return result(archived), 0
+          return out(`${lineText(archived.message.id)}  archived`), 0
+        }
+        if (status === undefined) throw usage('Missing the receipt: seen or acted.', { reason: 'missing_arguments' })
+        if (status !== 'seen' && status !== 'acted') throw usage('The receipt must be seen or acted.')
+        if (extra !== undefined) throw usage('inbox ack takes a message ID and a receipt.')
+        const acked = await client().operationalInbox.ack(id, status)
+        if (flags.json) return result(acked), 0
+        return out(`${lineText(acked.message.id)}  ${status}`), 0
+      }
+      const [key, channel] = verb === 'raw' ? args.slice(1) : args
+      if (!key) throw usage(verb === 'raw' ? 'Missing the sync entry whose inbox to read, such as slack.' : 'Missing what to read: use inbox read or name a sync entry.', { reason: 'missing_arguments' })
       const events = await client().inbox(key, {
-        ...(args[1] ? { channel: args[1] } : {}),
+        ...(channel ? { channel } : {}),
         ...(flags.limit ? { limit: Number(flags.limit) } : {}),
       })
       if (flags.json) return result({ events }), 0
@@ -1973,6 +2021,8 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       return 0
     }
 
+    case 'agents':
+      return agents(args)
     case 'tasks':
       return tasks(args)
 
@@ -1994,8 +2044,74 @@ async function run(command: string | undefined, args: string[]): Promise<number>
   }
 }
 
+function formatAgent(agent: AgentView): string {
+  const { id, channel, role, harness, binding, generation, parent, status, heartbeatAt } = agent
+  return [
+    `${lineText(id)}  ${role}`,
+    `  channel     ${lineText(channel)}`,
+    `  principal   ${lineText(binding.principal)}`,
+    `  profile     ${binding.profile === null ? 'none' : lineText(binding.profile)}`,
+    `  harness     ${lineText(harness)}`,
+    `  parent      ${parent === null ? 'none' : lineText(parent)}`,
+    `  generation  ${generation}`,
+    `  status      ${status}`,
+    `  heartbeat   ${heartbeatAt === null ? 'none' : lineText(heartbeatAt)}`,
+  ].join('\n')
+}
+
+async function agents(args: string[]): Promise<number> {
+  const [verb, target, ...extra] = args
+  if (verb === undefined) throw usage('Missing the agent command: list, register, heartbeat, or retire.', { reason: 'missing_arguments' })
+  const sub = specOf('agents')?.subcommands?.find(({ name }) => name === verb)
+  if (!sub) throw usage(`Unknown agent command ${verb}.`, { reason: 'unknown_command' })
+  const next = [{ instruction: 'See how to use it', argv: [...cli(), 'agents', verb, '--help'] }]
+  const what = verb === 'list' || verb === 'register' ? 'channel' : 'agent ID'
+  if (!target) throw usage(`Missing the ${what}.`, { reason: 'missing_arguments', next })
+  if (extra.length > 0) throw usage(`agents ${verb} takes one ${what}.`, { next })
+  const seen = new Set<string>()
+  for (const { name } of ordered) {
+    if (globalOptions.some((option) => option.name === name)) continue
+    if (!sub.options.some((option) => option.name === name))
+      throw usage(`Unknown option --${name} for ${named()} agents ${verb}.`, { reason: 'unknown_option', next })
+    if (seen.has(name)) throw usage(`Pass --${name} once.`, { next })
+    seen.add(name)
+  }
+  if (verb === 'list') {
+    const { agents } = await client().agents.list(target)
+    if (flags.json) result({ agents })
+    else out(agents.length ? agents.map(formatAgent).join('\n\n') : 'no agents registered')
+    return 0
+  }
+
+  const value = flags.generation
+  const generation = Number(value)
+  if (value === undefined && verb !== 'register') throw usage('Missing --generation.', { reason: 'missing_arguments', next })
+  if (value !== undefined && (!/^\d+$/.test(value) || !Number.isSafeInteger(generation) || generation < 1))
+    throw usage('--generation takes a positive integer.', { next })
+
+  let agent: AgentView
+  if (verb === 'register') {
+    const { harness, parent } = flags
+    if (!flags.role) throw usage('Missing --role.', { reason: 'missing_arguments', next })
+    if (!harness) throw usage('Missing --harness.', { reason: 'missing_arguments', next })
+    const role = AgentRole.safeParse(flags.role)
+    if (!role.success) throw usage('--role takes one of the roles shown in help.', { next })
+    agent = await client().agents.register({
+      channel: target,
+      role: role.data,
+      harness,
+      ...(parent !== undefined ? { parent } : {}),
+      ...(value !== undefined ? { ifGeneration: generation } : {}),
+    })
+  } else if (verb === 'heartbeat') agent = await client().agents.heartbeat(target, generation)
+  else agent = await client().agents.retire(target, generation)
+  if (flags.json) result({ agent })
+  else out(formatAgent(agent))
+  return 0
+}
+
 /** What `tasks` does to a task, by the word after it: any other word is a channel to list. */
-const TASK_VERBS = new Set(['create', 'claim', 'run', 'renew', 'release', 'complete', 'fail', 'block', 'unblock', 'reopen', 'assign', 'needs', 'priority', 'show', 'cancel'])
+const TASK_VERBS = new Set(['create', 'claim', 'run', 'renew', 'release', 'complete', 'fail', 'block', 'ask', 'attention', 'answer', 'unblock', 'reopen', 'assign', 'needs', 'priority', 'show', 'cancel'])
 const TASK_STATES = ['waiting', 'ready', 'claimed', 'blocked', 'completed', 'failed', 'canceled']
 
 /** A task's ID as you'd write it: `#812` or `812`. */
@@ -2153,6 +2269,23 @@ async function planFrom(path: string, board: Board): Promise<TaskInBatch[]> {
     ...(Array.isArray(task.needs) ? { needs: task.needs.map((need) => boardNeed(need, keys)) } : {}),
     ...(typeof task.for === 'string' && !task.for.includes(':') ? { for: profileActor(principal, task.for) } : {}),
   })) as TaskInBatch[]
+}
+
+/** A draft or replacement, never a claim. Don't repeat any part of an invalid JSON body. */
+async function attentionFrom(path: string) {
+  const where = path === '-' ? 'stdin' : path
+  const text = await (path === '-' ? io.stdin() : io.readFile(path)).catch(() => null)
+  if (text === null) throw usage(`Can't read ${where}.`, { reason: 'file_not_found' })
+  const next = [{ instruction: 'See what the draft takes', argv: [...cli(), 'tasks', 'ask', '--help'] }]
+  let draft: unknown
+  try {
+    draft = JSON.parse(typeof text === 'string' ? text : new TextDecoder().decode(text))
+  } catch {
+    throw usage(`${where} isn't JSON.`, { next })
+  }
+  const checked = AttentionAskFile.safeParse(draft)
+  if (!checked.success) throw usage(`${where} must hold an attention draft, with optional replaces and no claim.`, { next })
+  return checked.data
 }
 
 /** `--claim`, on `tasks create`: a flag there (`optionsFor`), where a grant's takes a value. */
@@ -2538,6 +2671,43 @@ async function tasks(args: string[]): Promise<number> {
       printTask(task, 'blocked')
       return 0
     }
+    case 'ask': {
+      one(rest[1], 'one task and --file')
+      if (!flags.file) throw usage('Missing --file <path> for the attention draft.', { reason: 'missing_arguments' })
+      const draft = await attentionFrom(flags.file)
+      const stored = await claims.get(id)
+      const request = stored ? { ...draft, claim: { epoch: stored.epoch, token: stored.token } } : draft
+      // Don't drop the cached proof: another process might already have stored the next claim.
+      let answer
+      try {
+        answer = await board.tasks.ask(id, request)
+      } catch (error) {
+        if (!stored || !(error instanceof BoardError) || error.origin !== 'board' || error.code !== 'claim_lost') throw error
+        // The board refused the proof. Let it check ownership and state again without one.
+        answer = await board.tasks.ask(id, draft)
+      }
+      if (flags.json) result(answer)
+      else out(`requested attention on ${ref(id)}  ${answer.attention.id}`)
+      return 0
+    }
+    case 'attention': {
+      one(rest[1], 'one task')
+      const answer = await board.tasks.attention(id)
+      if (flags.json) result(answer)
+      else out(answer.attention ? formatAttention(answer.attention) : `no attention request on ${ref(id)}`)
+      return 0
+    }
+    case 'answer': {
+      one(rest[3], 'a task, a request ID, an option, and --commit')
+      const [, requestId, option] = rest
+      if (!requestId || !option || !flags.commit) throw usage('Missing the request ID, option, or --commit <sha>.', { reason: 'missing_arguments' })
+      const checked = AttentionAnswerBody.safeParse({ option, commit: flags.commit })
+      if (!checked.success) throw usage('Pass an option ID and a full lowercase SHA-1 or SHA-256 with --commit.')
+      const answer = await board.tasks.answer(id, requestId, checked.data)
+      if (flags.json) result(answer)
+      else out(`answered ${ref(id)}  ${answer.task.task?.state ?? ''}`.trimEnd())
+      return 0
+    }
     case 'unblock':
     case 'reopen': {
       one(rest[1], 'one task')
@@ -2625,6 +2795,11 @@ function taskFailure(code: string, status: number): { class: Failure['class']; m
       return { class: 'limit', message: `Can't ${doing()}. That's too many channels and owners.`, next: [{ instruction: 'Name fewer owners with --from, or a smaller subtree' }] }
     case 'channel_tree_too_large':
       return { class: 'limit', message: `Can't ${doing()}. That's too many channels.`, next: [{ instruction: 'Name a channel, or a smaller subtree' }] }
+    case 'attention_stale':
+    case 'attention_required':
+      return status === 409 ? { class: 'conflict', message: `Can't ${doing()}. ${code === 'attention_required' ? 'It needs a structured answer.' : 'The request or its snapshot is no longer current.'}`, next: also('See the current request', 'attention', ...asTyped()) } : null
+    case 'no_task_attention':
+      return status === 501 ? { class: 'platform', message: `Can't ${doing()}. This board does not support task attention.`, next: [] } : null
     case 'no_tasks':
       return status === 501 ? { class: 'platform', message: `Can't ${doing()}. This board keeps no tasks.`, next: [] } : null
     case 'reserved_label':
@@ -2804,6 +2979,9 @@ async function runOnce(argv: string[], options: App): Promise<number> {
   }
 }
 
+/** The agent commands that write to the registry. */
+const AGENT_WRITES = new Set(['register', 'heartbeat', 'retire'])
+
 /** The commands that change the board, whatever their arguments. */
 const WRITES = new Set(['post', 'reply', 'edit', 'delete', 'label', 'react', 'schedule', 'sync'])
 
@@ -2812,8 +2990,11 @@ function stopped(reason: unknown): Failed {
   const timedOut = reason instanceof Error && reason.name === 'TimeoutError'
   // A subcommand that writes is `channels create`'s first word, `sources <key> join`'s second.
   const sub = current.command === 'sources' ? current.args[1] : current.args[0]
-  // Every task verb writes: a claim, its renewal, and what settles or changes the task.
-  const writes = WRITES.has(current.command ?? '') || ['create', 'update', 'revoke', 'cancel', 'join'].includes(sub ?? '') || (current.command === 'tasks' && sub !== 'show' && TASK_VERBS.has(sub ?? ''))
+  // Only show and attention are read-only task verbs.
+  const writes = WRITES.has(current.command ?? '') || ['create', 'update', 'revoke', 'cancel', 'join'].includes(sub ?? '')
+    || (current.command === 'tasks' && sub !== 'show' && sub !== 'attention' && TASK_VERBS.has(sub ?? ''))
+    || (current.command === 'agents' && AGENT_WRITES.has(sub ?? ''))
+    || (current.command === 'inbox' && (sub === 'ack' || sub === 'archive'))
   return new Failed({
     class: timedOut ? 'timeout' : 'canceled',
     reason: timedOut ? 'timeout' : 'canceled',

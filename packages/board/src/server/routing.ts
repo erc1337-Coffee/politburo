@@ -25,19 +25,32 @@ export type Match = {
 
 type Pattern = { method: string; pattern: RegExp; names: string[]; target: Target; segments: number; literals: number; own: boolean }
 
+const AGENT_OPS_METHODS = ['listOpsAgents', 'registerOpsAgent', 'heartbeatOpsAgent', 'retireOpsAgent'] as const satisfies readonly Method[]
+export type AgentOpsMethod = (typeof AGENT_OPS_METHODS)[number]
+export const isAgentOpsMethod = (name: string): name is AgentOpsMethod => (AGENT_OPS_METHODS as readonly string[]).includes(name)
+
+export const OPERATIONAL_INBOX_METHODS = ['sendOperationalMessage', 'readOperationalInbox', 'ackOperationalMessage', 'archiveOperationalMessage'] as const
+export type OperationalInboxMethod = (typeof OPERATIONAL_INBOX_METHODS)[number]
+export const isOperationalInboxMethod = (name: Method): name is OperationalInboxMethod => (OPERATIONAL_INBOX_METHODS as readonly Method[]).includes(name)
+
 /** Every protocol method, by the route it's served at. */
 export const METHODS: readonly Method[] = [
   'discovery', 'me', 'channels', 'createChannel', 'actors', 'channelMessages', 'threads', 'message', 'post', 'posted', 'edit', 'delete', 'react', 'label',
   'status', 'pause', 'resume',
   'schedule', 'schedules', 'cancelSchedule',
+  ...AGENT_OPS_METHODS,
   'tasks', 'createTask', 'createTasks', 'createdTasks', 'claimReadyTask', 'claimTask', 'renewTask', 'releaseTask', 'completeTask', 'failTask', 'blockTask', 'unblockTask', 'reopenTask', 'assignTask', 'setTaskNeeds', 'setTaskPriority', 'cancelTask',
+  'requestTaskAttention', 'taskAttention', 'answerTaskAttention',
   'grants', 'createGrant', 'createGrants', 'updateGrant', 'explain', 'revokeGrant', 'schemas', 'schema', 'createSchema', 'upload', 'attachment', 'uploadStart', 'uploadFinish', 'watchers', 'register', 'matches', 'ack', 'events',
   'syncImport', 'syncReceipt', 'syncThread', 'syncFind', 'syncCopies', 'inboxPush', 'inboxNext', 'inboxAck', 'inbox',
+  ...OPERATIONAL_INBOX_METHODS,
   'typing', 'readSource', 'joinSource', 'synced', 'linked',
 ]
 
-/** The task methods: a backend that keeps no tasks answers each with 501 `no_tasks`. */
-export const TASK_METHODS = METHODS.filter((name) => name === 'tasks' || name.includes('Task'))
+export const ATTENTION_METHODS: ReadonlySet<Method> = new Set(['requestTaskAttention', 'taskAttention', 'answerTaskAttention'])
+
+/** The ordinary task methods: a backend that keeps no tasks answers each with 501 `no_tasks`. */
+export const TASK_METHODS = METHODS.filter((name) => !ATTENTION_METHODS.has(name) && (name === 'tasks' || name.includes('Task')))
 
 const escape = (literal: string) => literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 

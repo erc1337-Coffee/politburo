@@ -146,6 +146,12 @@ export const options = {
   port: { type: 'string', value: 'N', description: 'the port to listen on' },
   dir: { type: 'string', value: 'dir', description: 'where the board keeps its log (default: .board/)' },
   'no-inspect': { type: 'boolean', description: "don't start the inspector" },
+  // Agent registry.
+  'agent-ops': { type: 'boolean', description: 'enable the fork-only agent registry' },
+  role: { type: 'string', value: 'role', description: 'required: coordinator, issues, controller, implementation-worker, reviewer, qa-owner, qa-runner, or user-watcher' },
+  harness: { type: 'string', value: 'harness', description: 'required: the harness running this agent' },
+  parent: { type: 'string', value: 'id', description: 'the ID of a registered parent in the same channel (default: no parent)' },
+  generation: { type: 'string', value: 'N', description: 'required: the current generation, as agents list shows it' },
   // Tasks.
   state: { type: 'string', value: 'state', description: 'in a state: waiting, ready, claimed, blocked, completed, failed, canceled, open, or all (default: open)' },
   needs: { type: 'string', multiple: true, value: 'id', description: 'wait for a task to complete first' },
@@ -156,6 +162,7 @@ export const options = {
   lease: { type: 'string', value: 'duration', description: 'how long to hold it: 30s to 1h (default: 15m, or what the board gives)' },
   result: { type: 'string', value: 'text', description: 'what it came to, when the command exits 0' },
   kind: { type: 'string', value: 'kind', description: 'what the hold is for: needs_input, awaiting_approval' },
+  commit: { type: 'string', value: 'sha', description: 'the full lowercase SHA on the request' },
   pool: { type: 'boolean', description: 'back to anyone who may claim it' },
   none: { type: 'boolean', description: 'wait for nothing' },
   // What a turn-end hook an earlier board installed still passes to `hook`.
@@ -186,6 +193,10 @@ const text = (description = 'what it says: - reads it from stdin, and it may be 
   required: false,
   description,
 })
+
+/** An agent registry's channel or agent ID. */
+const agentChannel: CliArgument = { name: 'channel', required: true, description: 'the exact channel, such as work/review' }
+const agentId = () => id('the agent ID, as agents list shows it')
 
 /** A task's ID: its thread's root's. */
 const task = (description = "a task's ID, as tasks shows it (#812)"): CliArgument => ({ name: 'id', required: true, description })
@@ -527,11 +538,48 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
     name: 'inbox',
     description: 'raw platform events, for debugging sync',
     arguments: [
-      { name: 'key', required: true, description: 'the sync entry, e.g. slack' },
+      { name: 'key', required: true, description: 'the sync entry, e.g. slack; use raw for read, ack, archive, or raw' },
       { name: 'channel', required: false, description: 'the board channel its events went to' },
     ],
     options: [option('limit', 'events to list')],
+    runsWithoutSubcommand: true,
     examples: [{ name: "list Slack's latest events", value: 'inbox slack' }],
+    subcommands: [
+      {
+        name: 'read',
+        description: 'read your 15 latest active operational messages',
+        arguments: [],
+        options: [],
+        examples: [{ name: 'read your operational inbox', value: 'inbox read' }],
+      },
+      {
+        name: 'ack',
+        description: 'mark an operational message seen or acted',
+        arguments: [
+          { name: 'id', required: true, description: 'the ID inbox read shows' },
+          { name: 'seen|acted', required: true },
+        ],
+        options: [],
+        examples: [{ name: 'mark a message seen', value: 'inbox ack 812 seen' }],
+      },
+      {
+        name: 'archive',
+        description: 'hide an operational message from your inbox',
+        arguments: [{ name: 'id', required: true, description: 'the ID inbox read shows' }],
+        options: [],
+        examples: [{ name: 'archive a message', value: 'inbox archive 812' }],
+      },
+      {
+        name: 'raw',
+        description: 'read raw platform events, including for reserved sync keys',
+        arguments: [
+          { name: 'key', required: true, description: 'the sync entry' },
+          { name: 'channel', required: false, description: 'the board channel its events went to' },
+        ],
+        options: [option('limit', 'events to list')],
+        examples: [{ name: 'list events for a sync entry named read', value: 'inbox raw read' }],
+      },
+    ],
   },
   {
     group: 'messages',
@@ -695,8 +743,29 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
         examples: [{ name: 'ask for approval', value: 'tasks block 813 "approve the prod deploy?" --kind awaiting_approval' }],
       },
       {
+        name: 'ask',
+        description: 'hold a task for a decision on a specific commit',
+        arguments: [task()],
+        options: [option('file', 'a JSON draft with kind, question, context, options, evidence, expiresAt, commit, revision, and optional replaces: - reads stdin')],
+        examples: [{ name: 'ask for a decision', value: 'tasks ask 813 --file attention.json' }],
+      },
+      {
+        name: 'attention',
+        description: 'read the current attention request on a task',
+        arguments: [task()],
+        options: [],
+        examples: [{ name: 'read the request and its options', value: 'tasks attention 813' }],
+      },
+      {
+        name: 'answer',
+        description: 'choose an option on a task attention request, as a configured responder',
+        arguments: [task(), { name: 'request-id', required: true, description: 'the current attention request ID' }, { name: 'option', required: true, description: 'the option ID to choose, such as approve or retry-2' }],
+        options: [option('commit')],
+        examples: [{ name: 'answer an attention request', value: 'tasks answer 813 7c9a5f1e-2d84-4b6a-9e3c-5f8a1d2b6740 approve --commit 8f3a2c7e9b1d4f6a0c5e8b2d7f1a3c9e4b6d0f2a' }],
+      },
+      {
         name: 'unblock',
-        description: 'lift a hold, as its owner: ready again, or waiting while a task it needs has not completed',
+        description: 'lift a plain hold, as its owner: ready again, or waiting while a task it needs has not completed',
         arguments: [task()],
         options: [],
         examples: [{ name: 'lift a hold', value: 'tasks unblock 813' }],
@@ -734,6 +803,44 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
         arguments: [task(), { name: 'reason', required: true, description: 'why, in a line' }],
         options: [],
         examples: [{ name: 'cancel a task', value: 'tasks cancel 812 "superseded by #820"' }],
+      },
+    ],
+  },
+  {
+    group: 'agents',
+    name: 'agents',
+    description: 'the channel roster on a board that opts into the agent registry',
+    arguments: [],
+    options: [],
+    examples: [],
+    subcommands: [
+      {
+        name: 'list',
+        description: 'list enabled and retired agents in one channel',
+        arguments: [agentChannel],
+        options: [],
+        examples: [{ name: 'see who is registered', value: 'agents list work/review' }],
+      },
+      {
+        name: 'register',
+        description: 'register yourself or your profile, or update its registration',
+        arguments: [agentChannel],
+        options: [option('role'), option('harness'), option('parent'), option('generation', 'the current generation, required to change or re-enable an entry')],
+        examples: [{ name: 'register a reviewer', value: 'agents register work --role reviewer --harness codex --as qa' }],
+      },
+      {
+        name: 'heartbeat',
+        description: 'record a heartbeat for your enabled agent',
+        arguments: [agentId()],
+        options: [option('generation')],
+        examples: [],
+      },
+      {
+        name: 'retire',
+        description: 'disable your registered agent',
+        arguments: [agentId()],
+        options: [option('generation')],
+        examples: [],
       },
     ],
   },
