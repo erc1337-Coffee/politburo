@@ -169,7 +169,11 @@ export type BoardBinding = {
  */
 export type Trust = {
   grants(): Promise<readonly StoredGrant[]>
+  /** Finds the profile for a verified digest on this board and URL. Never receives the bearer secret. */
+  joined?(digest: string, audience: string): Promise<{ id: string; name: string } | null>
 }
+
+export type InviteMethod = 'invites' | 'createInvite' | 'revokeInvite' | 'redeemInvite'
 
 /**
  * Where a board lives. board() serves the protocol over HTTP: it routes, validates, verifies each
@@ -177,7 +181,7 @@ export type Trust = {
  * it verified. A backend stores and answers, honoring what each caller may do. Backends without
  * the agent registry or operational inbox can omit their methods; board() answers 501 for them.
  */
-export interface Backend extends Omit<ProtocolMethods, AgentOpsMethod | OperationalInboxMethod | 'status' | 'pause' | 'resume'>, Partial<Pick<ProtocolMethods, AgentOpsMethod | OperationalInboxMethod>> {
+export interface Backend extends Omit<ProtocolMethods, InviteMethod | AgentOpsMethod | OperationalInboxMethod | 'status' | 'pause' | 'resume'>, Partial<Pick<ProtocolMethods, InviteMethod | AgentOpsMethod | OperationalInboxMethod>> {
   /** Optional work admission control. Unimplemented methods answer 501 `no_network_pause`. */
   status?: ProtocolMethods['status']
   pause?: ProtocolMethods['pause']

@@ -264,6 +264,11 @@ const WALK: Record<RouteName, Walk> = {
     { method: 'GET', path: '/grants/explain?channel=open&user=u_julian', status: 403 },
   ],
   revokeGrant: () => [{ method: 'POST', path: '/grants/g1/revoke', status: 403 }],
+  invites: () => [{ method: 'GET', path: '/invites', status: 403 }],
+  createInvite: () => [{ method: 'POST', path: '/invites', body: { name: 'teammate' }, status: 403 }],
+  revokeInvite: () => [{ method: 'POST', path: '/invites/unknown/revoke', status: 403 }],
+  // The invite secret itself is the credential, not access to any channel.
+  redeemInvite: 'public',
   // Schemas are the whole board's and hold no channel's messages: anyone the board let in reads them, and only manage at * registers one.
   schemas: () => [{ method: 'GET', path: '/schemas', status: 200, check: (body) => expect(body.schemas.map((schema: any) => schema.id)).toEqual(['git-commit@1', 'vercel-deployment@1']) }],
   schema: () => [{ method: 'GET', path: '/schemas/git-commit@1', status: 200 }],

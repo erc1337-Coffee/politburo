@@ -203,7 +203,7 @@ itself.
 | Team board | `--scope <team>` (or `--team`) | none | in a Vercel project, its team's; for a CLI [inside another](#inside-another-cli), your login's team's anywhere else |
 | Board name | `--name <board>` | `BOARD_NAME` | the team's default board |
 | Make the named board | `--ensure` | none | off: `vb` only finds it |
-| Token | none | `BOARD_TOKEN` | detected: a local board's (`vb serve`), GitHub Actions, the Vercel runtime, then your Vercel login (`VERCEL_AUTH_TOKEN`, or `vercel login`); none for a board with no Vercel project |
+| Token | none | `BOARD_TOKEN` | detected: a local owner's (`vb serve`), a saved `vb join` credential, GitHub Actions, the Vercel runtime, then your Vercel login (`VERCEL_AUTH_TOKEN`, or `vercel login`) |
 | Profile | `--as <name>` | `BOARD_PROFILE` | none: you write as yourself |
 | Profile avatar | `--avatar <url>` (with `--as`) | `BOARD_AVATAR` | none |
 | Output | `--json` | none | human output |
@@ -267,15 +267,17 @@ itself.
   `--url` and `BOARD_URL` take, so a script outside the project reaches it
   without `--scope`.
 - **The token** resolves in this order: `BOARD_TOKEN`, a local board's own
-  (from [`vb serve`](#serve), for a board on localhost), a GitHub Actions OIDC
-  token (`permissions: id-token: write`), the Vercel runtime's OIDC token, then
+  (from [`vb serve`](#serve), for a board on localhost), the credential saved
+  by [`vb join`](#join) for this URL, a GitHub Actions OIDC token
+  (`permissions: id-token: write`), the Vercel runtime's OIDC token, then
   a development token minted with your Vercel login: `VERCEL_AUTH_TOKEN`, which
   the Vercel CLI sets for a CLI it runs, or else your `vercel login`. That last one is cached
   in `~/.config/board/tokens/` for its 12-hour life. See
   [Identity](../01-board/03-identity.md). A team's board in Vercel's API
   gets the deployment's OIDC token, or else `BOARD_TOKEN` or your Vercel login.
-- **A board with no Vercel project has no token for your login to mint,** so
-  a request goes to it with none. A board that names its callers another way
+- **A board with no Vercel project has no token for your login to mint.**
+  If no credential matches earlier, a request goes to it with none. A board
+  that names its callers another way
   takes it: one [behind Tailscale](../03-guides/08-tailnet.md), say. Any other
   answers 401, and `vb` says to pass a token in `BOARD_TOKEN`.
 - **A profile is named, never detected.** `--as` or `BOARD_PROFILE` writes as
@@ -359,7 +361,10 @@ $ vb read 812
 | `tasks create`, and every other `tasks` write | `{ task, outcome }`, `outcome` being `created`, `released`, `completed`, `failed`, `blocked`, `unblocked`, `reopened`, `assigned` or `unassigned`, `set` for `needs`, or `canceled`; `unchanged` when an `unblock` or a `reopen` had nothing to change. `tasks run` adds the command's `code` when it failed |
 | `wait` | `{ event }`: `{ cursor, type, createdAt, payload, message, actor }` |
 | `tail` | one event per line, as they come |
-| `whoami` | `{ actor, name, handle, profile, expiresAt, can, board, source }` |
+| `whoami` | `{ actor, principal, name, handle, profile, expiresAt, can, board, source }` |
+| `invite create` | `{ invite, outcome: "created" }`, with metadata only |
+| `invite list`, `invite revoke` | `{ invites }`, `{ revoked }` |
+| `join` | `{ board, principal }`, without the bearer credential |
 
 ```bash
 vb read prs --label state=open --json | jq -r '.threads[] | "#\(.message.id) \(.replies) \(.message.text)"'
@@ -424,7 +429,7 @@ Who you are on the board (name and actor ID), which board, where the token
 came from, when it expires, and what you can do in each
 channel. `can` is left out for full access. With `--json`, the
 [`/me`](./03-http.md#routes) response plus `board` and `source`, where the
-token came from (`BOARD_TOKEN`, `vb serve`, `GitHub Actions OIDC`,
+token came from (`BOARD_TOKEN`, `vb serve`, `vb join`, `GitHub Actions OIDC`,
 `Vercel OIDC`, or `vercel login`), or null when the request went with none.
 
 ```text
@@ -465,6 +470,24 @@ Credentials the API says expire show when, as `token`. Where it says
 nothing of what you can do, you can read, post, react, and label everywhere.
 
 See [Access](../01-board/09-access.md).
+
+### join
+
+```text
+vb join <url> <invite>
+vb join <url> - < invite.txt
+```
+
+Redeems a single-use invite on a self-hosted board, without using an existing
+credential. Use `-` to read the invite from stdin and keep it out of shell
+history and process arguments. Use the exact public board URL, including its
+mount path. It must use HTTPS, except on loopback, and must not include user
+info, a query, or a fragment. Redemption does not follow redirects.
+
+The CLI saves the bearer credential for that URL. It never prints the
+credential or the invite secret, even with `--json`. Run
+`vb --url <url> whoami` to check your identity and grants. See
+[Invite teammates](../03-guides/09-invite-teammates.md).
 
 ### serve
 
@@ -627,6 +650,34 @@ The result is `board  paused` or `board  running`. With `--json` it is
 An unsupported board fails with `reason: "no_network_pause"`.
 
 ## Access
+
+### invite
+
+```text
+vb --url <url> invite create <name> --out <file> [--expires-in <seconds>] [--can <pattern=permissions>]...
+vb --url <url> invite list
+vb --url <url> invite revoke <id>
+```
+
+Creates, lists, or revokes invites on a self-hosted board. Needs `manage` at
+`*` and refuses callers narrowed by `x-board-can`, even if they keep `manage`
+at `*`.
+
+The name starts with an ASCII letter and has at most 32 letters, numbers,
+and hyphens. `--expires-in` takes whole seconds from 1 to 604800; the default
+is 86400 (24 hours).
+
+Without `--can`, members receive `read`, `post`, `react`, and `label` across
+all channels. Repeat `--can pattern=permissions` for channel-specific grants;
+permissions are comma-separated. `sync` is opt-in. `manage` and `all` are
+not allowed.
+
+`create` writes the invite secret only to a new `0600` file and refuses to
+overwrite one. The CLI prints neither the invite secret nor the joined
+bearer, including with `--json`. `list` shows
+metadata only, and `revoke` applies only to a pending invite. After
+redemption, use [`grants`](#grants) to revoke the grant naming the member's
+principal ID. See [Invite teammates](../03-guides/09-invite-teammates.md).
 
 ### grants
 

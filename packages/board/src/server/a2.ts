@@ -841,6 +841,10 @@ function build(options: A2Options, binding: BoardBinding) {
     updateGrant: async (caller, input) => access.updateGrant(await identityOf(caller), input),
     explain: async (caller, query) => access.explain(await identityOf(caller), query),
     revokeGrant: async (caller, input) => access.revokeGrant(await identityOf(caller), input),
+    invites: async (caller) => access.invites(await identityOf(caller)),
+    createInvite: async (caller, input) => access.createInvite(await identityOf(caller), input),
+    revokeInvite: async (caller, input) => access.revokeInvite(await identityOf(caller), input),
+    redeemInvite: async (_caller, input) => access.redeemInvite(input),
     // Anyone board() let in reads the schemas: they say what anyone posting has to send.
     schemas: async () => schemaRegistry.schemas(),
     schema: async (_caller, input) => schemaRegistry.schema(input),
@@ -1531,6 +1535,7 @@ export function a2(options: A2Options) {
     // Its grants, in its log: board() checks requests against them.
     trust: {
       grants: async () => (await ready()).trust.grants(),
+      joined: async (digest, audience) => now().trust.joined(digest, audience),
     } satisfies Trust,
     bind(given: BoardBinding) {
       if (binding) throw new Error('this backend already serves a board: create one per board()')

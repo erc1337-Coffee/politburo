@@ -1,5 +1,5 @@
 import { everyChannel } from '../client/channels.ts'
-import { INBOX_EVENT_ID_MAX, type AttentionDraft, type Discovery, type Explanation, type GrantView, type Me, type MessageView, type RegistrationView } from '../api/routes.ts'
+import { INBOX_EVENT_ID_MAX, type AttentionDraft, type CreatedInvite, type Discovery, type Explanation, type GrantView, type InviteView, type Joined, type Me, type MessageView, type RegistrationView } from '../api/routes.ts'
 import { BoardError, type ExplainPrincipal, type TaskInBatch, type TaskOptions } from '../client/client.ts'
 import { block } from '../contract/blocks.ts'
 import { canonical } from '../contract/data-schemas.ts'
@@ -8,20 +8,20 @@ import type { Board } from '../server/board.ts'
 
 /**
  * Checks that a board speaks the protocol, through a handle on it (`conformance(board())`), as
- * `vb` and agents use it: every board answers all of it. A board may keep no schedules, tasks, or
- * files, or no index to find threads by what their messages say or who wrote them, and says so with a
- * 501, which the kit reports as not kept here. A board may also answer 501 `no_operational_inbox`
- * to the inbox read. Where supported, the kit sends short-lived operational messages to the run's
- * own principal and archives the latest. It writes ordinary messages to one channel
- * (`conformance` by default), and for the tasks checks that need two, to `tasks` under it, keeps
- * every post on the board, and deletes what it posted. The one
- * schema it registers, `conformance@1`, stays: a schema version is never removed.
- * On boards that opt into agent operations, the kit retires its test agent;
- * the disabled entries and private intent facts remain on the board.
+ * `vb` and agents use it: every board answers all of it. A board may keep no schedules, tasks,
+ * invites, or files, or no index to find threads by what their messages say or who wrote them, and
+ * says so with a 501, which the kit reports as not kept here. A board may also answer 501
+ * `no_operational_inbox` to the inbox read. Where supported, the kit sends short-lived operational
+ * messages to the run's own principal and archives the latest. It writes ordinary messages to one
+ * channel (`conformance` by default), and for the tasks checks that need two, to `tasks` under it,
+ * keeps every post on the board, and deletes what it posted. The one schema it registers,
+ * `conformance@1`, stays: a schema version is never removed. Invite checks leave terminal invite
+ * records, but revoke the grants they make. On boards that opt into agent operations, the kit
+ * retires its test agent; the disabled entries and private intent facts remain on the board.
  */
 
 /** What a check is about, for the report's headings. */
-export type CheckGroup = 'core' | 'paging' | 'search' | 'schedules' | 'tasks' | 'network-pause' | 'grants' | 'schemas' | 'attachments' | 'watchers' | 'sync' | 'agents' | 'operational-inbox'
+export type CheckGroup = 'core' | 'network-pause' | 'paging' | 'search' | 'schedules' | 'tasks' | 'grants' | 'invites' | 'schemas' | 'attachments' | 'watchers' | 'sync' | 'agents' | 'operational-inbox'
 
 export type CheckResult = {
   group: CheckGroup
@@ -56,6 +56,12 @@ export type ConformanceOptions = {
    * skipped, and it stands in for `withCan` when that's left out.
    */
   withHeaders?: (headers: Record<string, string>) => Board
+  /**
+   * The same board using only the freshly joined caller's bearer. Bind the transport to the URL
+   * you configured (not the board's discovery response), reject redirects, and never log or persist
+   * the token. Without this opt-in, only the check of the joined caller's access is skipped.
+   */
+  withInviteToken?: (token: string) => Board
   /**
    * Whom the grants checks name. A board that verifies tokens itself (`vb serve`) takes the made-up
    * IDs they use without it; one that looks names up, as Vercel's API does, needs real ones on its
@@ -164,6 +170,7 @@ type Context = {
   posted: string[]
   withCan?: (can: string) => Board
   withHeaders?: (headers: Record<string, string>) => Board
+  withInviteToken?: ConformanceOptions['withInviteToken']
   principals: Principals
   /** The board's own Vercel team, as its discovery names it. */
   team: string | null
@@ -230,6 +237,108 @@ function unnamed(error: unknown): Skip | null {
 }
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
+
+const NO_INVITES = 'not kept here: this board keeps no invites'
+const NO_INVITE_TOKEN = "this run can't call the board with a joined caller's token"
+
+// An implementation can echo a credential in its errors, or even in fields meant to be public.
+// Invite checks report only fixed text, counts, and HTTP statuses, never a value from the board.
+const inviteError = (error: unknown, action: string) =>
+  new Mismatch(`${action}: ${error instanceof BoardError && Number.isInteger(error.status) ? `got HTTP ${error.status}` : 'request failed'}`)
+
+async function inviteCall<T>(action: string, attempt: () => Promise<T>): Promise<T> {
+  try {
+    return await attempt()
+  } catch (error) {
+    throw inviteError(error, action)
+  }
+}
+
+function refusedInvite(result: PromiseSettledResult<Joined>, action: string) {
+  check(result.status === 'rejected', `${action}: it succeeded`)
+  // Unknown, expired, revoked and used credentials are indistinguishable to the caller.
+  check(result.reason instanceof BoardError && result.reason.status === 403 && result.reason.code === 'invalid_invite', `${action}: expected 403 invalid_invite`)
+}
+
+/** Each probe can grant only in the scratch channel or in a unique, unposted channel under it. */
+async function withInvite(
+  ctx: Context,
+  purpose: string,
+  expiresIn: number,
+  canPost: boolean,
+  run: (probe: {
+    name: string
+    join: () => Promise<Joined>
+    listed: (state: InviteView['state']) => Promise<void>
+    revoke: () => Promise<{ revoked: boolean }>
+  }) => Promise<void>,
+): Promise<void | string> {
+  const board = ctx.board
+  const name = `conformance-${ctx.labels.conformance}-${purpose}`
+  const scope = `${ctx.channel}/${name}`
+  const can = { [scope]: ['read'] as const, ...(canPost ? { [ctx.channel]: ['read', 'post'] as const } : {}) }
+  let made: CreatedInvite
+  try {
+    made = await board.createInvite({ name, can, expiresIn })
+  } catch (error) {
+    if (error instanceof BoardError && error.status === 501 && error.code === 'no_invites') return NO_INVITES
+    if (error instanceof BoardError && error.status === 403) return "this caller can't manage invites"
+    throw inviteError(error, 'creating an invite')
+  }
+
+  const { invite, secret } = made
+  const id = invite?.id
+  // Never use a secret as a public ID, even if a broken board puts one there.
+  const validId = typeof id === 'string' && id.length > 0 && id.length <= 128 && id !== secret && !id.startsWith('vbi_') && !id.startsWith('vbj_')
+  const members = new Set<string>()
+  let joining = false
+  const revoke = () => inviteCall('revoking the invite', () => board.revokeInvite(id))
+  try {
+    check(validId, 'the new invite should have a public ID distinct from its credential')
+    check(typeof secret === 'string' && secret.length > 0, 'the new invite should have a secret')
+    const metadata = (view: InviteView, state: InviteView['state']) => {
+      check(view.name === name && view.state === state, `the invite should be named as requested and be ${state}`)
+      check(typeof view.expiresAt === 'string' && Number.isFinite(Date.parse(view.expiresAt)), 'the invite should give an expiry time')
+      check(canonical(view.can) === canonical(can), 'the invite should give only the requested permissions')
+      check(!JSON.stringify(view).includes(secret), 'the invite metadata should not expose the secret')
+    }
+    metadata(invite, 'pending')
+    await run({
+      name,
+      async join() {
+        joining = true
+        const joined = await board.join(secret)
+        check(typeof joined?.principal === 'string' && joined.principal.length > 0, 'redemption should return a principal')
+        members.add(joined.principal)
+        return joined
+      },
+      async listed(state) {
+        const views = await inviteCall('listing invites', () => board.invites())
+        const found = views.filter((view) => view.id === id)
+        check(found.length === 1, 'the invite should be listed exactly once')
+        metadata(found[0]!, state)
+        check(found[0]!.expiresAt === invite.expiresAt, 'listing should keep the original expiry time')
+      },
+      revoke,
+    })
+  } finally {
+    try {
+      if (validId) await revoke()
+    } finally {
+      if (joining) {
+        // The unique pattern also finds a grant left by a join that committed but didn't return
+        // a principal. Never revoke grants from a snapshot diff: another admin could be writing.
+        const grants = await inviteCall('looking up the invitee grant for cleanup', () => board.grants())
+        for (const grant of grants) {
+          if (grant.principals.some((principal) => principal.kind === 'invitee' && (members.has(principal.id) || Object.hasOwn(grant.can, scope)))) {
+            const revoked = await inviteCall('cleaning up the invitee grant', () => board.revokeGrant(grant.id))
+            check(revoked.revoked === true, 'the invitee grant should be revoked during cleanup')
+          }
+        }
+      }
+    }
+  }
+}
 
 type GrantInput = Parameters<Board['createGrant']>[0]
 
@@ -2254,6 +2363,76 @@ const CHECKS: Check[] = [
     run: async () => "grants across teams aren't specified yet: what a project on another team needs, and what all-projects means for one, comes later",
   },
   {
+    group: 'invites',
+    name: 'lists a pending invite and refuses it once revoked',
+    run: (ctx) =>
+      withInvite(ctx, 'revoke', 60, false, async ({ listed, revoke, join }) => {
+        await listed('pending')
+        check((await revoke()).revoked === true, 'revoking a pending invite should revoke it')
+        check((await revoke()).revoked === false, 'revoking an already revoked invite should change nothing')
+        await listed('revoked')
+        const [result] = await Promise.allSettled([join()])
+        refusedInvite(result, 'redeeming the revoked invite')
+      }),
+  },
+  {
+    group: 'invites',
+    name: 'lists a short-lived invite as expired and refuses it',
+    run: (ctx) =>
+      withInvite(ctx, 'expiry', 1, false, async ({ listed, join }) => {
+        // Wait relative to creation, not to a comparison between the board's clock and ours.
+        await new Promise((resolve) => setTimeout(resolve, 1100))
+        await listed('expired')
+        const [result] = await Promise.allSettled([join()])
+        refusedInvite(result, 'redeeming the expired invite')
+      }),
+  },
+  {
+    group: 'invites',
+    name: 'redeems an invite for only one of the callers that race for it',
+    run: (ctx) =>
+      withInvite(ctx, 'race', 60, false, async ({ join, listed, revoke }) => {
+        const attempts = await Promise.allSettled([join(), join(), join()])
+        const winners = attempts.filter((result) => result.status === 'fulfilled')
+        check(winners.length === 1, `exactly one redemption should succeed, got ${winners.length}`)
+        check(typeof winners[0]!.value.token === 'string' && winners[0]!.value.token.length > 0, 'redemption should return a bearer token')
+        for (const result of attempts) if (result.status === 'rejected') refusedInvite(result, 'a losing redemption')
+        await listed('redeemed')
+        check((await revoke()).revoked === false, 'revoking an already redeemed invite should change nothing')
+      }),
+  },
+  {
+    group: 'invites',
+    name: 'lets a joined caller read and post only as granted',
+    run: async (ctx) => {
+      const open = ctx.withInviteToken
+      if (!open) return NO_INVITE_TOKEN
+      return withInvite(ctx, 'access', 60, true, async ({ name, join }) => {
+        const { root } = needRoot(ctx)
+        const { principal, token } = await inviteCall('redeeming the invite', join)
+        check(typeof token === 'string' && token.length > 0, 'redemption should return a bearer token')
+        const joined = open(token)
+        const me = await inviteCall('identifying the joined caller', () => joined.me())
+        check(me.principal === principal && me.principal !== ctx.me.principal && me.handle === name, 'the caller should authenticate as the invitee under the invited name')
+        const read = await inviteCall('reading in the granted channel', () => joined.thread(root.id))
+        check(read.message.id === root.id, 'the invitee should read the message in the granted channel')
+        const post = (channel: string) => joined.post(channel, { text: 'conformance: joined caller', noSync: true })
+        const posted = await inviteCall('posting in the granted channel', () => post(ctx.channel))
+        const cleanup = [posted.id]
+        try {
+          check(posted.by.principal === principal, 'the post should be authored by the invitee')
+          const [outside, admin] = await Promise.allSettled([post(`${ctx.channel}/tasks`), joined.invites()])
+          if (outside.status === 'fulfilled') cleanup.push(outside.value.id)
+          check(outside.status === 'rejected' && outside.reason instanceof BoardError && outside.reason.status === 403, 'posting outside the grant should be forbidden')
+          check(admin.status === 'rejected' && admin.reason instanceof BoardError && admin.reason.status === 403, 'listing invites as the invitee should be forbidden')
+        } finally {
+          // Only the author can delete these posts. Do it before revoking the invitee's grant.
+          await inviteCall('deleting the invitee posts', () => Promise.all(cleanup.map((id) => joined.delete(id))))
+        }
+      })
+    },
+  },
+  {
     group: 'schemas',
     name: 'lists the built-in schemas first, and reads a schema by its ID',
     run: async (ctx) => {
@@ -2944,6 +3123,7 @@ export async function conformance(board: Board, options: ConformanceOptions = {}
     posted: [],
     ...(options.withCan ? { withCan: options.withCan } : options.withHeaders ? { withCan: (can: string) => options.withHeaders!({ 'x-board-can': can }) } : {}),
     ...(options.withHeaders ? { withHeaders: options.withHeaders } : {}),
+    ...(options.withInviteToken ? { withInviteToken: options.withInviteToken } : {}),
     principals: {
       project: options.principals?.project ?? `prj_conformance${label}`,
       repository: options.principals?.repository ?? `acme/conformance-${label}`,
@@ -2967,6 +3147,7 @@ export async function conformance(board: Board, options: ConformanceOptions = {}
         else if (group === 'watchers' && error instanceof BoardError && error.code === 'watchers_need_project') checks.push({ group, name, status: 'skipped', detail: 'only a deployment registers watchers here' })
         // Vercel's API takes no GitHub or OIDC principal in a grant.
         else if (group === 'grants' && error instanceof BoardError && error.code === 'unsupported_principal') checks.push({ group, name, status: 'skipped', detail: 'this board takes no GitHub or OIDC principals in a grant' })
+        else if (group === 'invites' && !(error instanceof Mismatch)) checks.push({ group, name, status: 'failed', detail: inviteError(error, 'checking invites').message })
         else checks.push({ group, name, status: 'failed', detail: error instanceof Error ? error.message : String(error) })
       }
     }

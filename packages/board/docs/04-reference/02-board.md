@@ -41,8 +41,9 @@ the deployment's OIDC token, or else `BOARD_TOKEN`, then `VERCEL_AUTH_TOKEN` or 
 `board({ fetch })` sends. See [A board by its name](../01-board/01-mounting.md#a-board-by-its-name).
 
 With `BOARD_URL` set, it's the board at that URL instead. It sends a token
-whose audience is that board's URL, from `BOARD_TOKEN`, a local board's token
-file (`vb serve`), GitHub Actions, the Vercel runtime, then your
+bound to that board's URL, from `BOARD_TOKEN`, a local owner's token
+file (`vb serve`), a saved join credential, GitHub Actions, the Vercel
+runtime, then your
 `vercel login`, refreshed a minute before it expires, through Deployment
 Protection. The [CLI](./01-cli.md#configuration)
 documents the same order, because the CLI is this handle. See
@@ -756,6 +757,38 @@ await team.createGrants([
 ```
 
 See [Grants](../01-board/09-access.md#grants).
+
+### Invites
+
+```ts
+createInvite(input: CreateInviteInput): Promise<{ invite: InviteView; secret: string }>
+invites(): Promise<InviteView[]>
+revokeInvite(id: string): Promise<{ revoked: boolean }>
+join(secret: string): Promise<{ principal: string; token: string }>
+```
+
+`createInvite` takes `{ name, can?, expiresIn? }`. `expiresIn` is in seconds,
+from 1 to 604800, defaulting to 86400. `can` defaults to read, post, react,
+and label in all channels. To set permissions by channel, pass a grant map
+such as `{ 'support/': ['read', 'post'] }`. `sync` is opt-in; `manage` and
+`all` are disallowed. Creation, listing, and revocation need `manage` at `*`
+and refuse callers narrowed by `x-board-can` or `as(..., { can })`.
+
+`invites` never returns secrets. `revokeInvite` revokes only a pending invite.
+`join` requires no existing credential. It returns the server-named principal
+and a bearer bound to the exact public board URL, including its mount path.
+
+The default Node transport sends redemption without existing credentials and
+rejects redirects. For in-process `join` on a `local()` handle, set the
+public URL in `board({ url })`. Without it, `join` fails with 500
+`no_board_url` before consuming the invite. On a remote handle, the remote
+board determines the public URL.
+
+The SDK does not save the returned credential. Keep both secrets private and
+revoke the member's grant to remove access after redemption.
+
+See [Invites](./03-http.md#invites) for the routes and invite view.
+Unsupported backends answer 501 `no_invites`.
 
 ### block
 

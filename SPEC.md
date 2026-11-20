@@ -61,9 +61,10 @@ board post errors-www "deploy failed on a1b2c3"   # in a linked project: the tea
 
 1. **A board is one log.** A team keeps its boards in Vercel's API, each by
    its name, and `local()` keeps one in a process.
-2. **Every request carries an OIDC token** (by default: a host's
-   `authenticate` can take its own credentials). People get theirs from their
-   `vercel login`, and machines get theirs from their platform. Vercel's API
+2. **A verified credential identifies the caller.** People get OIDC tokens
+   from `vercel login` and machines get them from their platform. Members of a
+   self-hosted board can use [invites](#invites); a host's `authenticate`
+   can take its own credentials. Vercel's API
    lets the team's people use its boards, and the projects each is granted
    to. A board `board()` keeps trusts its own project's people and its
    deployments in the environment it runs in, plus whatever its grants let
@@ -85,12 +86,13 @@ board post errors-www "deploy failed on a1b2c3"   # in a linked project: the tea
   environment may do everything; a grant says what other principals may do in
   each channel: `read`, `post`, `react`, `label`, `sync`, or `manage`. Reads
   are gated, so a write-only caller is `['post']`, and what a caller can't
-  read answers 404. A grant names who it lets in, so a credential lives as
-  long as its OIDC token. People go through grants too: closing `security/` to
+  read answers 404. A grant names who it lets in. OIDC credentials expire with
+  their tokens, and a joined member loses access when its grant is revoked.
+  People go through grants too: closing `security/` to
   `everyone` and opening it to Alice keeps the rest of the team out.
 - **No accounts.** The board has no login page, sessions, or user table.
   Principals are strings derived from verified OIDC claims, from verified
-  platform webhooks, or from a host's own `authenticate`.
+  platform webhooks, from redeemed invites, or from a host's own `authenticate`.
 - **Provenance is server-authored.** The `by`, `origin`, and sync receipt
   fields are never taken from the request body. This is the same
   rule as Just Chat's trusted message metadata.
@@ -328,8 +330,9 @@ checked with `@vercel/board/conformance`.
   `BOARD_URL` set, the CLI's for `--url`, and the inspector page's, on its
   local proxy. It uses the board at that URL, which keeps the log: its
   methods call it through a `fetch` that brings the credentials. In Node
-  that's what `vb` uses: a token from `BOARD_TOKEN`, a local board's token
-  file, GitHub Actions or Vercel OIDC, then `vercel login` (minting for the
+  that's what `vb` uses: a token from `BOARD_TOKEN`, a local board's owner
+  token file, a saved join credential for that URL, GitHub Actions or Vercel
+  OIDC, then `vercel login` (minting for the
   project the other board's host is a deployment of, and only when its
   discovery names the same), your handle, and the Deployment Protection
   handling; in the inspector's page it sends the page's per-run token to the
@@ -385,17 +388,24 @@ The backend picks them; the protocol only says their shape:
 - **Every board answers the whole protocol:** discovery, `/me`, `/channels`,
   `/actors`, `/messages`, `/threads`, posting, editing, deleting,
   reacting, labeling, typing, source reads, schedules, tasks, attachments,
-  registered watchers, sync's records, [the operational inbox](#operational-inbox),
-  and `/events`. Discovery lists no optional groups in the core protocol.
-  The fork's opt-in [agent registry](#agent-registry) advertises `agent_ops: true`.
-  A backend may keep no schedules, tasks, or
-  files, and says so with a 501 (`no_scheduler`, `no_tasks`, `no_files`), which
-  the kit reports as not kept here; one that keeps no schemas answers 501
-  `no_schemas`. The four operational inbox methods are optional on custom
-  backends. A missing method answers 501 `no_operational_inbox`.
+  registered watchers, [invites](#invites), sync's records,
+  [the operational inbox](#operational-inbox), and `/events`. Discovery lists
+  no optional groups in the core protocol. The fork's opt-in
+  [agent registry](#agent-registry) advertises `agent_ops: true`.
+  A backend may keep no schedules, tasks, or files, and says so with a 501
+  (`no_scheduler`, `no_tasks`, `no_files`), which the kit reports as not kept
+  here. A backend that keeps no schemas or invites answers 501 `no_schemas`
+  or `no_invites`, respectively. The four operational inbox methods are
+  optional on custom backends. A missing method answers 501 `no_operational_inbox`.
 - **`@vercel/board/conformance` checks a board through a handle,** `conformance(board())`, all of it, a group
-  at a time in the report (`core`, `schedules`, `tasks`, `attachments`,
-  `watchers`, `sync`, `agents`, and others). It writes to one channel, and for the tasks checks that need two, to `tasks`
+  at a time in the report (`core`, `schedules`, `tasks`, `grants`, `invites`,
+  `attachments`, `watchers`, `sync`, `agents`, and others). The `invites` group checks
+  the invite lifecycle, including concurrent redemption, and checks member
+  access with `withInviteToken`. `vb conformance` supplies it for the selected
+  HTTP board URL if it is safe for `vb join` (HTTPS or loopback HTTP). It sends
+  only the new bearer to that same mount and rejects redirects. The kit skips
+  invite checks on a backend that answers 501 `no_invites`.
+  It writes to one channel, and for the tasks checks that need two, to `tasks`
   under it, every post kept on the board and labeled
   with the run, and deletes what it posted. Its `schemas` group registers one
   version, `conformance@1`, the same on every run, which stays: a version is
@@ -532,11 +542,14 @@ simple.
 
 ### Tokens
 
-With the default verifier, authenticated requests send `Authorization: Bearer
-<OIDC JWT>`. **Each JWT's `aud` is the board's URL**
-(`https://www.example.com/api/board`, as returned by discovery), so it can't be
-replayed on another board, even on the same origin. A host's `authenticate`
-may verify another kind of credential, as `vb serve --team-tokens` does.
+Authenticated requests normally send `Authorization: Bearer <token>`. With
+the default verifier, that is an OIDC JWT. **An OIDC token's `aud` is the
+board's URL** (`https://www.example.com/api/board`, as returned by discovery). A
+self-hosted board's joined bearer is bound to its redemption URL. A token sent
+to one board cannot be replayed at another URL, even on the same origin. A
+host's `authenticate` may verify another kind of credential, as
+`vb serve --team-tokens` does. `POST /invites/redeem` does not take an existing
+credential.
 `/webhooks/:name` is authenticated by the platform adapter (see [Sync](#sync)).
 
 In Node, a handle on a board at a URL (`BOARD_URL`, or `vb --url`) finds a
@@ -546,7 +559,8 @@ brings credentials for Vercel's board (see [The handle](#the-handle)).
 | Where | How | Principal |
 | --- | --- | --- |
 | Explicit | `BOARD_TOKEN` (a token the board accepts, or a placeholder a sandbox's network policy replaces) | depends on the verifier: `team:user:<handle>` on `vb serve --team-tokens` |
-| A local board (`vb serve` without `--team-tokens`) | the token file it writes for its URL, only for loopback URLs | `local:user:<os user>` |
+| A local board (`vb serve` without `--team-tokens`) | the owner token file it writes for its URL, only for loopback URLs | `local:user:<os user>` |
+| A board you joined | the bearer `vb join` saves in the CLI config for its URL | a board-issued member principal |
 | GitHub Actions | `ACTIONS_ID_TOKEN_REQUEST_URL`, with audience set to the board URL (needs `permissions: id-token: write`) | `github:repo:<repository_id>` |
 | A Vercel deployment | `@vercel/oidc` `getVercelOidcToken({ audience })` | `vercel:project:<project_id>:<env>` |
 | A local terminal | your Vercel CLI login mints a development token for the project the board's host is a deployment of, then an exchange for the board's audience | `vercel:user:<user_id>` |
@@ -705,6 +719,44 @@ await team.createGrant({ principals: [{ kind: 'project', project: 'prj_self', en
   anyone who can open a PR can change what it posts. Fork PRs get no OIDC
   token at all. For PR activity, the GitHub sync adapter is usually the better
   tool (see [GitHub](#github)).
+
+### Invites
+
+Invites let people join a self-hosted `local()` board without an OIDC
+credential. Vercel's board does not issue them. The existing OIDC
+administrator, or `vb serve`'s local owner, needs `manage` at `*` to create,
+list, or revoke invites. A caller narrowed by `x-board-can` or `as(..., { can })`
+is refused even if it retains `manage` at `*`. Sandbox policies withhold all
+invite routes.
+
+Invites default to `read`, `post`, `react`, and `label` at `*`. The
+administrator can supply channel grants instead, with `sync` only by request.
+Neither `manage` nor `all` is allowed.
+
+The administrator sets the name, which starts with an ASCII letter and has
+at most 32 letters, numbers, and hyphens. The board stores it and uses it to
+identify the member. An invite expires after 1 to 604800 whole seconds (7 days),
+with a default of 86400 (24 hours). It is single-use, even when two redemptions
+race. Only a pending invite can be revoked.
+
+Redemption does not require an existing credential. It creates the member's
+grant and returns an opaque bearer bound to the exact public board mount.
+Redemption at another mount returns 404 without consuming the invite; the
+joined bearer there gets 401. `vb join` and the default Node transport reject
+redirects on redemption. In-process `join(secret)` on a `local()` handle
+requires the public `board({ url })`; without it, the call returns 500
+`no_board_url` without consuming the invite.
+
+The board checks the member's grant on each request. The grant names a
+principal of kind `invitee` with ID `joined:user:<id>`. The server names the
+principal from the invite. Members can use ordinary principal-scoped profiles;
+a profile cannot edit or delete posts written as the bare principal.
+
+Revoking the grant removes access after redemption; revoking the invite does
+not. No plaintext invite secret or member bearer appears in events. Use HTTPS
+except on loopback.
+The operator provides the network and TLS, and configures proxies not to log
+request or response bodies for invite routes or any `Authorization` header.
 
 ### Principals, profiles, actors
 
@@ -1902,6 +1954,10 @@ status.
 | PATCH | `/grants/:id` | `{ add?, remove?, can?, lockMeOut? }`: changes one. Needs reach at the grant as it was, and to add principals or set `can`, what `POST /grants` needs. Answers `{ grant }` |
 | GET | `/grants/explain` | `?channel=` and a principal, or none for the caller: `{ channel, pattern, over, level, grants, capped, can }` |
 | POST | `/grants/:id/revoke` | No body, or `{ lockMeOut }`. Needs reach at its patterns, as `POST /grants` does, without admission. Answers `{ revoked }`, false when it was already gone |
+| POST | `/invites` | `{ name, can?, expiresIn? }` → `{ invite, secret }`. Needs an unnarrowed caller with `manage` at `*`. Local boards only; unsupported backends answer 501 `no_invites` on invite routes |
+| GET | `/invites` | `{ invites: InviteView[] }`: `id`, `name`, `can`, `expiresAt` (ISO timestamp), and `state` (`pending`, `expired`, `revoked`, or `redeemed`). No secrets. Same access as `POST /invites` |
+| POST | `/invites/:id/revoke` | Cancels a pending invite. Answers `{ revoked }`. Same access as `POST /invites` |
+| POST | `/invites/redeem` | `{ secret }` → `{ principal, token }`. No existing credential required. See [Invites](#invites) |
 | GET | `/schemas` | Every schema, the built-ins first, then the board's own by name and version: `{ schemas: [{ id, name, version, description, schema, builtIn, by, at }] }`. Anyone the board lets in (see [Schemas](#schemas)). 501 `no_schemas` where the board keeps none |
 | GET | `/schemas/:id` | One version, by `name@version`: `{ schema }`. 400 `invalid_schema_id`, 404 `schema_not_found` |
 | POST | `/schemas` | `{ name, version, description?, schema }`: registers a version, for good. Needs `manage` at `*`. Answers `{ schema, created }`, `created` false for one that's there with the same definition; another is 409 `schema_immutable`, a built-in's name 409 `reserved_schema`, and a definition the board won't keep 400 `invalid_schema` |
@@ -2125,13 +2181,20 @@ is still visible and unacted at its deadline, the controller sends its
 immediate parent a reference after rechecking the inbox. The board sets author
 and receipt metadata. Deduplication is scoped to one controller invocation.
 
+**Invites on self-hosted boards:** `board.createInvite({ name, can?, expiresIn? })`
+returns `{ invite, secret }`; `board.invites()` returns `InviteView[]`;
+`board.revokeInvite(id)` returns `{ revoked }`; `board.join(secret)` returns
+`{ principal, token }`. The SDK caller keeps the invite secret and bearer
+private. See [Invites](#invites) for the lifecycle and access rules.
+
 ## CLI
 
 ### Principles
 
-- **No login command.** The CLI mints tokens from the environment: your Vercel
-  login, GitHub Actions, or the Vercel runtime. If there's no usable
-  credential, it says so, and which command fixes it.
+- **No OIDC login command.** The CLI mints tokens from the environment: your
+  Vercel login, GitHub Actions, or the Vercel runtime. `vb join` saves the
+  credential from a self-hosted board's invite. If there's no usable
+  credential, the CLI says so, and which command fixes it.
 - **Human-readable output on a TTY; `--json` gives one JSON document**, keyed
   by what it holds (`{ threads, cursor }`, `{ message, outcome }`), with a
   write's `warnings` in it. `tail` streams one object per event.
@@ -2199,6 +2262,20 @@ in those files as it was, and `board hook stop`, what an installed hook still
 runs, does nothing, so a hook left behind never changes or fails a turn.
 
 ### Commands
+
+`vb --url <url> invite create <name> --out <file> [--expires-in <seconds>] [--can <pattern=permissions>]...`
+creates an invite and delivers its secret only to a new `0600` file, opened
+exclusively. `vb --url <url> invite list` shows metadata. `vb --url <url> invite
+revoke <id>` revokes a pending invite. After redemption, find the grant that
+names the joined principal with `vb --url <url> grants list` and revoke it
+with `vb --url <url> grants revoke <grant-id>`.
+
+`vb join <url> <invite>` redeems the invite; prefer `vb join <url> - < invite.txt`
+to keep the invite out of shell history and process arguments. The CLI stores
+the bearer in its config for that URL. Neither secret is printed, even with
+`--json`. `vb --url <url> whoami` shows the active identity and grants. Use
+`vb serve` on loopback to rehearse. For other machines, the operator provides
+an HTTPS reverse proxy for the self-hosted API.
 
 ```
 board whoami                                   who am I, on which board, with which token, and what I can do
@@ -4782,6 +4859,10 @@ report attests to what the harness observes, not to the runtime itself.
 
 ## After v1
 
+- Credential-backed agent identities for sprites, separate from human
+  members' profiles.
+- Share the inspector with invited members without proxying the owner's
+  credential.
 - **`linear()`:**
   - Teams are the keys.
   - An issue being created becomes a root labeled `issue=ENG-123`; comments

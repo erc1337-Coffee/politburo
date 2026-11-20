@@ -533,6 +533,14 @@ export const PrincipalInput = z.discriminatedUnion('kind', [
 /** What a grant lets its principals do: a map from channel pattern to `'all'` or a list, `[]` for none. Kept as written. */
 export const GrantCan = z.record(z.string().min(1).max(CHANNEL_PATTERN_MAX), CanGrant)
 
+export const INVITE_PERMISSIONS = ['read', 'post', 'react', 'label', 'sync'] as const
+export const CreateInviteBody = z.strictObject({
+  name: z.string().regex(/^[A-Za-z][A-Za-z0-9-]{0,31}$/, 'names start with a letter and use up to 32 letters, numbers, and hyphens'),
+  can: z.record(z.string().min(1).max(CHANNEL_PATTERN_MAX), z.array(z.enum(INVITE_PERMISSIONS)).max(INVITE_PERMISSIONS.length)).optional(),
+  expiresIn: z.number().int().min(1).max(604800).optional(),
+})
+export const RedeemInviteBody = z.strictObject({ secret: z.string().regex(/^vbi_[A-Za-z0-9_-]{43}$/) })
+
 /**
  * Says to go ahead with a grant change its caller couldn't take back: one that takes their own
  * `manage` at a pattern it names, which is 409 `grant_lockout` without it.
@@ -898,6 +906,17 @@ export type CanAt = 'all' | 'none' | readonly Permission[]
 export type GrantCan = Readonly<Record<string, CanAt>>
 /** A grant, as a handle takes it: who it names, and what they may do. */
 export type GrantInput = { principals: readonly PrincipalInput[]; can: GrantCan }
+
+export type CreateInviteInput = { name: string; can?: GrantCan; expiresIn?: number }
+export type InviteView = {
+  id: string
+  name: string
+  can: Record<string, (typeof INVITE_PERMISSIONS)[number][]>
+  expiresAt: string
+  state: 'pending' | 'expired' | 'revoked' | 'redeemed'
+}
+export type CreatedInvite = { invite: InviteView; secret: string }
+export type Joined = { principal: string; token: string }
 /**
  * What a grant write takes beside its change. `lockMeOut` goes ahead with one you couldn't take
  * back: it takes your own `manage` at a pattern it names, and is 409 `grant_lockout` without it.
@@ -958,6 +977,7 @@ export type Explanation = {
 /** A principal as a grant keeps it: IDs, with the names the board knows beside them. */
 export type PrincipalView =
   | { kind: 'user'; userId: string; email: string | null }
+  | { kind: 'invitee'; id: string }
   | { kind: 'project'; projectId: string; name: string | null; environments: string[]; teamId: string | null }
   | { kind: 'github'; repositoryId: string | null; repository: string; workflow?: string; branch?: string; event?: string }
   | { kind: 'oidc'; issuer: string; claims: Record<string, string | string[]> }
@@ -1405,6 +1425,10 @@ export const routes = {
   /** Which grant decides a channel, for the caller or, with `manage` at `*`, a principal it names. */
   explain: { method: 'GET', path: '/grants/explain', query: ExplainQuery },
   revokeGrant: { method: 'POST', path: '/grants/:id/revoke', body: RevokeGrantBody },
+  invites: { method: 'GET', path: '/invites' },
+  createInvite: { method: 'POST', path: '/invites', body: CreateInviteBody },
+  revokeInvite: { method: 'POST', path: '/invites/:id/revoke' },
+  redeemInvite: { method: 'POST', path: '/invites/redeem', body: RedeemInviteBody },
   /** Every schema: the built-ins, then the board's own. Anyone the board lets in reads them. */
   schemas: { method: 'GET', path: '/schemas' },
   /** One schema version, by `name@version`. */

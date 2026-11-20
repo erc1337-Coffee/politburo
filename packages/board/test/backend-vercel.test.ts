@@ -77,6 +77,7 @@ describe('vercel()', () => {
     const api = fakeMessageboard()
     // The API looks names up, so the grants checks name a project, a repository, a viewer, and an app its team has.
     const report = await conformance(handleOn(api), { withHeaders: withHeadersOn(api), principals: { project: 'prj_web', repository: 'acme/api', viewer: 'val@acme.com', app: 'ship' } })
+    expect(report.checks.filter((check) => check.group === 'invites').slice(0, 3).map((check) => check.detail)).toEqual(Array(3).fill('not kept here: this board keeps no invites'))
     const statuses = Object.fromEntries(report.checks.map((check) => [`${check.group}: ${check.name}`, check.status]))
     expect(statuses).toEqual({
       'core: says in its discovery where it is': 'passed',
@@ -166,6 +167,10 @@ describe('vercel()', () => {
       'grants: makes several grants in one write, or none of them, a lock with the grant that keeps its maker in': 'passed',
       'grants: lets a member grant on a pattern after a lock under it': 'skipped',
       'grants: lets a project on another team in, in its environments': 'skipped',
+      'invites: lists a pending invite and refuses it once revoked': 'skipped',
+      'invites: lists a short-lived invite as expired and refuses it': 'skipped',
+      'invites: redeems an invite for only one of the callers that race for it': 'skipped',
+      'invites: lets a joined caller read and post only as granted': 'skipped',
       'schemas: lists the built-in schemas first, and reads a schema by its ID': 'passed',
       'schemas: registers a schema version once: the same definition again changes nothing, and another is refused': 'passed',
       "schemas: refuses a built-in's name, and a definition it couldn't check a value against": 'passed',

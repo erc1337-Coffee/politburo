@@ -613,7 +613,7 @@ describe('cli', () => {
     expect((await vb(['read'])).stdout).toMatch(/^all channels · \d+ threads · cursor \d+\n/)
     // One of a thing is one, not ones.
     const lone = (await vb(['post', 'lone-work', 'just me'])).stdout.trim()
-    expect((await vb(['channels'])).stdout).toContain(`\nlone-work  1 thread · 1 message · last #${lone}\n`)
+    expect((await vb(['channels'])).stdout.split('\n')).toContain(`lone-work  1 thread · 1 message · last #${lone}`)
 
     // On a thread, --after and --label keep its root and the replies they match, from the one read of it.
     const texts = async (...flags: string[]) => {
@@ -643,7 +643,8 @@ describe('cli', () => {
     expect(await vb(['read', 'open-wrok'])).toMatchObject({ code: 1, stdout: '', stderr: expect.stringMatching(/^error: Couldn't find channel open-wrok\. Did you mean open-work\?\n/) })
     expect(await vb(['read', 'open-work', '--text', 'nothing like this'])).toMatchObject({ code: 0, stdout: expect.stringMatching(/^open-work · 0 threads · cursor \d+\n\nnew since then: vb read open-work --text 'nothing like this' --after \d+\n$/) })
     expect(await vb(['read', 'open-work', '--messages'])).toMatchObject({ code: 2 })
-  })
+    // This case starts dozens of CLI subprocesses in sequence.
+  }, 60_000)
 
   it("posts once for an idempotency key, and reads by a message's source", async () => {
     const once = await vb(['post', 'retries', 'deploy failed', '--idempotency-key', 'deploy-a1b2c3'])
