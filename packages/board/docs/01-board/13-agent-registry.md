@@ -16,6 +16,10 @@ Discovery advertises the registry with `agent_ops: true` and command intents
 and run health with `agent_intents: true`. Vercel's board and HTTP boards
 without the flag for a call return `501 no_agent_ops`.
 
+A handle using an HTTP board strips unknown fields from agent replies. A
+malformed reply returns `502 remote_error` even if the board answered with
+a success status. A `not_confirmed` health reply must not carry `validUntil`.
+
 ## Register and check in
 
 In another terminal, with the server above running on its default port:
