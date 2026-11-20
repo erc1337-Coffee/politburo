@@ -576,8 +576,8 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
     /**
      * What makes a new thread a task, to append with its root: `task.created`, `task.ready` when
      * the tasks it needs have all completed, and its claim when it asks for one. `claimed(id)` is
-     * what that claim answers once root `id` landed: null for a task made without one, or one this
-     * request didn't make (a retry of a post that landed gets the post back, and no claim).
+     * what that claim answers once root `id` landed. A retry recovers only the original, live
+     * claim, and only with the caller's own token.
      */
     async starting(
       identity: Identity,
@@ -617,17 +617,36 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
       }
       const claimed = async (id: number): Promise<TaskClaim | null> => {
         if (!input.claim) return null
-        // An idempotent bound create cannot pretend to have written a different binding.
-        if (input.id !== undefined && binding !== undefined) {
+        const replay = !committed && input.token !== undefined
+        let created: BoardEvent<'task.claimed'> | undefined
+        if (input.id !== undefined && (binding !== undefined || replay)) {
           const events = (await writes().session.history({ gte: id, lte: id + ALONG_MAX })) as BoardEvent[]
           const post = events[0]
           const along = post?.type === 'message.posted' ? post.payload.along ?? 0 : 0
-          const claim = events.slice(1, 1 + along).find((row) => row.type === 'task.claimed')
-          sameBinding(id, binding, claim?.payload.binding)
+          created = events.slice(1, 1 + along).find((row) => row.type === 'task.claimed')
+          // An idempotent bound create cannot pretend to have written a different binding.
+          sameBinding(id, binding, created?.payload.binding)
         }
-        if (!committed || !planned) return null
-        await arm(id, planned.epoch, planned.until)
-        return planned
+        if (committed && planned) {
+          await arm(id, planned.epoch, planned.until)
+          return planned
+        }
+        if (!replay || !created) return null
+        const ctx = writes()
+        const { status, index } = await ctx.work.at()
+        if (status.paused || status.pauseEpoch !== workEpoch) return null
+        const found = (await ctx.reads.messagesAt([id], index)).get(id)
+        const task = found?.task
+        // A later claim can reuse the same token but is not the one created with this post.
+        if (!task || task.state !== 'claimed' || task.epoch !== created.payload.epoch) return null
+        const current = task.claim
+        if (!current || !hashes(token, current.token) || lapsed(task, Date.now(), status.pauseEpoch)) return null
+        if (!(await claimedBy(found as Root, identity))) return null
+        const { status: now } = await ctx.work.at()
+        if (now.paused || lapsed(task, Date.now(), now.pauseEpoch)) return null
+        sameBinding(id, binding, current.binding)
+        await arm(id, task.epoch, current.until)
+        return { epoch: task.epoch, token, until: current.until, pauseEpoch: now.pauseEpoch, ...(current.binding ? { binding: current.binding } : {}) }
       }
       return { along, workEpoch, committed: () => { committed = true }, claimed }
     },

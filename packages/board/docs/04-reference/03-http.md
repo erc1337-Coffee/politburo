@@ -541,7 +541,11 @@ A task is a thread with a state. Its ID is its root's, and its root carries
   is, and needs `label` in its channel. The caller's principal owns the task.
   `needs` names tasks the caller can read, none of them canceled: one that was
   can never complete. `priority` sets its initial priority. `claim: true`
-  claims it in the same write.
+  claims it in the same write. On a local board, a retry with the same `id`
+  returns the task. It also returns the original claim if the same caller
+  supplies the matching `token`, the claim is still live, and any supplied
+  `binding` matches. The retry does not extend the lease. Without a supplied
+  token, the board returns the claim only on the first write.
 - **`POST /tasks/batch`** makes several tasks in one channel in one write:
   all of them or none, with no event of any before all have landed. Each task
   is what `POST /tasks` starts a thread with, less `claim` and `id`. A task's

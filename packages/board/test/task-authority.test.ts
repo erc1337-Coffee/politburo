@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BoardEventView, MessageView } from '../src/api/routes.ts'
 import { http } from '../src/backend-http/index.ts'
 import { bearer, board, caller, deploymentToken, localBoard, personToken } from './harness.ts'
@@ -244,6 +244,75 @@ it('checks binding shape and owner against the claimant on all claim entry point
   const adopted = await bo('POST', '/tasks', { re: thread.body.message.id, claim: true, binding: forged })
   expect(adopted.status).toBe(201)
   expect(adopted.body.claim.binding).toEqual(forged)
+})
+
+it.each(['unbound', 'bound'])('recovers a live %s create-and-claim with the same client id and token', async (kind) => {
+  expect((await bo('POST', '/control/pause', { reason: 'stop admitting work' })).status).toBe(200)
+  const resumed = await bo('POST', '/control/resume', { reason: 'admit new claims' })
+  expect(resumed.status).toBe(200)
+  const binding = kind === 'bound' ? bindingFor() : undefined
+  const path = binding ? '/tasks/create-bound' : '/tasks'
+  const token = randomBytes(32).toString('base64url')
+  const input = { channel: 'work', text: 'review the release', id: 'review-release', claim: true, token, binding }
+  const made = await worker('POST', path, input)
+  expect(made.status).toBe(201)
+  const id = made.body.task.id
+  expect(made.body.claim).toMatchObject({ token, pauseEpoch: resumed.body.pauseEpoch, until: expect.any(String), epoch: expect.any(Number) })
+  expect(made.body.claim.binding).toEqual(binding)
+
+  const replay = await worker('POST', path, input)
+  expect([200, 201]).toContain(replay.status)
+  expect(replay.body.task.id).toBe(id)
+  expect(replay.body.claim).toEqual(made.body.claim)
+
+  const renewed = await write(worker, id, 'renew', { ...proofOf(replay.body.claim), lease: 60 })
+  expect(renewed.status).toBe(200)
+  expect(renewed.body.until).not.toBe(made.body.claim.until)
+  const again = await worker('POST', path, input)
+  expect(again.body.claim).toEqual({ ...made.body.claim, until: renewed.body.until })
+  const wrongToken = await worker('POST', path, { ...input, token: randomBytes(32).toString('base64url') })
+  expect([200, 201]).toContain(wrongToken.status)
+  expect(wrongToken.body.claim).toBeUndefined()
+  if (binding) {
+    const different = await worker('POST', path, { ...input, binding: { ...binding, session: 'different' } })
+    expect(outcome(different)).toEqual([409, 'binding_mismatch'])
+  }
+  expect((await write(worker, id, 'complete', proofOf(again.body.claim))).body.task.task.state).toBe('completed')
+  const completed = await worker('POST', path, input)
+  expect([200, 201]).toContain(completed.status)
+  expect(completed.body.claim).toBeUndefined()
+})
+
+it.each(['release', 'pause and resume', 'lease expiry'])('does not recover a create-and-claim after %s', async (end) => {
+  const token = randomBytes(32).toString('base64url')
+  const input = { channel: 'work', text: 'review the release', id: 'review-release', claim: true, token }
+  const create = () => worker('POST', '/tasks', input)
+  const made = await create()
+  expect(made.status).toBe(201)
+  const id = made.body.task.id
+  const expectNoClaim = async () => {
+    const replay = await create()
+    expect([200, 201]).toContain(replay.status)
+    expect(replay.body.task.id).toBe(id)
+    expect(replay.body.claim).toBeUndefined()
+  }
+  if (end === 'release') {
+    expect((await write(worker, id, 'release', proofOf(made.body.claim))).status).toBe(200)
+    await expectNoClaim()
+    const replacement = await take(worker, id, { token })
+    expect(replacement.epoch).toBeGreaterThan(made.body.claim.epoch)
+  } else if (end === 'pause and resume') {
+    expect((await bo('POST', '/control/pause', { reason: 'stop admitting work' })).status).toBe(200)
+    expect((await bo('POST', '/control/resume', { reason: 'admit new claims' })).status).toBe(200)
+  } else {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.parse(made.body.claim.until) + 1)
+  }
+  try {
+    await expectNoClaim()
+  } finally {
+    if (end === 'lease expiry') vi.useRealTimers()
+  }
 })
 
 it('fences all proof writes by generation even with the same actor and token after a park', async () => {
