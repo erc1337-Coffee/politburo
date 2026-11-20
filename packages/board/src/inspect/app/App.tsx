@@ -10,6 +10,7 @@ import { Messages, Pendings, type RowOptions } from './message.tsx'
 import { GLOBAL_CHAT, GLOBAL_CHAT_PATH, channelPath, here, Link, navigate, route, useLocation, useNow, useTypeToFocus } from './nav.tsx'
 import { Settings } from './settings.tsx'
 import { Sidebar } from './sidebar.tsx'
+import { HomeEmblem } from './home-emblem.tsx'
 import { actorFor, TaskCard, taskIds } from './task.tsx'
 import { Tasks } from './tasks.tsx'
 import { FilterButton, FilterChips } from './filters.tsx'
@@ -171,7 +172,7 @@ export function App() {
     if (nav) focus('.sidebar')
     else if (where.thread !== null && (old?.thread !== where.thread || old.nav || (narrow && !root.querySelector('.pane')?.contains(document.activeElement)))) focus('.pane [data-view-title]')
     else if (old?.path !== where.path) focus('.main [data-view-title]')
-    else if (old.nav) restore(navOpener.current, '.main [data-view-title]')
+    else if (old.nav) restore(navOpener.current, '.header [aria-label="Show sidebar"]')
     else if (old.thread !== null && where.thread === null) restore(threadOpener.current, '.main [data-view-title]')
   }, [where.path, where.thread, nav, narrow, ready])
 
@@ -226,22 +227,26 @@ export function App() {
   const setFilter = (next: Filter) => navigate(here({ filter: next }), true)
   const sources = (state.discovery?.sync ?? []).map((entry) => entry.key)
   const filters = { filter, setFilter, sources, known }
-  const expand = (
-    <button
-      className={`tool${sidebar.collapsed ? '' : ' only-narrow'}`}
-      title="show the sidebar"
-      aria-label="Show sidebar"
-      aria-expanded={!sidebar.collapsed && (!narrow || nav)}
-      onClick={(event) => {
-        navOpener.current = event.currentTarget
-        sidebar.collapse(false)
-        if (narrow) setNav(true)
-        else requestAnimationFrame(() => shell.current?.querySelector<HTMLElement>('.sidebar')?.focus())
-      }}
-    >
-      <PanelLeftOpen size={15} strokeWidth={1.75} />
-    </button>
-  )
+  const hiddenSidebarLead = !nav && (narrow || sidebar.collapsed) ? (
+    <>
+      <HomeEmblem />
+      <button
+        className="tool"
+        title="show the sidebar"
+        aria-label="Show sidebar"
+        aria-expanded={false}
+        onClick={(event) => {
+          navOpener.current = event.currentTarget
+          sidebar.collapse(false)
+          if (narrow) setNav(true)
+          else requestAnimationFrame(() => shell.current?.querySelector<HTMLElement>('.sidebar')?.focus())
+        }}
+      >
+        <PanelLeftOpen size={15} strokeWidth={1.75} />
+      </button>
+    </>
+  ) : null
+  const expand = narrow && where.thread !== null ? null : hiddenSidebarLead
   return (
     <div
       ref={shell}
@@ -257,6 +262,7 @@ export function App() {
           <Sidebar
             state={state}
             current={current}
+            onHome={() => setNav(false)}
             onCollapse={() => {
               if (nav) setNav(false)
               else sidebar.collapse(true)
@@ -303,7 +309,7 @@ export function App() {
       {where.thread !== null && (
         <aside className="pane" aria-label="Thread" inert={nav}>
           <ResizeHandle side="left" label="resize the thread" onDrag={pane.drag} onDone={pane.done} onStep={pane.step} />
-          <ThreadPane key={where.thread} id={where.thread} state={state} viewer={viewer} now={now} known={known} />
+          <ThreadPane key={where.thread} id={where.thread} state={state} viewer={viewer} now={now} known={known} lead={narrow ? hiddenSidebarLead : null} />
         </aside>
       )}
       <Toasts />
@@ -441,7 +447,7 @@ function Channel(props: { chat?: boolean; channel: string; state: State; options
   )
 }
 
-function ThreadPane(props: { id: string; state: State; viewer: Viewer; now: number; known: KnownLabels }) {
+function ThreadPane(props: { id: string; state: State; viewer: Viewer; now: number; known: KnownLabels; lead: ReactNode }) {
   const { id, state, viewer } = props
   const [missing, setMissing] = useState(false)
   useEffect(() => {
@@ -459,7 +465,7 @@ function ThreadPane(props: { id: string; state: State; viewer: Viewer; now: numb
   const options: RowOptions = { me: state.me!.actor, viewer, now: props.now, known: props.known, platforms, syncConfigured: Boolean(state.discovery?.sync.length), schemas: state.schemas, names }
   return (
     <>
-      <Header title={isTask(t?.root) ? 'task' : 'thread'} meta={t ? `in #${t.root.channel}` : undefined}>
+      <Header lead={props.lead} title={isTask(t?.root) ? 'task' : 'thread'} meta={t ? `in #${t.root.channel}` : undefined}>
         {t && !isTask(t.root) && !t.root.deleted && viewer.may('label', t.root.channel) && (
           <Ask
             label={<ListTodo size={15} strokeWidth={1.75} />}

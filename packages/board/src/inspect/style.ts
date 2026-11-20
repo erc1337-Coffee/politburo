@@ -115,7 +115,10 @@ input, textarea { font: inherit; color: var(--bright); letter-spacing: inherit; 
 }
 /* Which board this is: its name, and where it is under it. */
 .brand .which { display: grid; min-width: 0; line-height: 1.3; }
-.board-mark { flex: none; width: 26px; height: 26px; display: grid; place-items: center; color: var(--gold-text); background: var(--action); border: 1px solid var(--gold); border-radius: 4px; }
+.home-emblem { flex: none; width: 44px; height: 44px; display: grid; place-items: center; border-radius: 4px; }
+.home-emblem img { display: block; object-fit: contain; background: #fff; }
+.home-emblem:hover { background: var(--shade-hover); }
+.home-emblem:focus-visible { outline: 2px solid var(--bright); outline-offset: -2px; }
 .brand .name, .brand .at { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .brand .at { color: var(--faint); font-size: 11px; font-weight: 400; }
 .sidebar h2 { display: flex; align-items: center; justify-content: space-between; height: 18px; margin: 16px 8px 4px; font-size: 11px; font-weight: 500; color: var(--faint); }
@@ -205,7 +208,6 @@ input, textarea { font: inherit; color: var(--bright); letter-spacing: inherit; 
 .text-link { color: var(--accent); text-decoration: underline; text-decoration-color: var(--faint); text-underline-offset: 3px; white-space: nowrap; cursor: default; }
 .text-link:hover { text-decoration-color: currentColor; }
 .scrim { display: none; }
-@media (min-width: 64rem) { .tool.only-narrow { display: none; } }
 
 .live { display: flex; align-items: center; gap: 6px; color: var(--faint); font-size: 11px; }
 .live i { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
@@ -489,22 +491,23 @@ button:not(:disabled, [aria-disabled="true"]):active {
 .page { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 0 16px; }
 .home-view { padding: clamp(16px, 4vw, 40px); }
 .home-view > * { max-width: 52rem; margin-inline: auto; }
-.home-intro { padding-bottom: 20px; }
+.handoffs-view { padding-block: 12px 16px; }
+.home-intro { padding-bottom: 6px; }
 .home-view p { margin: 0 0 6px; color: var(--muted); }
 .home-view a { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
 .home-intro a { display: inline-flex; min-height: 32px; align-items: center; }
 .home-view a:focus-visible, .home-view button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-.home-queue { padding: 14px 0 22px; border-top: 1px solid var(--hairline); }
-.home-queue h2 { margin: 0 0 12px; font-size: 1rem; color: var(--bright); }
+.home-queue { padding: 7px 0 8px; border-top: 1px solid var(--hairline); }
+.home-queue h2 { margin: 0; font-size: 1rem; color: var(--bright); }
 .handoff-list, .handoff-needs ul { list-style: none; margin: 0; padding: 0; }
-.handoff { padding: 12px 0; overflow-wrap: anywhere; }
+.handoff { padding: 5px 0; overflow-wrap: anywhere; }
 .handoff + .handoff { border-top: 1px solid var(--hairline); }
-.handoff-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin-bottom: 4px; }
+.handoff-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 8px; margin-bottom: 2px; }
 .handoff-title { font-weight: 600; }
 .handoff small { color: var(--muted); }
 .handoff-result { white-space: pre-wrap; }
-.handoff-needs { margin-top: 8px; padding-inline-start: 12px; border-inline-start: 2px solid var(--hairline); }
-.handoff-needs li { margin-top: 4px; }
+.handoff-needs { margin-top: 3px; padding-inline-start: 8px; border-inline-start: 2px solid var(--hairline); }
+.handoff-needs li { margin-top: 1px; }
 .more { display: block; margin: 8px 20px; }
 /* A few facts, each a quiet name and what it is. */
 .facts { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 3px 10px; margin: 0; }

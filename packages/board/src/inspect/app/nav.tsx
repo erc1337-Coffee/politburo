@@ -70,7 +70,7 @@ export function here(changes: { thread?: string | null; filter?: Filter; params?
   return `${current()}${query ? `?${query}` : ''}`
 }
 
-export function Link(props: { to: string; className?: string; current?: boolean; title?: string; children: ReactNode }) {
+export function Link(props: { to: string; className?: string; current?: boolean; title?: string; onNavigate?: () => void; children: ReactNode }) {
   const navigatedAt = useRef(0)
   const plain = (event: React.MouseEvent | React.PointerEvent) =>
     event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey
@@ -83,12 +83,16 @@ export function Link(props: { to: string; className?: string; current?: boolean;
       onPointerDown={(event) => {
         if (event.pointerType !== 'mouse' || !plain(event)) return
         navigatedAt.current = Date.now()
+        props.onNavigate?.()
         navigate(props.to)
       }}
       onClick={(event) => {
         if (!plain(event)) return
         event.preventDefault()
-        if (Date.now() - navigatedAt.current > 500) navigate(props.to)
+        if (event.detail === 0 || Date.now() - navigatedAt.current > 500) {
+          props.onNavigate?.()
+          navigate(props.to)
+        }
       }}
     >
       {props.children}

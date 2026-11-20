@@ -90,7 +90,7 @@ export function Home({ state, now, lead }: { state: State; now: number; lead: Re
   return (
     <>
       <Header title="Handoffs" lead={lead} live={state.live} />
-      <div className="page home-view">
+      <div className="page home-view handoffs-view">
         <div className="home-intro">
           <p>Follow work from its prerequisites to delivery. Open a task thread for the brief and evidence. Delivery is not approval.</p>
           <Link to="/tasks?state=all">Browse Tasks</Link>

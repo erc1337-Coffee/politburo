@@ -1,4 +1,5 @@
 import { Activity, Check, ChevronsUpDown, ClipboardList, House, LayoutGrid, Lock, MessageSquare, PanelLeftClose, Plus, Settings } from 'lucide-react'
+import { HomeEmblem } from './home-emblem.tsx'
 import { useEffect, useMemo, useState } from 'react'
 import type { ChannelView, Me } from '../../api/routes.ts'
 import { compileAccess, type Access } from '../../server/access.ts'
@@ -42,7 +43,7 @@ function useSeen(state: State, current: Route): Record<string, number> {
   return seen
 }
 
-export function Sidebar({ state, current, onCollapse }: { state: State; current: Route; onCollapse: () => void }) {
+export function Sidebar({ state, current, onHome, onCollapse }: { state: State; current: Route; onHome: () => void; onCollapse: () => void }) {
   const seen = useSeen(state, current)
   const groups = useMemo(() => {
     const out = new Map<string, ChannelView[]>()
@@ -63,7 +64,7 @@ export function Sidebar({ state, current, onCollapse }: { state: State; current:
   return (
     <div className="sidebar-col">
       <div className="brand">
-        <span className="board-mark" aria-hidden="true"><LayoutGrid size={15} /></span>
+        <HomeEmblem onNavigate={onHome} />
         <span className="which grow" title={state.discovery?.url}>
           <span className="name">{where.name}</span>
           {where.at && <span className="at">{where.at}</span>}
