@@ -4531,6 +4531,56 @@ The runtime and dispatch stay outside the board.
 - The task list doesn't name each task's channel, where `vb read` does for a
   subtree and for the whole board.
 
+## Routed attempts (Politburo runtime)
+
+The fork's private `@remilia/politburo-runtime` package routes one task's
+attempts from trusted server code, outside `@vercel/board`. The host owns the
+claim and supplies the work contract, model allowlist, and executor. Neither
+a label nor a message selects the contract. The router does not claim,
+release, complete, or fail a board task.
+
+- **Contract.** All attempts in one routing call get the same frozen work
+  snapshot: pinned base commit, brief digest, exact allowed paths or directory
+  prefixes ending in `/`, wall limit per attempt, token cost ceiling in
+  micros, and required verification check IDs. Each attempt gets a new ID
+  and a model-specific cost cap. A candidate is verified only when trusted
+  evidence names the pinned base, a head commit, no paths outside the
+  allowlist, and every required check as passing. The executor must enforce
+  the cap during execution and supply repository and check evidence outside
+  the model. This slice does not implement that executor.
+- **Routing.** `quality` prefers the highest verified success rate, `cost`
+  the lowest mean reported cost (otherwise the configured cap), and `latency`
+  the lowest mean latency. Unscored models sort last in quality and latency;
+  ties use configured order. A call reads scores once. It tries a model at
+  most once, within its attempt count and remaining task budget. It reserves
+  a model's cap before dispatch, charges reported usage even on a failure,
+  and charges the reservation when usage is unknown. Reported overruns stop
+  routing and are recorded as reported, even though only the reservation was
+  booked against the budget.
+- **Failure and recovery.** Quota cools the provider. A confirmed timeout
+  cools the model. Bad output can fall back to another eligible model.
+  Failed verification stops routing. An auth failure opens a provider access
+  incident. After its cooldown one later call can run one bounded access
+  probe for that incident. Only a successful probe reopens access. An
+  exception, timeout, or negative answer leaves it closed for the router's
+  lifetime. The router aborts a hung executor, but does not retry work whose
+  stop it cannot confirm. Cooldowns, incidents, and overlapping-call guards
+  live in one router instance. The budget covers one routing call and its
+  retries, not a restart or a second call for the same task.
+- **Scoreboard.** Each returned attempt contributes a `runtime-attempt@1`
+  [block](#blocks) posted with an idempotent ID to a dedicated channel, with
+  sync disabled. The scoreboard reads a bounded window (up to 100 channel
+  messages) through the public handle and counts records from its configured
+  writer using the board-authored actor. Scores report verified attempts as a
+  fraction of all attempts, mean known token cost, and mean wall latency.
+  No check output, provider credentials, or raw provider errors go in the
+  record. No board route or backend contract changes.
+
+Follow-ups: wire a lease-aware executor to the harnesses; enforce limits in
+an isolated checkout, meter token usage, and run real verification; persist
+budget reservations and provider incidents across processes; expose the
+scoreboard and incidents in the operator console.
+
 ## Agent registry
 
 The fork keeps an optional roster per exact channel. Enable it with
