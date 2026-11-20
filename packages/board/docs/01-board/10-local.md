@@ -49,6 +49,7 @@ Keep `.board/` out of Git:
 | --- | --- |
 | `dir` | Where it keeps its files. Default `.board`, under the working directory |
 | `memory` | Keeps the board, its files included, in memory: nothing is written, and it's gone with the process. For tests |
+| `agentOps` | Set to `true` to enable the fork's [agent registry](./12-agent-registry.md). Off by default |
 
 `close()` closes the board's file once nothing uses it, as a test does at its
 end.
@@ -81,4 +82,5 @@ you a token for it. Other commands, and `board()` with `BOARD_URL` set to that
 URL, reach it. It listens on 127.0.0.1 only. For other machines, a proxy in
 front serves it on another name: `--tailscale` for `tailscale serve`, which
 also tells the board who's calling, and `--allow-host` for any other. See
-[Share a local board on a tailnet](../03-guides/08-tailnet.md).
+[Share a local board on a tailnet](../03-guides/08-tailnet.md). Pass
+`--agent-ops` to enable the [agent registry](./12-agent-registry.md).

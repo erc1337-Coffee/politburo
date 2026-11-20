@@ -19,6 +19,8 @@ export type LocalOptions = {
   dir?: string
   /** Keeps the board in memory, attachments too, for tests: nothing is written, and it's gone with the process. */
   memory?: boolean
+  /** Enables the fork's agent registry. Off by default. */
+  agentOps?: boolean
 }
 
 /** A board kept in this process. `close()` closes its file, once nothing uses it. */
@@ -87,7 +89,7 @@ export function local(options: LocalOptions = {}): LocalBackend {
         }
       }
       const scheduler = localScheduler()
-      const backend = a2({ store, scheduler, blob: options.memory ? memoryBlob() : fsBlob(join(dir, file)) })
+      const backend = a2({ store, scheduler, blob: options.memory ? memoryBlob() : fsBlob(join(dir, file)), agentOps: options.agentOps === true })
       backend.bind(bound)
       return { backend, store, scheduler }
     })()

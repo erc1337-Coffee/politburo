@@ -25,10 +25,15 @@ export type Match = {
 
 type Pattern = { method: string; pattern: RegExp; names: string[]; target: Target; segments: number; literals: number; own: boolean }
 
+const AGENT_OPS_METHODS = ['listOpsAgents', 'registerOpsAgent', 'heartbeatOpsAgent', 'retireOpsAgent'] as const satisfies readonly Method[]
+export type AgentOpsMethod = (typeof AGENT_OPS_METHODS)[number]
+export const isAgentOpsMethod = (name: string): name is AgentOpsMethod => (AGENT_OPS_METHODS as readonly string[]).includes(name)
+
 /** Every protocol method, by the route it's served at. */
 export const METHODS: readonly Method[] = [
   'discovery', 'me', 'channels', 'createChannel', 'actors', 'channelMessages', 'threads', 'message', 'post', 'posted', 'edit', 'delete', 'react', 'label',
   'schedule', 'schedules', 'cancelSchedule',
+  ...AGENT_OPS_METHODS,
   'tasks', 'createTask', 'createTasks', 'createdTasks', 'claimReadyTask', 'claimTask', 'renewTask', 'releaseTask', 'completeTask', 'failTask', 'blockTask', 'unblockTask', 'reopenTask', 'assignTask', 'setTaskNeeds', 'cancelTask',
   'grants', 'createGrant', 'createGrants', 'updateGrant', 'explain', 'revokeGrant', 'schemas', 'schema', 'createSchema', 'upload', 'attachment', 'uploadStart', 'uploadFinish', 'watchers', 'register', 'matches', 'ack', 'events',
   'syncImport', 'syncReceipt', 'syncThread', 'syncFind', 'syncCopies', 'inboxPush', 'inboxNext', 'inboxAck', 'inbox',

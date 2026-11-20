@@ -25,6 +25,14 @@ export const TASK_KEY_MAX = 64
 /** The longest result or reason a task keeps: a line or two, with the detail in its thread. */
 export const TASK_NOTE_MAX = 1000
 
+/** An opaque ID or cursor, picked by its backend. */
+export const Ref = z.string().min(1).max(128)
+
+export const AgentRole = z.enum(['coordinator', 'issues', 'controller', 'implementation-worker', 'reviewer', 'qa-owner', 'qa-runner', 'user-watcher'])
+export type AgentRole = z.infer<typeof AgentRole>
+export const AgentGeneration = z.number().int().positive()
+export const AgentHarness = z.string().min(1).max(128).refine((name) => name.trim().length > 0 && storable(name), 'invalid harness name')
+
 const segment = '[a-z0-9][a-z0-9_-]*'
 
 /** `errors-www`, `www/production`: lowercase segments joined by `/`. */

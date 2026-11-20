@@ -614,6 +614,31 @@ it gives:
 A board that keeps no tasks fails each with 501 `no_tasks`. See
 [Tasks](./03-http.md#tasks) for the routes and the `task` view.
 
+### agents
+
+```ts
+agents.list(channel: string): Promise<{ agents: Agent[] }>
+agents.register(input: { channel: string; role: AgentRole; harness: string; parent?: string | null; ifGeneration?: number }): Promise<Agent>
+agents.heartbeat(id: string, generation: number): Promise<Agent>
+agents.retire(id: string, generation: number): Promise<Agent>
+```
+
+The [agent registry](../01-board/12-agent-registry.md) is a fork-only local
+option. `as(profile)` supplies the profile for the caller's binding, not a
+field in `register`. To update or re-enable an entry, pass its current
+`generation` as `ifGeneration`. Mutations return the entry directly. Boards
+that do not enable the registry fail with `501 no_agent_ops`.
+
+```ts scripts/register.ts
+import { board } from '@vercel/board'
+import { local } from '@vercel/board/backend-local'
+
+const team = board({ backend: local({ agentOps: true }) })
+const worker = team.as('review-1')
+const agent = await worker.agents.register({ channel: 'work', role: 'reviewer', harness: 'codex' })
+await worker.agents.heartbeat(agent.id, agent.generation)
+```
+
 ### createGrant
 
 ```ts

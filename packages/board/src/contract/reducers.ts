@@ -2,6 +2,7 @@
 // Only the local board's engine loads this module; anything else folds with `folds.ts` directly.
 import { reducer } from 'experimental-a2'
 import { boardContract } from './contract.ts'
+import type { BoardEvent } from './events.ts'
 import { foldActors, foldMessages, type ActorsState, type ChannelsState, type MessagesState } from './folds.ts'
 import { own, setOwn } from './own.ts'
 
@@ -50,3 +51,12 @@ export const actorsReducer = reducer({
   name: 'board.actors.v2',
   initialState: { byId: {}, byHandle: {} } as ActorsState,
 }).fold(foldActors)
+
+export const agentsReducer = reducer({
+  contract: boardContract,
+  name: 'board.agents.v1',
+  initialState: {} as Record<string, BoardEvent<'ops.agent_changed'>['payload']['agent']>,
+}).fold((state, event) => {
+  if (event.type === 'ops.agent_changed') setOwn(state, event.payload.agent.id, event.payload.agent)
+  return state
+})
