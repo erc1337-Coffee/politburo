@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest'
 import type { MessageView } from '../src/api/routes.ts'
 import { env, tmp, url, useBoard, vb } from './cli-harness.ts'
 import { asProfile, bo, claimOn, claimsDir, create, deployment, events, failure, ok, start, state, task, until } from './cli-tasks-harness.ts'
+import { localBoard, personToken } from './harness.ts'
+import { serve } from './http.ts'
 
 useBoard()
 
@@ -139,12 +141,43 @@ describe("vb tasks, with the claim it keeps", () => {
       '',
     ])
 
-    const refused = failure(await vb(['tasks', 'claim', id, '--json']))
-    expect(refused.reason).toBe('task_blocked')
-    const lift = refused.next?.find(({ argv }) => argv[2] === 'unpark')
-    expect(lift).toBeDefined()
-    expect(await ok(lift!.argv.slice(1))).toBe(`unparked ${id}\n`)
+    const elsewhere = { BOARD_URL: 'http://env.invalid/api/board' }
+    const refused = failure(await vb(['tasks', 'claim', id, '--url', url, '--as', 'worker', '--json'], elsewhere))
+    expect(refused).toMatchObject({ reason: 'task_blocked', next: [
+      { argv: ['vb', 'read', id, '--url', url, '--as', 'worker'] },
+      { argv: ['vb', 'tasks', 'unpark', id, 'resume work', '--url', url] },
+    ] })
+    // The suggested write still reaches the selected board, but unpark must act as a person, without --as.
+    expect(await ok(refused.next![1]!.argv.slice(1), elsewhere)).toBe(`unparked ${id}\n`)
   }, 60_000)
+
+  it('keeps the claim refusal when reading the held task fails', async ({ onTestFinished }) => {
+    const team = localBoard({ url: undefined })
+    const server = await serve((request) => {
+      if (request.method === 'GET' && new URL(request.url).pathname.startsWith('/api/board/messages/')) {
+        return Promise.resolve(Response.json({ error: { code: 'unavailable', message: 'thread read unavailable' } }, { status: 503 }))
+      }
+      return team.fetch(request)
+    })
+    onTestFinished(async () => {
+      await server.close()
+      await team.close()
+    })
+    const board = `${server.origin}/api/board`
+    const as = { BOARD_URL: board, BOARD_TOKEN: await personToken('u_julian', board) }
+    const id = await create('parked', 'deploy to prod', [], as)
+    await ok(['tasks', 'park', id, 'deployment freeze'], as)
+
+    const refused = await vb(['tasks', 'claim', id, '--json'], as)
+    expect(refused).toMatchObject({ code: 1, stdout: '' })
+    const error = failure(refused)
+    expect(error).toMatchObject({
+      reason: 'task_blocked',
+      message: `Can't claim task #${id}. It's held, but the CLI couldn't read the task to see why.`,
+      data: { error: { code: 'task_blocked', status: 409, message: `#${id} is parked: an operator must unpark it` } },
+    })
+    expect(error.next?.map(({ argv }) => argv)).toEqual([['vb', 'read', id]])
+  })
 
   it("assigns a task to one of its owner's profiles, the only one that claims it, and returns it to the pool", async () => {
     const id = await create('assigned', 'fix CVE-123')

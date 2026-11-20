@@ -922,7 +922,7 @@ function missing(): string | undefined {
  * doing, with the board's words under it and in `data`, never in what to run: a board can answer
  * with any code, the handle's own included.
  */
-function failureOf(error: unknown, parked = false): Failure {
+function failureOf(error: unknown, hold: TaskHold = 'unknown'): Failure {
   if (error instanceof Failed) return error.failure
   if (current.command === 'invite' || current.command === 'join') return inviteFailure(error)
   const message = error instanceof Error ? error.message : String(error)
@@ -950,6 +950,8 @@ function failureOf(error: unknown, parked = false): Failure {
         return own('platform', 'no_project')
       case 'no_token':
         return own('auth', 'token_unavailable')
+      case 'no_agent_ops':
+        return own('platform', code)
       case 'no_board':
         // A person's named board that isn't there, or that they can't see: this command again makes it.
         return own('not_found', 'board_not_found', [{ instruction: 'Check the name, or make it', argv: rerun('--ensure') }])
@@ -999,7 +1001,7 @@ function failureOf(error: unknown, parked = false): Failure {
   })
   const specific = (fallback: string) => (/^[a-z]+(_[a-z]+)+$/.test(code) && code !== 'invalid_request' && code !== 'remote_error' ? code : fallback)
   // What a board says about a task, said by what this run was doing, with a way on from here.
-  const about = taskFailure(code, status, parked)
+  const about = taskFailure(code, status, hold)
   // Where the headline is all the board said (`#812 isn't a task`), its words aren't said twice.
   if (about) return { ...theirs(about.class, code, about.message, about.next), ...(about.whole ? { details: [] } : {}) }
   if (status === 409 && code === 'board_paused')
@@ -3085,23 +3087,25 @@ function namedTask(): string | undefined {
   return command === 'tasks' && verb !== undefined && TASK_VERBS.has(verb) && target !== undefined && isMessageRef(target) ? messageId(target) : undefined
 }
 
+type TaskHold = 'parked' | 'held' | 'unknown'
+
 /** A hold and a park share one code. Read the task to tell them apart without losing the original failure. */
-async function isTaskParked(): Promise<boolean> {
-  if (!taskBoard || flags.ready) return false
+async function taskHold(): Promise<TaskHold> {
+  if (!taskBoard || flags.ready) return 'unknown'
   const id = namedTask()
-  if (id === undefined) return false
+  if (id === undefined) return 'unknown'
   try {
-    return Boolean((await taskBoard.thread(id, { limit: 1 })).message.task?.parked)
+    return (await taskBoard.thread(id, { limit: 1 })).message.task?.parked ? 'parked' : 'held'
   } catch {
-    return false
+    return 'unknown'
   }
 }
 
 /** How a board's own word about a task reads from here: the headline, and the way on. Null for any other code. */
-function taskFailure(code: string, status: number, parked: boolean): { class: Failure['class']; message: string; next: Recovery[]; whole?: true } | null {
+function taskFailure(code: string, status: number, hold: TaskHold): { class: Failure['class']; message: string; next: Recovery[]; whole?: true } | null {
   const { command, args } = current
   const named = namedTask()
-  const read = (instruction: string): Recovery[] => (named === undefined ? [] : [{ instruction, argv: [...cli(), 'read', named] }])
+  const read = (instruction: string, ...options: string[]): Recovery[] => (named === undefined ? [] : [{ instruction, argv: [...cli(), 'read', named, ...options] }])
   const also = (instruction: string, ...words: string[]): Recovery[] => (named === undefined ? [] : [{ instruction, argv: [...cli(), 'tasks', words[0]!, named, ...words.slice(1)] }])
   switch (code) {
     case 'task_claimed':
@@ -3111,11 +3115,13 @@ function taskFailure(code: string, status: number, parked: boolean): { class: Fa
     case 'task_waiting':
       return { class: 'conflict', message: `Can't ${doing()}. It waits for other tasks.`, next: read('See what it waits for') }
     case 'task_blocked': {
-      const see = read("See what it's held for")
-      if (parked) return { class: 'conflict', message: `Can't ${doing()}. It's parked.`, next: [...see, ...also('Or, as an operator, lift the park', 'unpark', 'resume work')] }
-      // `unblock` refuses operator holds. Don't suggest the same command again, even if the read failed.
-      if (command === 'tasks' && args[0] === 'unblock') return { class: 'conflict', message: `Can't ${doing()}. It's parked.`, next: see }
-      return { class: 'conflict', message: `Can't ${doing()}. It's held for a person.`, next: [...see, ...also('Or, as its owner, lift the hold', 'unblock')] }
+      const board = onSameBoard()
+      const see = read("See what it's held for", ...board, ...asTyped())
+      if (hold === 'unknown') return { class: 'conflict', message: `Can't ${doing()}. It's held, but the CLI couldn't read the task to see why.`, next: see }
+      // An operator acts without a profile, even if the failed command named one.
+      if (hold === 'parked') return { class: 'conflict', message: `Can't ${doing()}. It's parked.`, next: [...see, ...also('Or, as an operator, lift the park', 'unpark', 'resume work', ...board)] }
+      const lift = args[0] === 'unblock' ? [] : also('Or, as its owner, lift the hold', 'unblock', ...board, ...asTyped())
+      return { class: 'conflict', message: `Can't ${doing()}. It's held for a person.`, next: [...see, ...lift] }
     }
     case 'task_finished':
       return { class: 'conflict', message: `Can't ${doing()}. It's finished.`, next: read('See how it ended') }
@@ -3329,8 +3335,8 @@ async function runOnce(argv: string[], options: App): Promise<number> {
     }
     // Before the parser says, `--json` is whether it was typed before any `--`.
     const json = flags.json ?? argv.slice(0, argv.includes('--') ? argv.indexOf('--') : undefined).includes('--json')
-    const parked = error instanceof BoardError && error.code === 'task_blocked' && await isTaskParked()
-    return report(failureOf(error, parked), json)
+    const hold = error instanceof BoardError && error.code === 'task_blocked' ? await taskHold() : undefined
+    return report(failureOf(error, hold), json)
   }
 }
 
