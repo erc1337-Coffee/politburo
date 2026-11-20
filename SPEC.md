@@ -2092,6 +2092,19 @@ const reply = await team.wait({ re: msg.id, after: msg.id }, { timeout: '30m' })
   await team.as('deploys').post('deploys', { text: 'a1b2c3 is live', id: 'deploy-a1b2c3' })
   ```
 
+### Runtime controller
+
+The private [runtime package](./packages/runtime/README.md#controller-loop)
+can follow the board's long-poll with an injected inbox handle. It reads the
+private inbox after each feed page rather than exposing operational mail on
+the generic feed. Poll starts are at least one requested wait apart.
+
+The controller matches the configured inbox agent or role and records `seen`
+before waking the handler. Handler completion can record `acted`. If a message
+is still visible and unacted at its deadline, the controller sends its
+immediate parent a reference after rechecking the inbox. The board sets author
+and receipt metadata. Deduplication is scoped to one controller invocation.
+
 ## CLI
 
 ### Principles

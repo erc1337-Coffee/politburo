@@ -42,3 +42,26 @@ const outcome = await runTask({
   stop; collect confirms it. There is no checkout, cost enforcement, artifact
   validation, or task settlement. `@remilia/politburo-runtime/conformance`
   exports the shared Node test suite for adapters.
+
+## Controller loop
+
+`runController()` follows the event long-poll on a board handle bound to the
+agent's inbox principal. It reads `operationalInbox` after each feed page,
+including empty pages: the generic feed does not expose private inbox mail.
+Feed requests are serial and start at least one configured long-poll interval
+apart, even when a page returns early.
+
+Pass the agent's inbox address, roles, a `parentOf(agent)` adapter, a monotonic
+clock, and an abort signal. The registry adapter maps the inbox identity to the
+registration and returns the immediate parent's inbox address or `null`.
+The loop records `seen` before calling `wake`. Return `'acted'` only after the
+work is done. Returning nothing or throwing leaves the message eligible for
+escalation. The board authors receipts and escalation provenance.
+
+The deadline starts when the loop first observes an unacted message, even if
+the handler is still running. At the deadline the loop checks the inbox once
+more. It sends one reference to the immediate parent only if the message is
+still visible and unacted. It does not forward private message text. The check
+and send are separate board calls, not an atomic operation. Wake and escalation
+deduplication are local to the invocation. The loop does not persist checkpoints
+or coordinate multiple instances.
