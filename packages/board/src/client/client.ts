@@ -405,12 +405,12 @@ export function createBoardClient(options: ClientOptions) {
   const taskWrite = async (id: string, verb: string, body: object = {}) => (await call<{ task: MessageView }>('POST', `/tasks/${path(id)}/${verb}`, { body })).task
 
   /** What a claim on task `id` does, with the `epoch` and `token` the claim answered. */
-  const held = (id: string, proof: { epoch: number; token: string }): HeldTask => {
-    const { epoch, token } = proof
+  const held = (id: string, proof: Omit<TaskClaim, 'until'>): HeldTask => {
+    const { epoch, token, pauseEpoch } = proof
     return {
       async renew(lease) {
         const { task, until } = await call<{ task: MessageView; until: string }>('POST', `/tasks/${path(id)}/renew`, { body: { epoch, token, ...(lease !== undefined ? { lease } : {}) } })
-        return claimed(task, { epoch, token, until })
+        return claimed(task, { epoch, token, until, ...(pauseEpoch === undefined ? {} : { pauseEpoch }) })
       },
       release: () => taskWrite(id, 'release', { epoch, token }),
       complete: (result) => taskWrite(id, 'complete', { epoch, token, ...(result !== undefined ? { result } : {}) }),

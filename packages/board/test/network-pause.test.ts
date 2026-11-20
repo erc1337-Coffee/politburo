@@ -165,6 +165,7 @@ describe('network pause', () => {
     const fresh = await agent('POST', `/tasks/${already}/claim`, {})
     expect(fresh.status).toBe(200)
     expect(fresh.body.claim.epoch).toBeGreaterThan(proof.epoch)
+    expect(fresh.body.claim.pauseEpoch).toBe(1)
     expectConflict(await agent('POST', `/tasks/${already}/complete`, proof), lostClaim)
   })
 

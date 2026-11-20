@@ -123,8 +123,8 @@ a refused write it can read answers 403. `GET /me` returns the caller's
 | POST | `/tasks/batch` | `{ channel, tasks, id? }`: starts a thread for each of 1 to 100 tasks, in one write. A task is `{ key?, text, labels?, noSync?, attachments?, needs?, for? }`. Answers 201 `{ tasks }`, their roots in order |
 | GET | `/tasks/batch/:id` | The batch you made under that `id`: `{ tasks }`, their roots as they are now, in order. 404 `batch_not_found` when you made none |
 | GET | `/tasks` | `{ tasks, cursor }`: tasks as thread summaries, oldest first. Query: `channel`, `state`, `label`, `by`, `owner`, `for`, `needs`, `after`, `limit` |
-| POST | `/tasks/claim` | `{ channel, label?, from?, lease?, wait? }`: claims the oldest ready task in a channel or subtree. Answers `{ task, claim }`, or `{ task: null }` |
-| POST | `/tasks/:id/claim` | `{ lease? }`. Answers `{ task, claim: { epoch, token, until } }` |
+| POST | `/tasks/claim` | `{ channel, label?, from?, lease?, wait? }`: claims the highest priority eligible ready task in a channel or subtree, oldest first at equal priority. Answers `{ task, claim }`, or `{ task: null }` |
+| POST | `/tasks/:id/claim` | `{ lease? }`. Answers `{ task, claim: { epoch, token, until, pauseEpoch? } }` |
 | POST | `/tasks/:id/renew` | `{ epoch, token, lease? }`. Answers `{ task, until }` |
 | POST | `/tasks/:id/release` | `{ epoch, token }`. Answers `{ task }`, as the routes below do |
 | POST | `/tasks/:id/complete` | `{ epoch, token, result? }` |
@@ -518,9 +518,12 @@ A task is a thread with a state. Its ID is its root's, and its root carries
   than 100 tasks, or more than a board holds in one write, is 400
   `batch_too_large`: send it in parts.
 - **A claim is a lease.** `lease` is seconds, and 900 when left out. The
-  answer's `claim` is `{ epoch, token, until }`: `epoch` and `token` go
-  on every write the claim makes, and `until` is when the lease ends. The token
-  shows only there. Of claims that race, one lands.
+  answer's `claim` is `{ epoch, token, until, pauseEpoch? }`: `epoch` and
+  `token` go on every write the claim makes, and `until` is when the lease
+  ends. The token shows only there. Local boards include the server's
+  `pauseEpoch` at admission, separate from the task's `epoch`. See
+  [Network pause](../01-board/12-network-pause.md). Of claims that race, one
+  lands.
 - **A claim's writes are fenced.** `renew`, `release`, `complete`, `fail`, and
   `block` with a claim land only while that claim holds the task: the same
   `epoch`, its `token`, and a lease that hasn't run out. Anything else is 409

@@ -301,7 +301,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
         ...(task?.state === 'claimed' ? [{ type: 'task.expired' as const, payload: { ...about, epoch: task.epoch } }] : []),
         { type: 'task.claimed', payload: { ...about, epoch, ...(pauseEpoch === 0 ? {} : { pauseEpoch }), until, token: hashOf(token), by: identity.author } },
       ],
-      claim: { epoch, token, until },
+      claim: { epoch, token, until, pauseEpoch },
     }
   }
 
@@ -690,7 +690,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
         if (sent !== undefined && task.claim && hashes(sent, task.claim.token)) {
           if (stale(task, pauseEpoch)) throw claimLost(id)
           if (!lapsed(task, Date.now(), pauseEpoch)) {
-            made.claim = { epoch: task.epoch, token, until: task.claim.until }
+            made.claim = { epoch: task.epoch, token, until: task.claim.until, pauseEpoch }
             made.replay = true
             return []
           }

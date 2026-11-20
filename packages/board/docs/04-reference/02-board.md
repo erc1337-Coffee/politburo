@@ -431,10 +431,13 @@ if (claim) {
   result or reason of 1,000 characters, and answers 400 `invalid_request`
   past one. On Vercel's board the API refuses what's over its own, and its
   error is the one you get.
-- **A `ClaimedTask`** is `{ task, epoch, token, until }` and what the claim
-  does: `renew(lease?)`, `release()`, `complete(result?)`, `fail(reason)`, and
-  `block(reason, { kind? })`, and `priority(level)`. `until` is when its lease ends. Once the claim is
-  over, each throws a 409 `claim_lost` and changes nothing.
+- **A `ClaimedTask`** is `{ task, epoch, token, until, pauseEpoch? }` and
+  what the claim does: `renew(lease?)`, `release()`, `complete(result?)`,
+  `fail(reason)`, `block(reason, { kind? })`, and `priority(level)`. `until`
+  is when its lease ends. A local claim's `pauseEpoch` is the board's epoch
+  when it granted the claim; it is preserved when renewing that handle.
+  Once the claim is over, each write throws a 409 `claim_lost` and changes
+  nothing. See [Network pause](../01-board/12-network-pause.md).
 - **`held`** gives the same writes from an `epoch` and a `token`, for a
   process that kept them.
 - **`block`, `unblock`, `reopen`, `assign`, `needs`, and `cancel`** are for the

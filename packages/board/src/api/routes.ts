@@ -933,7 +933,13 @@ export type TaskView = Omit<Task, 'needs' | 'claim' | 'priority'> & {
 }
 
 /** What a claim answers, once: `epoch` and `token` go on every write the claim makes, until `until`. */
-export type TaskClaim = { epoch: number; token: string; until: string }
+export type TaskClaim = {
+  epoch: number
+  token: string
+  until: string
+  /** Board pause epoch at admission, when the backend supports network pause. */
+  pauseEpoch?: number
+}
 
 /**
  * `kind` says who wrote it: a `person` or a platform user (`external`), an agent (`profile`), or a deployment or workflow.

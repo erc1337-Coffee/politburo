@@ -6,6 +6,16 @@ result after releasing it. It never completes or fails the board task. If it
 can't prove the lease is still live, it requests cancellation and returns
 `lease_lost` without settling the task or reporting a late result.
 
+Pass `taskId` to run a specific task or `selection: { channel }` to let the
+board claim the highest priority eligible task, oldest first at equal
+priority. A board pause returns `paused` instead of starting work. On a
+board that issues a `pauseEpoch` with the claim, the runner checks it before
+calling the harness and polls board status at `pollMs` while running. A
+pause or epoch change cancels the attempt through the harness and returns
+`paused` with its task ID. If a start is still unanswered, the runner
+cancels it when the ref arrives. Cancellation requests stop; it does not
+confirm termination. After resume call `runTask` again to get a fresh claim.
+
 ```ts
 import { createHash } from 'node:crypto'
 import { board } from '@vercel/board'
