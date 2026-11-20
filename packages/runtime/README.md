@@ -42,3 +42,7 @@ const outcome = await runTask({
   stop; collect confirms it. There is no checkout, cost enforcement, artifact
   validation, or task settlement. `@remilia/politburo-runtime/conformance`
   exports the shared Node test suite for adapters.
+
+## ops
+
+`refill` drafts up to 15 proposed tasks when the ready queue runs low. `scanDiff` and `preflight` refuse added lines with tokens, keys, or emails. `createInstance` writes a self-hosted instance directory with no credentials. `writeResumePacket` and `appendAttempt` keep resume packets and an attempt ledger as plain files.
