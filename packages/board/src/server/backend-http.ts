@@ -188,6 +188,8 @@ export function createHttp(url: string | undefined, options: HttpOptions, enviro
     const route = routes[method]
     // Each `:name` in the path is the input's field of that name; the rest are the query or the body.
     const fields = { ...input }
+    // The remote derives the audience from its own mount, not from an HTTP client's input.
+    if (method === 'redeemInvite') return Response.json(await client.join((input as Protocol['redeemInvite']['input']).secret).catch(rethrow))
     const path = route.path.replace(/:(\w+)/g, (_, name: string) => {
       const value = fields[name]
       delete fields[name]

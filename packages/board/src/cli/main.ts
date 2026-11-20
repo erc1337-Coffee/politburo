@@ -1,14 +1,15 @@
 import { spawn } from 'node:child_process'
-import { readFile, stat, writeFile } from 'node:fs/promises'
+import { open, readFile, stat, unlink, writeFile } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { parseArgs } from 'node:util'
-import { CHANNELS_LIMIT_MAX, GRANT_BATCH_MAX, THREADS_LIMIT_DEFAULT, THREADS_LIMIT_MAX, type GrantInput, type Me, type MessageView } from '../api/routes.ts'
+import { CHANNELS_LIMIT_MAX, CreateInviteBody, GRANT_BATCH_MAX, THREADS_LIMIT_DEFAULT, THREADS_LIMIT_MAX, type GrantInput, type InviteView, type Me, type MessageView } from '../api/routes.ts'
 import { everyChannel } from '../client/channels.ts'
 import { withMentions } from '../api/tail.ts'
 import { BoardError, type ClaimedTask, type Filters, type ProfileOption, type TaskInBatch, type Written } from '../client/client.ts'
 import type { Mentioned } from '../contract/mentions.ts'
 import { createTasksInChunks, TasksInChunksError } from '../client/chunks.ts'
-import { boardUrl, connect, environmentProfile, handFetch, handLogin, handToken, PASSED, vercelProjectFile } from '../client/node.ts'
+import { boardUrl, connect, environmentProfile, handFetch, handLogin, handToken, JOINED, PASSED, redeemFetch, vercelProjectFile } from '../client/node.ts'
+import { canonicalJoinUrl, INVITE_SECRET, JOIN_TOKEN, prepareJoinCredential } from '../client/join-config.ts'
 import { http } from '../backend-http/index.ts'
 import { credentialed, credentialSource, handTeam, vercel } from '../backend-vercel/index.ts'
 import { board as boardAt, type Board } from '../server/index.ts'
@@ -22,7 +23,7 @@ import { explainPrincipalOf, explanationLine, GrantMisuse, grantCanOf, KINDS, pa
 import { formatSchema, formatSchemas } from './schemas.ts'
 import { parseSchemaId } from '../contract/data-schemas.ts'
 import { block } from '../contract/blocks.ts'
-import { actorName, claimLine, formatAccess, formatConformance, formatEvent, formatGrants, grantRow, formatSchedule, formatTasks, mentionedIn, reactionNames, formatSourceRead, formatSynced, formatThreadSummaries, formatThreads, terminalText, who } from './format.ts'
+import { actorName, claimLine, formatAccess, formatConformance, formatEvent, formatGrants, grantRow, formatSchedule, formatTasks, grantCan, mentionedIn, reactionNames, formatSourceRead, formatSynced, formatThreadSummaries, formatThreads, terminalText, who } from './format.ts'
 import { fileClaims, memoryClaims, tokenClaims, type Claims } from './claims.ts'
 import { runCommand } from './run.ts'
 import { AGENTS, allowRules, cliOf, disallow, installedHook, tilde, uninstallHook, type HookAgent } from './hooks.ts'
@@ -272,6 +273,8 @@ function parse(argv: string[]) {
     flags = parsed.values
     positionals = parsed.positionals.map((arg) => (arg.startsWith(MARK) ? arg.slice(MARK.length) : arg))
   } catch (error) {
+    // Unknown flags and values can themselves be the invite, even when it's malformed.
+    if (word === 'join' || word === 'invite') throw usage(`Invalid options for ${word}.`)
     throw parseFailure(error as Error & { code?: string }, argv, word)
   }
   // An option only another command takes would be dropped without a word (`edit --attach`): it's unknown here too.
@@ -420,12 +423,17 @@ const TERMINAL: Io = {
 }
 let io: Io = TERMINAL
 
-// What a person reads can't drive their terminal; what a program reads is byte for byte what the board said.
-const out = (text: string) => io.write(`${terminalText(text)}\n`)
+/** Public metadata (an invite name, a principal, a channel) must not echo a credential. */
+const redactCredentials = (text: string) => text.replace(/vb[ij]_[A-Za-z0-9_-]{43}/g, '[redacted]')
+const privateOutput = () => current.command === 'invite' || current.command === 'join' || sent() === JOINED
+const outputText = (text: string) => privateOutput() ? redactCredentials(text) : text
+
+// What a person reads can't drive their terminal; JSON otherwise keeps what the board said.
+const out = (text: string) => io.write(`${outputText(terminalText(text))}\n`)
 /** `--json`'s result: one document, with what the run's writes warned about, indented at a terminal. */
-const result = (value: object) => io.write(`${JSON.stringify(warnings.length ? { ...value, warnings } : value, null, io.tty ? 2 : undefined)}\n`)
+const result = (value: object) => io.write(`${outputText(JSON.stringify(warnings.length ? { ...value, warnings } : value, null, io.tty ? 2 : undefined))}\n`)
 /** One line of a JSON stream (`tail`): compact, wherever it goes. */
-const line = (value: object) => io.write(`${JSON.stringify(value)}\n`)
+const line = (value: object) => io.write(`${outputText(JSON.stringify(value))}\n`)
 
 /** A message's ID as you'd write it: `#812` or `812`. It's passed to the board as it is. */
 function messageId(value: string | undefined, what = 'message ID'): string {
@@ -830,6 +838,10 @@ function doing(): string {
       if (a === 'needs') return `change what ${one} needs`
       return `${a} ${one}`
     }
+    case 'join':
+      return 'join the board'
+    case 'invite':
+      return a === 'create' ? 'create the invite' : a === 'revoke' ? 'revoke the invite' : 'list invites'
     case 'grants':
       return a === 'create' ? (flags.file !== undefined ? 'create the grants' : 'create the grant') : a === 'update' ? `update grant ${b}` : a === 'explain' ? `explain ${b ?? 'the channel'}` : a === 'revoke' ? `revoke grant ${b}` : 'list grants'
     case 'schemas':
@@ -880,6 +892,7 @@ function missing(): string | undefined {
  */
 function failureOf(error: unknown): Failure {
   if (error instanceof Failed) return error.failure
+  if (current.command === 'invite' || current.command === 'join') return inviteFailure(error)
   const message = error instanceof Error ? error.message : String(error)
   const { code, status, hint, origin, retryAfter } = error as { code?: unknown; status?: unknown; hint?: unknown; origin?: unknown; retryAfter?: unknown }
   // Not the board's or the handle's: the system's (a file it couldn't write), or a bug.
@@ -1013,7 +1026,9 @@ function failureOf(error: unknown): Failure {
         ? [{ instruction: 'Pass a token it accepts' }]
         : sent() === 'BOARD_TOKEN'
           ? [{ instruction: 'Pass a token it accepts in BOARD_TOKEN, or unset it' }]
-          : [{ instruction: 'Log in again', argv: ['vercel', 'login'] }],
+          : sent() === JOINED
+            ? [{ instruction: 'Ask for a new invite and join again' }]
+            : [{ instruction: 'Log in again', argv: ['vercel', 'login'] }],
     )
   if (status === 403) return theirs('permission', 'permission_denied', `You can't ${doing()}.`)
   if (status === 404) {
@@ -1061,9 +1076,12 @@ const waitFor = (seconds: number) => (seconds < 120 ? `${Math.max(1, seconds)}s`
 
 /** How this run ends with `failure`: shown on stderr, or by the app, and its exit code. */
 function report(failure: Failure, json: boolean): number {
-  if (app.onError) app.onError(failure, { json })
-  else if (json) io.error(`${JSON.stringify(failureDocument(failure))}\n`)
-  else io.error(`${terminalText(formatFailure(failure))}\n`)
+  if (app.onError) {
+    const encoded = JSON.stringify(failure)
+    const safe = redactCredentials(encoded)
+    app.onError(safe === encoded ? failure : JSON.parse(safe) as Failure, { json })
+  } else if (json) io.error(`${redactCredentials(JSON.stringify(failureDocument(failure)))}\n`)
+  else io.error(`${redactCredentials(terminalText(formatFailure(failure)))}\n`)
   return exitCode(failure)
 }
 
@@ -1122,6 +1140,21 @@ function connection(url: string | undefined = flags.url, options: { token?: stri
   const board = boardAt({ backend: http(at, { fetch: transport.fetch }) })
   sent = transport.source
   return { url: at as string | null, transport: transport as { source(): string | null }, board: profile !== undefined ? board.as(profile) : board }
+}
+
+/** The conformance invitee talks only to this mount, with the new bearer and no other credentials. */
+function inviteMember(at: string, token: string): Board {
+  const mount = new URL(at)
+  const path = mount.pathname.replace(/\/+$/, '')
+  const send: typeof fetch = async (input, init) => {
+    const request = new Request(input, { ...init, credentials: 'omit', redirect: 'error' })
+    const to = new URL(request.url)
+    if (to.origin !== mount.origin || (to.pathname !== path && !to.pathname.startsWith(`${path}/`)))
+      throw new Error('Joined conformance requests must stay on the board that issued the invite.')
+    request.headers.set('authorization', `Bearer ${token}`)
+    return globalThis.fetch(request)
+  }
+  return boardAt({ backend: http(at, { fetch: send }) }).as(null)
 }
 
 /**
@@ -1204,8 +1237,8 @@ function hookAgents(names: string[]): HookAgent[] {
 /** Says what a write that went through had to say: in its JSON result with `--json`, on stderr otherwise. */
 function warn(warning: Warning) {
   if (flags.json) warnings.push(warning)
-  else if (app.onWarning) app.onWarning(warning)
-  else io.error(`${terminalText(`warning: ${warning.message}`)}\n`)
+  else if (app.onWarning) app.onWarning({ reason: outputText(warning.reason), message: outputText(warning.message) })
+  else io.error(`${outputText(terminalText(`warning: ${warning.message}`))}\n`)
 }
 
 /**
@@ -1282,6 +1315,137 @@ function portFlag(): number | undefined {
   return port
 }
 
+/** Never include the board's message, hint, code, or response body from an invite operation. */
+function inviteFailure(error: unknown): Failure {
+  const status = error instanceof BoardError ? error.status : undefined
+  if (current.command === 'join') {
+    if (status === 400 || status === 401 || status === 403 || status === 410)
+      return { class: 'auth', reason: 'invalid_invite', message: "The board didn't accept the invite.", next: [{ instruction: 'Check the board URL or ask for a new invite' }] }
+    if (status === 404 || status === 405 || status === 501)
+      return { class: 'platform', reason: 'invites_unavailable', message: "This URL doesn't accept invites." }
+    return { class: 'network', reason: 'join_failed', message: "Couldn't join the board at that URL.", next: [{ instruction: 'Check the URL, including its path; join does not follow redirects' }] }
+  }
+  const action = doing()
+  if (status === 401 || status === 403) return { class: 'permission', reason: 'permission_denied', message: `You can't ${action}.`, next: [{ instruction: 'Use a credential with board-wide manage access' }] }
+  if (status === 501) return { class: 'platform', reason: 'invites_unavailable', message: "This board doesn't manage invites." }
+  if (status === 400) return { class: 'usage', reason: 'invalid_invite_arguments', message: `The board rejected the request to ${action}.` }
+  return {
+    class: 'platform', reason: 'invite_request_failed', message: `Couldn't ${action}.`,
+    ...(current.args[0] === 'create' ? { next: [{ instruction: 'Check the invite list before trying again' }] } : {}),
+  }
+}
+
+/** A view is public metadata, even if a remote included additional fields in its answer. */
+const inviteView = ({ id, name, can, expiresAt, state }: InviteView): InviteView => ({ id, name, can, expiresAt, state })
+const inviteRow = ({ id, name, state, expiresAt, can }: InviteView) => `${id}  ${name}  ${state}  ${expiresAt}  ${grantCan(can, false)}`.trimEnd()
+
+async function runInvite([verb, subject, extra]: string[]): Promise<number> {
+  if (verb !== 'create' && verb !== 'list' && verb !== 'revoke') throw usage('Use invite create, invite list, or invite revoke.')
+  if (verb !== 'create' && (flags.out !== undefined || flags['expires-in'] !== undefined || flags.can !== undefined))
+    throw usage('--out, --expires-in, and --can are for invite create.')
+  if (verb === 'list') {
+    if (subject !== undefined) throw usage('invite list takes no arguments.')
+    const invites = (await client().invites()).map(inviteView)
+    if (flags.json) result({ invites })
+    else out(invites.length ? invites.map(inviteRow).join('\n') : 'no invites')
+    return 0
+  }
+  if (verb === 'revoke') {
+    if (!subject || extra !== undefined || !/^[^\s/]+$/.test(subject)) throw usage('invite revoke takes one invite ID, from invite list.')
+    const { revoked } = await client().revokeInvite(subject)
+    if (flags.json) result({ revoked })
+    else out(`${revoked ? 'revoked' : 'not revoked'} ${subject}`)
+    return 0
+  }
+  if (io.board) throw usage('invite create needs a private file on this machine.', { reason: 'not_available', next: [] })
+  if (extra !== undefined || !CreateInviteBody.shape.name.safeParse(subject).success)
+    throw usage('Pass one name: a letter, then up to 31 letters, digits, or hyphens.')
+  const path = flags.out
+  if (!path || path === '-') throw usage('Pass --out <file> to save the invite secret to a new private file.', { reason: 'missing_arguments' })
+  const expires = flags['expires-in']
+  if (expires !== undefined && !/^\d{1,6}$/.test(expires)) throw usage('--expires-in takes whole seconds from 1 to 604800.')
+  const expiresIn = expires === undefined ? undefined : Number(expires)
+  if (!CreateInviteBody.shape.expiresIn.safeParse(expiresIn).success) throw usage('--expires-in takes whole seconds from 1 to 604800.')
+  let can
+  try {
+    can = flags.can === undefined ? undefined : grantCanOf(flags.can)
+  } catch {
+    throw usage('--can takes pattern=permissions, like support/=read,post.')
+  }
+  const input = CreateInviteBody.safeParse({ name: subject, expiresIn, can })
+  if (!input.success) throw usage('--can takes read, post, react, label, or sync. Invites cannot grant all or manage.')
+
+  const board = client()
+  // Reserve the file first: if it exists or can't be opened, no invite is made.
+  const file = await open(path, 'wx', 0o600).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'EEXIST') throw usage('--out already exists. Pick a new file.', { reason: 'file_exists' })
+    throw new Failed({ class: 'platform', reason: 'invite_file_error', message: "Couldn't open the invite file." })
+  })
+  let created: InviteView | undefined
+  try {
+    await file.chmod(0o600).catch(() => {
+      throw new Failed({ class: 'platform', reason: 'invite_file_error', message: "Couldn't make the invite file private." })
+    })
+    const { invite, secret } = await board.createInvite(input.data)
+    created = invite
+    if (typeof secret !== 'string' || !INVITE_SECRET.test(secret)) throw new Error('invalid invite response')
+    await file.writeFile(`${secret}\n`, 'utf8')
+    await file.close()
+  } catch (error) {
+    await file.close().catch(() => {})
+    await unlink(path).catch(() => {})
+    if (!created) throw error
+    const revoked = await board.revokeInvite(created.id).then(({ revoked }) => revoked, () => false)
+    throw new Failed({
+      class: 'platform', reason: 'invite_file_error',
+      message: revoked ? "Couldn't save the invite secret. The invite was revoked." : "Couldn't save the invite secret or confirm the invite was revoked.",
+      ...(!revoked ? { next: [{ instruction: 'Check the invite list and revoke any pending invite you just made' }] } : {}),
+    })
+  }
+  if (flags.json) result({ invite: inviteView(created), outcome: 'created' })
+  else {
+    out(`created ${inviteRow(created)}`)
+    out(`file  ${path}`)
+  }
+  return 0
+}
+
+async function runJoin([given, invite, extra]: string[]): Promise<number> {
+  if (given === undefined || invite === undefined || extra !== undefined) throw usage('Pass a board URL and one invite, or - to read it from stdin.')
+  if (flags.url !== undefined || flags.scope !== undefined || flags.team !== undefined || flags.name !== undefined || flags.ensure || flags.as !== undefined || flags.avatar !== undefined)
+    throw usage('join takes the board URL as an argument, without board or profile options.')
+  const url = canonicalJoinUrl(given)
+  if (!url) throw usage('Use an HTTPS board URL without userinfo, query, or fragment. HTTP is only allowed on loopback.', { reason: 'invalid_board_url' })
+  if (invite === '-' && process.stdin.isTTY) throw usage('Redirect stdin from the invite file when passing -.', { reason: 'missing_invite' })
+  const secret = invite === '-' ? (await io.stdin()).trim() : invite
+  if (!INVITE_SECRET.test(secret)) throw usage('Expected an invite secret, or - to read it from stdin.', { reason: 'invalid_invite' })
+
+  const staged = await prepareJoinCredential(url).catch(() => {
+    throw new Failed({ class: 'platform', reason: 'join_config_error', message: "Couldn't prepare a private file for the board credential." })
+  })
+  try {
+    // This handle deliberately doesn't use connection(): no existing credentials or platform login.
+    const board = boardAt({ backend: http(url, { fetch: redeemFetch }) })
+    const { principal, token } = await board.join(secret)
+    if (typeof principal !== 'string' || !principal || typeof token !== 'string' || !JOIN_TOKEN.test(token))
+      throw new Failed({ class: 'platform', reason: 'invalid_join_response', message: "The board didn't return a valid credential." })
+    await staged.save(token).catch(() => {
+      throw new Failed({
+        class: 'platform', reason: 'join_config_error', message: "The invite was redeemed, but the credential couldn't be saved.",
+        next: [{ instruction: 'Fix the CLI config directory and ask for a new invite' }],
+      })
+    })
+    if (flags.json) result({ board: url, principal })
+    else {
+      out(`joined ${principal}`)
+      out(`board  ${url}`)
+    }
+  } finally {
+    await staged.discard()
+  }
+  return 0
+}
+
 async function run(command: string | undefined, args: string[]): Promise<number> {
   switch (command) {
     case undefined:
@@ -1313,6 +1477,12 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       return 0
     }
 
+    case 'invite':
+      return runInvite(args)
+
+    case 'join':
+      return runJoin(args)
+
     case 'conformance': {
       if (args.length > 0) throw usage('conformance takes no arguments: pass its channel with --channel.')
       // It posts and changes grants, so it checks a board someone named, never the team's by default.
@@ -1327,10 +1497,18 @@ async function run(command: string | undefined, args: string[]): Promise<number>
         })
       // The same board with this run's own credential and headers of the run's (x-board-can, a profile), as a proxy holding it sends them:
       // what `vb()` was handed can't be opened again.
-      const withHeaders = io.board ? {} : { withHeaders: (headers: Record<string, string>) => connection(undefined, { headers }).board }
+      const connected = io.board ? null : connection()
+      const board = connected?.board ?? client()
+      const at = connected?.url
+      // Use the URL this run opened, not a URL from discovery or an injected handle we can't reopen.
+      const mount = at && !vercelBoard(at) ? canonicalJoinUrl(at) : null
       // Open the board first: one it can't reach (no room for it, no grant, a lapsed login) is this run's error, not a check the board failed.
-      await client().me()
-      const report = await conformance(client(), { ...(flags.channel ? { channel: flags.channel } : {}), ...withHeaders })
+      await board.me()
+      const report = await conformance(board, {
+        ...(flags.channel ? { channel: flags.channel } : {}),
+        ...(connected ? { withHeaders: (headers: Record<string, string>) => connection(undefined, { headers }).board } : {}),
+        ...(mount ? { withInviteToken: (token: string) => inviteMember(mount, token) } : {}),
+      })
       if (flags.json) result(report)
       else out(formatConformance(report))
       return report.ok ? 0 : 1
@@ -2746,7 +2924,7 @@ async function runOnce(argv: string[], options: App): Promise<number> {
 }
 
 /** The commands that change the board, whatever their arguments. */
-const WRITES = new Set(['post', 'reply', 'edit', 'delete', 'label', 'react', 'schedule', 'sync'])
+const WRITES = new Set(['post', 'reply', 'edit', 'delete', 'label', 'react', 'schedule', 'sync', 'join'])
 
 /** What a run its caller's signal stopped says: a write it was making may have landed. */
 function stopped(reason: unknown): Failed {
@@ -2764,7 +2942,7 @@ function stopped(reason: unknown): Failed {
 }
 
 /** The commands about the machine the CLI runs on, not the board: none of them run in-process. */
-const MACHINE = new Set(['whoami', 'hooks', 'hook', 'serve', 'inspect'])
+const MACHINE = new Set(['whoami', 'hooks', 'hook', 'serve', 'inspect', 'join'])
 
 /** `main()` with `io` in place of the terminal, for `vb()`. One run at a time, as `main()`'s. */
 export async function mainWith(argv: string[], options: App, with_: Io): Promise<number> {

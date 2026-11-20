@@ -164,14 +164,18 @@ export type BoardBinding = {
  */
 export type Trust = {
   grants(): Promise<readonly StoredGrant[]>
+  /** Finds the profile for a verified digest on this board and URL. Never receives the bearer secret. */
+  joined?(digest: string, audience: string): Promise<{ id: string; name: string } | null>
 }
+
+export type InviteMethod = 'invites' | 'createInvite' | 'revokeInvite' | 'redeemInvite'
 
 /**
  * Where a board lives. board() serves the protocol over HTTP: it routes, validates, verifies each
  * caller, applies `access`, runs the middleware, watchers, and sync, and calls these with the caller
  * it verified. A backend stores and answers, honoring what each caller may do.
  */
-export interface Backend extends ProtocolMethods {
+export interface Backend extends Omit<ProtocolMethods, InviteMethod>, Partial<Pick<ProtocolMethods, InviteMethod>> {
   /** Routes of its own, beside the protocol: one at a protocol route's path takes its place. */
   readonly routes: readonly BackendRoute[]
   /**

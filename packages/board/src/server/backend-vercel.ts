@@ -9,13 +9,13 @@ import { mentionTerm, mentionTerms, replaceMentions } from '../contract/mentions
 import { actorParts, importedHandle, platformProfile, underPrincipal, type Via } from '../contract/profiles.ts'
 import { VERSION } from '../version.ts'
 import { compileAccess, parseCan, parsePattern, PERMISSIONS, type AccessSummary, type Permission } from './access.ts'
-import { type Backend, type BackendRoute, type BoardBinding, type Caller, type ProtocolMethods } from './backend.ts'
+import { type Backend, type BackendRoute, type BoardBinding, type Caller, type InviteMethod, type ProtocolMethods } from './backend.ts'
 import { mediaType } from '../contract/files.ts'
 import { uploadName } from './file-names.ts'
 import { badRequest, duplicateId, HttpError, json, notFound } from './errors.ts'
 import { carried } from './carried.ts'
 import { deployedOnVercel, registrant, wakePath, type WakeAt } from './registrant.ts'
-import { METHODS } from './routing.ts'
+import { INVITE_METHODS, METHODS } from './routing.ts'
 import { compileWatcher } from './watch-spec.ts'
 import { tailWatchers } from './tails.ts'
 import { canonicalWatchers, type SyncEntrySpec, type WatcherSpec } from './watchers-hash.ts'
@@ -3026,16 +3026,18 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     return { cursor, type, createdAt: iso(change.createdAt), payload, message, ...(own ? {} : { actor: await nameOf(who, change.actor) }) } as BoardEventView
   }
 
+  type VercelMethods = Omit<ProtocolMethods, InviteMethod>
+  // Leave invites out so board() answers no_invites without first starting the Vercel backend.
   const unsupported = Object.fromEntries(
-    METHODS.map((method) => [
+    METHODS.filter((method) => !INVITE_METHODS.has(method)).map((method) => [
       method,
       async () => {
         throw notSupported(method === 'register' || method === 'watchers' || method === 'matches' || method === 'ack' ? 'watchers' : method)
       },
     ]),
-  ) as unknown as ProtocolMethods
+  ) as unknown as VercelMethods
 
-  const methods: ProtocolMethods = {
+  const methods: VercelMethods = {
     ...unsupported,
     async discovery(caller) {
       const who: Who = { profile: null }
@@ -3936,7 +3938,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
         return (method as (...input: unknown[]) => unknown)(caller, ...args)
       },
     ]),
-  ) as unknown as ProtocolMethods
+  ) as unknown as VercelMethods
 
   const backend = {
     ...starting,

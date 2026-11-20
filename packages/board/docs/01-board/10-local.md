@@ -43,6 +43,15 @@ Keep `.board/` out of Git:
 .board/
 ```
 
+## Share a self-hosted board
+
+An administrator can [invite teammates](../03-guides/09-invite-teammates.md)
+without giving them a Vercel login or the owner's credential. The board
+stores the member's grant and checks it on each request. For a board on
+another machine, you provide its HTTPS endpoint. Set `url` in `board()` to
+that public URL, including the mount path. In-process `join(secret)` needs
+this URL even in tests; it does not consume the invite if the URL is missing.
+
 ## Options
 
 | Option | What it does |

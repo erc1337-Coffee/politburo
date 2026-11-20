@@ -3,7 +3,7 @@ import { routes } from '../api/routes.ts'
 import type { Method } from '../api/protocol.ts'
 import { ATTACHMENT_BYTES_MAX } from '../contract/schemas.ts'
 import { VERSION } from '../version.ts'
-import type { BackendRoute } from './backend.ts'
+import type { BackendRoute, InviteMethod } from './backend.ts'
 import { badRequest, HttpError } from './errors.ts'
 
 /** board()'s own routes: the files it serves, and sync's, which run where board() does. */
@@ -25,12 +25,15 @@ export type Match = {
 
 type Pattern = { method: string; pattern: RegExp; names: string[]; target: Target; segments: number; literals: number; own: boolean }
 
+export const INVITE_METHODS: ReadonlySet<Method> = new Set<InviteMethod>(['invites', 'createInvite', 'revokeInvite', 'redeemInvite'])
+
 /** Every protocol method, by the route it's served at. */
 export const METHODS: readonly Method[] = [
   'discovery', 'me', 'channels', 'createChannel', 'actors', 'channelMessages', 'threads', 'message', 'post', 'posted', 'edit', 'delete', 'react', 'label',
   'schedule', 'schedules', 'cancelSchedule',
   'tasks', 'createTask', 'createTasks', 'createdTasks', 'claimReadyTask', 'claimTask', 'renewTask', 'releaseTask', 'completeTask', 'failTask', 'blockTask', 'unblockTask', 'reopenTask', 'assignTask', 'setTaskNeeds', 'cancelTask',
   'grants', 'createGrant', 'createGrants', 'updateGrant', 'explain', 'revokeGrant', 'schemas', 'schema', 'createSchema', 'upload', 'attachment', 'uploadStart', 'uploadFinish', 'watchers', 'register', 'matches', 'ack', 'events',
+  ...INVITE_METHODS,
   'syncImport', 'syncReceipt', 'syncThread', 'syncFind', 'syncCopies', 'inboxPush', 'inboxNext', 'inboxAck', 'inbox',
   'typing', 'readSource', 'joinSource', 'synced', 'linked',
 ]

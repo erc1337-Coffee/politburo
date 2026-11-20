@@ -32,6 +32,8 @@ import {
   RegisterBody,
   ScheduleBody,
   CreateGrantsBody,
+  CreateInviteBody,
+  RedeemInviteBody,
   GrantBody,
   RevokeGrantBody,
   UpdateGrantBody,
@@ -66,11 +68,12 @@ import { derivedId, sha256 } from '../client/ids.ts'
 import { claimsOf, KNOWN_AGENTS, viaOf } from './actors.ts'
 import { importedHandle, userIdOf } from '../contract/profiles.ts'
 import type { CallerRequest } from './auth.ts'
+import { isJoinedCredential } from './policy.ts'
 import { avatarSvg } from './avatars.ts'
-import { badRequest, batchTooLarge, forbidden, HttpError, json, notFound, toErrorResponse } from './errors.ts'
+import { badRequest, batchTooLarge, forbidden, HttpError, json, notFound, toErrorResponse, unauthorized } from './errors.ts'
 import { extractMentions, settleMentions, type Mentioned, type MentionedActor } from '../contract/mentions.ts'
 import { DroppedError, runMiddleware, type Write, type WriteSource } from './middleware.ts'
-import { createRouter, METHODS, openapi, queryObject, readCapped, readJson, type BoardRoute } from './routing.ts'
+import { createRouter, INVITE_METHODS, METHODS, openapi, queryObject, readCapped, readJson, type BoardRoute } from './routing.ts'
 import { FULL_ACCESS, parseCan, type Access } from './access.ts'
 import { syncTarget, type SyncTarget } from './targets.ts'
 import { SYNC_ACTOR, type WriteOrigin } from './origin.ts'
@@ -78,7 +81,9 @@ import type { WatcherContext } from './watcher.ts'
 import { VERSION } from '../version.ts'
 
 /** The methods whose answer is something new. */
-const CREATED = new Set<Method>(['post', 'schedule', 'createTask', 'createTasks', 'upload', 'uploadFinish'])
+const CREATED = new Set<Method>(['post', 'schedule', 'createTask', 'createTasks', 'upload', 'uploadFinish', 'createInvite'])
+const noInvites = () => new HttpError(501, 'no_invites', 'this board keeps no invites')
+const SECRET_RESPONSE = { 'cache-control': 'no-store' }
 
 /**
  * Refuses a label write under `board.`: those keys are the board's own, which only its task writes
@@ -125,6 +130,7 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
     case 'actors':
     case 'watchers':
     case 'grants':
+    case 'invites':
     case 'schemas':
       return {}
     case 'message':
@@ -137,6 +143,7 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
     case 'schema':
     case 'attachment':
     case 'uploadFinish':
+    case 'revokeInvite':
       return { id }
     case 'channelMessages':
       return ChannelMessagesQuery.parse(queryObject(url))
@@ -201,6 +208,8 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
       return GrantBody.parse(await body())
     case 'createGrants':
       return CreateGrantsBody.parse(await body())
+    case 'createInvite':
+      return CreateInviteBody.parse(await body())
     case 'updateGrant':
       return { id, ...UpdateGrantBody.parse(await body()) }
     case 'revokeGrant':
@@ -339,6 +348,7 @@ export async function createServe(context: BoardContext): Promise<Serve> {
     const credential = header.match(/^Bearer\s+(.+)$/i)?.[1] ?? null
     // Only a token is checked against the audience: a request without one (a cookie, no one) needs no URL to be sure of.
     const audience = credential === null ? (options.url?.replace(/\/+$/, '') ?? at) : audienceOf(at)
+    if (backend.trust?.joined && isJoinedCredential(credential) && !atAudience(at, audience)) throw unauthorized('invalid board credential')
     return { credential, claims: claimsOf(request.headers), audience, headers: request.headers }
   }
 
@@ -363,6 +373,9 @@ export async function createServe(context: BoardContext): Promise<Serve> {
     warned = true
     return at
   }
+
+  /** Joined credentials only work at the public mount itself, not at aliases or deeper mounts. */
+  const atAudience = (at: string, audience: string) => URL.parse(audience)?.href.replace(/\/+$/, '') === at
 
   /**
    * What a board that serves no requests answers them: one that uses another board's. One on
@@ -1048,6 +1061,34 @@ export async function createServe(context: BoardContext): Promise<Serve> {
     }
   }
 
+  /** Redeeming the invite proves admission; neither headers nor an existing login can name the new principal. */
+  async function redeem(request: Request, at: string, injected: boolean): Promise<Response> {
+    if (!backend.redeemInvite) throw noInvites()
+    // http() forwards only the secret; its remote board binds the bearer to its own mount.
+    const audience = injected ? (backend.keeps ? ownUrl() : at) : audienceOf(at)
+    if (audience === null)
+      throw new HttpError(500, 'no_board_url', 'this board needs a public URL to redeem an invite in-process', {
+        hint: 'Pass board({ url }) with the URL people reach it at.',
+      })
+    if (!injected && !atAudience(at, audience)) throw notFound('this is not the public board mount')
+    const invalid = () => badRequest('send an invite secret in the request body', 'invalid_invite')
+    let body: unknown
+    try {
+      body = JSON.parse(new TextDecoder().decode(await readCapped(request, 1024)))
+    } catch {
+      throw invalid()
+    }
+    const parsed = RedeemInviteBody.safeParse(body)
+    if (!parsed.success) throw invalid()
+    try {
+      return json(await backend.redeemInvite(OWN, { ...parsed.data, audience }, request.signal), 201, SECRET_RESPONSE)
+    } catch (error) {
+      if (error instanceof HttpError) throw error
+      // A failure on a secret-bearing request must not log the input or serialize a raw exception.
+      throw new HttpError(500, 'internal', 'could not redeem the invite')
+    }
+  }
+
   /** board()'s own routes for a caller: sync's, which run where board() does. */
   async function serve(name: BoardRoute, caller: Caller, request: Request, url: URL, params: Record<string, string>): Promise<Response> {
     const signal = request.signal
@@ -1183,13 +1224,18 @@ export async function createServe(context: BoardContext): Promise<Serve> {
       // uses another board's doesn't serve. Nothing runs for one before that.
       if (!injected && !policy.open) throw servesOnly()
       if (!injected && target.kind === 'protocol' && target.name === 'discovery') return json(await discovery(request, audienceOf(at), request.signal))
-      if (target.kind === 'protocol' && typeof (backend[target.name] as unknown) !== 'function') throw notFound(`no route: ${request.method} ${url.pathname}`)
+      if (target.kind === 'protocol' && target.name === 'redeemInvite') return await redeem(request, at, injected !== null)
+      if (target.kind === 'protocol' && typeof (backend[target.name] as unknown) !== 'function') {
+        if (INVITE_METHODS.has(target.name)) throw noInvites()
+        throw notFound(`no route: ${request.method} ${url.pathname}`)
+      }
       // A sync callback's client does everything but its own writes as sync.
       const own = injected && 'platform' in injected ? engine!.caller : injected
       const asked = own ? null : requestOf(request, at)
       const caller: Caller = own ?? (await callerOf(asked!))
       if (target.kind === 'board') return await serve(target.name, caller, request, url, match.params)
 
+      if (INVITE_METHODS.has(target.name) && narrowed(caller)) throw forbidden("this caller is narrowed and can't manage invites")
       const input = await inputOf(target.name, request, url, match.params)
       if (target.name === 'events' && (request.headers.get('accept') ?? '').includes('text/event-stream'))
         return await sse(caller, input as Protocol['events']['input'], request, asked ? () => callerOf(asked) : null)
@@ -1197,7 +1243,7 @@ export async function createServe(context: BoardContext): Promise<Serve> {
       if (target.name === 'attachment') return attachmentResponse(output as Protocol['attachment']['output'])
       // A channel that was there already is answered, not created.
       const made = CREATED.has(target.name) || (target.name === 'createChannel' && (output as Protocol['createChannel']['output']).created)
-      return json(output, made ? 201 : 200)
+      return json(output, made ? 201 : 200, target.name === 'createInvite' ? SECRET_RESPONSE : undefined)
     } catch (error) {
       // Stopped by its caller (a page reloaded, a long-poll let go): no one reads the answer, and
       // the abort isn't the board's failure. Any other failure still is, caller there or not.

@@ -106,6 +106,8 @@ export const options = {
   times: { type: 'string', value: 'N', description: 'repeating this many times' },
   can: { type: 'string', multiple: true, value: 'pattern=perms', description: 'what they may do, repeated: perms, all, or none' },
   'lock-me-out': { type: 'boolean', description: "go ahead with a change you couldn't take back" },
+  out: { type: 'string', value: 'file', description: 'required: save the secret to a new private file' },
+  'expires-in': { type: 'string', value: 'seconds', description: 'when the invite expires, in seconds (1 to 604800; default: 86400)' },
   // Grants: whom one names, each flag a principal, with the modifiers after it.
   user: { type: 'string', multiple: true, value: 'email', description: 'a person on the team' },
   project: { type: 'string', multiple: true, short: 'p', value: 'name|id', description: "a project's deployments" },
@@ -206,6 +208,48 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
     arguments: [],
     options: [],
     examples: [{ name: 'see who you are on the board', value: 'whoami' }],
+  },
+  {
+    group: 'you',
+    name: 'join',
+    description: 'redeem an invite and save a credential for that board URL',
+    arguments: [
+      { name: 'url', required: true, description: 'the board URL: HTTPS, or HTTP on loopback' },
+      { name: 'invite', required: true, description: 'the secret, or - to read it from stdin' },
+    ],
+    options: [],
+    examples: [{ name: 'join without putting the secret in the command line', value: 'join https://board.example.com/api/board - < invite.txt' }],
+  },
+  {
+    group: 'the board',
+    name: 'invite',
+    description: 'give someone access to the board with a one-time invite',
+    arguments: [],
+    options: [],
+    examples: [],
+    subcommands: [
+      {
+        name: 'create',
+        description: 'create an invite and save its secret to a new private file',
+        arguments: [{ name: 'name', required: true, description: 'starts with a letter; up to 32 letters, digits, and hyphens' }],
+        options: [option('out'), option('expires-in'), option('can', 'pattern=permissions, repeated: read, post, react, label, or sync')],
+        examples: [{ name: 'invite a member', value: 'invite create sam --out invite.txt' }],
+      },
+      {
+        name: 'list',
+        description: 'list invites and their states, without secrets',
+        arguments: [],
+        options: [],
+        examples: [],
+      },
+      {
+        name: 'revoke',
+        description: 'revoke a pending invite',
+        arguments: [{ name: 'id', required: true, description: 'the ID from invite list' }],
+        options: [],
+        examples: [],
+      },
+    ],
   },
   {
     group: 'the board',

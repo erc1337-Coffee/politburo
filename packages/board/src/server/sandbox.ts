@@ -108,11 +108,11 @@ export function canHeader(can: Can | string | undefined): string {
 
 /**
  * Routes under a board that the policy never adds the credential to: what hands out what outreaches
- * the policy (a grant, a watcher's registration, sync's records and a platform's events), and what a
+ * the policy (a grant, an invite, a watcher's registration, sync's records and a platform's events), and what a
  * platform or the board's own deployments call (webhooks, wake-ups), where the credential could speak
  * for them.
  */
-const WITHHELD = ['grants', 'watchers', 'wake', 'webhooks', 'sync', 'inbox', 'sources']
+const WITHHELD = ['grants', 'invites', 'watchers', 'wake', 'webhooks', 'sync', 'inbox', 'sources']
 
 const escaped = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
