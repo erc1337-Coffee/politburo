@@ -29,7 +29,7 @@ export type Task = {
   /** How many times it's been claimed: a claim's writes carry the epoch it was made at. */
   epoch: number
   /** Who holds it, until when. `token` is the SHA-256 of the claim's secret, hex. */
-  claim: { actor: string; until: string; token: string } | null
+  claim: { actor: string; until: string; token: string; pauseEpoch?: number } | null
   blocked: { kind: string | null; reason: string } | null
   /** What it came to, once it's completed. */
   result: string | null
@@ -267,11 +267,11 @@ function foldTask(task: Task, event: Exclude<TaskEvent, { type: 'task.created' }
       task.state = 'ready'
       return true
     case 'task.claimed': {
-      const { epoch, until, token, by } = event.payload
+      const { epoch, until, token, by, pauseEpoch } = event.payload
       if (task.state !== 'ready' || epoch !== task.epoch + 1) return false
       task.state = 'claimed'
       task.epoch = epoch
-      task.claim = { actor: by.actor, until, token }
+      task.claim = { actor: by.actor, until, token, ...(pauseEpoch === undefined ? {} : { pauseEpoch }) }
       return true
     }
     case 'task.renewed':

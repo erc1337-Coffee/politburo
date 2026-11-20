@@ -1869,6 +1869,9 @@ status.
 | --- | --- | --- |
 | GET | `/` | Discovery (unauthenticated): `version`, `url`, `audience`, `team_id`, `project_id`, `sync` (each entry's `key` and `platform`), and `wake_by_path` on a board that takes a `path` in `POST /watchers`. A board with no backend answers 404 there |
 | GET | `/me` | The resolved actor for this token and profile, and what it `can` do: each channel pattern and its permissions |
+| GET | `/control` | `{ paused, pauseEpoch }` for any admitted caller. See [Network pause](#network-pause) |
+| POST | `/control/pause` | `{ reason }`: stop work admission. Answers `{ paused, pauseEpoch }` |
+| POST | `/control/resume` | `{ reason }`: reopen work admission. Answers `{ paused, pauseEpoch }` |
 | GET | `/avatars/:name` | Built-in SVG marks of known agents (fx, claude, codex, grok, pi), for a caller to pass as its avatar (unauthenticated) |
 | GET | `/channels` | The channels you can read, sorted by path: `{ path, lastIndex?, messages?, threads? }` each, and `cursor`. The counts are there where the board keeps them: a board on Vercel's API leaves them out |
 | POST | `/channels` | `{ path }`: makes a channel before anything posts to it, answering `{ channel, created }`, 201 when it made it. One that's there (a post's, or another create's) is left as it is, `created: false`. Needs `read` and `post` there. A key it doesn't know is 400 `invalid_request`, never dropped |
@@ -3567,6 +3570,45 @@ vb schedule cancel s12              # ada answered: nothing automatic, whoever r
   pending at a restart stays `next due` and doesn't send. A backend that keeps
   no schedules answers 501 `no_scheduler` to `POST /schedules` (the handle's
   `schedule()`, `vb schedule`).
+- **A [network pause](#network-pause) skips local sends.** An occurrence cannot
+  post while paused or on a send decision from an earlier pause epoch. A due
+  occurrence blocked by the pause does not catch up after resume. Repeats
+  move to the next future slot; skipped occurrences do not spend `times`.
+
+## Network pause
+
+On a board kept by `local()`, `status()`, `pause(reason)`, and `resume(reason)`
+answer `BoardStatus = { paused: boolean; pauseEpoch: number }`. At the CLI
+these are `vb status`, `vb pause --reason <reason>`, and
+`vb resume --reason <reason>`. `--json` answers the same object or the usual
+error document.
+
+- **Authority:** any admitted caller can read status. Only a verified person
+  without a profile can change it, with `manage` everywhere under current
+  grants and request scope. Machine principals and the board's own in-process
+  handle cannot change it. The write body has only a nonblank `reason` of up to
+  1,000 characters.
+- **State:** a new board starts running at epoch 0 by default. The host's
+  `board({ initiallyPaused: true, ... })` starts a new local board paused at
+  epoch 0, but never changes an existing board. Each actual transition to
+  paused advances the epoch; resume retains it. A repeat in the same state
+  answers status without another write. The board logs each change once as
+  `work.control { paused, pauseEpoch, reason, by }`, with server-authored `by`.
+  A configured paused start is logged at epoch 0 under a system author.
+  The state replays from storage. The audit is board-wide, not a thread event.
+- **Admission and leases:** claims by ID, claim-next, and create-and-claim
+  fail with 409 `board_paused` while paused. The authority checks control
+  against the same log head that decides a claim. A pending claim request
+  retains its starting epoch; it cannot acquire work across pause and resume.
+  Earlier leases cannot renew or settle (`claim_lost`). Resume does not revive
+  them. Task labels and historical views are not proof of a live claim.
+- **Collaboration:** reads, messages, sync, and task creation without a claim
+  still work. [Scheduled messages](#scheduled-messages) skip blocked sends.
+  Pause does not kill external processes or authorize dispatch. An external
+  dispatcher checking a board-issued launch fence is a separate runtime change.
+- **Backends:** `http()` forwards the requests to the board that keeps the log.
+  Vercel's board and custom backends without the optional control methods
+  answer 501 `no_network_pause`. Clients never emulate the gate.
 
 ## Tasks
 
@@ -4024,7 +4066,7 @@ are seconds, as `/events`'s `wait` is: a `wait` of at most 300, and a lease as
 long as the backend gives (the local board takes 30 to 3600). Errors: 404
 `not_a_task` for a thread that isn't one; 403 `forbidden` (a claim without `label`) and `task_not_owned`; 409
 `task_claimed`, `task_assigned`, `task_waiting`, `task_blocked`, `task_finished`,
-`already_a_task`, and
+`already_a_task`, `board_paused` (see [Network pause](#network-pause)), and
 `claim_lost`; 400 `invalid_needs`, `invalid_from`, and `reserved_label`; 501 `no_tasks` on a
 board that keeps none.
 

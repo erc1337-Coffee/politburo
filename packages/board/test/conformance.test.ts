@@ -163,8 +163,10 @@ describe('the conformance kit', () => {
   it('passes a board on a2(), checking the whole protocol, and deletes what it posted', async () => {
     const board = testBoard({ scheduler: fakeQueue().scheduler })
     const client = await clientOf(board.fetch)
-    const report = await conformance(client, { withHeaders: withHeaders(board.fetch) })
+    const report = await conformance(client, { withHeaders: withHeaders(board.fetch), networkPause: true })
     expect(report.checks.filter((check) => check.status === 'failed')).toEqual([])
+    expect(report.checks.filter((check) => check.group === 'network-pause').map((check) => check.status)).toEqual(['passed'])
+    expect(await client.status()).toMatchObject({ paused: false, pauseEpoch: 1 })
     // withHeaders stands in for withCan, so the narrowing checks run too.
     expect(report.checks.filter((check) => [...NARROWED, ...GRANTS_NARROWED].includes(check.name)).map((check) => check.status)).toEqual([...NARROWED, ...GRANTS_NARROWED].map(() => 'passed'))
     expect(report.checks.filter((check) => [...HEADERS, 'shows no session on a message, its event, or you'].includes(check.name)).map((check) => check.status)).toEqual(Array(5).fill('passed'))
@@ -172,7 +174,7 @@ describe('the conformance kit', () => {
     expect(report).toMatchObject({ ok: true, url: BOARD_URL })
     // Every grant it made is gone, the ones that closed a pattern to everyone included.
     expect((await client.grants()).map((grant) => grant.id)).toEqual(['g1', 'g2', 'g3'])
-    expect([...new Set(report.checks.map((check) => check.group))]).toEqual(['core', 'paging', 'search', 'schedules', 'tasks', 'grants', 'schemas', 'attachments', 'watchers', 'sync'])
+    expect([...new Set(report.checks.map((check) => check.group))]).toEqual(['core', 'network-pause', 'paging', 'search', 'schedules', 'tasks', 'grants', 'schemas', 'attachments', 'watchers', 'sync'])
     expect(report.checks.filter((check) => check.group === 'tasks').map((check) => check.status)).toEqual(Array.from({ length: 24 }, () => 'passed'))
     const { messages } = await client.channel('conformance').messages({ limit: 500 })
     expect(messages.filter((message) => !message.deleted)).toEqual([])
@@ -184,6 +186,7 @@ describe('the conformance kit', () => {
   it("passes through a board's own handle, in-process", async () => {
     const team = testBoard({ scheduler: fakeQueue().scheduler })
     const report = await conformance(team)
+    expect(report.checks.some((check) => check.group === 'network-pause')).toBe(false)
     // The board's own code needs no grant to keep it in what it closes, and no proxy narrows it. Each
     // of its profiles is a principal of its own there, so none is an actor a task of its own could be for.
     expect(skipped(report)).toEqual([
@@ -204,6 +207,20 @@ describe('the conformance kit', () => {
       [NARROWED[5], NO_CAN],
     ])
     expect((await team.me()).actor).toBe('board:client')
+  })
+
+  it('skips an opted-in network-pause check on a backend that declares it unsupported', async () => {
+    const team = testBoard({ scheduler: fakeQueue().scheduler })
+    const withoutPause: Fetch = (request) => {
+      if (!new URL(request.url).pathname.includes('/control')) return team.fetch(request)
+      if (request.method === 'GET') return Promise.resolve(Response.json({ error: { code: 'no_network_pause', message: 'network pause is not supported' } }, { status: 501 }))
+      throw new Error('unsupported backends should not get a pause or resume request')
+    }
+    const client = await clientOf(withoutPause)
+    const report = await conformance(client, { networkPause: true })
+    expect(report.checks.filter((check) => check.group === 'network-pause')).toMatchObject([
+      { status: 'skipped', detail: 'not kept here: this board does not support network pause' },
+    ])
   })
 
   it("fails a board that lets a profile change another profile's messages, or keeps its principal from changing them", async () => {

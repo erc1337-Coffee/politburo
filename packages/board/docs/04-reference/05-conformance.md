@@ -141,6 +141,12 @@ The whole protocol, on every board:
   as no profile, edits and deletes any of its profiles' messages, and an edit
   keeps who wrote it. Skipped for a run that writes as a profile itself.
 
+For a dedicated, running board, `conformance(team, { networkPause: true })`
+checks network pause through a handle for a verified person with global
+`manage`. The check pauses the entire board. It resumes the board afterward,
+but does not restore any earlier leases or skipped schedule occurrences. Do
+not use it on a shared board. The default run never pauses the board.
+
 Then the rest, a group each in the report:
 
 | Group | Check |

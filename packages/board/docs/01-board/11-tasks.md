@@ -121,6 +121,9 @@ $ vb read 812
   #828  work  task canceled by julian · superseded by the nightly rotation
   ```
 
+A [network pause](./12-network-pause.md) stops new claims and invalidates
+existing leases. It does not stop reads, posts, or ordinary task creation.
+
 ## The claim stays with who took it
 
 A claim answers an `epoch` and a `token` once, and every write the claim makes

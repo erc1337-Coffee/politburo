@@ -25,13 +25,14 @@ import { badRequest, duplicateId, forbidden, HttpError, notFound, textTooLong, t
 import { eventView, foldEvent, indexOf, lastFeed, loadBefore, OWN_CODE, pollFeed, readableFilter, ref, toMessageFilter, verifiedRecord, view, viewedBy, viewLinkedIds, viaOfRecord } from './feed.ts'
 import { createReads, tablesConsumer } from './reads.ts'
 import { createdBy, createSchedules, type Schedule } from './schedules.ts'
+import { createControl, publicStatus } from './control.ts'
 import { createTasks, taskLimits } from './tasks.ts'
 import type { BoardStore, MessageFilter, ThreadPosition } from '../store/types.ts'
 import { compileWatcher, createWatchers, ID, registrantSession } from './watch.ts'
 import { ack, pull, pullInbox, type QueueSession } from './registered.ts'
 import { createRegistry, storedPrincipal, type SyncEntrySpec } from './registry.ts'
 import { METHODS } from './routing.ts'
-import { authorizeMessage, authorizeOwn, authorizePost, blindText, trusted, writeAttach, writeChannel, writeDelete, writeEdit, writeLabels, writeLinks, writePost, writeReaction, writeRoots, landedBatch, deploymentIdentity, landedFor, type Identity, type WriteContext } from './writes.ts'
+import { authorizeMessage, authorizeOwn, authorizePost, blindText, untilApplied, whileHeadMoves, trusted, writeAttach, writeChannel, writeDelete, writeEdit, writeLabels, writeLinks, writePost, writeReaction, writeRoots, landedBatch, deploymentIdentity, landedFor, type Identity, type WriteContext } from './writes.ts'
 import { SYNC_ACTOR, type WriteOrigin } from './origin.ts'
 import { derivedId, isKeyIdOf } from '../client/ids.ts'
 import { DroppedError, MIDDLEWARE_ACTOR } from './middleware.ts'
@@ -286,7 +287,23 @@ function build(options: A2Options, binding: BoardBinding) {
   })
   const session = server.session(BOARD_SESSION)
   const reads = createReads(store.tables, session, projection)
-  const writes: WriteContext = { session, reads }
+  const work = createControl(log, session, binding.initiallyPaused && !store.beforeWorkControl)
+  const writes: WriteContext = { session, reads, work }
+
+  async function setPaused(caller: Caller, paused: boolean, reason: string) {
+    if (!fromRequest(caller) || !('identity' in caller)) throw forbidden('only a person with board-wide manage can change work control')
+    const { principal, author } = caller.identity
+    if (principal.kind !== 'person' || author.profile !== null || !principal.access.everywhere('manage'))
+      throw forbidden('only a person with board-wide manage can change work control')
+    return whileHeadMoves(async () => {
+      const { status, index } = await work.at()
+      if (status.paused === paused) return publicStatus(status)
+      const pauseEpoch = status.pauseEpoch + (paused ? 1 : 0)
+      const rows = await session.append.ifLastIndex(index, { type: 'work.control', payload: { paused, pauseEpoch, reason, by: author } })
+      await untilApplied(writes, rows)
+      return { paused, pauseEpoch }
+    })
+  }
 
   /** Sync's inbound: each platform event board()'s sync pushed here, one platform thread at a time. */
   const inbound = consumer({
@@ -399,6 +416,7 @@ function build(options: A2Options, binding: BoardBinding) {
       return channel !== undefined ? await handle.post(channel, rest) : await handle.reply(re!, rest)
     } catch (error) {
       if (error instanceof BoardError && error.code === 'dropped') throw new DroppedError(error.message === 'the board dropped this message' ? [] : error.message.split('\n'))
+      if (error instanceof BoardError && error.code === 'board_paused') throw new HttpError(409, error.code, error.message)
       throw error
     }
   }
@@ -422,7 +440,7 @@ function build(options: A2Options, binding: BoardBinding) {
     const proofs = await authorizePost(writes, principal.access, body)
     ownId(caller, principal, body.id)
     const attachments = await attachmentsFor(principal, body.attachments)
-    const { schedule } = caller.origin
+    const { schedule, scheduleEpoch } = caller.origin
     const message = await writePost(writes, {
       attachments,
       identity,
@@ -436,7 +454,7 @@ function build(options: A2Options, binding: BoardBinding) {
       sync: body.sync,
       after: afterAt(body.after),
       // A schedule's send, which only this board's own schedules make.
-      ...(schedule && !fromRequest(caller) ? { schedule } : {}),
+      ...(schedule && caller.origin.via?.kind === 'schedule' ? { schedule, workEpoch: scheduleEpoch } : {}),
     })
     return { message }
   }
@@ -451,6 +469,9 @@ function build(options: A2Options, binding: BoardBinding) {
   }
 
   const methods: ProtocolMethods = {
+    status: async () => publicStatus((await work.at()).status),
+    pause: (caller, { reason }) => setPaused(caller, true, reason),
+    resume: (caller, { reason }) => setPaused(caller, false, reason),
     async discovery() {
       // As its own code sees it: board() answers a request with who the board is to it, the URL it
       // reached and the project tokens are minted for. Its own code reaches it in process when
@@ -642,9 +663,9 @@ function build(options: A2Options, binding: BoardBinding) {
       // A new thread, posted as any is: `post` where it lands, and `label` for the labels it carries.
       const proofs = await authorizePost(writes, principal.access, { channel: body.channel, labels: body.labels })
       ownId(caller, principal, body.id)
+      const made = await tasks.starting(identity, { channel: body.channel!, ...about }, caller.origin.claimEpoch)
       const attachments = await attachmentsFor(principal, body.attachments)
-      const made = tasks.starting(identity, { channel: body.channel!, ...about })
-      const task = await writePost(writes, { attachments, identity, proofs, channel: body.channel, text: body.text ?? '', labels: body.labels, noSync: body.noSync, id: body.id, with: made.along })
+      const task = await writePost(writes, { attachments, identity, proofs, channel: body.channel, text: body.text ?? '', labels: body.labels, noSync: body.noSync, id: body.id, with: made.along, workEpoch: made.workEpoch, onCommit: made.committed })
       // A retry gets back the post that landed with its ID: one that was no task's is another write's.
       if (!task.task) throw duplicateId()
       const claim = await made.claimed(messageAt(task.id))
@@ -1367,6 +1388,7 @@ function build(options: A2Options, binding: BoardBinding) {
   return {
     methods,
     schedules,
+    work,
     trust: access.trust,
     /** The scheduler's callback, for every A2 server behind the board. */
     scheduler: options.scheduler
@@ -1397,6 +1419,7 @@ export function a2(options: A2Options) {
   const delivery = new AsyncLocalStorage<true>()
   const ready = async () => {
     const ran = now()
+    await ran.work.ready()
     // The first call on an instance starts the schedules catching up, and doesn't wait. Only a call
     // that isn't a scheduler's delivery takes them over: an old instance's timers mustn't take them back.
     ran.schedules.catchUp({ takeOver: !delivery.getStore() })

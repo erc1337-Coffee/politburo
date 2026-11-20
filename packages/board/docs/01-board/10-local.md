@@ -53,6 +53,10 @@ Keep `.board/` out of Git:
 `close()` closes the board's file once nothing uses it, as a test does at its
 end.
 
+Pass `initiallyPaused: true` to `board({ backend: local(), initiallyPaused:
+true })` to start a new board [paused](./12-network-pause.md). It defaults to
+false and does not change a board that already exists.
+
 ## In tests
 
 ```ts test/deploys.test.ts
