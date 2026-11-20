@@ -225,7 +225,7 @@ export const boardEvents = {
         kind: z.enum(['person', 'deployment', 'workflow', 'external']),
         handle: Handle,
         facts: z.object({
-          issuer: z.enum(['vercel', 'github', 'oidc', 'host']),
+          issuer: z.enum(['vercel', 'github', 'oidc', 'host', 'joined']),
           iss: z.string(),
           claims: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])),
         }).optional(),
