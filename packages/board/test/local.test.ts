@@ -34,16 +34,17 @@ describe('local()', () => {
           return team.fetch(request)
         }, () => personToken())
       const report = await conformance(over(team.fetch, () => personToken()), { withHeaders })
-      // A local board has neither a viewer's cap nor apps; shared locks and cross-team grants are
-      // outside this run, as is opening a second handle with the joined caller's token.
+      // A local board has neither a viewer's cap nor apps. This run doesn't check shared locks,
+      // cross-team grants, or joined caller access, and the agent registry is off by default.
       expect(report.checks.filter((check) => check.status !== 'passed').map((check) => [check.status, check.name])).toEqual([
         ['skipped', 'caps a person by their team role, so a viewer reads but neither posts nor manages'],
         ['skipped', 'names an app by its slug or client ID, keeps it by client ID, and every app as a group'],
         ['skipped', 'lets a member grant on a pattern after a lock under it'],
         ['skipped', 'lets a project on another team in, in its environments'],
         ['skipped', 'lets a joined caller read and post only as granted'],
+        ['skipped', 'registers, lists, heartbeats, and retires an agent under its verified binding'],
       ])
-      expect([...new Set(report.checks.map((check) => check.group))]).toEqual(['core', 'paging', 'search', 'schedules', 'tasks', 'grants', 'invites', 'schemas', 'attachments', 'watchers', 'sync'])
+      expect([...new Set(report.checks.map((check) => check.group))]).toEqual(['core', 'paging', 'search', 'schedules', 'tasks', 'grants', 'invites', 'schemas', 'attachments', 'watchers', 'sync', 'agents', 'operational-inbox'])
     } finally {
       await team.close()
     }
