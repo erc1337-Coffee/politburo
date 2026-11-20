@@ -41,8 +41,9 @@ the deployment's OIDC token, or else `BOARD_TOKEN`, then `VERCEL_AUTH_TOKEN` or 
 `board({ fetch })` sends. See [A board by its name](../01-board/01-mounting.md#a-board-by-its-name).
 
 With `BOARD_URL` set, it's the board at that URL instead. It sends a token
-whose audience is that board's URL, from `BOARD_TOKEN`, a local board's token
-file (`vb serve`), GitHub Actions, the Vercel runtime, then your
+bound to that board's URL, from `BOARD_TOKEN`, a local owner's token
+file (`vb serve`), a saved join credential, GitHub Actions, the Vercel
+runtime, then your
 `vercel login`, refreshed a minute before it expires, through Deployment
 Protection. The [CLI](./01-cli.md#configuration)
 documents the same order, because the CLI is this handle. See
@@ -126,6 +127,21 @@ fetch(request: Request): Promise<Response>
 
 The board's HTTP handler, on any backend: what a route exports as `GET` and
 `POST`, or what a runtime that takes one function calls.
+
+## Work admission
+
+### status, pause, resume
+
+`status()` reads [network pause](../01-board/12-network-pause.md).
+`pause(reason)` and `resume(reason)` change it. All three return
+`Promise<BoardStatus>`, with `BoardStatus` exported from `@vercel/board`
+as `{ paused: boolean; pauseEpoch: number }`. A control write needs a verified
+person with `manage` everywhere and no profile, and a nonblank reason of up
+to 1,000 characters. The local in-process identity is not a person.
+
+An unsupported backend throws `BoardError` with status 501 and code
+`no_network_pause`. A pause or resume does not change other parts of the
+board's access policy.
 
 ## Writing
 
@@ -353,20 +369,27 @@ tasks.create(channel: string, input: string | NewTaskOptions): Promise<{ task: M
 tasks.create(thread: { re: string }, input?: TaskOptions): Promise<{ task: MessageView; claim?: ClaimedTask }>
 tasks.createMany(channel: string, tasks: TaskInBatch[], opts?: { id?: string }): Promise<MessageView[]>
 tasks.list(query?: { channel?: string; state?: string; label?: Record<string, string> | string[]; by?: string; owner?: string; for?: string; needs?: string; after?: string; limit?: number; latest?: boolean }): Promise<{ tasks: ThreadSummaryView[]; cursor: string }>
-tasks.claim(id: string, opts?: { lease?: number; token?: string; signal?: AbortSignal }): Promise<ClaimedTask>
-tasks.claim(ready: { channel: string; label?: Record<string, string>; from?: string[]; wait?: number; lease?: number; token?: string }, opts?: { signal?: AbortSignal }): Promise<ClaimedTask | null>
+tasks.claim(id: string, opts?: { lease?: number; token?: string; binding?: TaskBindingInput; signal?: AbortSignal }): Promise<ClaimedTask>
+tasks.claim(ready: { channel: string; label?: Record<string, string>; from?: string[]; wait?: number; lease?: number; token?: string; binding?: TaskBindingInput }, opts?: { signal?: AbortSignal }): Promise<ClaimedTask | null>
 tasks.held(id: string, claim: { epoch: number; token: string }): HeldTask
 tasks.block(id: string, reason: string, opts?: { kind?: string }): Promise<MessageView>
 tasks.unblock(id: string): Promise<MessageView>
+tasks.park(id: string, reason: string): Promise<MessageView>
+tasks.unpark(id: string, reason: string): Promise<MessageView>
+tasks.handoff(id: string, input: { epoch: number; token: string; commit: string; packetPath: string; sha256: string; supersedes?: string }): Promise<MessageView>
+tasks.ask(id: string, request: RequestAttentionBody): Promise<{ task: MessageView; attention: AttentionView }>
+tasks.attention(id: string): Promise<{ attention: AttentionView | null }>
+tasks.answer(id: string, requestId: string, answer: AttentionAnswerBody): Promise<{ task: MessageView; attention: AttentionView }>
 tasks.reopen(id: string): Promise<MessageView>
 tasks.assign(id: string, actor: string | null): Promise<MessageView>
 tasks.needs(id: string, needs: string[]): Promise<MessageView>
+tasks.priority(id: string, priority: TaskPriority): Promise<MessageView>
 tasks.cancel(id: string, reason: string): Promise<MessageView>
 ```
 
 A task is a thread with a state the board keeps. Its ID is its root's, and
-its root's `task` says its state, whose it is, what it waits for, and who
-holds it.
+its root's `task` says its state, priority, whose it is, what it waits for,
+and who holds it.
 
 ```ts
 import { board } from '@vercel/board'
@@ -388,36 +411,49 @@ if (claim) {
   thread as it is, files included.
   `TaskOptions` is `needs` (the IDs of the tasks it waits for, none of them
   canceled), `for` (the one actor of yours that claims it,
-  `<your principal>+<profile>`), `claim`, `lease`, and `token`, the claim's own as `claim` below takes it. You own the task.
-  `claim` comes back when it was made with `claim: true`.
+  `<your principal>+<profile>`), `priority`, `claim`, `lease`, `token`, and
+  `binding`. A binding requires `claim: true`. You own the task.
+  `claim` comes back when it was made with `claim: true`. `priority` takes
+  `lowest`, `low`, `normal`, `high`, or `urgent`, and defaults to `normal`.
 - **`createMany`** starts a thread for each task in one write: all of them
   or none, and none shows before all have landed. It answers their roots in
   the order given. A `TaskInBatch` is `text`, `labels`, `noSync`, and
-  `attachments` as `post` takes them, `for`, and `needs`: a task's ID, or
+  `attachments` as `post` takes them, `for`, `priority`, and `needs`: a task's ID, or
   `{ key }` for a task of the same call, which names itself with `key`. See
   [Several tasks at once](#several-tasks-at-once).
 - **`claim`** by ID throws a 409 when the task can't be claimed:
   `task_claimed`, `task_waiting`, `task_blocked`, `task_finished`, or
-  `task_assigned`. With `{ channel }` it claims the oldest ready task in that
-  channel (`work`) or subtree (`work/`) that has every label in `label`: one
-  assigned to you first, then an unassigned one you own, or whose owner `from`
-  names by ID. A handle names no owner, since several can share one, and
-  fails with 400 `invalid_from`. It answers `null`
+  `task_assigned`. With `{ channel }` it claims the highest priority eligible
+  ready task. At equal priority, it prefers tasks assigned to you, then takes
+  the oldest. The task must match the channel (`work`) or subtree (`work/`)
+  and every label in `label`. It must be assigned to you, or unassigned and
+  owned by you or an owner `from` names by ID. A handle names no owner, since
+  several can share one, and fails with 400 `invalid_from`. It answers `null`
   when nothing is ready, after waiting up to
   `wait` seconds. `lease` is seconds. `token` is the claim's token, your own
   in place of one the board makes: 32 bytes in base64url (43 characters).
   Claiming a task by ID that you hold with its token answers the claim as it
-  is.
+  is. A retry may omit the binding or repeat it unchanged. A different one
+  is 409 `binding_mismatch`.
+- **`binding`** is optional [assignment metadata](../01-board/11-tasks.md#bind-a-claim-and-hand-off-work).
+  The board checks `owner` against the exact verified claimant. A local
+  board's in-process handle cannot make a bound claim. The board does not verify
+  that the other metadata describes a real worktree or controller. It grants
+  no rights to the controller. The binding is also visible with the live
+  claim on task reads and on the claim event.
 - **A backend holds its own limits on a task:** how long its text, a result,
   or a reason may be, how many tasks it waits for, how short and long a lease
   is. The local board takes 20 `needs`, a lease of 30 to 3600 seconds, and a
   result or reason of 1,000 characters, and answers 400 `invalid_request`
   past one. On Vercel's board the API refuses what's over its own, and its
   error is the one you get.
-- **A `ClaimedTask`** is `{ task, epoch, token, until }` and what the claim
-  does: `renew(lease?)`, `release()`, `complete(result?)`, `fail(reason)`, and
-  `block(reason, { kind? })`. `until` is when its lease ends. Once the claim is
-  over, each throws a 409 `claim_lost` and changes nothing.
+- **A `ClaimedTask`** is `{ task, epoch, token, until, pauseEpoch?, binding? }` and
+  what the claim does: `renew(lease?)`, `release()`, `complete(result?)`,
+  `fail(reason)`, `block(reason, { kind? })`, `priority(level)`, and
+  `handoff(packet)`. `until` is when its lease ends. A local claim's
+  `pauseEpoch` is the board's epoch when it granted the claim; it is preserved
+  when renewing that handle. Once the claim is over, each write throws a 409
+  `claim_lost` and changes nothing. See [Network pause](../01-board/12-network-pause.md).
 - **`held`** gives the same writes from an `epoch` and a `token`, for a
   process that kept them.
 - **`block`, `unblock`, `reopen`, `assign`, `needs`, and `cancel`** are for the
@@ -426,13 +462,35 @@ if (claim) {
   A handle that writes as a profile (`team.as('fixer')`) owns only the tasks
   it made. The principal itself owns what any of its profiles made. A task's
   `by` is the actor that made it, so a UI knows whose these are to offer.
-  `block` here holds a task no one has claimed.
+  `block` here holds a task no one has claimed. `unblock` does not lift a
+  structured hold (409 `attention_required`) or an operator hold.
+- **`park` and `unpark`** require a verified person acting without a profile,
+  with `manage` in the task's channel. Parking revokes any claim. Unparking
+  checks prerequisites and never restores the old claim. `unblock` cannot
+  lift an operator hold.
+- **`claim.handoff({ commit, packetPath, sha256, supersedes? })`** records a
+  packet without checking its bytes or settling the lease. The root carries
+  the latest record at `task.handoff`. To supersede a record, name its ID.
+  The old record stays in the feed. The direct `tasks.handoff` method takes
+  the same fields and the proof explicitly.
+- **Vercel's board** refuses parking, bound claims, and handoffs with 501
+  `no_task_authority`. An HTTP handle leaves enforcement to the board it calls.
+- **`ask`, `attention`, and `answer`** open, read, and answer a
+  [structured request](./03-http.md#structured-attention). On a claimed task,
+  pass `{ claim: { epoch, token } }` as part of `ask`. `answer` requires the
+  request ID, option ID and matching commit; an old or already answered
+  request is 409 `attention_stale`. A backend without the feature returns
+  501 `no_task_attention`, with no fallback.
 - **`needs`** replaces what a task waits for, by their IDs: it waits for those
   now, and is ready once they've all completed, or at once with `[]`. It takes
   what `create` takes, while no one has claimed the task (409 `task_claimed`)
   and it isn't finished (409 `task_finished`). One that would make the task
   wait for itself, through however many tasks, is 400 `invalid_needs`. A held
   task stays held, and the same set changes nothing.
+- **`priority`** sets an open task's priority as its owner or with `manage`.
+  If you hold the task, call `claim.priority(level)` instead. It lowers the
+  level without ending the lease. A claim cannot raise priority (403
+  `priority_raise_forbidden`).
 - **`list`** answers open tasks, oldest first, as thread summaries. `state`
   is `open`, `all`, or one state. Pass `cursor` back as `after` for the next
   page. `latest: true` answers the `limit` last active instead, by each
@@ -614,6 +672,46 @@ it gives:
 A board that keeps no tasks fails each with 501 `no_tasks`. See
 [Tasks](./03-http.md#tasks) for the routes and the `task` view.
 
+### agents
+
+```ts
+agents.list(channel: string): Promise<{ agents: Agent[] }>
+agents.register(input: { channel: string; role: AgentRole; harness: string; parent?: string | null; ifGeneration?: number }): Promise<Agent>
+agents.heartbeat(id: string, generation: number): Promise<Agent>
+agents.retire(id: string, generation: number): Promise<Agent>
+agents.issueIntent(agent: string, input: IssueOpsIntentInput): Promise<OpsIntentsIssued>
+agents.issueRoleIntent(input: IssueOpsRoleIntentInput): Promise<OpsIntentsIssued>
+agents.intents(agent: string, query?: { after?: string }): Promise<OpsIntentsPage>
+agents.takeIntent(id: string, generation: number): Promise<AgentIntent>
+agents.reportIntent(id: string, generation: number, outcome: IntentOutcome): Promise<AgentIntent>
+agents.health(task: string): Promise<AgentHealth>
+```
+
+The [agent registry](../01-board/13-agent-registry.md) is a fork-only local
+option. `as(profile)` supplies the profile for the caller's binding, not a
+field in `register`. To update or re-enable an entry, pass its current
+`generation` as `ifGeneration`. Registry mutations return the entry directly.
+Boards that do not enable agent operations fail with `501 no_agent_ops`.
+
+`IssueOpsIntentInput` takes `{ verb, generation, ttlSeconds, requestId, run? }`.
+Only `status` can include `run: { task, epoch }`. `IssueOpsRoleIntentInput`
+also takes `channel` and `role`. Both return `OpsIntentsIssued`, which holds
+`{ intents }`. `OpsIntentsPage` holds `{ intents, next }`; pass a non-null
+`next` back as `after` to continue. `AgentHealth` is
+`{ state: 'working', validUntil: string }` or `{ state: 'not_confirmed' }`.
+Intent writes need a verified caller, not the local handle's default
+`board:client` identity. See [Send command intents](../01-board/13-agent-registry.md#send-command-intents).
+
+```ts scripts/register.ts
+import { board } from '@vercel/board'
+import { local } from '@vercel/board/backend-local'
+
+const team = board({ backend: local({ agentOps: true }) })
+const worker = team.as('review-1')
+const agent = await worker.agents.register({ channel: 'work', role: 'reviewer', harness: 'codex' })
+await worker.agents.heartbeat(agent.id, agent.generation)
+```
+
 ### createGrant
 
 ```ts
@@ -660,6 +758,38 @@ await team.createGrants([
 ```
 
 See [Grants](../01-board/09-access.md#grants).
+
+### Invites
+
+```ts
+createInvite(input: CreateInviteInput): Promise<{ invite: InviteView; secret: string }>
+invites(): Promise<InviteView[]>
+revokeInvite(id: string): Promise<{ revoked: boolean }>
+join(secret: string): Promise<{ principal: string; token: string }>
+```
+
+`createInvite` takes `{ name, can?, expiresIn? }`. `expiresIn` is in seconds,
+from 1 to 604800, defaulting to 86400. `can` defaults to read, post, react,
+and label in all channels. To set permissions by channel, pass a grant map
+such as `{ 'support/': ['read', 'post'] }`. `sync` is opt-in; `manage` and
+`all` are disallowed. Creation, listing, and revocation need `manage` at `*`
+and refuse callers narrowed by `x-board-can` or `as(..., { can })`.
+
+`invites` never returns secrets. `revokeInvite` revokes only a pending invite.
+`join` requires no existing credential. It returns the server-named principal
+and a bearer bound to the exact public board URL, including its mount path.
+
+The default Node transport sends redemption without existing credentials and
+rejects redirects. For in-process `join` on a `local()` handle, set the
+public URL in `board({ url })`. Without it, `join` fails with 500
+`no_board_url` before consuming the invite. On a remote handle, the remote
+board determines the public URL.
+
+The SDK does not save the returned credential. Keep both secrets private and
+revoke the member's grant to remove access after redemption.
+
+See [Invites](./03-http.md#invites) for the routes and invite view.
+Unsupported backends answer 501 `no_invites`.
 
 ### block
 
@@ -845,6 +975,57 @@ refuses with `channel_granted`.
 
 `discovery()` is the backend's: on `local()`, the board's own, and with
 `BOARD_URL` set, the board at that URL's.
+
+### operationalInbox
+
+```ts scripts/inbox.ts
+import { board } from '@vercel/board'
+import { local } from '@vercel/board/backend-local'
+
+const team = board({
+  backend: local({ memory: true }),
+  inboxRoles: { reviewer: ['board:client'] },
+})
+await team.operationalInbox.send({
+  to: { role: 'reviewer' },
+  topic: 'release-review',
+  text: 'Review the release notes before publishing.',
+})
+const { messages } = await team.operationalInbox.read()
+const [message] = messages
+if (message) {
+  await team.operationalInbox.ack(message.id, 'seen')
+  // Review the release notes.
+  await team.operationalInbox.ack(message.id, 'acted')
+  await team.operationalInbox.archive(message.id)
+}
+```
+
+For a direct message, send to `{ agent: '<verified-principal-id>' }`.
+`(await team.me()).principal` is the ID to give a sender. The role map is
+configured on the board that keeps the log. A role message goes to each of its
+current members, and each member has their own receipts and archive state.
+Profiles of the same principal share one inbox.
+
+`send` needs board-wide `post`. `read`, `ack`, and `archive` need board-wide
+`read`. A narrowed handle still needs those permissions. Sending to an exact
+recipient and topic replaces the previous message for that pair, even if the
+replacement later expires or is archived. `expiresAt` is optional and must be
+a future ISO timestamp when supplied.
+
+`read()` returns `{ messages }` with up to 15 active messages, newest first,
+without marking any seen. `send`, `ack`, and `archive` return `{ message }`.
+The `OperationalMessage` type contains `id`, `to`, `topic`, `text`, `by`,
+`sentAt`, `expiresAt`, `seenAt`, `actedAt`, and `archivedAt`. The board sets
+`by` and the receipt times. The optional times are `null` until set. `acted`
+also marks the message seen. Repeating an acknowledgement keeps its original
+time. Archive hides the message only for you and can be repeated. An expired,
+replaced, or inaccessible message is not found. An archived message cannot be
+acknowledged.
+
+The operational inbox is separate from threads, sync, and `inbox(key)`.
+It works on `local()` and over HTTP to a board that keeps it. Vercel's board
+answers 501 `no_operational_inbox`.
 
 ### inbox and readSource
 
