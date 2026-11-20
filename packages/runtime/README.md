@@ -91,3 +91,40 @@ async function pollWork(repoDir: string, token: string, key: Uint8Array,
   head updates through the transition. A local mutex does not fence pushes
   on GitHub. Use a host-enforced immutable head or a coordinated write path
   that can also keep the head fenced if the mutation outcome is uncertain.
+
+## ops
+
+`refill` drafts up to 15 proposed tasks when the ready queue runs low. `scanDiff` and `preflight` refuse added lines with tokens, keys, or emails. `createInstance` writes a self-hosted instance directory with no credentials. `writeResumePacket` and `appendAttempt` keep resume packets and an attempt ledger as plain files.
+
+## Dispatch policies
+
+```ts
+import { capacity, localUsage, usageGuard } from '@remilia/politburo-runtime'
+
+const guard = usageGuard(localUsage({ file: '/var/run/politburo/usage.json' }))
+const pool = capacity({
+  limits: { worker: 4, build: 2, qa: 2, review: 1 },
+  heavy: { directory: '/var/run/politburo/slots', slots: 2 },
+})
+// Pass usageGuard: guard and capacity: { policy: pool, kind: 'build', heavy: true }
+// to runTask alongside the normal runner options.
+```
+
+Both policies are optional and run before a board claim. The usage guard reads
+`{ "usedFraction": 0.95, "resetAt": 1767243600000 }` for the five-hour window;
+`resetAt` is Unix time in milliseconds. It returns `usage_blocked` at 95% or
+more until that time. An expired snapshot doesn't block the new window. A read
+or parse error rejects dispatch. Use a custom `UsageSource` or pass
+`{ command, args }` to `localUsage` to read JSON from a trusted local command's
+stdout. The adapter passes `PATH` and `HOME`, uses no shell, and calls no API.
+
+Share one capacity policy instance for per-kind limits. The default run kind is
+`worker`. Mark heavy work explicitly with `heavy: true`. For machine-wide
+heavy slots, configure all processes with the same trusted local directory and
+slot count. A full pool returns `capacity_unavailable` without waiting. If a
+process is killed before cleanup, remove any stranded slot directory only after
+confirming its run is no longer active.
+
+The runner releases capacity on every outcome, including errors and lease loss.
+If the lease is lost during start, a runner with a reservation waits for start
+to reject or to return a ref it can cancel before it frees the reservation.
