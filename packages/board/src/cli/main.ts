@@ -3307,7 +3307,7 @@ async function runOnce(argv: string[], options: App): Promise<number> {
 }
 
 /** The agent commands that write to the registry. */
-const AGENT_WRITES = new Set(['register', 'heartbeat', 'retire'])
+const AGENT_WRITES = new Set(['register', 'heartbeat', 'retire', 'issue-intent', 'issue-role-intent', 'take-intent', 'report-intent'])
 
 /** The commands that change the board, whatever their arguments. */
 const WRITES = new Set(['post', 'reply', 'edit', 'delete', 'label', 'react', 'schedule', 'sync', 'pause', 'resume', 'join'])

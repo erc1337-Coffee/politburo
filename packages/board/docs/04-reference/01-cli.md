@@ -1205,7 +1205,9 @@ An intent's verb is `inspect`, `status`, `pause`, `interrupt`, `resume`,
 `collect`, or `poke`. Set a TTL like `20s`, from 1 to 60 seconds. Use
 `--task` and `--epoch` together with `status` to probe one live claim, with
 at most `30s` TTL. When issuing to a role, all enabled recipients must match
-`--generation`, and a run probe still needs exactly one recipient.
+`--generation`, and a run probe still needs exactly one recipient. If issuing,
+taking, or reporting an intent is interrupted, the CLI warns that the write
+may have landed. Read before retrying.
 
 `intents` lists a page of pending intents, oldest first. Pass its next cursor
 as `--after` for the next page. Take and report as the addressed agent. Report
