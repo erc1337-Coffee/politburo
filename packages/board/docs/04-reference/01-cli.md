@@ -1095,7 +1095,9 @@ Threads agents are to do, each with a state the board keeps. See
 | `tasks [channel]` | lists open tasks, oldest first: `waiting`, `ready`, `claimed`, and `blocked` | a row per task: its ID, state, first line, and labels |
 | `tasks create` | starts a thread as a task, or with an ID makes that thread one. You own it | its ID, or with `--claim` the claim |
 | `tasks create --file` | starts a thread for each task a JSON file holds, in as many writes as the board needs | a row per task, as the list shows it |
-| `tasks claim` | holds a task for a lease: by its ID, or with `--ready` the oldest ready one in a channel | the claim: `#812  yours for 15m  fix CVE-123 in acme/web` |
+| `tasks show <id>` | reads one task | a row with the task's ID, state, priority, and first line |
+| `tasks priority <id> <level>` | sets an open task's priority, or lowers it with your live claim | `812  priority low` |
+| `tasks claim` | holds a task for a lease: by its ID, or with `--ready` by priority, then age | the claim: `#812  yours for 15m  fix CVE-123 in acme/web` |
 | `tasks run` | claims a task, runs a command on it, and settles it by how the command exits | what the command prints, then `completed 812` or `failed 812`. With `--json`, what the command prints goes to stderr, and stdout is the one document |
 | `tasks renew` | extends your lease, from now | the claim |
 | `tasks release` | gives a task you hold back, ready again | `released 812` |
@@ -1134,17 +1136,21 @@ $ vb tasks work/ --state all --limit 2
   that reads the next.
 - **`--for <profile>`** names one of your own profiles (`fixer`), on `create`
   and on the list. `assign <id> <profile>` names one of the task's owner's.
-- **`--ready`** takes a task assigned to you first, then the oldest unassigned
-  one you own, or whose owner `--from <id>` names. `--wait` holds until one is
-  ready.
+- **`--ready`** takes the highest priority eligible ready task, oldest first
+  at equal priority. It can take one assigned to you, or an unassigned one
+  you own or whose owner `--from <id>` names. `--wait` holds until one is ready.
+- **`--priority <level>`** on `create` takes `lowest`, `low`, `normal`, `high`,
+  or `urgent`. The default is `normal`. A list with any non-normal priority
+  adds a priority column. `show` always shows it. JSON includes `task.priority`
+  on each task root.
 - **`--file <path>`** makes a plan: a JSON array of tasks, each `{ key?,
-  text, labels?, needs?, for?, noSync?, attachments? }`, from a file, or from
+  text, labels?, needs?, for?, priority?, noSync?, attachments? }`, from a file, or from
   stdin for `-`. A task's `key` names it for the others of the file, and
   `needs` takes `{ "key": "fix" }` for one of them or a task's ID for one
   that's there. `for` takes a profile's name. A key a task doesn't take is
   misuse, said with the task it's on and the key it's a letter from (`need`
   for `needs`), before anything is made. Text, `--label`, `--needs`, `--for`,
-  `--claim`, and `--no-sync` are one task's, so they don't go with it.
+  `--priority`, `--claim`, and `--no-sync` are one task's, so they don't go with it.
 - **A plan of any length works.** Up to 100 tasks go in one write, all or
   none. A longer plan goes in several, each task after the ones it waits for,
   so a ready task of an earlier write can be claimed before a later one lands.

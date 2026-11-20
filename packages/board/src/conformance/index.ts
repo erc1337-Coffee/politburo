@@ -409,7 +409,7 @@ async function task(ctx: Context, text: string, options: TaskOptions & { labels?
 
 /** Several tasks of this run's, made in one write: the run deletes their roots at the end, as it does a task's. */
 async function taskBatch(ctx: Context, tasks: TaskInBatch[], opts: { id?: string } = {}) {
-  const made = await ctx.board.tasks.createMany(ctx.channel, tasks.map((one) => ({ ...one, labels: ctx.labels, noSync: true })), opts)
+  const made = await ctx.board.tasks.createMany(ctx.channel, tasks.map((one) => ({ ...one, labels: { ...one.labels, ...ctx.labels }, noSync: true })), opts)
   ctx.posted.push(...made.map((root) => root.id))
   return made
 }
@@ -1587,7 +1587,7 @@ const CHECKS: Check[] = [
   },
   {
     group: 'tasks',
-    name: 'claims the oldest ready task in a channel or its subtree that has the labels asked for, and waits for one',
+    name: 'claims the oldest ready task at equal priority in a channel or its subtree, and waits for one',
     run: async (ctx) => {
       const queue = { ...ctx.labels, queue: `q${ctx.labels.conformance}` }
       const { task: older } = await task(ctx, 'conformance: the older of two', { labels: queue })
@@ -1607,6 +1607,52 @@ const CHECKS: Check[] = [
       same(got?.task.id, older.id, 'the task a waiting claim got')
       await got!.release()
       await second!.release()
+    },
+  },
+  {
+    group: 'tasks',
+    name: 'keeps task priority and claims highest priority first, then oldest',
+    run: async (ctx) => {
+      const labels = { ...ctx.labels, queue: 'priority' }
+      const { task: normal } = await task(ctx, 'conformance: default priority', { labels })
+      await taskBatch(ctx, [
+        { text: 'conformance: low priority', priority: 'low', labels },
+        { text: 'conformance: high priority', priority: 'high', labels },
+        { text: 'conformance: lowest priority', priority: 'lowest', labels },
+        { text: 'conformance: urgent priority', priority: 'urgent', labels },
+        { text: 'conformance: urgent priority again', priority: 'urgent', labels },
+      ])
+      same((await ctx.board.thread(normal.id)).message.task?.priority, 'normal', 'the default priority on a task read')
+      const listed = await ctx.board.tasks.list({ channel: ctx.channel, label: Object.entries(labels).map(([key, value]) => `${key}=${value}`) })
+      alike(listed.tasks.map(({ message }) => message.task?.priority), ['normal', 'low', 'high', 'lowest', 'urgent', 'urgent'], 'priorities in creation order on the list')
+      // Take the IDs from the list, not from the order the batch answered in.
+      const [first, low, high, lowest, urgent, laterUrgent] = listed.tasks
+      for (const { message } of [urgent!, laterUrgent!, high!, first!, low!, lowest!]) {
+        const claim = await ctx.board.tasks.claim({ channel: ctx.channel, label: labels })
+        same(claim?.task.id, message.id, 'the next task by priority and age')
+        await claim!.complete()
+      }
+    },
+  },
+  {
+    group: 'tasks',
+    name: 'lets task writers set priority and live claims only lower it',
+    run: async (ctx) => {
+      const { task: root } = await task(ctx, 'conformance: change priority', { priority: 'low' })
+      same(root.task?.priority, 'low', 'the priority set on create')
+      same((await ctx.board.tasks.priority(root.id, 'high')).task?.priority, 'high', 'the priority raised by the owner')
+      const { cursor } = await ctx.board.poll({ channel: ctx.channel })
+      const claim = await ctx.board.tasks.claim(root.id)
+      await rejects(claim.priority('urgent'), 403, 'priority_raise_forbidden', 'a claim raising priority')
+      await rejects(ctx.board.tasks.priority(root.id, 'urgent'), 409, 'task_claimed', 'a claim holder raising priority without proof')
+      const lowered = await claim.priority('low')
+      same(lowered.task?.priority, 'low', 'the priority lowered by the claim')
+      same(lowered.task?.state, 'claimed', 'the task state after lowering priority')
+      await claim.release()
+      await rejects(claim.priority('lowest'), 409, 'claim_lost', 'a released claim lowering priority')
+      same((await ctx.board.thread(root.id)).message.task?.priority, 'low', 'the stored priority after rejected writes')
+      const { events } = await ctx.board.poll({ channel: ctx.channel, after: cursor })
+      alike(events.flatMap((event) => event.type === 'task.priority_changed' && event.message?.id === root.id ? [[event.payload.priority, event.message.task?.priority]] : []), [['low', 'low']], 'priority changes in the feed')
     },
   },
   {

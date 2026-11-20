@@ -2,7 +2,7 @@ import type { Protocol } from '../api/protocol.ts'
 import { CHANNELS_LIMIT_DEFAULT, CHANNELS_LIMIT_MAX, LEASE_DEFAULT_S, RegisterBody, type ActorView, type BoardEventView, type ChannelView, type Discovery, type GrantView, type InboxEntry, type MessageView, type RegistrationView, type ScheduleView, type SchemaView, type TaskClaim, type TaskView, type ThreadSummaryView } from '../api/routes.ts'
 import { duration, type ProfileOption } from '../client/client.ts'
 import { sha256 } from '../client/ids.ts'
-import { IMPORT_BYTES_MAX, MESSAGE_TEXT_MAX, RemoteWatcherId, TASK_LABEL, type Attachment, type Author, type Labels, type TaskState } from '../contract/schemas.ts'
+import { DEFAULT_TASK_PRIORITY, TaskPriority, IMPORT_BYTES_MAX, MESSAGE_TEXT_MAX, RemoteWatcherId, TASK_LABEL, type Attachment, type Author, type Labels, type TaskState } from '../contract/schemas.ts'
 import type { ExternalAuthor, Link, Origin } from '../contract/external.ts'
 import { blocksIn } from '../contract/blocks.ts'
 import { mentionTerm, mentionTerms, replaceMentions } from '../contract/mentions.ts'
@@ -48,6 +48,7 @@ type ApiChannel = { id: string; name: string }
  */
 type ApiTask = {
   state: TaskState
+  priority?: TaskPriority
   owner: string
   /** The actor its owner made it a task as: itself, or one of its profiles. */
   by: string
@@ -303,7 +304,7 @@ const SANDBOX_TASK_ROUTES: readonly SandboxRoute[] = [
   { method: 'POST', path: '/tasks' },
   { method: 'POST', path: '/tasks/batch' },
   { method: 'POST', path: '/tasks/claim' },
-  ...['claim', 'renew', 'release', 'complete', 'fail', 'block', 'unblock', 'reopen', 'assign', 'needs', 'cancel'].map((change) => ({ method: 'POST', path: `/tasks/:task/${change}` })),
+  ...['claim', 'renew', 'release', 'complete', 'fail', 'block', 'unblock', 'reopen', 'assign', 'needs', 'priority', 'cancel'].map((change) => ({ method: 'POST', path: `/tasks/:task/${change}` })),
 ]
 
 /**
@@ -497,6 +498,7 @@ const isId = (value: string) => /^[^\s:]+:\S+$/.test(value)
 const TASK_EVENTS: Record<string, BoardEventView['type']> = {
   'task.made': 'task.created',
   'task.assigned': 'task.assigned',
+  'task.priority_changed': 'task.priority_changed',
   'task.needs_changed': 'task.needs_changed',
   'task.ready': 'task.ready',
   'task.claimed': 'task.claimed',
@@ -1486,6 +1488,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
   /** A task as board shows it: the tasks it waits for by their roots' IDs, and its claim's end as a time. */
   const taskView = (task: ApiTask): TaskView => ({
     state: task.state,
+    priority: TaskPriority.safeParse(task.priority).data ?? DEFAULT_TASK_PRIORITY,
     owner: task.owner,
     by: task.by,
     for: task.for,
@@ -2903,9 +2906,10 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
    * What makes a thread a task, as the API takes it: the token is this backend's, for a claim made in the same write.
    * Whom it's for is the API's to check, one of its owner's profiles, as on any board.
    */
-  const taskSpec = (input: { needs?: string[] | undefined; for?: string | null | undefined; claim?: boolean | undefined; lease?: number | undefined }, token: string | null) => ({
+  const taskSpec = (input: { needs?: string[] | undefined; for?: string | null | undefined; priority?: TaskPriority | undefined; claim?: boolean | undefined; lease?: number | undefined }, token: string | null) => ({
     ...(input.needs?.length ? { needs: needsOf(input.needs) } : {}),
     ...(input.for ? { for: input.for } : {}),
+    ...(input.priority !== undefined ? { priority: input.priority } : {}),
     ...(token ? { claim: { claimToken: token, leaseSeconds: input.lease ?? LEASE_DEFAULT_S } } : {}),
   })
 
@@ -2914,8 +2918,9 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
    * is what was asked for. It waits when it names tasks to wait for, which the API checked, and no one holds it: a
    * claim takes `label`, which reads.
    */
-  const askedTask = (owner: string, by: string, input: { needs?: string[] | undefined; for?: string | null | undefined }): ApiTask => ({
+  const askedTask = (owner: string, by: string, input: { needs?: string[] | undefined; for?: string | null | undefined; priority?: TaskPriority | undefined }): ApiTask => ({
     state: input.needs?.length ? 'waiting' : 'ready',
+    priority: input.priority ?? DEFAULT_TASK_PRIORITY,
     owner,
     by,
     for: input.for ?? null,
@@ -2984,10 +2989,13 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     let payload: Record<string, unknown>
     switch (type) {
       case 'task.created':
-        payload = { ...base, needs: message.task!.needs, for: task.for, by }
+        payload = { ...base, needs: message.task!.needs, for: task.for, priority: message.task!.priority, by }
         break
       case 'task.assigned':
         payload = { ...base, for: task.for, by }
+        break
+      case 'task.priority_changed':
+        payload = { ...base, priority: message.task!.priority, by }
         break
       case 'task.needs_changed':
         payload = { ...base, needs: message.task!.needs, by }
@@ -3613,6 +3621,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
           ...(task.attachments?.length ? { attachments: task.attachments } : {}),
           ...(needs.length ? { needs } : {}),
           ...(task.for ? { for: task.for } : {}),
+          ...(task.priority !== undefined ? { priority: task.priority } : {}),
         }
       })
       // The batch's `id` is its caller's own key for it: the API answers the key again, with the same request, with the
@@ -3636,7 +3645,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
             const asked = input.tasks[at]!
             const needs = [...waits[at]!.threads, ...waits[at]!.keys.map((key) => threads[places.get(key)!]!)]
             const { actor } = await self(who)
-            const stood: ApiTask = { state: needs.length ? 'waiting' : 'ready', owner: principalId(actor.principal), by: await actorOf(who), for: asked.for ?? null, needs, epoch: 0, claim: null, blocked: null, result: null, reason: null }
+            const stood: ApiTask = { state: needs.length ? 'waiting' : 'ready', priority: asked.priority ?? DEFAULT_TASK_PRIORITY, owner: principalId(actor.principal), by: await actorOf(who), for: asked.for ?? null, needs, epoch: 0, claim: null, blocked: null, result: null, reason: null }
             const first = { id: idAt(task.id, 1), threadId: task.id, sequence: 1 }
             return view(who, { ...(await sent(who, first, { text: asked.text, labels: { ...asked.labels, [TASK_LABEL]: stood.state }, attachments: asked.attachments, noSync: asked.noSync })), task: stood }, input.channel)
           }),
@@ -3740,6 +3749,11 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
       const who = whoOf(caller)
       // What it waits for now, by their threads: the API checks each, and that none waits for this one.
       return { task: await rootOf(who, await taskWrite(who, `${await taskPath(who, id, signal)}/needs`, { needs: needsOf(needs) }, { id, signal })) }
+    },
+    async setTaskPriority(caller, { id, priority, epoch, token }, signal) {
+      const who = whoOf(caller)
+      const proof = epoch !== undefined && token !== undefined ? await proofOf({ epoch, token }) : null
+      return { task: await rootOf(who, await taskWrite(who, `${await taskPath(who, id, signal)}/priority`, { priority, ...proof }, { id, signal })) }
     },
     async cancelTask(caller, { id, reason }, signal) {
       const who = whoOf(caller)

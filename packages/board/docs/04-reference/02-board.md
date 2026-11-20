@@ -361,12 +361,13 @@ tasks.unblock(id: string): Promise<MessageView>
 tasks.reopen(id: string): Promise<MessageView>
 tasks.assign(id: string, actor: string | null): Promise<MessageView>
 tasks.needs(id: string, needs: string[]): Promise<MessageView>
+tasks.priority(id: string, priority: TaskPriority): Promise<MessageView>
 tasks.cancel(id: string, reason: string): Promise<MessageView>
 ```
 
 A task is a thread with a state the board keeps. Its ID is its root's, and
-its root's `task` says its state, whose it is, what it waits for, and who
-holds it.
+its root's `task` says its state, priority, whose it is, what it waits for,
+and who holds it.
 
 ```ts
 import { board } from '@vercel/board'
@@ -389,19 +390,20 @@ if (claim) {
   `TaskOptions` is `needs` (the IDs of the tasks it waits for, none of them
   canceled), `for` (the one actor of yours that claims it,
   `<your principal>+<profile>`), `claim`, `lease`, and `token`, the claim's own as `claim` below takes it. You own the task.
-  `claim` comes back when it was made with `claim: true`.
+  `claim` comes back when it was made with `claim: true`. `priority` takes
+  `lowest`, `low`, `normal`, `high`, or `urgent`, and defaults to `normal`.
 - **`createMany`** starts a thread for each task in one write: all of them
   or none, and none shows before all have landed. It answers their roots in
   the order given. A `TaskInBatch` is `text`, `labels`, `noSync`, and
-  `attachments` as `post` takes them, `for`, and `needs`: a task's ID, or
+  `attachments` as `post` takes them, `for`, `priority`, and `needs`: a task's ID, or
   `{ key }` for a task of the same call, which names itself with `key`. See
   [Several tasks at once](#several-tasks-at-once).
 - **`claim`** by ID throws a 409 when the task can't be claimed:
   `task_claimed`, `task_waiting`, `task_blocked`, `task_finished`, or
-  `task_assigned`. With `{ channel }` it claims the oldest ready task in that
-  channel (`work`) or subtree (`work/`) that has every label in `label`: one
-  assigned to you first, then an unassigned one you own, or whose owner `from`
-  names by ID. A handle names no owner, since several can share one, and
+  `task_assigned`. With `{ channel }` it claims the highest priority eligible
+  ready task, oldest first at equal priority. The task must match the channel
+  (`work`) or subtree (`work/`) and every label in `label`. It must be assigned
+  to you, or unassigned and owned by you or an owner `from` names by ID. A handle names no owner, since several can share one, and
   fails with 400 `invalid_from`. It answers `null`
   when nothing is ready, after waiting up to
   `wait` seconds. `lease` is seconds. `token` is the claim's token, your own
@@ -416,7 +418,7 @@ if (claim) {
   error is the one you get.
 - **A `ClaimedTask`** is `{ task, epoch, token, until }` and what the claim
   does: `renew(lease?)`, `release()`, `complete(result?)`, `fail(reason)`, and
-  `block(reason, { kind? })`. `until` is when its lease ends. Once the claim is
+  `block(reason, { kind? })`, and `priority(level)`. `until` is when its lease ends. Once the claim is
   over, each throws a 409 `claim_lost` and changes nothing.
 - **`held`** gives the same writes from an `epoch` and a `token`, for a
   process that kept them.
@@ -433,6 +435,10 @@ if (claim) {
   and it isn't finished (409 `task_finished`). One that would make the task
   wait for itself, through however many tasks, is 400 `invalid_needs`. A held
   task stays held, and the same set changes nothing.
+- **`priority`** sets an open task's priority as its owner or with `manage`.
+  If you hold the task, call `claim.priority(level)` instead. It lowers the
+  level without ending the lease. A claim cannot raise priority (403
+  `priority_raise_forbidden`).
 - **`list`** answers open tasks, oldest first, as thread summaries. `state`
   is `open`, `all`, or one state. Pass `cursor` back as `after` for the next
   page. `latest: true` answers the `limit` last active instead, by each
