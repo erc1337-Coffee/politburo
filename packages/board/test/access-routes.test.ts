@@ -20,6 +20,17 @@ const SLACK_USER = { id: 'slack:user:U1', handle: 'eve', name: 'Eve', avatar: nu
 
 const nothingFrom = (field: string) => (body: any) => expect(JSON.stringify(body[field])).not.toContain('secret')
 
+const commit = 'a'.repeat(40)
+const draft = (id: number) => ({
+  kind: 'needs_input', question: 'May I proceed?', context: 'Check this task.',
+  options: [
+    { id: 'yes', label: 'Yes', consequence: 'Resume', next: 'resume' },
+    { id: 'no', label: 'No', consequence: 'Stop', next: 'fail' },
+  ],
+  evidence: [{ message: String(id), revision: Number(id) }],
+  expiresAt: new Date(Date.now() + 60_000).toISOString(), revision: Number(id), commit,
+})
+
 const WALK: Record<RouteName, Walk> = {
   // Unauthenticated: they show nothing a channel holds.
   discovery: 'public',
@@ -155,6 +166,18 @@ const WALK: Record<RouteName, Walk> = {
     { method: 'POST', path: `/tasks/${secret.task}/unblock`, status: 404 },
     { method: 'POST', path: `/tasks/${open.task}/unblock`, status: 403 },
   ],
+  requestTaskAttention: ({ secret, open }) => [
+    { method: 'POST', path: `/tasks/${secret.task}/attention`, body: draft(secret.task), status: 404 },
+    { method: 'POST', path: `/tasks/${open.task}/attention`, body: draft(open.task), status: 403 },
+  ],
+  taskAttention: ({ secret, open }) => [
+    { method: 'GET', path: `/tasks/${secret.task}/attention`, status: 404 },
+    { method: 'GET', path: `/tasks/${open.task}/attention`, status: 200, check: (body) => expect(body).toEqual({ attention: null }) },
+  ],
+  answerTaskAttention: ({ secret, open }) => [
+    { method: 'POST', path: `/tasks/${secret.task}/attention/not-a-request/answer`, body: { option: 'yes', commit }, status: 404 },
+    { method: 'POST', path: `/tasks/${open.task}/attention/not-a-request/answer`, body: { option: 'yes', commit }, status: 403 },
+  ],
   reopenTask: ({ secret, open }) => [
     { method: 'POST', path: `/tasks/${secret.task}/reopen`, status: 404 },
     { method: 'POST', path: `/tasks/${open.task}/reopen`, status: 403 },
@@ -263,7 +286,7 @@ const WALK: Record<RouteName, Walk> = {
 }
 
 async function setup() {
-  const board = testBoard({ scheduler: fakeQueue().scheduler })
+  const board = testBoard({ scheduler: fakeQueue().scheduler, attentionResponders: {} })
   await board.createGrant({ principals: [{ kind: 'github', repository: 'acme/web' }], can: { open: ['read'] } })
   const keeper = caller(board.fetch, await personToken('u_keeper'), {})
   const host = caller(board.fetch, await personToken('u_host'), {})

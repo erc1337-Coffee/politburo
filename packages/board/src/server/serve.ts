@@ -1,6 +1,8 @@
 import {
   AckBody,
   AssignTaskBody,
+  AttentionAnswerBody,
+  RequestAttentionBody,
   TaskNeedsBody,
   BlockTaskBody,
   CancelTaskBody,
@@ -70,7 +72,7 @@ import { avatarSvg } from './avatars.ts'
 import { badRequest, batchTooLarge, forbidden, HttpError, json, notFound, toErrorResponse } from './errors.ts'
 import { extractMentions, settleMentions, type Mentioned, type MentionedActor } from '../contract/mentions.ts'
 import { DroppedError, runMiddleware, type Write, type WriteSource } from './middleware.ts'
-import { createRouter, METHODS, openapi, queryObject, readCapped, readJson, type BoardRoute } from './routing.ts'
+import { ATTENTION_METHODS, createRouter, METHODS, openapi, queryObject, readCapped, readJson, type BoardRoute } from './routing.ts'
 import { FULL_ACCESS, parseCan, type Access } from './access.ts'
 import { syncTarget, type SyncTarget } from './targets.ts'
 import { SYNC_ACTOR, type WriteOrigin } from './origin.ts'
@@ -78,7 +80,7 @@ import type { WatcherContext } from './watcher.ts'
 import { VERSION } from '../version.ts'
 
 /** The methods whose answer is something new. */
-const CREATED = new Set<Method>(['post', 'schedule', 'createTask', 'createTasks', 'upload', 'uploadFinish'])
+const CREATED = new Set<Method>(['post', 'schedule', 'createTask', 'createTasks', 'requestTaskAttention', 'upload', 'uploadFinish'])
 
 /**
  * Refuses a label write under `board.`: those keys are the board's own, which only its task writes
@@ -133,6 +135,7 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
     case 'synced':
     case 'cancelSchedule':
     case 'unblockTask':
+    case 'taskAttention':
     case 'reopenTask':
     case 'schema':
     case 'attachment':
@@ -191,6 +194,10 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
       return { id, ...FailTaskBody.parse(await body()) }
     case 'blockTask':
       return { id, ...BlockTaskBody.parse(await body()) }
+    case 'requestTaskAttention':
+      return { id, ...RequestAttentionBody.parse(await body()) }
+    case 'answerTaskAttention':
+      return { id, requestId: params.requestId ?? '', ...AttentionAnswerBody.parse(await body()) }
     case 'assignTask':
       return { id, ...AssignTaskBody.parse(await body()) }
     case 'setTaskNeeds':
@@ -1042,7 +1049,10 @@ export async function createServe(context: BoardContext): Promise<Serve> {
       }
       default: {
         const method = backend[name] as unknown
-        if (typeof method !== 'function') throw notFound(`no route: ${name}`)
+        if (typeof method !== 'function') {
+          if (ATTENTION_METHODS.has(name)) throw new HttpError(501, 'no_task_attention', 'this board does not support task attention')
+          throw notFound(`no route: ${name}`)
+        }
         return (method as (caller: Caller, input: unknown, signal: AbortSignal) => Promise<unknown>).call(backend, caller, input, signal)
       }
     }
@@ -1146,10 +1156,9 @@ export async function createServe(context: BoardContext): Promise<Serve> {
    */
   async function discovery(request: Request, url: string, signal: AbortSignal): Promise<Protocol['discovery']['output']> {
     const { projectId, teamId } = await policy.discoveryIdentity(request.headers)
-    const sync = backend.keeps
-      ? (await backend.discovery(OWN, {}, signal)).sync
-      : Object.entries(entries).map(([key, entry]) => ({ key, platform: entry.platform }))
-    return { version: VERSION, url, audience: url, team_id: teamId, project_id: projectId, sync }
+    const capabilities = backend.keeps ? await backend.discovery(OWN, {}, signal) : null
+    const sync = capabilities?.sync ?? Object.entries(entries).map(([key, entry]) => ({ key, platform: entry.platform }))
+    return { version: VERSION, url, audience: url, team_id: teamId, project_id: projectId, sync, ...(capabilities?.task_attention === true ? { task_attention: true } : {}) }
   }
 
   async function dispatch(request: Request, injected: Caller | PlatformCaller | null): Promise<Response> {
@@ -1183,7 +1192,7 @@ export async function createServe(context: BoardContext): Promise<Serve> {
       // uses another board's doesn't serve. Nothing runs for one before that.
       if (!injected && !policy.open) throw servesOnly()
       if (!injected && target.kind === 'protocol' && target.name === 'discovery') return json(await discovery(request, audienceOf(at), request.signal))
-      if (target.kind === 'protocol' && typeof (backend[target.name] as unknown) !== 'function') throw notFound(`no route: ${request.method} ${url.pathname}`)
+      if (target.kind === 'protocol' && !ATTENTION_METHODS.has(target.name) && typeof (backend[target.name] as unknown) !== 'function') throw notFound(`no route: ${request.method} ${url.pathname}`)
       // A sync callback's client does everything but its own writes as sync.
       const own = injected && 'platform' in injected ? engine!.caller : injected
       const asked = own ? null : requestOf(request, at)

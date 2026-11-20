@@ -141,6 +141,13 @@ The whole protocol, on every board:
   as no profile, edits and deletes any of its profiles' messages, and an edit
   keeps who wrote it. Skipped for a run that writes as a profile itself.
 
+The `tasks` group also checks structured attention on boards that advertise
+`task_attention: true`. It opens and reads a request using a live claim, and
+checks that neither the old claim nor legacy `unblock` can settle the task.
+The check does not need a responder credential. Without that capability, it
+has no row in the report. If the board advertises it but does not serve the
+routes, the check fails.
+
 Then the rest, a group each in the report:
 
 | Group | Check |
@@ -158,9 +165,10 @@ Then the rest, a group each in the report:
 Every board answers all of them: see
 [the whole protocol](./03-http.md#the-whole-protocol). A board may keep no
 schedules, tasks, grants, schemas, or files, and no index to find threads by
-(`search`), and say so: one that answers one of those groups' checks with a
-501 has it skipped, `not kept here`, with what the board said. A board that's
-meant to keep them and doesn't yet answers otherwise, and fails.
+(`search`), and say so. Except for the advertised capability above, a 501
+in one of those groups skips the check, `not kept here`, with what the board
+said. A board that's meant to keep them and doesn't yet answers otherwise,
+and fails.
 Vercel's board keeps no search index, and lists threads one channel at a
 time: both `search` checks are skipped there, with its own words for each.
 Vercel's API reads who writes as boards did before, so a run there fails two

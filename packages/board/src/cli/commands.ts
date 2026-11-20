@@ -154,6 +154,7 @@ export const options = {
   lease: { type: 'string', value: 'duration', description: 'how long to hold it: 30s to 1h (default: 15m, or what the board gives)' },
   result: { type: 'string', value: 'text', description: 'what it came to, when the command exits 0' },
   kind: { type: 'string', value: 'kind', description: 'what the hold is for: needs_input, awaiting_approval' },
+  commit: { type: 'string', value: 'sha', description: 'the full lowercase SHA on the request' },
   pool: { type: 'boolean', description: 'back to anyone who may claim it' },
   none: { type: 'boolean', description: 'wait for nothing' },
   // What a turn-end hook an earlier board installed still passes to `hook`.
@@ -652,8 +653,29 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
         examples: [{ name: 'ask for approval', value: 'tasks block 813 "approve the prod deploy?" --kind awaiting_approval' }],
       },
       {
+        name: 'ask',
+        description: 'hold a task for a decision on a specific commit',
+        arguments: [task()],
+        options: [option('file', 'a JSON draft with kind, question, context, options, evidence, expiresAt, commit, revision, and optional replaces: - reads stdin')],
+        examples: [{ name: 'ask for a decision', value: 'tasks ask 813 --file attention.json' }],
+      },
+      {
+        name: 'attention',
+        description: 'read the current attention request on a task',
+        arguments: [task()],
+        options: [],
+        examples: [{ name: 'read the request and its options', value: 'tasks attention 813' }],
+      },
+      {
+        name: 'answer',
+        description: 'choose an option on a task attention request, as a configured responder',
+        arguments: [task(), { name: 'request-id', required: true, description: 'the current attention request ID' }, { name: 'option', required: true, description: 'the option ID to choose, such as approve or retry-2' }],
+        options: [option('commit')],
+        examples: [{ name: 'answer an attention request', value: 'tasks answer 813 7c9a5f1e-2d84-4b6a-9e3c-5f8a1d2b6740 approve --commit 8f3a2c7e9b1d4f6a0c5e8b2d7f1a3c9e4b6d0f2a' }],
+      },
+      {
         name: 'unblock',
-        description: 'lift a hold, as its owner: ready again, or waiting while a task it needs has not completed',
+        description: 'lift a plain hold, as its owner: ready again, or waiting while a task it needs has not completed',
         arguments: [task()],
         options: [],
         examples: [{ name: 'lift a hold', value: 'tasks unblock 813' }],

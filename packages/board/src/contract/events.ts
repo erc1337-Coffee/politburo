@@ -15,6 +15,7 @@ import {
   MessageId,
   MessageText,
   MESSAGE_TEXT_MAX,
+  Ref,
   RemoteWatcherId,
   CAN_MAX,
   storable,
@@ -23,6 +24,7 @@ import {
   TaskNote,
 } from './schemas.ts'
 import { ExternalEvent, ExternalTarget, Link, LINKS_PER_MESSAGE_MAX, Origin } from './external.ts'
+import { AttentionDraft, AttentionReceipt } from './attention.ts'
 
 /** The sync key a write came from, or null when it was written on the board. */
 const From = z.string().nullable()
@@ -37,6 +39,8 @@ export const ALONG_MAX = 3
 
 /** Which claim of a task this is: 1 for its first, one more for each after. A write that names an older one changes nothing. */
 const Epoch = z.number().int().positive()
+/** Attention can be requested before the task has ever been claimed. */
+const AttentionEpoch = z.number().int().nonnegative()
 /** When a claim's lease runs out, as an ISO time. */
 const Until = z.string().datetime()
 
@@ -175,8 +179,11 @@ export const boardEvents = {
     'task.unblocked': z.object({ ...Task, by: Author }),
     /** Reason `deleted` when its root was. */
     'task.canceled': z.object({ ...Task, reason: TaskNote, by: Author }),
-    /** A failed task is ready again. */
-    'task.reopened': z.object({ ...Task, by: Author }),
+    /** A failed task reopens, waiting only if it failed on an attention hold before its needs completed. */
+    'task.reopened': z.object({ ...Task, by: Author, waiting: z.literal(true).optional() }),
+    // Request and answer each change the task state in the same event as their attention fact.
+    'task.attention_requested': z.object({ ...Task, requestId: Ref, epoch: AttentionEpoch, draft: AttentionDraft, by: Author, replaces: Ref.optional() }),
+    'task.attention_answered': z.object({ ...Task, requestId: Ref, epoch: AttentionEpoch, by: Author, receipt: AttentionReceipt }),
     'actor.seen': z.object({
       actor: ActorId,
       kind: SeenActorKind,

@@ -358,6 +358,9 @@ tasks.claim(ready: { channel: string; label?: Record<string, string>; from?: str
 tasks.held(id: string, claim: { epoch: number; token: string }): HeldTask
 tasks.block(id: string, reason: string, opts?: { kind?: string }): Promise<MessageView>
 tasks.unblock(id: string): Promise<MessageView>
+tasks.ask(id: string, request: RequestAttentionBody): Promise<{ task: MessageView; attention: AttentionView }>
+tasks.attention(id: string): Promise<{ attention: AttentionView | null }>
+tasks.answer(id: string, requestId: string, answer: AttentionAnswerBody): Promise<{ task: MessageView; attention: AttentionView }>
 tasks.reopen(id: string): Promise<MessageView>
 tasks.assign(id: string, actor: string | null): Promise<MessageView>
 tasks.needs(id: string, needs: string[]): Promise<MessageView>
@@ -426,7 +429,14 @@ if (claim) {
   A handle that writes as a profile (`team.as('fixer')`) owns only the tasks
   it made. The principal itself owns what any of its profiles made. A task's
   `by` is the actor that made it, so a UI knows whose these are to offer.
-  `block` here holds a task no one has claimed.
+  `block` here holds a task no one has claimed. `unblock` does not lift a
+  structured hold (409 `attention_required`).
+- **`ask`, `attention`, and `answer`** open, read, and answer a
+  [structured request](./03-http.md#structured-attention). On a claimed task,
+  pass `{ claim: { epoch, token } }` as part of `ask`. `answer` requires the
+  request ID, option ID and matching commit; an old or already answered
+  request is 409 `attention_stale`. A backend without the feature returns
+  501 `no_task_attention`, with no fallback.
 - **`needs`** replaces what a task waits for, by their IDs: it waits for those
   now, and is ready once they've all completed, or at once with `[]`. It takes
   what `create` takes, while no one has claimed the task (409 `task_claimed`)

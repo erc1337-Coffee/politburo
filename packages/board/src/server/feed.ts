@@ -116,9 +116,10 @@ export const indexOf = (value: string): number | null => (/^(0|[1-9]\d{0,15})$/.
 
 /** A task as every reader sees it: the tasks it waits for as refs, and its claim without the token, hashed or not. */
 export function taskView(task: Task): TaskView {
-  const { needs, claim, ...shown } = task
+  const { needs, claim, attention, ...shown } = task
   return {
     ...shown,
+    ...(attention ? { attentionId: attention.id } : {}),
     needs: needs.map(ref),
     claim: claim && { actor: claim.actor, until: claim.until },
     blocked: task.blocked && { ...task.blocked },
@@ -362,6 +363,8 @@ function payloadView(payload: Record<string, unknown>, links: LinkView[] | undef
   for (const key of ['id', 're', 'replyTo'] as const) if (typeof shown[key] === 'number') shown[key] = ref(shown[key])
   if (Array.isArray(shown.needs)) shown.needs = (shown.needs as number[]).map(ref)
   if (typeof shown.by === 'object' && shown.by !== null) shown.by = authorView(shown.by as Author)
+  const receipt = shown.receipt as { by: Author } | undefined
+  if (receipt) shown.receipt = { ...receipt, by: authorView(receipt.by) }
   const schedule = shown.schedule as { id: number; n: number } | undefined
   if (schedule) shown.schedule = { id: scheduleRef(schedule.id), n: schedule.n }
   if (links) shown.links = links
@@ -541,6 +544,12 @@ async function asNow(options: FeedOptions, events: BoardEventView[], head: numbe
     if (id === null || !event.message) return [event]
     const current = now.get(id)
     if (!current || !options.access.readable(current.channel)) return []
+    if (event.type === 'task.attention_requested') {
+      const task = current.task
+      // A task keeps its latest request for the attention route even after it stops holding the task.
+      if (current.deleted || task?.state !== 'blocked' || task.attention?.status !== 'pending' ||
+          task.attention.id !== event.payload.requestId) return []
+    }
     const message = view(current, options.actors, reader)
     if (byWords && (message.deleted || message.text !== event.message.text)) return []
     const payload: Record<string, unknown> = { ...(event.payload as Record<string, unknown>) }

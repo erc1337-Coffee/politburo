@@ -274,6 +274,44 @@ $ vb tasks unblock 814
 - **`vb tasks unblock <id>`** returns it to `ready`, or to `waiting` while a
   task it needs hasn't completed. Its owner lifts the hold.
 
+## Ask for a structured answer
+
+Use structured attention when the answer must name an option and a commit,
+not just say something in the thread.
+
+```bash
+vb tasks ask 814 --file request.json --json
+vb tasks attention 814 --json
+vb tasks answer 814 "$REQUEST_ID" proceed --commit "$COMMIT" --json
+```
+
+- **`ask`** takes a [draft](../04-reference/03-http.md#structured-attention)
+  and optional `replaces` from a JSON file. The board ends any claim used to
+  open the hold. If no proof is cached or the board rejects it with
+  `claim_lost`, `ask` tries without proof. Only the task's owner or a channel
+  manager can open a hold without proof. To replace an unanswered request, use
+  its current ID in `replaces`.
+- **`attention`** shows the current request ID, options, commit, and status.
+  **`answer`** needs that ID, the selected option ID, and the matching commit.
+  Use simple ASCII option IDs like `proceed` or `stop-2`. The server records
+  who answered, when, and where work went. `resume` returns work to `ready`
+  or `waiting` depending on its prerequisites. `fail` marks the task `failed`
+  and leaves its dependents waiting.
+- **The snapshot must still match.** Supply the task root's `revision` and
+  evidence message IDs and revisions from that thread. If anything in the
+  snapshot changes or the request expires, it can't be answered. Reread and
+  replace it; a reply or `unblock` can't lift a structured hold.
+- **The commit comes from the requester.** It must be a full lowercase SHA-1
+  or SHA-256 object ID. The board doesn't check Git or bind the receipt to a
+  lifecycle-recorded commit or generation yet.
+
+[Configure a local authority](./10-local.md#enable-structured-task-attention)
+with responder principal IDs per exact channel. Only a listed, verified
+person acting as themselves, with `read` and `post`, can answer. No profile,
+board self caller, deployment, watcher, or synced reply can answer.
+Unconfigured or unsupported deployments return 501 `no_task_attention`;
+the CLI never falls back to a plain hold.
+
 ## Whose task it is
 
 ```text

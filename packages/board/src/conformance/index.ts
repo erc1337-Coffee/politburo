@@ -1,5 +1,5 @@
 import { everyChannel } from '../client/channels.ts'
-import { INBOX_EVENT_ID_MAX, type Explanation, type GrantView, type Me, type MessageView, type RegistrationView } from '../api/routes.ts'
+import { INBOX_EVENT_ID_MAX, type AttentionDraft, type Discovery, type Explanation, type GrantView, type Me, type MessageView, type RegistrationView } from '../api/routes.ts'
 import { BoardError, type ExplainPrincipal, type TaskInBatch, type TaskOptions } from '../client/client.ts'
 import { block } from '../contract/blocks.ts'
 import { canonical } from '../contract/data-schemas.ts'
@@ -163,7 +163,13 @@ type Context = {
   team: string | null
 }
 
-type Check = { group: CheckResult['group']; name: string; run: (ctx: Context) => Promise<void | string> }
+type Check = {
+  group: CheckResult['group']
+  name: string
+  /** Omit the check unless advertised. Once advertised, a 501 is a failure. */
+  requires?: 'task_attention'
+  run: (ctx: Context) => Promise<void | string>
+}
 
 /**
  * The groups a board may keep none of, saying so with a 501: a board without a scheduler answers
@@ -1477,6 +1483,38 @@ const CHECKS: Check[] = [
   },
   {
     group: 'tasks',
+    name: 'opens structured attention through a claim, and the hold cannot be unblocked or settled through the old claim',
+    requires: 'task_attention',
+    async run(ctx) {
+      const { task: root } = await task(ctx, 'conformance: a task to hold for structured attention')
+      const supporting = await ctx.board.reply(root.id, 'conformance: the evidence for the request')
+      ctx.posted.push(supporting.id)
+      same((await ctx.board.tasks.attention(root.id)).attention, null, 'attention on a new task')
+      const claim = await ctx.board.tasks.claim(root.id, { lease: 60 })
+      const draft: AttentionDraft = {
+        kind: 'needs_input', question: 'conformance: proceed?', context: 'conformance: request review',
+        options: [
+          { id: 'go', label: 'Proceed', consequence: 'Resume work', next: 'resume' },
+          { id: 'stop', label: 'Stop', consequence: 'Do not continue', next: 'fail' },
+        ],
+        evidence: [{ message: supporting.id, revision: supporting.revision }],
+        expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(), revision: root.revision, commit: 'a'.repeat(40),
+      }
+      const opened = await ctx.board.tasks.ask(root.id, { ...draft, claim: { epoch: claim.epoch, token: claim.token } })
+      isRef(opened.attention.id, 'the request ID')
+      same(opened.attention.status, 'pending', 'the new request')
+      same(opened.attention.by.actor, ctx.me.actor, 'the requester')
+      same(opened.task.task?.state, 'blocked', 'the task with an attention request')
+      same(opened.task.task?.attentionId, opened.attention.id, "the task's current request ID")
+      same(opened.task.task?.claim, null, 'the claim after it requested attention')
+      check(!show(opened).includes(claim.token), 'opening attention should not show the claim token')
+      alike((await ctx.board.tasks.attention(root.id)).attention, opened.attention, 'the current request, read back')
+      await rejects(claim.complete(), 409, 'claim_lost', 'completing through the claim that requested attention')
+      await rejects(ctx.board.tasks.unblock(root.id), 409, 'attention_required', 'unblocking a structured hold')
+    },
+  },
+  {
+    group: 'tasks',
     name: 'keeps a task assigned to a profile for that actor alone',
     run: async (ctx) => {
       // The same credential, as a profile of its own: its actor, under the run's principal.
@@ -2506,7 +2544,8 @@ export async function conformance(board: Board, options: ConformanceOptions = {}
     return { url: board.url, checks, ok: false }
   }
   // The board it checks, as it names itself: a handle on one elsewhere has no URL of its own.
-  const url = (discovery as { url: string }).url
+  const info = discovery as Discovery
+  const { url } = info
   checks.push({ group: 'core', name: 'says in its discovery where it is', status: 'passed' })
   const me = await board.me()
   const own = namesCaller(me, options.principals)
@@ -2530,15 +2569,16 @@ export async function conformance(board: Board, options: ConformanceOptions = {}
       viewer: options.principals?.viewer ?? null,
       app: options.principals?.app ?? null,
     },
-    team: (discovery as { team_id?: string | null }).team_id ?? null,
+    team: info.team_id ?? null,
   }
   try {
-    for (const { group, name, run } of CHECKS) {
+    for (const { group, name, requires, run } of CHECKS) {
+      if (requires && info[requires] !== true) continue
       try {
         const skipped = await run(ctx)
         checks.push(skipped ? { group, name, status: 'skipped', detail: skipped } : { group, name, status: 'passed' })
       } catch (error) {
-        if (OPTIONAL.has(group) && error instanceof BoardError && error.status === 501) checks.push({ group, name, status: 'skipped', detail: `not kept here: ${error.message}` })
+        if (!requires && OPTIONAL.has(group) && error instanceof BoardError && error.status === 501) checks.push({ group, name, status: 'skipped', detail: `not kept here: ${error.message}` })
         // Vercel's API takes watchers only from a deployment: a run as anyone else can't check them.
         else if (group === 'watchers' && error instanceof BoardError && error.code === 'watchers_need_project') checks.push({ group, name, status: 'skipped', detail: 'only a deployment registers watchers here' })
         // Vercel's API takes no GitHub or OIDC principal in a grant.

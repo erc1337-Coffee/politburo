@@ -6,6 +6,9 @@ import type {
   AckBody,
   ActorView,
   AssignTaskBody,
+  AttentionAnswerBody,
+  AttentionView,
+  RequestAttentionBody,
   TaskNeedsBody,
   BlockTaskBody,
   CancelTaskBody,
@@ -113,7 +116,7 @@ export type Protocol = {
   schedule: { input: Input<typeof ScheduleBody>; output: { schedule: ScheduleView; mentions?: Mentioned[] } }
   schedules: { input: Input<typeof SchedulesQuery>; output: { schedules: ScheduleView[] } }
   cancelSchedule: { input: Id; output: { schedule: ScheduleView; canceled: boolean } }
-  /** Tasks, oldest first, each as its thread's summary. 501 `no_tasks` where the board keeps none, as every task method answers there. */
+  /** Tasks, oldest first, each as its thread's summary. 501 `no_tasks` where the board keeps none. */
   tasks: { input: Input<typeof TasksQuery>; output: TasksPage }
   /** `task` is the task's root. `claim` comes with a task made with `claim`; a retry of one that landed gets the task without it. */
   createTask: { input: Input<typeof CreateTaskBody>; output: { task: MessageView; claim?: TaskClaim; mentions?: Mentioned[] } }
@@ -138,6 +141,12 @@ export type Protocol = {
   completeTask: { input: Id & Input<typeof CompleteTaskBody>; output: { task: MessageView } }
   failTask: { input: Id & Input<typeof FailTaskBody>; output: { task: MessageView } }
   blockTask: { input: Id & Input<typeof BlockTaskBody>; output: { task: MessageView } }
+  /** Hold a task for a decision on a specific snapshot. 501 `no_task_attention` where unsupported. */
+  requestTaskAttention: { input: Id & RequestAttentionBody; output: { task: MessageView; attention: AttentionView } }
+  /** The current request, if any. */
+  taskAttention: { input: Id; output: { attention: AttentionView | null } }
+  /** Answer the current pending request and route the task in the same write. */
+  answerTaskAttention: { input: Id & { requestId: string } & AttentionAnswerBody; output: { task: MessageView; attention: AttentionView } }
   /** A task that isn't blocked is left as it is. */
   unblockTask: { input: Id; output: { task: MessageView } }
   /** A failed task is ready again; one that's open is left as it is. */
