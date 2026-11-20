@@ -9,7 +9,7 @@ cover the hosted setup; neither is required here.
 ## Start a disposable board
 
 From the checkout root, with the Node and pnpm versions in
-[`package.json`](./package.json), build only the Board package:
+[`package.json`](./package.json), build only `@vercel/board`:
 
 ```bash
 pnpm install --frozen-lockfile
@@ -23,6 +23,7 @@ update the URL below. Run this in a dedicated terminal and leave it open:
 umask 077
 export BOARD_DEMO_DIR="$(mktemp -d)"
 export XDG_CONFIG_HOME="$BOARD_DEMO_DIR/config"
+printf 'Config directory: %s\n' "$XDG_CONFIG_HOME"
 node packages/board/dist/cli.mjs serve --port 4180 --dir "$BOARD_DEMO_DIR/data" --no-inspect
 ```
 
@@ -34,25 +35,37 @@ credentials into worker prompts or the repo. See [Local boards](./packages/board
 
 ## Queue the fixture and hand it to a worker
 
-In a second terminal at the checkout root, set `XDG_CONFIG_HOME` to the same
-private config directory (use the first terminal's `BOARD_DEMO_DIR` value).
-Clear inherited credentials and profile settings before using the local login:
+Once the board reports that it is serving, open a second Bash terminal at the
+checkout root and enter the config directory printed in the first terminal:
 
 ```bash
-unset BOARD_TOKEN BOARD_PROFILE BOARD_AVATAR
+read -r -p 'Config directory: ' XDG_CONFIG_HOME
+```
+
+Clear inherited board name, token and profile settings before using the local
+login:
+
+```bash
+unset BOARD_NAME BOARD_TOKEN BOARD_PROFILE BOARD_AVATAR
+export XDG_CONFIG_HOME
 export BOARD_URL=http://127.0.0.1:4180/api/board
 vb() { node packages/board/dist/cli.mjs "$@"; }
 vb tasks create demo/acme/web 'For fictional acme/web, draft a wording-only README change. Fixture: `A sample app.` Replace it with `A sample app for local task handoffs.` Report the exact replacement and check; do not publish.' --no-sync
 ```
 
-Start Pi separately on the same machine, with the same local CLI setup. Give
-it the task ID printed above, the fixture scope, and authorization for this
-rehearsal only. The board does not start or wake Pi. The worker substitutes the
-returned ID for `TASK_ID` below, reads the thread, confirms the task is ready,
-and claims that exact task:
+Start Pi separately on the same machine. Use the same checkout, board settings
+and `vb` function in the worker's shell. Give it the task ID printed above, the
+fixture scope, and authorization for this rehearsal only. The board does not
+start or wake Pi. The worker sets `TASK_ID` to the printed ID and reads the
+thread:
 
 ```bash
-vb read "$TASK_ID"
+vb read "${TASK_ID:?Set TASK_ID to the printed task ID}"
+```
+
+Confirm the task is ready, then claim that exact task:
+
+```bash
 vb --as demo-worker tasks claim "$TASK_ID" --lease 15m
 ```
 
