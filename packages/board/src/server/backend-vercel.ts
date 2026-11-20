@@ -2,20 +2,20 @@ import type { Protocol } from '../api/protocol.ts'
 import { CHANNELS_LIMIT_DEFAULT, CHANNELS_LIMIT_MAX, LEASE_DEFAULT_S, RegisterBody, type ActorView, type BoardEventView, type ChannelView, type Discovery, type GrantView, type InboxEntry, type MessageView, type RegistrationView, type ScheduleView, type SchemaView, type TaskClaim, type TaskView, type ThreadSummaryView } from '../api/routes.ts'
 import { duration, type ProfileOption } from '../client/client.ts'
 import { sha256 } from '../client/ids.ts'
-import { IMPORT_BYTES_MAX, MESSAGE_TEXT_MAX, RemoteWatcherId, TASK_LABEL, type Attachment, type Author, type Labels, type TaskState } from '../contract/schemas.ts'
+import { DEFAULT_TASK_PRIORITY, TaskPriority, IMPORT_BYTES_MAX, MESSAGE_TEXT_MAX, RemoteWatcherId, TASK_LABEL, type Attachment, type Author, type Labels, type TaskState } from '../contract/schemas.ts'
 import type { ExternalAuthor, Link, Origin } from '../contract/external.ts'
 import { blocksIn } from '../contract/blocks.ts'
 import { mentionTerm, mentionTerms, replaceMentions } from '../contract/mentions.ts'
 import { actorParts, importedHandle, platformProfile, underPrincipal, type Via } from '../contract/profiles.ts'
 import { VERSION } from '../version.ts'
 import { compileAccess, parseCan, parsePattern, PERMISSIONS, type AccessSummary, type Permission } from './access.ts'
-import { type Backend, type BackendRoute, type BoardBinding, type Caller, type ProtocolMethods } from './backend.ts'
+import { type Backend, type BackendRoute, type BoardBinding, type Caller, type InviteMethod, type ProtocolMethods } from './backend.ts'
 import { mediaType } from '../contract/files.ts'
 import { uploadName } from './file-names.ts'
-import { badRequest, duplicateId, HttpError, json, notFound } from './errors.ts'
+import { badRequest, duplicateId, HttpError, json, noAgentOps, notFound } from './errors.ts'
 import { carried } from './carried.ts'
 import { deployedOnVercel, registrant, wakePath, type WakeAt } from './registrant.ts'
-import { METHODS } from './routing.ts'
+import { INVITE_METHODS, isAgentOpsMethod, METHODS } from './routing.ts'
 import { compileWatcher } from './watch-spec.ts'
 import { tailWatchers } from './tails.ts'
 import { canonicalWatchers, type SyncEntrySpec, type WatcherSpec } from './watchers-hash.ts'
@@ -48,6 +48,7 @@ type ApiChannel = { id: string; name: string }
  */
 type ApiTask = {
   state: TaskState
+  priority?: TaskPriority
   owner: string
   /** The actor its owner made it a task as: itself, or one of its profiles. */
   by: string
@@ -303,7 +304,7 @@ const SANDBOX_TASK_ROUTES: readonly SandboxRoute[] = [
   { method: 'POST', path: '/tasks' },
   { method: 'POST', path: '/tasks/batch' },
   { method: 'POST', path: '/tasks/claim' },
-  ...['claim', 'renew', 'release', 'complete', 'fail', 'block', 'unblock', 'reopen', 'assign', 'needs', 'cancel'].map((change) => ({ method: 'POST', path: `/tasks/:task/${change}` })),
+  ...['claim', 'renew', 'release', 'complete', 'fail', 'block', 'unblock', 'reopen', 'assign', 'needs', 'priority', 'cancel'].map((change) => ({ method: 'POST', path: `/tasks/:task/${change}` })),
 ]
 
 /**
@@ -375,6 +376,7 @@ const TAGGED_MAX = 200
 
 /** What Vercel's boards don't do, and with `instead`, what to do there. */
 const notSupported = (what: string, instead?: string) => new HttpError(501, 'not_supported', `Vercel's boards don't support ${what} yet${instead ? `: ${instead}` : ''}`)
+const noTaskAttention = () => { throw new HttpError(501, 'no_task_attention', "Vercel's boards don't support task attention") }
 
 /** What credentials may do when the API doesn't say: read, post, react, and label everywhere, as any it lets in. */
 const DEFAULT_CAN: AccessSummary = { '*': ['read', 'post', 'react', 'label'] }
@@ -497,6 +499,7 @@ const isId = (value: string) => /^[^\s:]+:\S+$/.test(value)
 const TASK_EVENTS: Record<string, BoardEventView['type']> = {
   'task.made': 'task.created',
   'task.assigned': 'task.assigned',
+  'task.priority_changed': 'task.priority_changed',
   'task.needs_changed': 'task.needs_changed',
   'task.ready': 'task.ready',
   'task.claimed': 'task.claimed',
@@ -511,6 +514,10 @@ const TASK_EVENTS: Record<string, BoardEventView['type']> = {
   'task.reopened': 'task.reopened',
 }
 /** The API's codes for a task that can't change as asked, each a 409 on a board. */
+function noTaskAuthority(): never {
+  throw new HttpError(501, 'no_task_authority', "Vercel's board does not support task parking, bindings, or handoffs")
+}
+
 const TASK_CONFLICTS = new Set(['already_a_task', 'task_claimed', 'task_assigned', 'task_waiting', 'task_blocked', 'task_finished', 'claim_lost'])
 
 /** A grant as the API answers it, its `at` in milliseconds, as the protocol has it: an ISO string. */
@@ -644,6 +651,10 @@ const authorOf = (actor: ApiActor): Author => ({
 
 /** Who cancels a schedule when no one did: the API, once its creator can no longer post it, as a local board's scheduler. */
 const SCHEDULER: Author = { actor: 'board:schedule', principal: 'board:schedule', profile: null }
+
+async function noOperationalInbox(): Promise<never> {
+  throw new HttpError(501, 'no_operational_inbox', 'this board keeps no operational inbox')
+}
 
 /**
  * An actor where the API doesn't name them: its handle is its profile, or a short form of its
@@ -1486,6 +1497,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
   /** A task as board shows it: the tasks it waits for by their roots' IDs, and its claim's end as a time. */
   const taskView = (task: ApiTask): TaskView => ({
     state: task.state,
+    priority: TaskPriority.safeParse(task.priority).data ?? DEFAULT_TASK_PRIORITY,
     owner: task.owner,
     by: task.by,
     for: task.for,
@@ -2903,9 +2915,10 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
    * What makes a thread a task, as the API takes it: the token is this backend's, for a claim made in the same write.
    * Whom it's for is the API's to check, one of its owner's profiles, as on any board.
    */
-  const taskSpec = (input: { needs?: string[] | undefined; for?: string | null | undefined; claim?: boolean | undefined; lease?: number | undefined }, token: string | null) => ({
+  const taskSpec = (input: { needs?: string[] | undefined; for?: string | null | undefined; priority?: TaskPriority | undefined; claim?: boolean | undefined; lease?: number | undefined }, token: string | null) => ({
     ...(input.needs?.length ? { needs: needsOf(input.needs) } : {}),
     ...(input.for ? { for: input.for } : {}),
+    ...(input.priority !== undefined ? { priority: input.priority } : {}),
     ...(token ? { claim: { claimToken: token, leaseSeconds: input.lease ?? LEASE_DEFAULT_S } } : {}),
   })
 
@@ -2914,8 +2927,9 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
    * is what was asked for. It waits when it names tasks to wait for, which the API checked, and no one holds it: a
    * claim takes `label`, which reads.
    */
-  const askedTask = (owner: string, by: string, input: { needs?: string[] | undefined; for?: string | null | undefined }): ApiTask => ({
+  const askedTask = (owner: string, by: string, input: { needs?: string[] | undefined; for?: string | null | undefined; priority?: TaskPriority | undefined }): ApiTask => ({
     state: input.needs?.length ? 'waiting' : 'ready',
+    priority: input.priority ?? DEFAULT_TASK_PRIORITY,
     owner,
     by,
     for: input.for ?? null,
@@ -2984,10 +2998,13 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     let payload: Record<string, unknown>
     switch (type) {
       case 'task.created':
-        payload = { ...base, needs: message.task!.needs, for: task.for, by }
+        payload = { ...base, needs: message.task!.needs, for: task.for, priority: message.task!.priority, by }
         break
       case 'task.assigned':
         payload = { ...base, for: task.for, by }
+        break
+      case 'task.priority_changed':
+        payload = { ...base, priority: message.task!.priority, by }
         break
       case 'task.needs_changed':
         payload = { ...base, needs: message.task!.needs, by }
@@ -3026,17 +3043,25 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     return { cursor, type, createdAt: iso(change.createdAt), payload, message, ...(own ? {} : { actor: await nameOf(who, change.actor) }) } as BoardEventView
   }
 
+  type VercelMethods = Omit<ProtocolMethods, InviteMethod>
+  // Leave invites out so board() answers no_invites without first starting the Vercel backend.
   const unsupported = Object.fromEntries(
-    METHODS.map((method) => [
+    METHODS.filter((method) => !INVITE_METHODS.has(method)).map((method) => [
       method,
       async () => {
         throw notSupported(method === 'register' || method === 'watchers' || method === 'matches' || method === 'ack' ? 'watchers' : method)
       },
     ]),
-  ) as unknown as ProtocolMethods
+  ) as unknown as VercelMethods
 
-  const methods: ProtocolMethods = {
+  const noNetworkPause = async () => {
+    throw new HttpError(501, 'no_network_pause', "Vercel's board does not support network pause")
+  }
+  const methods: VercelMethods = {
     ...unsupported,
+    status: noNetworkPause,
+    pause: noNetworkPause,
+    resume: noNetworkPause,
     async discovery(caller) {
       const who: Who = { profile: null }
       const team = await teamId()
@@ -3420,6 +3445,10 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
       const { schema, created } = await api<{ schema: ApiSchema; created: boolean }>(who, 'POST', '/schemas', { body: { operationId: operationId(), ...input }, ...(signal ? { signal } : {}) })
       return { schema: schemaFrom(schema), created }
     },
+    sendOperationalMessage: noOperationalInbox,
+    readOperationalInbox: noOperationalInbox,
+    ackOperationalMessage: noOperationalInbox,
+    archiveOperationalMessage: noOperationalInbox,
     async schedule(caller, input, signal) {
       if (input.attachments?.length) throw notSupported('files on scheduled messages')
       const who = whoOf(caller)
@@ -3613,6 +3642,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
           ...(task.attachments?.length ? { attachments: task.attachments } : {}),
           ...(needs.length ? { needs } : {}),
           ...(task.for ? { for: task.for } : {}),
+          ...(task.priority !== undefined ? { priority: task.priority } : {}),
         }
       })
       // The batch's `id` is its caller's own key for it: the API answers the key again, with the same request, with the
@@ -3636,7 +3666,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
             const asked = input.tasks[at]!
             const needs = [...waits[at]!.threads, ...waits[at]!.keys.map((key) => threads[places.get(key)!]!)]
             const { actor } = await self(who)
-            const stood: ApiTask = { state: needs.length ? 'waiting' : 'ready', owner: principalId(actor.principal), by: await actorOf(who), for: asked.for ?? null, needs, epoch: 0, claim: null, blocked: null, result: null, reason: null }
+            const stood: ApiTask = { state: needs.length ? 'waiting' : 'ready', priority: asked.priority ?? DEFAULT_TASK_PRIORITY, owner: principalId(actor.principal), by: await actorOf(who), for: asked.for ?? null, needs, epoch: 0, claim: null, blocked: null, result: null, reason: null }
             const first = { id: idAt(task.id, 1), threadId: task.id, sequence: 1 }
             return view(who, { ...(await sent(who, first, { text: asked.text, labels: { ...asked.labels, [TASK_LABEL]: stood.state }, attachments: asked.attachments, noSync: asked.noSync })), task: stood }, input.channel)
           }),
@@ -3724,10 +3754,17 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
       const body = { reason, ...(kind !== undefined ? { kind } : {}), ...proof }
       return { task: await rootOf(who, await taskWrite(who, `${await taskPath(who, id, signal)}/block`, body, { id, signal })) }
     },
+    requestTaskAttention: async () => noTaskAttention(),
+    taskAttention: async () => noTaskAttention(),
+    answerTaskAttention: async () => noTaskAttention(),
+
     async unblockTask(caller, { id }, signal) {
       const who = whoOf(caller)
       return { task: await rootOf(who, await taskWrite(who, `${await taskPath(who, id, signal)}/unblock`, {}, { id, signal })) }
     },
+    parkTask: async () => noTaskAuthority(),
+    unparkTask: async () => noTaskAuthority(),
+    handoffTask: async () => noTaskAuthority(),
     async reopenTask(caller, { id }, signal) {
       const who = whoOf(caller)
       return { task: await rootOf(who, await taskWrite(who, `${await taskPath(who, id, signal)}/reopen`, {}, { id, signal })) }
@@ -3740,6 +3777,11 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
       const who = whoOf(caller)
       // What it waits for now, by their threads: the API checks each, and that none waits for this one.
       return { task: await rootOf(who, await taskWrite(who, `${await taskPath(who, id, signal)}/needs`, { needs: needsOf(needs) }, { id, signal })) }
+    },
+    async setTaskPriority(caller, { id, priority, epoch, token }, signal) {
+      const who = whoOf(caller)
+      const proof = epoch !== undefined && token !== undefined ? await proofOf({ epoch, token }) : null
+      return { task: await rootOf(who, await taskWrite(who, `${await taskPath(who, id, signal)}/priority`, { priority, ...proof }, { id, signal })) }
     },
     async cancelTask(caller, { id, reason }, signal) {
       const who = whoOf(caller)
@@ -3931,12 +3973,16 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     Object.entries(methods).map(([name, method]) => [
       name,
       (caller: Caller, ...args: unknown[]) => {
+        if (isAgentOpsMethod(name)) throw noAgentOps()
         if ('identity' in caller) throw servesNone()
-        if (binding) waitUntil(start())
+        // Refuse unsupported authority operations before starting any background upstream calls.
+        if ((name === 'createTask' || name === 'claimTask' || name === 'claimReadyTask') &&
+            (args[0] as { binding?: unknown } | undefined)?.binding !== undefined) noTaskAuthority()
+        if (name !== 'parkTask' && name !== 'unparkTask' && name !== 'handoffTask' && binding) waitUntil(start())
         return (method as (...input: unknown[]) => unknown)(caller, ...args)
       },
     ]),
-  ) as unknown as ProtocolMethods
+  ) as unknown as VercelMethods
 
   const backend = {
     ...starting,
@@ -3970,6 +4016,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     },
     // Vercel's API posts each send, so board()'s middleware screens a schedule when it's made.
     sendsSchedulesHere: false,
+    supportsTaskAuthority: false,
     // One deployment of a project holds each of its sync keys, as Vercel's API says when it registers.
     syncedHere: holds,
     bind(next: BoardBinding) {
