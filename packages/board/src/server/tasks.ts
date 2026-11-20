@@ -6,7 +6,7 @@ import { LEASES_SESSION, leasesContract, type LeaseEvents } from '../contract/co
 import type { BoardEvent } from '../contract/events.ts'
 import { foldMessages, type Message, type MessagesState, type Task } from '../contract/folds.ts'
 import { actorsReducer, channelsReducer } from '../contract/reducers.ts'
-import { OPEN_TASK_STATES, TASK_BATCH_MAX, TASK_KEY_MAX, TASK_LABEL, TASK_NEEDS_MAX, TASK_NOTE_MAX, TaskHoldKind, type TaskState } from '../contract/schemas.ts'
+import { DEFAULT_TASK_PRIORITY, OPEN_TASK_STATES, priorityRank, TASK_BATCH_MAX, TASK_KEY_MAX, TASK_LABEL, TASK_NEEDS_MAX, TASK_NOTE_MAX, TaskHoldKind, TaskPriority, type TaskState } from '../contract/schemas.ts'
 import { batchPlan, type BatchNeed } from '../contract/task-batch.ts'
 import { authorize, type Access, type Permission } from './access.ts'
 import { badRequest, batchTooLarge, forbidden, HttpError, notFound } from './errors.ts'
@@ -437,7 +437,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
     throw badRequest(`from: ${value} is a handle, which several can share: name the owner by ID`, 'invalid_from')
   }
 
-  /** A claim of the oldest ready task there that the caller takes, or null when there's none now. */
+  /** Claims the highest priority ready task the caller can take, oldest first at equal priority. */
   async function claimNext(identity: Identity, input: Protocol['claimReadyTask']['input'], signal: AbortSignal): Promise<{ root: Message; claim: TaskClaim } | null> {
     const ctx = writes()
     const { principal, actor } = identity
@@ -459,19 +459,18 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
       read.taken = null
       const position = await ctx.reads.tables.position()
       const now = Date.now()
-      // One assigned to the caller first, then the oldest unassigned one of an owner it takes tasks from.
-      let pool: Root | null = null
-      let mine: Root | null = null
-      for await (const root of rootsAt(filter, ['ready', 'claimed'], position)) {
-        const { task } = root
+      let root: Root | null = null
+      let best = -1
+      for await (const candidate of rootsAt(filter, ['ready', 'claimed'], position)) {
+        const { task } = candidate
         if (stateNow(task, now) !== 'ready') continue
-        if (assignedTo(task, identity)) {
-          mine = root
-          break
-        }
-        if (task.for === null && pool === null && owners.has(task.owner)) pool = root
+        if (!assignedTo(task, identity) && !(task.for === null && owners.has(task.owner))) continue
+        const rank = priorityRank(task.priority)
+        if (rank <= best) continue
+        root = candidate
+        best = rank
+        if (best === TaskPriority.options.length - 1) break
       }
-      const root = mine ?? pool
       // A caller that stopped waiting takes nothing: a task claimed for no one would sit out its lease.
       if (!root || signal.aborted) return { position, events: [] }
       const { events, claim } = claiming(root, root.task, identity, input.lease, token)
@@ -499,7 +498,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
      */
     starting(
       identity: Identity,
-      input: { channel: string; needs?: string[] | undefined; for?: string | null | undefined; claim?: boolean | undefined; lease?: number | undefined; token?: string | undefined },
+      input: { channel: string; needs?: string[] | undefined; for?: string | null | undefined; priority?: TaskPriority | undefined; claim?: boolean | undefined; lease?: number | undefined; token?: string | undefined },
     ): { along: Along; claimed: (id: number) => Promise<TaskClaim | null> } {
       const { principal, actor, author } = identity
       const assigned = ownActor(principal.id, input.for)
@@ -516,7 +515,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
           position,
           events: (root) => {
             const about = { id: root.id, thread: root.thread }
-            const events: Events = [{ type: 'task.created', payload: { ...about, needs: needs.ids, for: assigned, by: author } }]
+            const events: Events = [{ type: 'task.created', payload: { ...about, needs: needs.ids, for: assigned, priority: input.priority ?? DEFAULT_TASK_PRIORITY, by: author } }]
             if (needs.ids.length > 0 && !waits) events.push({ type: 'task.ready', payload: about })
             if (input.claim) events.push(...claiming(root, null, identity, input.lease, token).events)
             return events
@@ -541,7 +540,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
      * those are new, so it waits. Refused before anything is read: an assignee that isn't its
      * owner's, a `key` two tasks have or none has, and tasks that wait for each other.
      */
-    startingMany(identity: Identity, tasks: readonly { key?: string | undefined; needs?: readonly BatchNeed[] | undefined; for?: string | null | undefined }[]): AlongEach {
+    startingMany(identity: Identity, tasks: readonly { key?: string | undefined; needs?: readonly BatchNeed[] | undefined; for?: string | null | undefined; priority?: TaskPriority | undefined }[]): AlongEach {
       const { principal, author } = identity
       const assigned = tasks.map((task) => ownActor(principal.id, task.for))
       const plan = batchPlan(tasks)
@@ -562,7 +561,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
             roots.map((root, at): Events => {
               const about = { id: root.id, thread: root.thread }
               const waitsFor = [...needs[at]!.ids, ...inside[at]!.map((other) => roots[other]!.id)]
-              return [{ type: 'task.created', payload: { ...about, needs: waitsFor, for: assigned[at]!, by: author } }, ...(readied[at] ? [{ type: 'task.ready' as const, payload: about }] : [])]
+              return [{ type: 'task.created', payload: { ...about, needs: waitsFor, for: assigned[at]!, priority: tasks[at]!.priority ?? DEFAULT_TASK_PRIORITY, by: author } }, ...(readied[at] ? [{ type: 'task.ready' as const, payload: about }] : [])]
             }),
         }
       }
@@ -572,7 +571,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
      * Makes the thread rooted at `id` a task, as it is: `label` in its channel, and the caller's
      * principal owns it. A reply names no task, and neither does a root that's gone.
      */
-    async adopt(identity: Identity, id: number, input: { needs?: string[] | undefined; for?: string | null | undefined; claim?: boolean | undefined; lease?: number | undefined; token?: string | undefined }): Promise<{ task: MessageView; claim?: TaskClaim }> {
+    async adopt(identity: Identity, id: number, input: { needs?: string[] | undefined; for?: string | null | undefined; priority?: TaskPriority | undefined; claim?: boolean | undefined; lease?: number | undefined; token?: string | undefined }): Promise<{ task: MessageView; claim?: TaskClaim }> {
       const { principal, actor, author } = identity
       await authorizeMessage(writes(), principal.access, 'label', id)
       const assigned = ownActor(principal.id, input.for)
@@ -588,7 +587,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
         if (input.claim && waits) throw conflict('task_waiting', `#${id} would wait for ${needs.ids.map((need) => `#${need}`).join(', ')}: it wasn't made a task`)
         if (input.claim && assigned !== null && assigned !== actor.id) throw conflict('task_assigned', `#${id} would be assigned to ${assigned}: it wasn't made a task`)
         const about = { id, thread: found.thread }
-        const events: Events = [{ type: 'task.created', payload: { ...about, needs: needs.ids, for: assigned, by: author } }]
+        const events: Events = [{ type: 'task.created', payload: { ...about, needs: needs.ids, for: assigned, priority: input.priority ?? DEFAULT_TASK_PRIORITY, by: author } }]
         if (needs.ids.length > 0 && !waits) events.push({ type: 'task.ready', payload: about })
         if (input.claim) {
           const claimed = claiming(found, null, identity, input.lease, token)
@@ -680,7 +679,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
       return { task: await shown(identity, root), claim }
     },
 
-    /** Claims the oldest ready task there, waiting up to `wait` seconds for one. */
+    /** Claims the next ready task there, waiting up to `wait` seconds for one. */
     async claimReady(identity: Identity, input: Protocol['claimReadyTask']['input'], signal: AbortSignal): Promise<Protocol['claimReadyTask']['output']> {
       const deadline = Date.now() + (input.wait ?? 0) * 1000
       for (let pause = 100; ; pause = Math.min(pause * 2, 1000)) {
@@ -805,6 +804,28 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
           { type: 'task.needs_changed', payload: { ...about, needs: needs.ids, by: identity.author } },
           ...(needs.ids.length > 0 && needs.completed && task.state !== 'blocked' ? [{ type: 'task.ready' as const, payload: about }] : []),
         ]
+      })
+      return { task: await shown(identity, root) }
+    },
+
+    /** Changes an open task's priority without changing its claim, state, or labels. */
+    async priority(identity: Identity, id: number, priority: TaskPriority, proof?: Proof): Promise<{ task: MessageView }> {
+      await taskOf(identity.principal.access, id)
+      const root = await changeTask(identity, id, (found) => {
+        const { task } = found
+        if (proof) fenced(found, proof)
+        else {
+          owns(identity, found)
+          // A current holder cannot bypass the claim's limit by omitting its proof.
+          if (task.claim?.actor === identity.actor.id && !lapsed(task, Date.now()))
+            throw conflict('task_claimed', `#${id} is held by your claim: change priority through it`)
+        }
+        if (finished(task)) throw conflict('task_finished', `#${id} is ${task.state}`)
+        const previous = task.priority ?? DEFAULT_TASK_PRIORITY
+        if (proof && priorityRank(priority) > priorityRank(previous))
+          throw new HttpError(403, 'priority_raise_forbidden', 'a claim may lower priority, not raise it')
+        if (priority === previous) return []
+        return [{ type: 'task.priority_changed', payload: { id, thread: found.thread, priority, ...(proof ? { epoch: proof.epoch } : {}), by: identity.author } }]
       })
       return { task: await shown(identity, root) }
     },

@@ -21,6 +21,7 @@ import {
   SentTaskHoldKind,
   SentTaskNote,
   TaskState,
+  TaskPriority,
 } from '../contract/schemas.ts'
 import { ExternalAuthor, ExternalEvent, ExternalTarget, Link as LinkSchema, LINKS_PER_MESSAGE_MAX, MENTIONED_PER_MESSAGE_MAX, Origin } from '../contract/external.ts'
 import type { BoardEvent } from '../contract/events.ts'
@@ -277,6 +278,7 @@ export const CreateTaskBody = z
     /** How many tasks one may wait for is the backend's to say. */
     needs: z.array(Ref).optional(),
     for: ActorId.nullable().optional(),
+    priority: TaskPriority.optional().describe('Defaults to normal.'),
     claim: z.boolean().optional(),
     lease: Lease.optional(),
     ...ClaimToken,
@@ -322,6 +324,7 @@ export const CreateTasksBody = z.object({
           /** How many tasks one may wait for is the backend's to say. */
           needs: z.array(z.union([Ref, z.object({ key: TaskKey }).strict()])).optional(),
           for: ActorId.nullable().optional(),
+          priority: TaskPriority.optional().describe('Defaults to normal.'),
         })
         .refine((task) => task.text.trim().length > 0 || (task.attachments?.length ?? 0) > 0, { message: 'message text is empty', path: ['text'] })
         .refine((task) => storable(task.text), { message: 'message text has a NUL character or a lone surrogate', path: ['text'] }),
@@ -371,8 +374,9 @@ export const TasksQuery = z.object({
 export const ClaimTaskBody = z.object({ lease: Lease.optional(), ...ClaimToken }).optional()
 
 /**
- * Claims the oldest ready task in `channel` that has every label in `label`: one assigned to the
- * caller first, then an unassigned one it owns, or whose owner `from` names by ID. `wait`
+ * Claims the highest priority eligible ready task in `channel`, oldest first at equal priority.
+ * It must have every label in `label` and be assigned to the caller, or unassigned and owned by
+ * the caller or an owner `from` names by ID. `wait`
  * holds the request up to that many seconds for one.
  */
 export const ClaimReadyTaskBody = z.object({
@@ -402,6 +406,12 @@ export const BlockTaskBody = z
 export const AssignTaskBody = z.object({ for: ActorId.nullable() })
 /** The tasks it waits for now, in place of what it waited for: none, for a task that waits for nothing. How many it may wait for is the backend's to say. */
 export const TaskNeedsBody = z.object({ needs: z.array(Ref) })
+/** The owner or manage sets priority; a live claim can only lower it. */
+export const TaskPriorityBody = z.object({
+  priority: TaskPriority,
+  epoch: Claimed.epoch.optional(),
+  token: Claimed.token.optional(),
+}).refine((body) => (body.epoch === undefined) === (body.token === undefined), { message: 'a claim is its `epoch` and its `token`: pass both, or neither' })
 export const CancelTaskBody = z.object({ reason: SentTaskNote })
 
 const CanGrant = z.union([z.literal('all'), z.array(z.string().min(1).max(16)).max(8)])
@@ -906,7 +916,8 @@ export type SchemaView = {
  * owner's actors made it one (`by`, who changes it as its owner), what it waits for, and who holds
  * it until when. A claim's token shows nowhere but in the answer that made it.
  */
-export type TaskView = Omit<Task, 'needs' | 'claim'> & {
+export type TaskView = Omit<Task, 'needs' | 'claim' | 'priority'> & {
+  priority: TaskPriority
   /** The tasks it waits for, by their IDs. */
   needs: string[]
   /** Who holds it. One whose `until` has passed is over: the task is claimable, and `ready` once the board says so. */
@@ -1236,7 +1247,7 @@ export const routes = {
   createTasks: { method: 'POST', path: '/tasks/batch', body: CreateTasksBody },
   /** The caller's own batch made under the `id` it gave, its tasks as they are now: for telling a retry before making anything. */
   createdTasks: { method: 'GET', path: '/tasks/batch/:id', query: CreatedTasksQuery },
-  /** Claims the oldest ready task in a channel or subtree: `label` where it is. Answers `{ task: null }` when none is. */
+  /** Claims the next eligible task in a channel or subtree by priority, then age. Answers `{ task: null }` when none is ready. */
   claimReadyTask: { method: 'POST', path: '/tasks/claim', body: ClaimReadyTaskBody },
   /** Claims a task: `label` in its channel. Its answer's `claim` goes on what the claim does next. */
   claimTask: { method: 'POST', path: '/tasks/:id/claim', body: ClaimTaskBody },
@@ -1253,6 +1264,7 @@ export const routes = {
   assignTask: { method: 'POST', path: '/tasks/:id/assign', body: AssignTaskBody },
   /** Replaces what a task waits for, while no one holds it and it isn't finished. */
   setTaskNeeds: { method: 'POST', path: '/tasks/:id/needs', body: TaskNeedsBody },
+  setTaskPriority: { method: 'POST', path: '/tasks/:id/priority', body: TaskPriorityBody },
   cancelTask: { method: 'POST', path: '/tasks/:id/cancel', body: CancelTaskBody },
   /** Listing grants needs manage at `*`; changing one, manage at each pattern its `can` names. Team owners always may. */
   grants: { method: 'GET', path: '/grants' },

@@ -15,7 +15,7 @@ import { board as boardAt, type Board } from '../server/index.ts'
 import { isBoardName } from '../server/board.ts'
 import { isApiMessageId } from '../server/backend-vercel.ts'
 import { normalizeEmoji } from '../contract/emoji.ts'
-import { ATTACHMENTS_PER_MESSAGE_MAX, DIRECT_UPLOAD_BYTES_MAX, MESSAGE_TEXT_MAX, type Attachment, AttachmentId } from '../contract/schemas.ts'
+import { ATTACHMENTS_PER_MESSAGE_MAX, DIRECT_UPLOAD_BYTES_MAX, MESSAGE_TEXT_MAX, type Attachment, AttachmentId, TaskPriority } from '../contract/schemas.ts'
 import { VERSION } from '../version.ts'
 import { conformance } from '../conformance/index.ts'
 import { explainPrincipalOf, explanationLine, GrantMisuse, grantCanOf, KINDS, patternsIn, principalsIn, type OptionToken } from './grants.ts'
@@ -1968,11 +1968,17 @@ async function run(command: string | undefined, args: string[]): Promise<number>
 }
 
 /** What `tasks` does to a task, by the word after it: any other word is a channel to list. */
-const TASK_VERBS = new Set(['create', 'claim', 'run', 'renew', 'release', 'complete', 'fail', 'block', 'unblock', 'reopen', 'assign', 'needs', 'cancel'])
+const TASK_VERBS = new Set(['create', 'claim', 'run', 'renew', 'release', 'complete', 'fail', 'block', 'unblock', 'reopen', 'assign', 'needs', 'priority', 'show', 'cancel'])
 const TASK_STATES = ['waiting', 'ready', 'claimed', 'blocked', 'completed', 'failed', 'canceled']
 
 /** A task's ID as you'd write it: `#812` or `812`. */
 const taskId = (value: string | undefined) => messageId(value, 'task ID')
+
+function priorityOf(value: unknown, from: string): TaskPriority {
+  const parsed = TaskPriority.safeParse(value)
+  if (parsed.success) return parsed.data
+  throw usage(`${from} takes ${TaskPriority.options.join(', ')}.`, { reason: 'invalid_priority' })
+}
 
 /** `--wait` or `--lease` in seconds: a number and a unit, as `schedule` takes a duration. A lease is 30s to 1h. */
 function seconds(flag: 'wait' | 'lease'): number | undefined {
@@ -1993,7 +1999,7 @@ function seconds(flag: 'wait' | 'lease'): number | undefined {
  */
 async function createPlan(target: string, text: string | undefined, path: string): Promise<number> {
   if (isMessageRef(target)) throw usage(`--file holds a plan, which starts threads in a channel, and ${ref(target)} is a thread.`)
-  const own = text !== undefined ? 'text' : (['label', 'needs', 'for', 'claim', 'lease', 'no-sync'] as const).find((name) => (flags as Record<string, unknown>)[name] !== undefined && (flags as Record<string, unknown>)[name] !== false)
+  const own = text !== undefined ? 'text' : (['label', 'needs', 'for', 'claim', 'lease', 'no-sync', 'priority'] as const).find((name) => (flags as Record<string, unknown>)[name] !== undefined && (flags as Record<string, unknown>)[name] !== false)
   if (own !== undefined) throw usage(`${own === 'text' ? 'Text' : `--${own}`} is one task's: with --file, each task in the file has its own.`)
   const board = client()
   const tasks = await planFrom(path, board)
@@ -2030,7 +2036,7 @@ async function createPlan(target: string, text: string | undefined, path: string
 }
 
 /** What a task of a plan's `--file` takes, as `tasks.createMany` does. */
-const PLAN_KEYS = ['key', 'text', 'labels', 'needs', 'for', 'noSync', 'attachments']
+const PLAN_KEYS = ['key', 'text', 'labels', 'needs', 'for', 'noSync', 'attachments', 'priority']
 
 /** The help page that says what a plan holds. */
 const planHelp = (): Recovery => ({ instruction: 'See what a plan takes', argv: [...cli(), 'tasks', 'create', '--help'] })
@@ -2078,6 +2084,7 @@ function checkPlan(plan: Record<string, unknown>[], where: string): void {
         next: [planHelp()],
       })
     }
+    if ('priority' in task) priorityOf(task.priority, `Priority on task ${at + 1} of ${where}`)
     if (!('needs' in task)) continue
     const needs = '[{"key": "fix"}, "812"]'
     if (!Array.isArray(task.needs)) throw usage(`Task ${at + 1} of ${where} has needs that aren't a list, such as ${needs}.`, { next: [planHelp()] })
@@ -2194,7 +2201,7 @@ async function withClaim<T>(claims: Claims, id: string, write: () => Promise<T>)
 }
 
 /**
- * Claims a task for this run, by its ID or with `--ready` the oldest ready one in `target`, and
+ * Claims a task for this run, by its ID or with `--ready` the highest priority eligible one in `target`, and
  * keeps the claim. With nothing ready it fails: `nothing_ready`, or `timeout` once `--wait` ran
  * out, as `wait` does. Stopped while it waits, it answers the exit code instead.
  */
@@ -2311,8 +2318,10 @@ async function tasks(args: string[]): Promise<number> {
     if (flags.file !== undefined) return createPlan(target, body, flags.file)
     const lease = seconds('lease')
     if (lease !== undefined && !claimFlag()) throw usage('--lease is how long a claim holds the task: pass --claim too.')
+    const priority = flags.priority === undefined ? undefined : priorityOf(flags.priority, '--priority')
     const { board, claims } = tasksOn()
     const about = {
+      ...(priority !== undefined ? { priority } : {}),
       ...(flags.needs?.length ? { needs: flags.needs.map((id) => taskId(id)) } : {}),
       ...(flags.for ? { for: profileActor((await board.me()).principal, flags.for) } : {}),
       ...(claimFlag() ? { claim: true } : {}),
@@ -2436,6 +2445,27 @@ async function tasks(args: string[]): Promise<number> {
   const { board, claims } = tasksOn()
 
   switch (verb) {
+    case 'show': {
+      one(rest[1], 'one task')
+      const { message, replies } = await board.thread(id)
+      if (message.id !== id || !message.task)
+        throw new Failed({ class: 'not_found', reason: 'not_a_task', message: `${ref(id)} isn't a task.` })
+      if (flags.json) result({ task: message })
+      else out(formatTasks([{ message, replies: replies.length, last: replies.at(-1) ?? null }], true))
+      return 0
+    }
+    case 'priority': {
+      one(rest[2], 'a task and a priority')
+      if (rest[1] === undefined) throw usage('Missing the priority.', { reason: 'missing_arguments' })
+      const priority = priorityOf(rest[1], 'Priority')
+      const stored = await claims.get(id)
+      const task = stored
+        ? await withClaim(claims, id, () => board.tasks.held(id, stored).priority(priority))
+        : await board.tasks.priority(id, priority)
+      if (flags.json) result({ task, outcome: 'set' })
+      else out(`${messageRef(id)}  priority ${task.task?.priority ?? priority}`)
+      return 0
+    }
     case 'renew': {
       one(rest[1], 'one task')
       const lease = seconds('lease')
@@ -2547,6 +2577,8 @@ function taskFailure(code: string, status: number): { class: Failure['class']; m
       return { class: 'conflict', message: `Can't ${doing()}. It's finished.`, next: read('See how it ended') }
     case 'claim_lost':
       return { class: 'conflict', message: `Lost the claim on ${named === undefined ? 'the task' : `task ${ref(named)}`}. Its lease ran out, or the task moved on.`, next: [...read('See where it stands'), ...also('Or claim it again', 'claim', ...asTyped())] }
+    case 'priority_raise_forbidden':
+      return { class: 'permission', message: `Can't ${doing()}. A claim can lower priority, not raise it.`, next: [...read('See the current priority'), { instruction: 'Ask a task owner or channel manager to raise it' }] }
     case 'task_not_owned':
       return { class: 'permission', message: `You can't ${doing()}. It's someone else's.`, next: read('See whose it is') }
     case 'not_a_task':
@@ -2754,7 +2786,7 @@ function stopped(reason: unknown): Failed {
   // A subcommand that writes is `channels create`'s first word, `sources <key> join`'s second.
   const sub = current.command === 'sources' ? current.args[1] : current.args[0]
   // Every task verb writes: a claim, its renewal, and what settles or changes the task.
-  const writes = WRITES.has(current.command ?? '') || ['create', 'update', 'revoke', 'cancel', 'join'].includes(sub ?? '') || (current.command === 'tasks' && TASK_VERBS.has(sub ?? ''))
+  const writes = WRITES.has(current.command ?? '') || ['create', 'update', 'revoke', 'cancel', 'join'].includes(sub ?? '') || (current.command === 'tasks' && sub !== 'show' && TASK_VERBS.has(sub ?? ''))
   return new Failed({
     class: timedOut ? 'timeout' : 'canceled',
     reason: timedOut ? 'timeout' : 'canceled',

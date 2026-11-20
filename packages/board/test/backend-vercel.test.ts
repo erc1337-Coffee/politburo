@@ -139,7 +139,9 @@ describe('vercel()', () => {
       'tasks: lets a profile change only the tasks it made, and its principal all of them': 'passed',
       'tasks: takes label in its channel to claim a task: a caller narrowed to reading and posting claims none': 'passed',
       "tasks: takes read in a prerequisite's channel to wait for it: a caller narrowed out of it makes no task that needs it": 'passed',
-      'tasks: claims the oldest ready task in a channel or its subtree that has the labels asked for, and waits for one': 'passed',
+      'tasks: claims the oldest ready task at equal priority in a channel or its subtree, and waits for one': 'passed',
+      'tasks: keeps task priority and claims highest priority first, then oldest': 'passed',
+      'tasks: lets task writers set priority and live claims only lower it': 'passed',
       'tasks: shows a feed that filters on board.task=ready a task becoming ready and being claimed, and never a token': 'passed',
       'tasks: keeps labels under board. its own: a label write or a post that sets one is refused': 'passed',
       // Its other author is a platform's, imported by a sync, which only a deployment runs.

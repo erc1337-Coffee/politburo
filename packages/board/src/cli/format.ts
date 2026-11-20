@@ -1,4 +1,5 @@
 import type { BoardEventView, GrantView, Me, MessageView, PrincipalView, ScheduleView, SourceRead, SyncedView, TaskView, ThreadSummaryView } from '../api/routes.ts'
+import { DEFAULT_TASK_PRIORITY, TaskPriority } from '../contract/schemas.ts'
 import { displayEmoji } from '../contract/emoji.ts'
 import { fileSize } from '../contract/files.ts'
 import { byVercelBot, displayText } from '../contract/bots.ts'
@@ -168,6 +169,8 @@ function taskState(message: MessageView, task: TaskView, names: Map<string, stri
   else if (task.state === 'completed') parts.push('completed', ...(task.result ? [noteLine(task.result)] : []))
   else if (task.state === 'failed' || task.state === 'canceled') parts.push(task.state, ...(task.reason ? [noteLine(task.reason)] : []))
   else parts.push(task.state)
+  const priority = TaskPriority.safeParse(task.priority).data ?? DEFAULT_TASK_PRIORITY
+  if (priority !== DEFAULT_TASK_PRIORITY) parts.push(`priority ${priority}`)
   if (task.needs.length) parts.push(`needs ${task.needs.map((id) => `#${id}`).join(' ')}`)
   if (task.for !== null) parts.push(`for ${profileOf(task.for)}`)
   if (task.owner !== message.by.principal) parts.push(`owner ${named(task.owner)}`)
@@ -203,8 +206,10 @@ const TASK_NOTE_MIN = 20
  * column is as wide as any state, and the text's at least 30, so one list lines up with the next.
  * What a person wrote about how it ended is cut to fit 80 columns: the rest is in its thread.
  */
-export function formatTasks(tasks: ThreadSummaryView[]): string {
-  const rows = tasks.map(({ message }) => [`#${message.id}`, (message.task?.state ?? '').padEnd(STATE_WIDTH), firstLine(message, TASK_TEXT_MAX).padEnd(TASK_TEXT_MIN)])
+export function formatTasks(tasks: ThreadSummaryView[], showPriority = false): string {
+  const priorities = tasks.map(({ message }) => TaskPriority.safeParse(message.task?.priority).data ?? DEFAULT_TASK_PRIORITY)
+  const withPriority = showPriority || priorities.some((priority) => priority !== DEFAULT_TASK_PRIORITY)
+  const rows = tasks.map(({ message }, at) => [`#${message.id}`, (message.task?.state ?? '').padEnd(STATE_WIDTH), ...(withPriority ? [priorities[at]!] : []), firstLine(message, withPriority ? TASK_TEXT_MIN : TASK_TEXT_MAX).padEnd(TASK_TEXT_MIN)])
   const room = Math.max(TASK_NOTE_MIN, 80 - rows.reduce((widest, row) => Math.max(widest, row.join('  ').length), 0) - 2)
   return table(rows.map((row, at) => [...row, tasks[at]!.message.task ? taskNote(tasks[at]!.message, tasks[at]!.message.task!, room) : '']))
 }
@@ -424,6 +429,7 @@ export function formatEvent(event: BoardEventView): string {
       return `#${message.id}  ${where}  ✗ didn't reach ${event.payload.target}: ${event.payload.error}`
     case 'task.created':
     case 'task.assigned':
+    case 'task.priority_changed':
     case 'task.needs_changed':
     case 'task.ready':
     case 'task.claimed':
@@ -451,6 +457,8 @@ function taskEvent(event: Extract<BoardEventView, { type: `task.${string}` }>): 
       return `created${by}${more(event.payload.needs.length ? `needs ${event.payload.needs.map((id) => `#${id}`).join(' ')}` : null, event.payload.for !== null ? `for ${profileOf(event.payload.for)}` : null)}`
     case 'task.assigned':
       return event.payload.for !== null ? `assigned to ${profileOf(event.payload.for)}${by}` : `unassigned${by}`
+    case 'task.priority_changed':
+      return `priority ${event.payload.priority}${by}`
     case 'task.needs_changed':
       // What it waits for now, in place of what it waited for.
       return `needs ${event.payload.needs.length ? event.payload.needs.map((id) => `#${id}`).join(' ') : 'nothing'}${by}`

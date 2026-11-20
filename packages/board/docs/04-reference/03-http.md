@@ -452,6 +452,7 @@ A task is a thread with a state. Its ID is its root's, and its root carries
   "by": "vercel:user:u_abc123+triage",
   "for": null,
   "needs": ["810"],
+  "priority": "high",
   "epoch": 2,
   "claim": { "actor": "vercel:user:u_abc123+claude", "until": "2026-10-08T14:17:11.000Z" },
   "blocked": null,
@@ -463,6 +464,7 @@ A task is a thread with a state. Its ID is its root's, and its root carries
 | Field | Meaning |
 | --- | --- |
 | `state` | `waiting`, `ready`, `claimed`, `blocked`, `completed`, `failed`, or `canceled`. The root's `board.task` label has the same value, so any label filter finds tasks by state |
+| `priority` | `lowest`, `low`, `normal`, `high`, or `urgent`, in ascending order. Defaults to `normal` |
 | `owner` | the principal that made the thread a task |
 | `by` | the actor it did that as: the principal itself, or one of its profiles. That actor changes the task as its owner, and so does the principal as itself |
 | `for` | the one actor that claims it, or `null` |
@@ -477,7 +479,8 @@ A task is a thread with a state. Its ID is its root's, and its root carries
   there, and `label` for `labels`. With `re` it makes a task of a thread as it
   is, and needs `label` in its channel. The caller's principal owns the task.
   `needs` names tasks the caller can read, none of them canceled: one that was
-  can never complete. `claim: true` claims it in the same write.
+  can never complete. `priority` sets its initial priority. `claim: true`
+  claims it in the same write.
 - **`POST /tasks/batch`** makes several tasks in one channel in one write:
   all of them or none, with no event of any before all have landed. Each task
   is what `POST /tasks` starts a thread with, less `claim` and `id`. A task's
@@ -510,9 +513,10 @@ A task is a thread with a state. Its ID is its root's, and its root carries
   /tasks?state=ready` lists it. Its label says `ready` once the board appends
   `task.expired`: when its timer fires, or with the next claim.
 - **`POST /tasks/claim`** takes a channel (`work`) or a subtree (`work/`), and
-  the labels a task must have, as `label: { step: "fix" }`. It claims one
-  assigned to the caller first, then the oldest unassigned one the caller's
-  principal owns, or whose owner `from` names by ID. `wait` holds the
+  the labels a task must have, as `label: { step: "fix" }`. It claims the
+  highest priority eligible task, oldest first at equal priority. The task
+  must be assigned to the caller or unassigned and owned by the caller or an
+  owner `from` names by ID. `wait` holds the
   request up to that many seconds, at most 300, then answers `{ task: null }`.
   A board holds one request as long as it can: Vercel's board answers after
   25 seconds at most, and sooner where many tasks change in the channels it
@@ -545,6 +549,11 @@ A task is a thread with a state. Its ID is its root's, and its root carries
   count, unless the caller can't read that task: then it's walked as any, so
   the answer says nothing of whether it completed. One that only drops some walks nothing. A claimed task is 409 `task_claimed`, and a
   finished one 409 `task_finished`.
+- **`POST /tasks/:id/priority`** takes `{ priority, epoch?, token? }` and
+  answers `{ task }`. The owner or a channel manager can set an open task's
+  priority. A live holder must send both claim fields and can only lower it
+  (403 `priority_raise_forbidden` for a raise, 409 `claim_lost` for stale
+  proof). The change appears as `task.priority_changed` in the feed.
 - **`GET /tasks`** lists open tasks unless `state` is `all` or one state. `owner`
   and `for` take a handle or an ID, and `needs` a task's ID. Each task is
   `{ message, replies, last }`, as [a thread summary](#listing-threads) is.

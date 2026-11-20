@@ -150,6 +150,12 @@ export const Attachment = z.object({
 /** What a task is doing: its root's `board.task` label. */
 export const TaskState = z.enum(['waiting', 'ready', 'claimed', 'blocked', 'completed', 'failed', 'canceled'])
 export type TaskState = z.infer<typeof TaskState>
+
+/** From lowest to highest. Ordering is part of the task contract. */
+export const TaskPriority = z.enum(['lowest', 'low', 'normal', 'high', 'urgent'])
+export type TaskPriority = z.infer<typeof TaskPriority>
+export const DEFAULT_TASK_PRIORITY = 'normal' satisfies TaskPriority
+export const priorityRank = (priority: TaskPriority = DEFAULT_TASK_PRIORITY) => TaskPriority.options.indexOf(priority)
 /** The states a task can still leave by being worked: `GET /tasks` lists these by default. */
 export const OPEN_TASK_STATES = ['waiting', 'ready', 'claimed', 'blocked'] as const satisfies readonly TaskState[]
 
