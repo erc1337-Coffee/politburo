@@ -21,8 +21,9 @@ const titleOf = (root: TaskRoot) => firstLine(root.text).slice(0, 120) || `Task 
 function Outcome({ root }: { root: TaskRoot }) {
   const { task } = root
   if (task.state === 'completed') return <p className="handoff-result"><strong>Delivery:</strong> {task.result || 'No result recorded.'}</p>
+  if (task.parked) return <p className="handoff-result"><strong>Hold:</strong> {task.parked.reason}</p>
   if (task.blocked) return <p className="handoff-result"><strong>Hold:</strong> {task.blocked.kind && `${task.blocked.kind}: `}{task.blocked.reason}</p>
-  if (task.reason) return <p className="handoff-result"><strong>Reason:</strong> {task.reason}</p>
+  if (task.state === 'failed' || task.state === 'canceled') return <p className="handoff-result"><strong>Reason:</strong> {task.reason || 'No reason recorded.'}</p>
   return null
 }
 
@@ -50,20 +51,22 @@ function Prerequisite({ id, state, now }: { id: string; state: State; now: numbe
 function Handoff({ root, state, now }: { root: TaskRoot; state: State; now: number }) {
   const { task } = root
   const current = stateNow(task, now)
-  const claim = task.claim
+  const claim = task.state === 'claimed' ? task.claim : null
+  const holder = claim ? nameOf(state, claim.actor) : null
   const step = root.labels.step
   return (
     <li className="handoff">
       <div className="handoff-line">
         <Link className="handoff-title" to={here({ thread: root.id })}>{titleOf(root)}</Link>
         <StateMark state={current} />
+        <small>#{root.channel}</small>
+        {step && <small>step={step}</small>}
       </div>
-      <div className="handoff-line"><small>#{root.channel}</small>{step && <small>step={step}</small>}</div>
       {task.for && <p>Assigned to {nameOf(state, task.for)}</p>}
-      {claim && (current === 'claimed' || task.state === 'claimed') && (
+      {claim && (
         <p>
-          {current === 'claimed' ? 'Held by' : 'Expired claim by'} <strong>{nameOf(state, claim.actor)}</strong>{' '}
-          <small>({claim.actor})</small> · {current === 'claimed' ? 'Lease until' : 'Lease ended'}{' '}
+          {current === 'claimed' ? 'Held by' : 'Expired claim by'} <strong>{holder}</strong>{' '}
+          {holder !== claim.actor && <small>({claim.actor}) </small>}· {current === 'claimed' ? 'Lease until' : 'Lease ended'}{' '}
           <time dateTime={claim.until}>{new Date(claim.until).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'long' })}</time>
         </p>
       )}
@@ -71,7 +74,7 @@ function Handoff({ root, state, now }: { root: TaskRoot; state: State; now: numb
       {task.needs.length > 0 && (
         <div className="handoff-needs">
           <strong>Requires</strong>
-          <ul>{task.needs.map((id) => <Prerequisite key={id} id={id} state={state} now={now} />)}</ul>
+          <ul role="list">{task.needs.map((id) => <Prerequisite key={id} id={id} state={state} now={now} />)}</ul>
         </div>
       )}
     </li>
@@ -87,24 +90,23 @@ export function Home({ state, now, lead }: { state: State; now: number; lead: Re
     return () => { active = false }
   }, [])
   const rows = tasks(state, filter, now)
+  const status = !listed ? 'Loading tasks…'
+    : 'refused' in listed ? `Task list unavailable: ${listed.refused} Showing only tasks already known here.`
+    : listed.more ? 'Partial list · More tasks are available.'
+    : rows.length === 0 ? 'No tasks known to this view.'
+    : null
   return (
     <>
-      <Header title="Handoffs" lead={lead} live={state.live} />
+      <Header title="HANDOFFS" lead={lead} live={state.live} />
       <div className="page home-view handoffs-view">
-        <div className="home-intro">
-          <p>Follow work from its prerequisites to delivery. Open a task thread for the brief and evidence. Delivery is not approval.</p>
-          <Link to="/tasks?state=all">Browse Tasks</Link>
-          {!listed ? <p role="status">Loading tasks…</p> : 'refused' in listed ? (
-            <p role="status">Task list unavailable: {listed.refused} Showing only tasks already known here.</p>
-          ) : listed.more ? <p role="status">Partial list · More tasks are available.</p> : rows.length === 0 ? <p role="status">No tasks known to this view.</p> : null}
-        </div>
+        {status && <div className="home-intro"><p role="status">{status}</p></div>}
         {lanes.map(({ title, states }, index) => {
           const items = rows.filter(({ task }) => states.includes(stateNow(task, now)))
           if (items.length === 0) return null
           return (
             <section key={title} className="home-queue" aria-labelledby={`handoff-lane-${index}`}>
               <h2 id={`handoff-lane-${index}`}>{title}</h2>
-              <ul className="handoff-list">{items.map((root) => <Handoff key={root.id} root={root} state={state} now={now} />)}</ul>
+              <ul className="handoff-list" role="list">{items.map((root) => <Handoff key={root.id} root={root} state={state} now={now} />)}</ul>
             </section>
           )
         })}

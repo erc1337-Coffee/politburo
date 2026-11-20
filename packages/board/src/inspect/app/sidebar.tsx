@@ -1,12 +1,11 @@
-import { Activity, Check, ChevronsUpDown, ClipboardList, House, LayoutGrid, Lock, MessageSquare, PanelLeftClose, Plus, Settings } from 'lucide-react'
+import { Check, ChevronsUpDown, ClipboardList, House, LayoutGrid, PanelLeftClose, Settings } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import type { ChannelView, Me } from '../../api/routes.ts'
-import { compileAccess, type Access } from '../../server/access.ts'
 import * as board from './board.ts'
 import { toast } from './chrome.ts'
 import { HomeEmblem } from './home-emblem.tsx'
 import { Avatar } from './message.tsx'
-import { GLOBAL_CHAT, GLOBAL_CHAT_PATH, channelPath, Link, navigate, type Route } from './nav.tsx'
+import { Link, type Route } from './nav.tsx'
 import { openTasks, type State } from './store.ts'
 import { ContextMenuArea, Menu, MenuItem, MenuSeparator } from './ui.tsx'
 import { boardWords, shownName } from './words.ts'
@@ -35,9 +34,8 @@ function useSeen(state: State, current: Route): Record<string, number> {
       save(Object.fromEntries(channels.map((channel) => [channel.path, channel.lastIndex ?? 0])))
   }, [state.channels])
   useEffect(() => {
-    const path = current.view === 'global-chat' ? GLOBAL_CHAT : current.view === 'channel' ? current.channel : null
-    if (path === null) return
-    const channel = state.channels[path]
+    if (current.view !== 'channel') return
+    const channel = state.channels[current.channel]
     if (channel?.lastIndex !== undefined && (seen[channel.path] ?? 0) < channel.lastIndex) save({ ...seen, [channel.path]: channel.lastIndex })
   }, [current, state.channels])
   return seen
@@ -48,7 +46,6 @@ export function Sidebar({ state, current, onHome, onCollapse }: { state: State; 
   const groups = useMemo(() => {
     const out = new Map<string, ChannelView[]>()
     for (const channel of Object.values(state.channels).sort((a, b) => a.path.localeCompare(b.path))) {
-      if (channel.path === GLOBAL_CHAT) continue
       const at = channel.path.lastIndexOf('/')
       const group = at === -1 ? 'channels' : channel.path.slice(0, at)
       out.set(group, [...(out.get(group) ?? []), channel])
@@ -57,18 +54,14 @@ export function Sidebar({ state, current, onHome, onCollapse }: { state: State; 
   }, [state.channels])
   const open = openTasks(state)
   const where = boardWords(state.discovery)
-  const [adding, setAdding] = useState(false)
-  const access = useMemo(() => compileAccess(state.me?.can ?? {}), [state.me])
-  const canCreate = access.anywhere('read') && access.anywhere('post')
   const copy = (text: string) => void navigator.clipboard.writeText(text).then(() => toast(`copied ${text}`))
   return (
     <div className="sidebar-col">
       <div className="brand">
         <HomeEmblem onNavigate={onHome} />
-        <span className="which grow" title={state.discovery?.url}>
-          <span className="name">{where.name}</span>
-          {where.at && <span className="at">{where.at}</span>}
-        </span>
+        <Link to="/" className="wordmark" title={where.at ? `${where.name} · ${where.at}` : where.name} onNavigate={onHome}>
+          POLITBURO
+        </Link>
         <button type="button" className="tool" title="Hide sidebar" aria-label="Hide sidebar" onClick={onCollapse}>
           <PanelLeftClose size={15} strokeWidth={1.75} aria-hidden="true" />
         </button>
@@ -82,22 +75,12 @@ export function Sidebar({ state, current, onHome, onCollapse }: { state: State; 
           <House size={14} aria-hidden="true" />
           <span>Handoffs</span>
         </Link>
-        <Link to="/activity" className="item" current={current.view === 'activity'}>
-          <Activity size={14} aria-hidden="true" />
-          <span>Activity</span>
-        </Link>
         <Link to="/tasks" className="item" current={current.view === 'tasks'}>
           <ClipboardList size={14} aria-hidden="true" />
           <span className="name">tasks</span>
           {open !== null && open > 0 && <span className="count">{open}</span>}
         </Link>
-        <h2>
-          channels
-          {canCreate && <button className="tool" title="new channel" onClick={() => setAdding(true)}>
-            <Plus size={12} />
-          </button>}
-        </h2>
-        {canCreate && adding && <NewChannel access={access} onDone={() => setAdding(false)} />}
+        <h2>channels</h2>
         {groups.map(([group, channels]) => (
           <section key={group}>
             {group !== 'channels' && <h2>{group}</h2>}
@@ -115,7 +98,7 @@ export function Sidebar({ state, current, onHome, onCollapse }: { state: State; 
                     </>
                   }
                 >
-                  <Link to={channelPath(channel.path)} className={`item${unread ? ' unread' : ''}`} current={active} title={channel.path}>
+                  <Link to={`/c/${channel.path}`} className={`item${unread ? ' unread' : ''}`} current={active} title={channel.path}>
                     <span className="name">#{channel.path.slice(channel.path.lastIndexOf('/') + 1)}</span>
                     {unread ? <i className="dot" /> : channel.threads !== undefined ? <span className="count">{channel.threads}</span> : null}
                   </Link>
@@ -126,11 +109,6 @@ export function Sidebar({ state, current, onHome, onCollapse }: { state: State; 
         ))}
       </div>
       <div className="sidebar-foot">
-        <Link to={GLOBAL_CHAT_PATH} className="item" current={current.view === 'global-chat'}>
-          <MessageSquare size={14} aria-hidden="true" />
-          <span className="name">Global Chat</span>
-          {(state.channels[GLOBAL_CHAT]?.lastIndex ?? 0) > (seen[GLOBAL_CHAT] ?? Number.POSITIVE_INFINITY) && current.view !== 'global-chat' && <i className="dot" />}
-        </Link>
         <Link to="/settings/access" className="item settings" current={current.view === 'settings'}>
           <Settings size={14} strokeWidth={1.75} />
           <span>settings</span>
@@ -138,39 +116,6 @@ export function Sidebar({ state, current, onHome, onCollapse }: { state: State; 
         <ProfileMenu me={state.me!} />
       </div>
     </div>
-  )
-}
-
-/** A channel, made before anything posts to it. Private closes it to everyone but you. */
-function NewChannel({ access, onDone }: { access: Access; onDone: () => void }) {
-  const canClose = access.at('manage', '*')
-  const [closed, setClosed] = useState(false)
-  return (
-    <form
-      className="new-channel"
-      onSubmit={(event) => {
-        event.preventDefault()
-        const path = new FormData(event.currentTarget).get('path')?.toString().trim().replace(/^#/, '')
-        if (!path) return onDone()
-        if (!access.can('read', path) || !access.can('post', path)) return toast(`you can't create #${path}`)
-        void board.createChannel(path, canClose && closed ? { private: true } : {}).then((made) => made && navigate(channelPath(path)))
-        onDone()
-      }}
-      onKeyDown={(event) => event.key === 'Escape' && onDone()}
-      onBlur={(event) => !event.currentTarget.contains(event.relatedTarget) && onDone()}
-    >
-      <input name="path" autoFocus placeholder="name, e.g. incidents" pattern="[a-z0-9][a-z0-9_\-]*(/[a-z0-9][a-z0-9_\-]*)*" title="lowercase letters, numbers, - and _, with / between parts" spellCheck={false} />
-      {canClose && <button
-        type="button"
-        className={`tool${closed ? ' on' : ''}`}
-        aria-pressed={closed}
-        title={closed ? 'private: only you get in' : 'make it private'}
-        onMouseDown={(event) => event.preventDefault()}
-        onClick={() => setClosed(!closed)}
-      >
-        <Lock size={12} />
-      </button>}
-    </form>
   )
 }
 

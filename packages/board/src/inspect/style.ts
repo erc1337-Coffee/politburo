@@ -21,11 +21,16 @@ export const CSS = `
   --label: #fff8f4;
   --action: #73253e;
   --action-hover: #8b3050;
+  --action-pressed: #591a30;
   --chrome: #f7f1eb;
+  --chrome-pressed: #e4d6ce;
+  --bevel-light: #fff9ee;
+  --bevel-dark: #b39a89;
   --raised: 0 1px 1px #2a15191a;
   --shadow: #24141926;
   --red: #9b302c;
   --warning: #795318;
+  --display: 'Avenir Next Condensed', 'Bahnschrift', 'Arial Narrow', 'Liberation Sans Narrow', 'Helvetica Neue', sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
   --metadata: .75rem/1rem var(--mono);
   --inset: 12px;
@@ -53,6 +58,9 @@ export const CSS = `
     --accent-transparent: #f4aec638;
     --scrim: #120c10b3;
     --chrome: #30262b;
+    --chrome-pressed: #251b20;
+    --bevel-light: #746052;
+    --bevel-dark: #191215;
     --raised: 0 1px 1px #0005;
     --shadow: #0006;
     --red: #ffaaa2;
@@ -188,9 +196,9 @@ input, textarea { font: inherit; color: var(--bright); letter-spacing: inherit; 
 .header > .tool:hover, .brand > .tool:hover { background: var(--shade); }
 .header .title {
   margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--bright);
-  font: 700 1.125rem/1.375rem 'Avenir Next Condensed', 'Arial Narrow', 'Liberation Sans Narrow', sans-serif;
+  font: 700 1.125rem/1.375rem var(--display);
   font-stretch: condensed;
-  letter-spacing: .04em;
+  letter-spacing: .06em;
   text-transform: uppercase;
 }
 .header .meta { color: var(--faint); font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
@@ -371,7 +379,7 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
   color: var(--muted);
   font-size: 13px;
 }
-.tool:hover, .tool[data-popup-open] { background: var(--shade); color: var(--bright); }
+.tool:hover, .tool[data-popup-open] { color: var(--bright); }
 .tool.on { color: var(--accent); }
 .tool .count, .tool .tool-label { font-size: 11px; }
 
@@ -467,20 +475,10 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 .composer-channel { margin: 8px 8px 0; align-self: flex-start; width: min(320px, calc(100% - 16px)); }
 .composer-labels { margin: 8px 12px 0; }
 .composer-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-height: 30px; }
-.composer-footer .tool { border: 1px solid var(--hairline); border-radius: 4px; background: var(--chrome); box-shadow: var(--raised); }
 .composer-footer .hint { margin-left: auto; margin-right: 8px; }
 .pane .composer-footer .hint { display: none; }
 .pane .composer-footer .send { margin-left: auto; }
-.send { height: 30px; padding: 0 12px; background: var(--action); color: var(--label); border: 1px solid var(--gold); border-radius: 4px; font-weight: 600; white-space: nowrap; }
-.send:not(:disabled):hover { background: var(--action-hover); }
-@media (hover: hover) {
-  button:not(:disabled, [aria-disabled="true"]):hover { filter: brightness(1.07); }
-}
-button:not(:disabled, [aria-disabled="true"]):active {
-  filter: brightness(.94);
-  box-shadow: inset 1px 2px 3px var(--shadow), inset -1px -1px var(--gold);
-}
-/* Instant feedback, with no movement or transitions. */
+.send { height: 30px; padding: 0 12px; font-weight: 600; white-space: nowrap; }
 .button-sounds { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; white-space: nowrap; }
 .button-sounds input { accent-color: var(--action); }
 .send.small { height: 28px; padding: 0 10px; }
@@ -516,15 +514,57 @@ button:not(:disabled, [aria-disabled="true"]):active {
 /* --- buttons that act, and the small forms that ask first --- */
 .acts { display: flex; flex-wrap: wrap; gap: 4px; }
 .acts .act[aria-haspopup] { padding: 0 7px; }
-.act { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 9px; background: var(--chrome); border: 1px solid var(--hairline); border-radius: 4px; box-shadow: var(--raised); color: var(--dim); font-size: 12px; white-space: nowrap; }
-.act:hover, .act[data-popup-open] { background: var(--shade-hover); color: var(--bright); }
-.act.primary, .act.primary:hover { background: var(--action); color: var(--label); }
+.act { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 9px; color: var(--dim); font-size: 12px; white-space: nowrap; }
+.act:hover, .act[data-popup-open] { color: var(--bright); }
 .act.danger { color: var(--red); }
 /* A row's own control: there when you're on the row, and it says what it is only when you reach for it. */
-.act.quiet { visibility: hidden; background: none; color: var(--muted); }
+.act.quiet { visibility: hidden; color: var(--muted); }
 :hover > .act.quiet, :focus-within > .act.quiet { visibility: visible; }
-.act.quiet:hover, .act.quiet:focus-visible { background: var(--shade-hover); color: var(--red); }
+.act.quiet:hover, .act.quiet:focus-visible { color: var(--red); }
 .act:disabled { opacity: 0.5; }
+
+/* One raised surface for action buttons. Plain buttons use inset edges without adding height. */
+.send, .act, .tool { border: 1px solid var(--hairline); }
+:is(.tab-actions, .home-view) button:not(.send, .act, .tool) { padding-inline: 8px; }
+/* Match the standalone header control's specificity as well. */
+:is(.send, .act, .tool, .tab-actions button, .home-view button, .header > .tool) {
+  --button-fill: var(--chrome);
+  --button-hover: var(--shade-hover);
+  --button-pressed: var(--chrome-pressed);
+  --button-light: var(--bevel-light);
+  --button-dark: var(--bevel-dark);
+  background: var(--button-fill);
+  border-radius: 4px;
+  box-shadow: inset 1px 1px var(--button-light), inset -1px -1px var(--button-dark), var(--raised);
+  transition: none;
+}
+:is(.send, .act.primary) {
+  --button-fill: var(--action);
+  --button-hover: var(--action-hover);
+  --button-pressed: var(--action-pressed);
+  --button-light: var(--gold-text);
+  --button-dark: #451124;
+  border-color: var(--gold);
+  color: var(--label);
+}
+:is(.act, .tool)[data-popup-open] { background: var(--button-hover); }
+@media (hover: hover) {
+  :is(.send, .act, .tool, .tab-actions button, .home-view button, .header > .tool):not(:disabled, [aria-disabled='true']):hover {
+    background: var(--button-hover);
+  }
+}
+:is(.send, .act, .tool, .tab-actions button, .home-view button, .header > .tool):not(:disabled, [aria-disabled='true']):is(:active, [aria-pressed='true']) {
+  background: var(--button-pressed);
+  box-shadow: inset 1px 1px var(--button-dark), inset -1px -1px var(--button-light);
+  transform: translate(1px, 1px);
+}
+@media (prefers-reduced-motion: reduce) {
+  button, .send, .act, .tool { transition: none; animation: none; }
+  :is(.send, .act, .tool, .tab-actions button, .home-view button, .header > .tool):not(:disabled, [aria-disabled='true']):is(:active, [aria-pressed='true']) {
+    transform: none;
+  }
+}
+
 .ask { display: grid; gap: 8px; }
 .ask textarea { width: 100%; min-height: 64px; padding: 6px 8px; border: 0; outline: none; background: var(--shade); font-size: 13px; line-height: 1.5; resize: vertical; }
 .ask textarea:focus { outline: 1px solid var(--muted); }
@@ -617,7 +657,7 @@ button:not(:disabled, [aria-disabled="true"]):active {
 .field-name { color: var(--bright); }
 .schema-json { position: relative; }
 .schema-json pre { margin: 0; padding: 10px 12px; max-height: 360px; overflow: auto; border: 1px solid var(--hairline); background: var(--shade); color: var(--dim); font-family: inherit; font-size: 12px; line-height: 1.5; cursor: text; }
-.schema-json .act { position: absolute; top: 6px; right: 6px; background: var(--bg); }
+.schema-json .act { position: absolute; top: 6px; right: 6px; }
 .ask textarea.code { min-height: 180px; font-size: 12px; white-space: pre; }
 .suggest.version { width: 64px; flex-shrink: 0; }
 .error-text { color: var(--red); }
@@ -711,4 +751,24 @@ button:not(:disabled, [aria-disabled="true"]):active {
   .task-now { grid-column: auto; grid-row: auto; max-width: 24ch; }
   .task-where { max-width: 16ch; overflow: hidden; text-overflow: ellipsis; }
 }
+
+/* --- presidium and wordmark --- */
+.brand .wordmark {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: 700 1rem/1.25rem 'Avenir Next Condensed', 'Arial Narrow', 'Liberation Sans Narrow', sans-serif;
+  font-stretch: condensed;
+  letter-spacing: .06em;
+}
+.brand .wordmark:hover { color: var(--accent); }
+.presidium-board { padding: 12px; margin-bottom: 8px; background: var(--shade); border-radius: 4px; overflow-wrap: anywhere; }
+.presidium-board h2 { margin: 0 0 4px; font-size: 1rem; }
+.presidium-address { font: var(--metadata); }
+.presidium-counts { display: flex; flex-wrap: wrap; gap: 4px 16px; list-style: none; margin: 8px 0 0; padding: 0; }
+.presidium-counts a { white-space: nowrap; }
+
+.handoffs-view { padding-block: 5px 8px; }
+.handoffs-view > * + * { margin-block-start: 6px; }
+.home-queue h2 { padding-bottom: 1px; }
+.handoff { padding-block: 2px; }
+.handoff-line { margin-bottom: 0; }
 `

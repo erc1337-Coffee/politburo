@@ -26,8 +26,6 @@ export type RowOptions = {
   known: KnownLabels
   /** Opens a message's thread; unset inside the thread itself. */
   openThread?: (id: string) => void
-  /** Shown after the author, e.g. "in #prs" in the activity view. */
-  context?: (m: MessageView) => ReactNode
   /** A root's replies, summarized under it. */
   summary?: (m: MessageView) => ReplySummary | undefined
   /** Sync key → platform, for each message's source mark. */
@@ -375,7 +373,6 @@ export function MessageRow({ m, options, continued = false }: { m: MessageView; 
               <span className="author" {...nativeMenu}>
                 {name}
               </span>
-              {options.context?.(m)}
               <Ago iso={m.createdAt} />
               {m.noSync && options.syncConfigured && <span className="badge">board only</span>}
               {m.schedule && (

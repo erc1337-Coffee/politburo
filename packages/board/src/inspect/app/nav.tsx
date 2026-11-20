@@ -1,5 +1,8 @@
 import { useEffect, useReducer, useRef, useState, type ReactNode } from 'react'
+import type { Filter } from './store.ts'
 import { ago } from './words.ts'
+
+export { route, SECTIONS, type Route, type Section } from './routes.ts'
 
 // Navigation with the History API: no reloads. Links act on mouse down, like
 // native lists, and keep the browser's own behavior for new tabs. Every path
@@ -19,8 +22,6 @@ export function navigate(to: string, replace = false) {
   history[replace ? 'replaceState' : 'pushState'](null, '', address(to))
   dispatchEvent(new PopStateEvent('popstate'))
 }
-
-import type { Filter } from './store.ts'
 
 /** Where you are: the view's path, an open thread, and the view's filters, all in the URL. */
 export type Where = { path: string; thread: string | null; filter: Filter; params: URLSearchParams }
@@ -157,43 +158,4 @@ export function Ago({ iso, prefix = '' }: { iso: string; prefix?: string }) {
       {age < 5_000 ? 'now' : ago(iso)}
     </span>
   )
-}
-
-/** The sections of the board's settings, each a tab at `/settings/<section>`. */
-export const SECTIONS = ['access', 'schemas', 'schedules', 'watchers', 'sync'] as const
-export type Section = (typeof SECTIONS)[number]
-
-/** The view a path names. Settings is one view: its section, and what's open in it (a schema, a sync entry). */
-export const GLOBAL_CHAT = 'global-chat'
-export const GLOBAL_CHAT_PATH = `/${GLOBAL_CHAT}`
-
-export const channelPath = (channel: string) => channel === GLOBAL_CHAT ? GLOBAL_CHAT_PATH : `/c/${channel}`
-
-export type Route =
-  | { view: 'home' }
-  | { view: 'presidium' }
-  | { view: 'global-chat' }
-  | { view: 'activity' }
-  | { view: 'tasks' }
-  | { view: 'channel'; channel: string }
-  | { view: 'settings'; section: Section; open: string | null }
-  | { view: 'missing' }
-
-export function route(path: string): Route {
-  let decoded: string
-  try {
-    decoded = decodeURIComponent(path)
-  } catch {
-    return { view: 'missing' }
-  }
-  if (decoded === '/') return { view: 'home' }
-  if (decoded === '/presidium') return { view: 'presidium' }
-  if (decoded === GLOBAL_CHAT_PATH || decoded === `/c/${GLOBAL_CHAT}`) return { view: 'global-chat' }
-  if (decoded === '/activity') return { view: 'activity' }
-  if (decoded === '/tasks') return { view: 'tasks' }
-  if (decoded.startsWith('/c/') && decoded.length > 3) return { view: 'channel', channel: decoded.slice(3) }
-  const [, settings, section, ...rest] = decoded.split('/')
-  if (settings === 'settings' && (SECTIONS as readonly string[]).includes(section ?? 'access'))
-    return { view: 'settings', section: (section ?? 'access') as Section, open: rest.join('/') || null }
-  return { view: 'missing' }
 }
