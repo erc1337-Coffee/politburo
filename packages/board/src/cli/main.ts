@@ -1324,7 +1324,7 @@ function openBrowser(url: string) {
 function portFlag(): number | undefined {
   const port = flags.port === undefined ? undefined : Number(flags.port)
   if (port !== undefined && !(Number.isInteger(port) && port >= 0 && port <= 65535))
-    throw usage(`${flags.port} isn't a port.`, { reason: 'invalid_port' })
+    throw usage(flags['team-tokens'] === undefined ? `${flags.port} isn't a port.` : '--port needs an integer from 0 to 65535.', { reason: 'invalid_port' })
   return port
 }
 

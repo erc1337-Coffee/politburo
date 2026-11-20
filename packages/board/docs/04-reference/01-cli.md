@@ -471,9 +471,11 @@ See [Access](../01-board/09-access.md).
 ```text
 vb serve [--port N] [--dir <dir>] [--no-inspect] [--no-open] [--agent-ops]
          [--tailscale <host>]... [--allow-host <host>]...
+vb serve --team-tokens <file> [--dir <dir>] [--host <bind-ip>] [--port N]
+         [--allow-host <host>]...
 ```
 
-Runs a board on this machine until Ctrl-C, at
+Without `--team-tokens`, runs a board on this machine until Ctrl-C, at
 `http://127.0.0.1:4100/api/board` (`--port` picks another). Other commands
 reach it with `--url` or `BOARD_URL`, as it prints. It serves the
 [inspector](#inspect) on the same port, at `http://127.0.0.1:4100`, and opens
@@ -501,14 +503,24 @@ inspector at http://127.0.0.1:4100
   long as the run.
 - **It listens on 127.0.0.1 only,** for you and your agents on this machine.
 
-To reach it from another machine, put a proxy that forwards the `Host` header
-in front of it, and name the host the proxy serves it on. On a tailnet, that's
+When self-hosting, start `vb serve` outside Vercel, from an unlinked directory
+(no `.vercel/project.json`) and without Vercel project environment variables.
+Otherwise discovery can name a Vercel project and tokenless clients can try a
+Vercel login. Plain HTTP clients using an explicit `BOARD_TOKEN` in an ordinary
+environment are unaffected.
+
+#### Share it on a tailnet
+
+To reach a board without a team token file from another machine, put a proxy
+that forwards the `Host` header in front of it, and name the host the proxy
+serves it on. On a tailnet, that's
 `tailscale serve`:
 
 ```bash
 vb serve --tailscale box.tailnet.ts.net
-tailscale serve --bg 4100
 ```
+
+In a second terminal on the same machine, run `tailscale serve --bg 4100`.
 
 - **The board is at that host's URL there.** A request for
   `box.tailnet.ts.net` reaches it at `https://box.tailnet.ts.net/api/board`
@@ -521,9 +533,9 @@ tailscale serve --bg 4100
   it prints: `https://box.tailnet.ts.net/api/board`. The page at
   `https://box.tailnet.ts.net` acts as whoever opens it. See
   [Share a local board on a tailnet](../03-guides/08-tailnet.md).
-- **`--allow-host <host>` names no one.** It's for any other proxy: whoever
-  calls the board there needs a token minted for that URL, that a
-  [grant](#grants) lets in, and whoever reaches the page there acts as you.
+- **`--allow-host <host>` names no one.** Without a team token file, a caller
+  at that host needs a token minted for that URL that a [grant](#grants) lets
+  in. If the inspector is enabled, whoever reaches it there acts as you.
   See [Behind a proxy](../03-guides/02-inspector.md#behind-a-proxy). It
   doesn't go with `--tailscale`: another proxy could forge Tailscale's word.
 - **Your token stays on this machine.** It's for the board's `127.0.0.1` URL,
@@ -531,6 +543,25 @@ tailscale serve --bg 4100
 - **A host is a name, with a port when the proxy isn't on its scheme's default
   one** (`box.local:8080`). Written with `:443` or `:80`, it's the name
   without it too, as a browser sends it. Repeat either flag for more hosts.
+
+#### Share it with team tokens
+
+`--team-tokens <file>` reads a private JSON object of handles and bearer
+tokens at startup. Each handle names a person, `team:user:<handle>`, with
+access decided by the board's grants. This mode serves only the API. It has
+no embedded inspector or automatically minted local token, and doesn't go
+with `--tailscale`.
+
+`--host` is only for team mode. It defaults to `127.0.0.1` and takes a literal
+IP address other than an unspecified address. `board` gives the direct API
+URL. For each `--allow-host`, `share` gives the HTTPS API URL. The flag does
+not set up TLS. Keep the upstream port private and give teammates the `share`
+URL as `BOARD_URL` and their own token as `BOARD_TOKEN`.
+
+Removing a token and restarting stops new calls with that bearer. It leaves
+grants, pending schedule records, watcher registrations, and queued matches
+for that handle. See [Self-host a board](../03-guides/09-self-host.md) for
+setup and [offboarding](../03-guides/09-self-host.md#offboard-a-teammate).
 
 ### hooks
 
