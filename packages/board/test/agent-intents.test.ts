@@ -384,6 +384,70 @@ it('does not take a still-pending intent after its issuer credential expires', a
   await expect(worker.agents.takeIntent(intent!.id, 1)).rejects.toMatchObject({ status: 403, code: 'issuer_revoked' })
 })
 
+it('omits a pending run probe after its issuer grant is revoked', async () => {
+  const { team, worker, agent, run, take } = await runFixture()
+  const { grant } = await team.createGrant({ principals: [{ kind: 'github', repository: 'acme/web' }], can: { work: 'all' } })
+  const issuer = via(team.fetch, await workflowToken())
+  const { intents: [probe] } = await issuer.agents.issueIntent(agent.id, {
+    verb: 'status', run, generation: agent.generation, requestId: 'before-revoke', ttlSeconds: 30,
+  })
+  expect((await worker.agents.intents(agent.id)).intents.map(({ id }) => id)).toEqual([probe!.id])
+
+  await team.revokeGrant(grant.id)
+  await expect(take(probe!)).rejects.toMatchObject({ status: 403, code: 'issuer_revoked' })
+  expect((await worker.agents.intents(agent.id)).intents).toEqual([])
+})
+
+it('omits a pending run probe after its issuer credential expires', async ({ onTestFinished }) => {
+  const advance = clock(onTestFinished)
+  const token = await personToken('u_issuer')
+  advance(3_595_000)
+  const { team, worker, agent, run, take } = await runFixture()
+  const issuer = via(team.fetch, token)
+  const { intents: [probe] } = await issuer.agents.issueIntent(agent.id, {
+    verb: 'status', run, generation: agent.generation, requestId: 'before-issuer-expiry', ttlSeconds: 30,
+  })
+  expect((await worker.agents.intents(agent.id)).intents.map(({ id }) => id)).toEqual([probe!.id])
+
+  advance(10_000)
+  await expect(take(probe!)).rejects.toMatchObject({ status: 403, code: 'issuer_revoked' })
+  expect((await worker.agents.intents(agent.id)).intents).toEqual([])
+})
+
+it('omits a delegated pending run probe after its parent is retired', async () => {
+  const { client, worker, agent, run } = await runFixture()
+  const parent = client.as('controller')
+  const controller = await parent.agents.register({ ...config, role: 'controller' })
+  const child = await worker.agents.register({ ...config, parent: controller.id, ifGeneration: agent.generation })
+  const issuer = parent.as('controller', { can: 'work=read,post' })
+  const { intents: [probe] } = await issuer.agents.issueIntent(child.id, {
+    verb: 'status', run, generation: child.generation, requestId: 'before-parent-retirement', ttlSeconds: 30,
+  })
+  expect((await worker.agents.intents(child.id)).intents.map(({ id }) => id)).toEqual([probe!.id])
+
+  await parent.agents.retire(controller.id, controller.generation)
+  await expect(worker.agents.takeIntent(probe!.id, child.generation)).rejects.toMatchObject({ status: 403, code: 'issuer_revoked' })
+  expect((await worker.agents.intents(child.id)).intents).toEqual([])
+})
+
+it('lists a still-authorized run probe when another issuer loses issue authority', async () => {
+  const { team, worker, agent, run, issue } = await runFixture()
+  const principal = { kind: 'github', repository: 'acme/web' } as const
+  const { grant } = await team.createGrant({ principals: [principal], can: { work: 'all' } })
+  await team.createGrant({ principals: [principal], can: { work: ['read', 'post'] } })
+  const issuer = via(team.fetch, await workflowToken())
+  const { intents: [probe] } = await issuer.agents.issueIntent(agent.id, {
+    verb: 'status', run, generation: agent.generation, requestId: 'before-losing-manage', ttlSeconds: 30,
+  })
+  const authorized = await issue('still-authorized')
+  const recipient = worker.as('worker', { can: 'work=read,post' })
+  const listed = async () => (await recipient.agents.intents(agent.id)).intents.map(({ id }) => id)
+  expect(await listed()).toEqual([probe!.id, authorized.id])
+
+  await team.revokeGrant(grant.id)
+  expect(await listed()).toEqual([authorized.id])
+})
+
 it('keeps intent mutations out of all-events reads and out of ordinary task views', async () => {
   const { team, client, agent, task, issue, take, report, health } = await runFixture()
   const start = await client.post('work', 'before probing')
