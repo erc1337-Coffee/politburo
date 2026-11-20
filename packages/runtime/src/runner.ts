@@ -3,6 +3,8 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { BoardError, type Board } from '@vercel/board'
 import type { Harness, Result, RunRef, WorkSpec } from './harness.ts'
 import { checkedMs } from './process.ts'
+import type { CapacityKind, CapacityPolicy } from './capacity.ts'
+import type { UsageGuard } from './usage.ts'
 
 export type RunTaskOptions = {
   board: Board
@@ -16,6 +18,9 @@ export type RunTaskOptions = {
   /** Max delay between renewals; by default renew at a third of the time left on the lease. */
   renewEveryMs?: number
   pollMs?: number
+  usageGuard?: UsageGuard
+  /** Reserve a kind (worker by default) and, for heavy work, a machine slot. */
+  capacity?: { policy: CapacityPolicy; kind?: CapacityKind; heavy?: boolean }
 } & ({ taskId: string; selection?: never } | {
   taskId?: never
   /** Explicitly scoped ready selection using board's own eligibility rules. */
@@ -24,14 +29,32 @@ export type RunTaskOptions = {
 
 export type RunTaskOutcome =
   | { status: 'nothing_ready' }
+  | { status: 'usage_blocked'; resetAt: number }
+  | { status: 'capacity_unavailable' }
   | { status: 'lease_lost'; taskId: string }
   | { status: 'released'; taskId: string; run: RunRef; result: Result }
 
 /** Run one claim, then release it and return the result. Never settle the task. */
 export async function runTask(options: RunTaskOptions): Promise<RunTaskOutcome> {
-  const { board, harness, work, provider, model, attemptId = randomUUID(), lease, pollMs = 100, renewEveryMs } = options
+  const { usageGuard, capacity, pollMs = 100, renewEveryMs } = options
   checkedMs(pollMs, 'pollMs')
   if (renewEveryMs !== undefined) checkedMs(renewEveryMs, 'renewEveryMs')
+  if (usageGuard) {
+    const decision = await usageGuard.check()
+    if (!decision.allowed) return { status: 'usage_blocked', resetAt: decision.resetAt }
+  }
+  if (!capacity) return runClaim(options, pollMs, false)
+  const reservation = await capacity.policy.tryReserve({ kind: capacity.kind ?? 'worker', heavy: capacity.heavy })
+  if (!reservation) return { status: 'capacity_unavailable' }
+  try {
+    return await runClaim(options, pollMs, true)
+  } finally {
+    await reservation.release()
+  }
+}
+
+async function runClaim(options: RunTaskOptions, pollMs: number, holdForLateStart: boolean): Promise<RunTaskOutcome> {
+  const { board, harness, work, provider, model, attemptId = randomUUID(), lease, renewEveryMs } = options
   const claim = options.taskId !== undefined
     ? await board.tasks.claim(options.taskId, { lease })
     : await board.tasks.claim({ ...options.selection, lease })
@@ -103,8 +126,9 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskOutcome> 
     return leaseLost
   }
 
+  const execution = execute()
   try {
-    const finished = await Promise.race([loss, execute()])
+    const finished = await Promise.race([loss, execution])
     if ('status' in finished) return leaseLost
     // Prevent further renewals and serialize release with any renewal already in flight.
     done.abort()
@@ -126,5 +150,10 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskOutcome> 
     done.abort()
     clearTimeout(watchdog)
     if (lost && run !== undefined) await harness.cancel(run)
+    else if (lost && holdForLateStart) {
+      // A pending start can still launch work. Keep the slot until it rejects
+      // or returns a ref and execute requests cancellation. Loss still wins.
+      await execution.catch(() => {})
+    }
   }
 }
