@@ -14,10 +14,12 @@ import type { Board } from '../server/board.ts'
  * (`conformance` by default), and for the tasks checks that need two, to `tasks` under it, keeps
  * every post on the board, and deletes what it posted. The one
  * schema it registers, `conformance@1`, stays: a schema version is never removed.
+ * On boards that opt into agent operations, the kit retires its test agent;
+ * the disabled entry stays in the roster.
  */
 
 /** What a check is about, for the report's headings. */
-export type CheckGroup = 'core' | 'paging' | 'search' | 'schedules' | 'tasks' | 'network-pause' | 'grants' | 'schemas' | 'attachments' | 'watchers' | 'sync'
+export type CheckGroup = 'core' | 'paging' | 'search' | 'schedules' | 'tasks' | 'network-pause' | 'grants' | 'schemas' | 'attachments' | 'watchers' | 'sync' | 'agents'
 
 export type CheckResult = {
   group: CheckGroup
@@ -163,6 +165,7 @@ type Context = {
   principals: Principals
   /** The board's own Vercel team, as its discovery names it. */
   team: string | null
+  agentOps: boolean
 }
 
 type Check = {
@@ -2571,6 +2574,51 @@ const CHECKS: Check[] = [
       }
     },
   },
+  {
+    group: 'agents',
+    name: 'registers, lists, heartbeats, and retires an agent under its verified binding',
+    run: async ({ board, channel, labels, agentOps }) => {
+      if (!agentOps) {
+        await rejects(board.agents.list(channel), 501, 'no_agent_ops', 'listing agents without advertised support')
+        return 'not kept here: agent operations are not advertised'
+      }
+      const writer = board.as(`conformance-${labels.conformance}`)
+      const { principal, profile } = await writer.me()
+      const input = { channel, role: 'reviewer', harness: 'conformance' } as const
+      const enrolled = await writer.agents.register(input)
+      let current = enrolled
+      try {
+        isRef(enrolled.id, 'agent ID')
+        same(enrolled.channel, channel, 'registered channel')
+        same(enrolled.role, input.role, 'registered role')
+        same(enrolled.harness, input.harness, 'registered harness')
+        same(enrolled.parent, null, 'new agent parent')
+        same(enrolled.binding?.principal, principal, 'agent principal')
+        same(enrolled.binding?.profile, profile, 'agent profile')
+        same(enrolled.status, 'enabled', 'new agent status')
+        same(enrolled.generation, 1, 'new agent generation')
+        same(enrolled.heartbeatAt, null, 'new agent heartbeat')
+        current = await writer.agents.register(input)
+        same(current.id, enrolled.id, 'repeated registration ID')
+        same(current.generation, enrolled.generation, 'repeated registration generation')
+        current = await writer.agents.heartbeat(enrolled.id, enrolled.generation)
+        check(current.heartbeatAt !== null && Number.isFinite(Date.parse(current.heartbeatAt)), 'heartbeat should record a timestamp')
+        same(current.generation, enrolled.generation, 'generation after heartbeat')
+        current = await writer.agents.retire(enrolled.id, enrolled.generation)
+        same(current.id, enrolled.id, 'retired agent ID')
+        same(current.status, 'disabled', 'retired agent status')
+        same(current.generation, enrolled.generation + 1, 'retired agent generation')
+        same(current.heartbeatAt, null, 'retired agent heartbeat')
+        await refused(writer.agents.heartbeat(enrolled.id, current.generation), 409, 'heartbeat to a retired agent')
+        const { agents } = await board.agents.list(channel)
+        const listed = agents.find(({ id }) => id === enrolled.id)
+        same(listed?.status, 'disabled', 'retired agent status when listed')
+        same(listed?.generation, current.generation, 'retired agent generation when listed')
+      } finally {
+        if (current.status !== 'disabled') await writer.agents.retire(enrolled.id, current.generation).catch(() => {})
+      }
+    },
+  },
 ]
 
 /**
@@ -2660,6 +2708,7 @@ export async function conformance(board: Board, options: ConformanceOptions = {}
       app: options.principals?.app ?? null,
     },
     team: info.team_id ?? null,
+    agentOps: info.agent_ops === true,
   }
   try {
     const selected = options.networkPause ? [NETWORK_PAUSE, ...CHECKS] : CHECKS

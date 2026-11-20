@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { readFile, stat, writeFile } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { parseArgs } from 'node:util'
-import { CHANNELS_LIMIT_MAX, GRANT_BATCH_MAX, THREADS_LIMIT_DEFAULT, THREADS_LIMIT_MAX, type GrantInput, type Me, type MessageView } from '../api/routes.ts'
+import { CHANNELS_LIMIT_MAX, GRANT_BATCH_MAX, THREADS_LIMIT_DEFAULT, THREADS_LIMIT_MAX, type AgentView, type GrantInput, type Me, type MessageView } from '../api/routes.ts'
 import { everyChannel } from '../client/channels.ts'
 import { withMentions } from '../api/tail.ts'
 import { BoardError, type ClaimedTask, type Filters, type ProfileOption, type TaskInBatch, type Written } from '../client/client.ts'
@@ -16,14 +16,14 @@ import { isBoardName } from '../server/board.ts'
 import { isApiMessageId } from '../server/backend-vercel.ts'
 import { AttentionAnswerBody, AttentionAskFile } from '../contract/attention.ts'
 import { normalizeEmoji } from '../contract/emoji.ts'
-import { ATTACHMENTS_PER_MESSAGE_MAX, DIRECT_UPLOAD_BYTES_MAX, MESSAGE_TEXT_MAX, type Attachment, AttachmentId, TaskPriority } from '../contract/schemas.ts'
+import { AgentRole, ATTACHMENTS_PER_MESSAGE_MAX, DIRECT_UPLOAD_BYTES_MAX, MESSAGE_TEXT_MAX, type Attachment, AttachmentId, TaskPriority } from '../contract/schemas.ts'
 import { VERSION } from '../version.ts'
 import { conformance } from '../conformance/index.ts'
 import { explainPrincipalOf, explanationLine, GrantMisuse, grantCanOf, KINDS, patternsIn, principalsIn, type OptionToken } from './grants.ts'
 import { formatSchema, formatSchemas } from './schemas.ts'
 import { parseSchemaId } from '../contract/data-schemas.ts'
 import { block } from '../contract/blocks.ts'
-import { actorName, claimLine, formatAccess, formatAttention, formatConformance, formatEvent, formatGrants, grantRow, formatSchedule, formatTasks, mentionedIn, reactionNames, formatSourceRead, formatSynced, formatThreadSummaries, formatThreads, terminalText, who } from './format.ts'
+import { actorName, claimLine, formatAccess, formatAttention, formatConformance, formatEvent, formatGrants, grantRow, formatSchedule, formatTasks, lineText, mentionedIn, reactionNames, formatSourceRead, formatSynced, formatThreadSummaries, formatThreads, terminalText, who } from './format.ts'
 import { fileClaims, memoryClaims, tokenClaims, type Claims } from './claims.ts'
 import { runCommand } from './run.ts'
 import { AGENTS, allowRules, cliOf, disallow, installedHook, tilde, uninstallHook, type HookAgent } from './hooks.ts'
@@ -820,6 +820,10 @@ function doing(): string {
     case 'schedules':
     case 'actors':
       return `list ${command}`
+    case 'agents':
+      if (a === 'list' || a === 'register') return `${a === 'list' ? 'list agents' : 'register an agent'} in ${b ?? 'a channel'}`
+      if (a === 'heartbeat') return `record a heartbeat for agent ${b}`
+      return `retire agent ${b}`
     case 'tasks': {
       if (a === undefined || !TASK_VERBS.has(a)) return a === undefined ? 'list tasks' : `list tasks in ${a}`
       const one = b === undefined ? 'a task' : `task ${ref(b)}`
@@ -877,6 +881,7 @@ function missing(): string | undefined {
   if (command === 'tasks' && TASK_VERBS.has(a) && b !== undefined && isMessageRef(b)) return `message ${ref(b)}`
   if (command === 'grants' && (a === 'revoke' || a === 'update') && b !== undefined) return `grant ${b}`
   if (command === 'schemas' && a === 'inspect' && b !== undefined) return `schema ${b}`
+  if (command === 'agents' && (a === 'heartbeat' || a === 'retire') && b !== undefined) return `agent ${b}`
   if (command === 'download') return `attachment ${a}`
   return undefined
 }
@@ -1037,6 +1042,14 @@ function failureOf(error: unknown): Failure {
   if (status === 409) {
     // A grant change this caller couldn't take back: it keeps itself in, or says to go ahead.
     if (code === 'grant_lockout' && current.command === 'grants') return theirs('conflict', code, `Can't ${doing()}: it would lock you out.`, lockoutRecoveries())
+    if (code === 'agent_generation_conflict' && current.command === 'agents') {
+      const channel = current.args[0] === 'register' ? current.args[1] : undefined
+      return theirs('conflict', code, `Can't ${doing()}.`, [
+        channel === undefined
+          ? { instruction: 'Check the current generation with agents list in its channel' }
+          : { instruction: 'Check the current generation', argv: [...cli(), 'agents', 'list', channel, ...onSameBoard()] },
+      ])
+    }
     // A reply's --after: what's newer is in its thread, after the message it named.
     const { args } = current
     const newer = code === 'newer_message' && flags.after !== undefined && args[0] !== undefined
@@ -1063,6 +1076,10 @@ function failureOf(error: unknown): Failure {
   if (status === 429)
     return theirs('rate_limit', 'rate_limited', `Can't ${doing()}. Too many requests to the board.`, [
       { instruction: wait !== undefined ? `Wait ${waitFor(wait)}, then run it again` : 'Wait a minute, then run it again' },
+    ])
+  if (status === 501 && code === 'no_agent_ops' && current.command === 'agents')
+    return theirs('platform', code, `Can't ${doing()}. This board doesn't keep an agent registry.`, [
+      { instruction: 'Use a local board started with vb serve --agent-ops' },
     ])
   if (status === 501) return theirs('platform', specific('not_supported'), `Can't ${doing()}. This board doesn't support it.`)
   if (code === 'unreachable') return theirs('network', 'network_error', "Couldn't reach the board.")
@@ -1977,6 +1994,8 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       return 0
     }
 
+    case 'agents':
+      return agents(args)
     case 'tasks':
       return tasks(args)
 
@@ -1996,6 +2015,72 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       })
     }
   }
+}
+
+function formatAgent(agent: AgentView): string {
+  const { id, channel, role, harness, binding, generation, parent, status, heartbeatAt } = agent
+  return [
+    `${lineText(id)}  ${role}`,
+    `  channel     ${lineText(channel)}`,
+    `  principal   ${lineText(binding.principal)}`,
+    `  profile     ${binding.profile === null ? 'none' : lineText(binding.profile)}`,
+    `  harness     ${lineText(harness)}`,
+    `  parent      ${parent === null ? 'none' : lineText(parent)}`,
+    `  generation  ${generation}`,
+    `  status      ${status}`,
+    `  heartbeat   ${heartbeatAt === null ? 'none' : lineText(heartbeatAt)}`,
+  ].join('\n')
+}
+
+async function agents(args: string[]): Promise<number> {
+  const [verb, target, ...extra] = args
+  if (verb === undefined) throw usage('Missing the agent command: list, register, heartbeat, or retire.', { reason: 'missing_arguments' })
+  const sub = specOf('agents')?.subcommands?.find(({ name }) => name === verb)
+  if (!sub) throw usage(`Unknown agent command ${verb}.`, { reason: 'unknown_command' })
+  const next = [{ instruction: 'See how to use it', argv: [...cli(), 'agents', verb, '--help'] }]
+  const what = verb === 'list' || verb === 'register' ? 'channel' : 'agent ID'
+  if (!target) throw usage(`Missing the ${what}.`, { reason: 'missing_arguments', next })
+  if (extra.length > 0) throw usage(`agents ${verb} takes one ${what}.`, { next })
+  const seen = new Set<string>()
+  for (const { name } of ordered) {
+    if (globalOptions.some((option) => option.name === name)) continue
+    if (!sub.options.some((option) => option.name === name))
+      throw usage(`Unknown option --${name} for ${named()} agents ${verb}.`, { reason: 'unknown_option', next })
+    if (seen.has(name)) throw usage(`Pass --${name} once.`, { next })
+    seen.add(name)
+  }
+  if (verb === 'list') {
+    const { agents } = await client().agents.list(target)
+    if (flags.json) result({ agents })
+    else out(agents.length ? agents.map(formatAgent).join('\n\n') : 'no agents registered')
+    return 0
+  }
+
+  const value = flags.generation
+  const generation = Number(value)
+  if (value === undefined && verb !== 'register') throw usage('Missing --generation.', { reason: 'missing_arguments', next })
+  if (value !== undefined && (!/^\d+$/.test(value) || !Number.isSafeInteger(generation) || generation < 1))
+    throw usage('--generation takes a positive integer.', { next })
+
+  let agent: AgentView
+  if (verb === 'register') {
+    const { harness, parent } = flags
+    if (!flags.role) throw usage('Missing --role.', { reason: 'missing_arguments', next })
+    if (!harness) throw usage('Missing --harness.', { reason: 'missing_arguments', next })
+    const role = AgentRole.safeParse(flags.role)
+    if (!role.success) throw usage('--role takes one of the roles shown in help.', { next })
+    agent = await client().agents.register({
+      channel: target,
+      role: role.data,
+      harness,
+      ...(parent !== undefined ? { parent } : {}),
+      ...(value !== undefined ? { ifGeneration: generation } : {}),
+    })
+  } else if (verb === 'heartbeat') agent = await client().agents.heartbeat(target, generation)
+  else agent = await client().agents.retire(target, generation)
+  if (flags.json) result({ agent })
+  else out(formatAgent(agent))
+  return 0
 }
 
 /** What `tasks` does to a task, by the word after it: any other word is a channel to list. */
@@ -2867,6 +2952,9 @@ async function runOnce(argv: string[], options: App): Promise<number> {
   }
 }
 
+/** The agent commands that write to the registry. */
+const AGENT_WRITES = new Set(['register', 'heartbeat', 'retire'])
+
 /** The commands that change the board, whatever their arguments. */
 const WRITES = new Set(['post', 'reply', 'edit', 'delete', 'label', 'react', 'schedule', 'sync'])
 
@@ -2876,7 +2964,9 @@ function stopped(reason: unknown): Failed {
   // A subcommand that writes is `channels create`'s first word, `sources <key> join`'s second.
   const sub = current.command === 'sources' ? current.args[1] : current.args[0]
   // Only show and attention are read-only task verbs.
-  const writes = WRITES.has(current.command ?? '') || ['create', 'update', 'revoke', 'cancel', 'join'].includes(sub ?? '') || (current.command === 'tasks' && sub !== 'show' && sub !== 'attention' && TASK_VERBS.has(sub ?? ''))
+  const writes = WRITES.has(current.command ?? '') || ['create', 'update', 'revoke', 'cancel', 'join'].includes(sub ?? '')
+    || (current.command === 'tasks' && sub !== 'show' && sub !== 'attention' && TASK_VERBS.has(sub ?? ''))
+    || (current.command === 'agents' && AGENT_WRITES.has(sub ?? ''))
   return new Failed({
     class: timedOut ? 'timeout' : 'canceled',
     reason: timedOut ? 'timeout' : 'canceled',

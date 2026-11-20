@@ -27,7 +27,9 @@ import {
   InboxPushBody,
   InboxQuery,
   LabelBody,
+  ListOpsAgentsQuery,
   MatchesQuery,
+  OpsAgentGenerationBody,
   PostBody,
   ReactBody,
   ChannelMessagesQuery,
@@ -35,6 +37,7 @@ import {
   CreateChannelBody,
   Ref,
   RegisterBody,
+  RegisterOpsAgentBody,
   ScheduleBody,
   CreateGrantsBody,
   GrantBody,
@@ -72,10 +75,10 @@ import { claimsOf, KNOWN_AGENTS, viaOf } from './actors.ts'
 import { importedHandle, userIdOf } from '../contract/profiles.ts'
 import type { CallerRequest } from './auth.ts'
 import { avatarSvg } from './avatars.ts'
-import { badRequest, batchTooLarge, forbidden, HttpError, json, notFound, toErrorResponse } from './errors.ts'
+import { badRequest, batchTooLarge, forbidden, HttpError, json, noAgentOps, notFound, toErrorResponse } from './errors.ts'
 import { extractMentions, settleMentions, type Mentioned, type MentionedActor } from '../contract/mentions.ts'
 import { DroppedError, runMiddleware, type Write, type WriteSource } from './middleware.ts'
-import { ATTENTION_METHODS, createRouter, METHODS, openapi, queryObject, readCapped, readJson, type BoardRoute } from './routing.ts'
+import { ATTENTION_METHODS, createRouter, isAgentOpsMethod, METHODS, openapi, queryObject, readCapped, readJson, type BoardRoute } from './routing.ts'
 import { FULL_ACCESS, parseCan, type Access } from './access.ts'
 import { syncTarget, type SyncTarget } from './targets.ts'
 import { SYNC_ACTOR, type WriteOrigin } from './origin.ts'
@@ -155,6 +158,13 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
       return ThreadsQuery.parse(queryObject(url))
     case 'schedules':
       return SchedulesQuery.parse(queryObject(url))
+    case 'listOpsAgents':
+      return ListOpsAgentsQuery.parse(queryObject(url))
+    case 'registerOpsAgent':
+      return RegisterOpsAgentBody.parse(await body())
+    case 'heartbeatOpsAgent':
+    case 'retireOpsAgent':
+      return { agent: Ref.parse(params.agent), ...OpsAgentGenerationBody.parse(await body()) }
     case 'matches':
       return MatchesQuery.parse(queryObject(url))
     case 'events': {
@@ -1176,7 +1186,11 @@ export async function createServe(context: BoardContext): Promise<Serve> {
     const { projectId, teamId } = await policy.discoveryIdentity(request.headers)
     const capabilities = backend.keeps ? await backend.discovery(OWN, {}, signal) : null
     const sync = capabilities?.sync ?? Object.entries(entries).map(([key, entry]) => ({ key, platform: entry.platform }))
-    return { version: VERSION, url, audience: url, team_id: teamId, project_id: projectId, sync, ...(capabilities?.task_attention === true ? { task_attention: true } : {}) }
+    return {
+      version: VERSION, url, audience: url, team_id: teamId, project_id: projectId, sync,
+      ...(capabilities?.task_attention === true ? { task_attention: true } : {}),
+      ...(capabilities?.agent_ops === true ? { agent_ops: true } : {}),
+    }
   }
 
   async function dispatch(request: Request, injected: Caller | PlatformCaller | null): Promise<Response> {
@@ -1208,9 +1222,11 @@ export async function createServe(context: BoardContext): Promise<Serve> {
 
       // Everything else is for a caller: this deployment's own code, or a request, which a board that
       // uses another board's doesn't serve. Nothing runs for one before that.
-      if (!injected && !policy.open) throw servesOnly()
+      const ops = target.kind === 'protocol' && isAgentOpsMethod(target.name)
+      if (!injected && !policy.open) throw ops ? noAgentOps() : servesOnly()
       if (!injected && target.kind === 'protocol' && target.name === 'discovery') return json(await discovery(request, audienceOf(at), request.signal))
-      if (target.kind === 'protocol' && !CONTROL.has(target.name) && !ATTENTION_METHODS.has(target.name) && typeof backend[target.name] !== 'function') throw notFound(`no route: ${request.method} ${url.pathname}`)
+      if (target.kind === 'protocol' && !CONTROL.has(target.name) && !ATTENTION_METHODS.has(target.name) && typeof backend[target.name] !== 'function')
+        throw ops ? noAgentOps() : notFound(`no route: ${request.method} ${url.pathname}`)
       // A sync callback's client does everything but its own writes as sync.
       const own = injected && 'platform' in injected ? engine!.caller : injected
       const asked = own ? null : requestOf(request, at)

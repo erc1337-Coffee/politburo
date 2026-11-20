@@ -179,6 +179,8 @@ describe('vercel()', () => {
       "sync: takes an edit of a long message in its sync's inbox, under the longest event ID the protocol allows, and refuses a longer one": 'skipped',
       'sync: hands a sync each message change as a match of its @sync watcher': 'skipped',
       'sync: keeps noSync on a post and a reply, so sync sends neither': 'passed',
+      // The agent registry is an opt-in local feature, not part of Vercel's API.
+      'agents: registers, lists, heartbeats, and retires an agent under its verified binding': 'skipped',
     })
     // It leaves the grants as it found them.
     expect([...api.grants.keys()]).toEqual(['g1', 'g2', 'g3'])

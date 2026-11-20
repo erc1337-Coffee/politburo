@@ -10,8 +10,8 @@ import { fakeQueue } from './queue.ts'
  * 403. A new route fails the first test until it has an entry here.
  */
 type Fixture = {
-  secret: { root: number; reply: number; schedule: number; file: string; task: number }
-  open: { root: number; schedule: number; task: number }
+  secret: { root: number; reply: number; schedule: number; file: string; task: number; agent: string }
+  open: { root: number; schedule: number; task: number; agent: string }
 }
 type Call = { method: 'GET' | 'POST' | 'PATCH'; path: string; body?: unknown; status: number; check?: (body: any) => void }
 type Walk = 'public' | ((fixture: Fixture) => Call[])
@@ -204,6 +204,14 @@ const WALK: Record<RouteName, Walk> = {
     { method: 'POST', path: `/tasks/${secret.task}/cancel`, body: { reason: 'mine now' }, status: 404 },
     { method: 'POST', path: `/tasks/${open.task}/cancel`, body: { reason: 'mine now' }, status: 403 },
   ],
+  listOpsAgents: ({ open }) => [
+    { method: 'GET', path: '/ops/agents?channel=secret', status: 403 },
+    { method: 'GET', path: '/ops/agents?channel=open', status: 200, check: (body) => expect(body.agents).toMatchObject([{ id: open.agent }]) },
+  ],
+  registerOpsAgent: () => ['secret', 'open'].map((channel) => ({ method: 'POST', path: '/ops/agents', body: { channel, role: 'reviewer', harness: 'shell' }, status: 403 })),
+  // Even where an agent is visible, it is no target for another caller's writes.
+  heartbeatOpsAgent: ({ secret, open }) => [secret.agent, open.agent].map((id) => ({ method: 'POST', path: `/ops/agents/${encodeURIComponent(id)}/heartbeat`, body: { generation: 1 }, status: 404 })),
+  retireOpsAgent: ({ secret, open }) => [secret.agent, open.agent].map((id) => ({ method: 'POST', path: `/ops/agents/${encodeURIComponent(id)}/retire`, body: { generation: 1 }, status: 404 })),
   // Listing grants takes manage at *, and changing one manage at each pattern it names: g1 names *.
   grants: () => [{ method: 'GET', path: '/grants', status: 403 }],
   createGrant: () => [
@@ -294,7 +302,7 @@ const WALK: Record<RouteName, Walk> = {
 }
 
 async function setup() {
-  const board = testBoard({ scheduler: fakeQueue().scheduler, attentionResponders: {} })
+  const board = testBoard({ scheduler: fakeQueue().scheduler, attentionResponders: {}, agentOps: true })
   await board.createGrant({ principals: [{ kind: 'github', repository: 'acme/web' }], can: { open: ['read'] } })
   const keeper = caller(board.fetch, await personToken('u_keeper'), {})
   const host = caller(board.fetch, await personToken('u_host'), {})
@@ -322,7 +330,12 @@ async function setup() {
   // And a batch of them under an id, which finds it again for whoever made it, and no one else.
   expect((await keeper('POST', '/tasks/batch', { channel: 'secret', id: 'secret-plan', tasks: [{ text: 'hush, a plan', labels: { private: 'yes' } }] })).status).toBe(201)
   expect((await keeper('GET', '/tasks/batch/secret-plan')).body.tasks).toMatchObject([{ text: 'hush, a plan' }])
-  const fixture: Fixture = { secret: { root, reply, schedule, file, task }, open: { root: openRoot, schedule: openSchedule, task: openTask } }
+  const register = (channel: string) => board.agents.register({ channel, role: 'reviewer', harness: 'shell' })
+  const [secretAgent, openAgent] = [await register('secret'), await register('open')]
+  const fixture: Fixture = {
+    secret: { root, reply, schedule, file, task, agent: secretAgent.id },
+    open: { root: openRoot, schedule: openSchedule, task: openTask, agent: openAgent.id },
+  }
   return { board, fixture, outsider: caller(board.fetch, await workflowToken()) }
 }
 

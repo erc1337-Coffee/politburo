@@ -5,6 +5,10 @@ import type { Attachment } from '../contract/schemas.ts'
 import type {
   AckBody,
   ActorView,
+  AgentView,
+  ListOpsAgentsQuery,
+  OpsAgentGenerationBody,
+  RegisterOpsAgentBody,
   AssignTaskBody,
   AttentionAnswerBody,
   AttentionView,
@@ -89,6 +93,7 @@ import type {
 
 type Input<S extends z.ZodType> = NonNullable<z.output<S>>
 type Id = { id: string }
+type OpsAgentId = { agent: string }
 type Key = { key: string }
 type Nothing = Record<string, never>
 
@@ -125,6 +130,11 @@ export type Protocol = {
   schedule: { input: Input<typeof ScheduleBody>; output: { schedule: ScheduleView; mentions?: Mentioned[] } }
   schedules: { input: Input<typeof SchedulesQuery>; output: { schedules: ScheduleView[] } }
   cancelSchedule: { input: Id; output: { schedule: ScheduleView; canceled: boolean } }
+  /** Fork-only agent registry. 501 `no_agent_ops` on a board without it. */
+  listOpsAgents: { input: Input<typeof ListOpsAgentsQuery>; output: { agents: AgentView[] } }
+  registerOpsAgent: { input: Input<typeof RegisterOpsAgentBody>; output: AgentView }
+  heartbeatOpsAgent: { input: OpsAgentId & Input<typeof OpsAgentGenerationBody>; output: AgentView }
+  retireOpsAgent: { input: OpsAgentId & Input<typeof OpsAgentGenerationBody>; output: AgentView }
   /** Tasks, oldest first, each as its thread's summary. 501 `no_tasks` where the board keeps none. */
   tasks: { input: Input<typeof TasksQuery>; output: TasksPage }
   /** `task` is the task's root. `claim` comes with a task made with `claim`; a retry of one that landed gets the task without it. */

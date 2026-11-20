@@ -7,6 +7,9 @@ import {
   ATTACHMENTS_PER_MESSAGE_MAX,
   SeenActorKind,
   Author,
+  AgentGeneration,
+  AgentHarness,
+  AgentRole,
   ChannelPath,
   Emoji,
   Handle,
@@ -189,6 +192,20 @@ export const boardEvents = {
     // Request and answer each change the task state in the same event as their attention fact.
     'task.attention_requested': z.object({ ...Task, requestId: Ref, epoch: AttentionEpoch, draft: AttentionDraft, by: Author, replaces: Ref.optional() }),
     'task.attention_answered': z.object({ ...Task, requestId: Ref, epoch: AttentionEpoch, by: Author, receipt: AttentionReceipt }),
+    /** The private registry's current record after a register, heartbeat, or retire. */
+    'ops.agent_changed': z.object({
+      agent: z.object({
+        id: Ref,
+        channel: ChannelPath,
+        role: AgentRole,
+        parent: Ref.nullable(),
+        harness: AgentHarness,
+        binding: Author.pick({ principal: true, profile: true }),
+        generation: AgentGeneration,
+        status: z.enum(['enabled', 'disabled']),
+        heartbeatAt: Until.nullable(),
+      }),
+    }),
     'actor.seen': z.object({
       actor: ActorId,
       kind: SeenActorKind,
@@ -230,3 +247,6 @@ export type BoardEvent<K extends keyof BoardEvents & string = keyof BoardEvents 
     createdAt: Date
   }
 }[K]
+
+export type PublicBoardEvent = Exclude<BoardEvent, { type: `ops.${string}` }>
+export const isPublicBoardEvent = (event: BoardEvent): event is PublicBoardEvent => !event.type.startsWith('ops.')

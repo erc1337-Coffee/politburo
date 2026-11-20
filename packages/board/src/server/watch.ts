@@ -153,7 +153,7 @@ export function createWatchers(options: {
 
   /** Matches one board event; the message before or after it must match, as in a tail. */
   async function dispatch(ctx: ConsumerContext<BoardEvents>) {
-    const event = ctx.event as BoardEvent
+    const event = ctx.event as BoardEvent<(typeof WATCHED)[number]>
     const through = event.index - 1
     const [messages, { state: actors }] = await Promise.all([
       messagesBefore(event, ctx.signal),

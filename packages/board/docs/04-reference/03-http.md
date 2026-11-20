@@ -93,7 +93,7 @@ a refused write it can read answers 403. `GET /me` returns the caller's
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/` | Discovery (no token): `{ version, url, audience, team_id, project_id, sync, wake_by_path? }`, where `sync` lists each entry's `key` and `platform`, and `wake_by_path` says `POST /watchers` takes a `path`. A board with no backend has none: it answers only wake-ups and webhooks |
+| GET | `/` | Discovery (no token): `{ version, url, audience, team_id, project_id, sync, wake_by_path?, agent_ops? }`. `sync` lists each entry's `key` and `platform`, `wake_by_path` says `POST /watchers` takes a `path`, and `agent_ops: true` advertises the [agent registry](#agent-registry). A board with no backend has none: it answers only wake-ups and webhooks |
 | GET | `/me` | Who this token and profile write as: `{ actor, principal, kind, handle, name, avatar, profile, expiresAt, can }`, where `can` maps each channel pattern to its permissions |
 | GET | `/control` | Work admission status. See [Network pause](#network-pause) |
 | POST | `/control/pause` | `{ reason }`: stop new work admission |
@@ -628,6 +628,29 @@ or changed snapshot, canceled request, or repeat answer is 409
 `attention_stale`. An unknown option is 400 `invalid_request`. Unconfigured
 and unsupported backends answer 501 `no_task_attention`.
 
+### Agent registry
+
+| Method | Path | Body → result |
+| --- | --- | --- |
+| GET | `/ops/agents?channel=` | Exact channel → `{ agents: Agent[] }` |
+| POST | `/ops/agents` | `{ channel, role, harness, parent?, ifGeneration? }` → `Agent` |
+| POST | `/ops/agents/:agent/heartbeat` | `{ generation }` → `Agent` |
+| POST | `/ops/agents/:agent/retire` | `{ generation }` → `Agent` |
+
+An `Agent` has `id`, `channel`, `role`, `harness`, `parent` (an ID or `null`),
+`binding: { principal, profile }`, `generation`, `status` (`enabled` or
+`disabled`), and `heartbeatAt` (ISO timestamp or `null`). Bodies are strict.
+The board derives the entry's binding from the caller; no body takes identity.
+See [Agent registry](../01-board/12-agent-registry.md) for roles, access, and
+generation rules. Registry writes do not appear in the event feed.
+
+| Status | Code | Meaning |
+| --- | --- | --- |
+| 404 | `agent_not_found` | A missing, hidden, or mismatched agent or parent. |
+| 409 | `agent_generation_conflict` | The generation is stale, or a config change or re-enable is missing its generation. |
+| 409 | `agent_disabled` | A heartbeat for a disabled agent. |
+| 409 | `agent_parent_cycle` | The parent would make the agent its own ancestor. |
+
 ### Grants
 
 ```json
@@ -986,6 +1009,7 @@ When the board knows what fixes it, the error carries a `hint` too, as
 | 501 | `no_scheduler` | a schedule on a board that keeps no schedules |
 | 501 | `no_tasks` | a task route on a board that keeps no tasks |
 | 501 | `no_network_pause` | a control route on a board that does not support network pause |
+| 501 | `no_agent_ops` | an agent registry call to a disabled local board, Vercel's board, or an HTTP board without `agent_ops: true` in discovery |
 | 501 | `no_files` | an upload, a download, or a write that carries files, on a board that keeps no files |
 | 501 | `no_schemas` | a schema route on a board that keeps no schemas |
 | 501 | `no_direct_uploads` | a direct upload on a board that can't sign upload URLs, `local()` among them |

@@ -146,6 +146,12 @@ export const options = {
   port: { type: 'string', value: 'N', description: 'the port to listen on' },
   dir: { type: 'string', value: 'dir', description: 'where the board keeps its log (default: .board/)' },
   'no-inspect': { type: 'boolean', description: "don't start the inspector" },
+  // Agent registry.
+  'agent-ops': { type: 'boolean', description: 'enable the fork-only agent registry' },
+  role: { type: 'string', value: 'role', description: 'required: coordinator, issues, controller, implementation-worker, reviewer, qa-owner, qa-runner, or user-watcher' },
+  harness: { type: 'string', value: 'harness', description: 'required: the harness running this agent' },
+  parent: { type: 'string', value: 'id', description: 'the ID of a registered parent in the same channel (default: no parent)' },
+  generation: { type: 'string', value: 'N', description: 'required: the current generation, as agents list shows it' },
   // Tasks.
   state: { type: 'string', value: 'state', description: 'in a state: waiting, ready, claimed, blocked, completed, failed, canceled, open, or all (default: open)' },
   needs: { type: 'string', multiple: true, value: 'id', description: 'wait for a task to complete first' },
@@ -187,6 +193,10 @@ const text = (description = 'what it says: - reads it from stdin, and it may be 
   required: false,
   description,
 })
+
+/** An agent registry's channel or agent ID. */
+const agentChannel: CliArgument = { name: 'channel', required: true, description: 'the exact channel, such as work/review' }
+const agentId = () => id('the agent ID, as agents list shows it')
 
 /** A task's ID: its thread's root's. */
 const task = (description = "a task's ID, as tasks shows it (#812)"): CliArgument => ({ name: 'id', required: true, description })
@@ -756,6 +766,44 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
         arguments: [task(), { name: 'reason', required: true, description: 'why, in a line' }],
         options: [],
         examples: [{ name: 'cancel a task', value: 'tasks cancel 812 "superseded by #820"' }],
+      },
+    ],
+  },
+  {
+    group: 'agents',
+    name: 'agents',
+    description: 'the channel roster on a board that opts into the agent registry',
+    arguments: [],
+    options: [],
+    examples: [],
+    subcommands: [
+      {
+        name: 'list',
+        description: 'list enabled and retired agents in one channel',
+        arguments: [agentChannel],
+        options: [],
+        examples: [{ name: 'see who is registered', value: 'agents list work/review' }],
+      },
+      {
+        name: 'register',
+        description: 'register yourself or your profile, or update its registration',
+        arguments: [agentChannel],
+        options: [option('role'), option('harness'), option('parent'), option('generation', 'the current generation, required to change or re-enable an entry')],
+        examples: [{ name: 'register a reviewer', value: 'agents register work --role reviewer --harness codex --as qa' }],
+      },
+      {
+        name: 'heartbeat',
+        description: 'record a heartbeat for your enabled agent',
+        arguments: [agentId()],
+        options: [option('generation')],
+        examples: [],
+      },
+      {
+        name: 'retire',
+        description: 'disable your registered agent',
+        arguments: [agentId()],
+        options: [option('generation')],
+        examples: [],
       },
     ],
   },

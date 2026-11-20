@@ -1,6 +1,9 @@
 import { z } from 'zod'
 import {
   ActorId,
+  AgentGeneration,
+  AgentHarness,
+  AgentRole,
   AttachmentId,
   ATTACHMENTS_PER_MESSAGE_MAX,
   CHANNEL_PATTERN_MAX,
@@ -27,7 +30,7 @@ import {
 } from '../contract/schemas.ts'
 import { AttentionAnswerBody, RequestAttentionBody } from '../contract/attention.ts'
 import { ExternalAuthor, ExternalEvent, ExternalTarget, Link as LinkSchema, LINKS_PER_MESSAGE_MAX, MENTIONED_PER_MESSAGE_MAX, Origin } from '../contract/external.ts'
-import type { BoardEvent } from '../contract/events.ts'
+import type { BoardEvent, PublicBoardEvent } from '../contract/events.ts'
 import type { Link } from '../contract/external.ts'
 import type { Actor, Channel, ExternalCopy, Message, Task } from '../contract/folds.ts'
 import type { Via } from '../contract/profiles.ts'
@@ -35,6 +38,22 @@ import type { AccessSummary, Permission, WrittenCan } from '../server/access.ts'
 
 export { Ref }
 export { AttentionAnswerBody, AttentionDraft, AttentionReceipt, AttentionView, RequestAttentionBody } from '../contract/attention.ts'
+export type { AgentRole } from '../contract/schemas.ts'
+
+export const ListOpsAgentsQuery = z.strictObject({ channel: ChannelPath })
+export const RegisterOpsAgentBody = z.strictObject({
+  channel: ChannelPath,
+  role: AgentRole,
+  parent: Ref.nullable().optional(),
+  harness: AgentHarness,
+  ifGeneration: AgentGeneration.optional(),
+})
+export const OpsAgentGenerationBody = z.strictObject({ generation: AgentGeneration })
+
+export type RegisterOpsAgentInput = z.input<typeof RegisterOpsAgentBody>
+export type OpsAgentGenerationInput = z.input<typeof OpsAgentGenerationBody>
+export type Agent = BoardEvent<'ops.agent_changed'>['payload']['agent']
+export type AgentView = Agent
 
 /** The message's `revision` as it was read: if it's been edited or deleted since, 409 `revision_conflict`. */
 const Revision = z.number().int().positive()
@@ -997,7 +1016,7 @@ type PayloadView<P> = {
 }
 
 /** A board event as subscribers get it. Checking `type` narrows `payload` to that event's. */
-export type BoardEventView = BoardEvent extends infer E
+export type BoardEventView = PublicBoardEvent extends infer E
   ? E extends { type: infer T; payload: infer P }
     ? {
         /** Where this event is in the board's order: pass it as `after` to read on from here. */
@@ -1033,6 +1052,8 @@ export type Discovery = {
   wake_by_path?: boolean
   /** Whether this board is configured to keep structured task attention requests. */
   task_attention?: true
+  /** This board opts into the fork's agent registry. */
+  agent_ops?: true
 }
 
 /**
@@ -1255,6 +1276,10 @@ export const routes = {
   schedules: { method: 'GET', path: '/schedules', query: SchedulesQuery },
   /** Its creator, or manage in its channel, may cancel a schedule. Canceling one that's done is a no-op. */
   cancelSchedule: { method: 'POST', path: '/schedules/:id/cancel' },
+  listOpsAgents: { method: 'GET', path: '/ops/agents', query: ListOpsAgentsQuery },
+  registerOpsAgent: { method: 'POST', path: '/ops/agents', body: RegisterOpsAgentBody },
+  heartbeatOpsAgent: { method: 'POST', path: '/ops/agents/:agent/heartbeat', body: OpsAgentGenerationBody },
+  retireOpsAgent: { method: 'POST', path: '/ops/agents/:agent/retire', body: OpsAgentGenerationBody },
   /** Tasks, oldest first: open ones unless `state` says otherwise. */
   tasks: { method: 'GET', path: '/tasks', query: TasksQuery },
   /** Starts a thread as a task (`post` there, and `label` for its labels), or makes the thread `re` roots one (`label` there). */

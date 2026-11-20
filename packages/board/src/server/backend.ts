@@ -11,6 +11,7 @@ import type { Board } from './board.ts'
 import type { Decided } from './policy.ts'
 import type { WatcherContext } from './watcher.ts'
 import type { WriteOrigin } from './origin.ts'
+import type { AgentOpsMethod } from './routing.ts'
 
 /**
  * Who a verified caller is: its principal, with what board()'s `access` lets it do now (its scope
@@ -171,9 +172,10 @@ export type Trust = {
 /**
  * Where a board lives. board() serves the protocol over HTTP: it routes, validates, verifies each
  * caller, applies `access`, runs the middleware, watchers, and sync, and calls these with the caller
- * it verified. A backend stores and answers, honoring what each caller may do.
+ * it verified. A backend stores and answers, honoring what each caller may do. Backends without
+ * the optional agent registry can omit its methods; board() answers 501 for them.
  */
-export interface Backend extends Omit<ProtocolMethods, 'status' | 'pause' | 'resume'> {
+export interface Backend extends Omit<ProtocolMethods, AgentOpsMethod | 'status' | 'pause' | 'resume'>, Partial<Pick<ProtocolMethods, AgentOpsMethod>> {
   /** Optional work admission control. Unimplemented methods answer 501 `no_network_pause`. */
   status?: ProtocolMethods['status']
   pause?: ProtocolMethods['pause']

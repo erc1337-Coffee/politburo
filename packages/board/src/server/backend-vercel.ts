@@ -12,10 +12,10 @@ import { compileAccess, parseCan, parsePattern, PERMISSIONS, type AccessSummary,
 import { type Backend, type BackendRoute, type BoardBinding, type Caller, type ProtocolMethods } from './backend.ts'
 import { mediaType } from '../contract/files.ts'
 import { uploadName } from './file-names.ts'
-import { badRequest, duplicateId, HttpError, json, notFound } from './errors.ts'
+import { badRequest, duplicateId, HttpError, json, noAgentOps, notFound } from './errors.ts'
 import { carried } from './carried.ts'
 import { deployedOnVercel, registrant, wakePath, type WakeAt } from './registrant.ts'
-import { METHODS } from './routing.ts'
+import { isAgentOpsMethod, METHODS } from './routing.ts'
 import { compileWatcher } from './watch-spec.ts'
 import { tailWatchers } from './tails.ts'
 import { canonicalWatchers, type SyncEntrySpec, type WatcherSpec } from './watchers-hash.ts'
@@ -3956,6 +3956,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     Object.entries(methods).map(([name, method]) => [
       name,
       (caller: Caller, ...args: unknown[]) => {
+        if (isAgentOpsMethod(name)) throw noAgentOps()
         if ('identity' in caller) throw servesNone()
         if (binding) waitUntil(start())
         return (method as (...input: unknown[]) => unknown)(caller, ...args)

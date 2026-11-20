@@ -7,6 +7,7 @@ import { boardContract, inboxContract, INBOXES_SESSION, inboxSession, SCHEDULES_
 import type { AttentionResponders } from '../contract/attention.ts'
 import { BOARD_SESSION, type BoardEvent, type BoardEvents } from '../contract/events.ts'
 import { createTrust } from './trust.ts'
+import { createAgents } from './agents.ts'
 import { createSchemas } from './schemas.ts'
 import type { ExternalAuthor, Link, Origin } from '../contract/external.ts'
 import { actorsReducer, channelsReducer } from '../contract/reducers.ts'
@@ -22,7 +23,7 @@ import { viaOf } from './actors.ts'
 import { SYNC, type Backend, type BackendRoute, type BoardBinding, type Caller, type ProtocolMethods, type SelfCaller, type Trust } from './backend.ts'
 import { BoardError } from '../client/client.ts'
 import { attachmentBody, attachmentNotFound, finishUpload, ownUpload, readUpload, startUpload, writeUpload, type BlobStore, type Uploader } from './blob.ts'
-import { badRequest, duplicateId, forbidden, HttpError, notFound, textTooLong, toErrorResponse } from './errors.ts'
+import { badRequest, duplicateId, forbidden, HttpError, noAgentOps, notFound, textTooLong, toErrorResponse } from './errors.ts'
 import { eventView, foldEvent, indexOf, lastFeed, loadBefore, OWN_CODE, pollFeed, readableFilter, ref, toMessageFilter, verifiedRecord, view, viewedBy, viewLinkedIds, viaOfRecord } from './feed.ts'
 import { createReads, tablesConsumer } from './reads.ts'
 import { createdBy, createSchedules, type Schedule } from './schedules.ts'
@@ -60,6 +61,7 @@ export type A2Options = {
   blob?: BlobStore
   /** Enables structured attention; only these verified people may answer in each exact channel. */
   attentionResponders?: AttentionResponders
+  agentOps?: boolean
 }
 
 const boardServer = (options: A2Options) =>
@@ -271,7 +273,7 @@ function build(options: A2Options, binding: BoardBinding) {
         types: DELIVERED,
         lane: ({ event }) => `thread:${(event.payload as { thread: string }).thread}`,
       }).run(async (ctx) => {
-        const event = ctx.event as BoardEvent
+        const event = ctx.event as BoardEvent<(typeof DELIVERED)[number]>
         const [messages, { state: actors }] = await Promise.all([
           loadBefore(reads, event, ctx.signal),
           ctx.session.state(actorsReducer, { through: event.index - 1 }),
@@ -312,6 +314,16 @@ function build(options: A2Options, binding: BoardBinding) {
       return { paused, pauseEpoch }
     })
   }
+
+  const agents = options.agentOps === true ? createAgents(writes) : null
+  const agentRegistry = () => {
+    if (!agents) throw noAgentOps()
+    return agents
+  }
+  // In-process profiles are separate deployment identities. Match their names case-insensitively
+  // here as the verifier does for HTTP profiles, without merging them into one deployment identity.
+  const agentIdentityOf = (caller: Caller) =>
+    identityOf('self' in caller && caller.self !== null && caller.origin.via?.kind === 'client' ? { ...caller, self: caller.self.toLowerCase() } : caller)
 
   /** Sync's inbound: each platform event board()'s sync pushed here, one platform thread at a time. */
   const inbound = consumer({
@@ -495,6 +507,7 @@ function build(options: A2Options, binding: BoardBinding) {
         ...(attentionEnabled ? { task_attention: true } : {}),
         // Its own sync's entries, and those of the syncs registered here.
         sync: await syncEntries(),
+        ...(agents ? { agent_ops: true } : {}),
       }
       return body
     },
@@ -659,6 +672,19 @@ function build(options: A2Options, binding: BoardBinding) {
       const answer = await schedules.cancel(identity, scheduleAt(id))
       return { ...answer, schedule: blindSchedule(answer.schedule, identity.principal.access, identity.actor.id) }
     },
+    async listOpsAgents(caller, { channel }) {
+      return agentRegistry().list(await agentIdentityOf(caller), channel)
+    },
+    async registerOpsAgent(caller, input) {
+      return agentRegistry().register(await agentIdentityOf(caller), input)
+    },
+    async heartbeatOpsAgent(caller, { agent, generation }) {
+      return agentRegistry().heartbeat(await agentIdentityOf(caller), agent, generation)
+    },
+    async retireOpsAgent(caller, { agent, generation }) {
+      return agentRegistry().retire(await agentIdentityOf(caller), agent, generation)
+    },
+
     tasks: async (caller, query) => tasks.list(await identityOf(caller), query),
     async createTask(caller, body) {
       // A new thread's root is a message, within what this board holds of one, and a task within what it holds of those.
