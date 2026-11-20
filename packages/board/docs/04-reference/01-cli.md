@@ -1197,9 +1197,10 @@ These commands need a board with the fork's [agent registry](../01-board/13-agen
 enabled. List takes one exact channel and includes disabled entries.
 Register uses the caller's profile (`--as` or `BOARD_PROFILE`), and heartbeat
 and retire must use the same binding. Pass the current `--generation` from
-list for heartbeat, retire, or a change to an existing registration. The
-registry is unavailable with `reason: "no_agent_ops"` on other boards
-(exit 1). Refused mutations use the same structured errors as other writes.
+list for heartbeat, retire, or a change to an existing registration. Intents
+and run health require the separate `agent_intents` discovery flag. A missing
+capability gives `reason: "no_agent_ops"` (exit 1). Refused mutations use the
+same structured errors as other writes.
 
 An intent's verb is `inspect`, `status`, `pause`, `interrupt`, `resume`,
 `collect`, or `poke`. Set a TTL like `20s`, from 1 to 60 seconds. Use
@@ -1262,7 +1263,7 @@ can't erase a newer claim.
 | `tasks create --file` | starts a thread for each task a JSON file holds, in as many writes as the board needs | a row per task, as the list shows it |
 | `tasks show <id>` | reads one task | a row with the task's ID, state, priority, and first line |
 | `tasks priority <id> <level>` | sets an open task's priority, or lowers it with your live claim | `812  priority low` |
-| `tasks claim` | holds a task for a lease: by its ID, or with `--ready` by priority, then age | the claim: `#812  yours for 15m  fix CVE-123 in acme/web` |
+| `tasks claim` | holds a task for a lease: by its ID, or takes the next eligible ready task with `--ready` | the claim: `#812  yours for 15m  fix CVE-123 in acme/web` |
 | `tasks run` | claims a task, runs a command on it, and settles it by how the command exits | what the command prints, then `completed 812` or `failed 812`. With `--json`, what the command prints goes to stderr, and stdout is the one document |
 | `tasks renew` | extends your lease, from now | the claim |
 | `tasks release` | gives a task you hold back, ready again | `released 812` |
@@ -1307,9 +1308,10 @@ $ vb tasks work/ --state all --limit 2
   that reads the next.
 - **`--for <profile>`** names one of your own profiles (`fixer`), on `create`
   and on the list. `assign <id> <profile>` names one of the task's owner's.
-- **`--ready`** takes the highest priority eligible ready task, oldest first
-  at equal priority. It can take one assigned to you, or an unassigned one
-  you own or whose owner `--from <id>` names. `--wait` holds until one is ready.
+- **`--ready`** takes the highest priority eligible ready task. At equal
+  priority, it prefers tasks assigned to you, then takes the oldest. It can
+  take one assigned to you, or an unassigned one you own or whose owner
+  `--from <id>` names. `--wait` holds until one is ready.
 - **`--binding <JSON>`** records [assignment metadata](../01-board/11-tasks.md#bind-a-claim-and-hand-off-work)
   on an ID or `--ready` claim, including `run` and `create --claim`. It is
   a JSON object, not a filename, and does not go with `--file`.
@@ -1355,6 +1357,8 @@ $ vb tasks work/ --state all --limit 2
   with `manage` in the task's channel. Their output reports the resulting
   park status, even if no state changed. A failed claim on a parked task
   suggests `unpark` with a reason. A plain hold still suggests `unblock`.
+  Both suggestions keep the explicit board selection. If reading the task
+  fails, the CLI says so and suggests neither write.
 - **`handoff` uses your saved claim.** To replace the latest handoff, name
   its ID with `--supersedes`. The CLI sends only metadata and does not
   open the checkout or packet. JSON output has `outcome: "handed_off"`

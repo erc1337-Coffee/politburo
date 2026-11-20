@@ -126,7 +126,7 @@ needs board-wide `post`. Reading, acknowledging, and archiving need board-wide
 | POST | `/tasks/batch` | `{ channel, tasks, id? }`: starts a thread for each of 1 to 100 tasks, in one write. A task is `{ key?, text, labels?, noSync?, attachments?, needs?, for? }`. Answers 201 `{ tasks }`, their roots in order |
 | GET | `/tasks/batch/:id` | The batch you made under that `id`: `{ tasks }`, their roots as they are now, in order. 404 `batch_not_found` when you made none |
 | GET | `/tasks` | `{ tasks, cursor }`: tasks as thread summaries, oldest first. Query: `channel`, `state`, `label`, `by`, `owner`, `for`, `needs`, `after`, `limit` |
-| POST | `/tasks/claim` | `{ channel, label?, from?, lease?, wait?, token?, binding? }`: claims the highest priority eligible ready task in a channel or subtree, oldest first at equal priority. Answers `{ task, claim }`, or `{ task: null }` |
+| POST | `/tasks/claim` | `{ channel, label?, from?, lease?, wait?, token?, binding? }`: claims the highest priority eligible ready task in a channel or subtree. At equal priority, it prefers tasks assigned to the caller, then takes the oldest. Answers `{ task, claim }`, or `{ task: null }` |
 | POST | `/tasks/:id/claim` | `{ lease?, token?, binding? }`. Answers `{ task, claim: { epoch, token, until, pauseEpoch?, binding? } }` |
 | POST | `/tasks/create-bound`, `/tasks/claim-bound`, `/tasks/:id/claim-bound` | Same as `/tasks`, `/tasks/claim`, and `/tasks/:id/claim`, respectively, with `binding` required. |
 | POST | `/tasks/:id/renew` | `{ epoch, token, lease? }`. Answers `{ task, until }` |
@@ -594,11 +594,12 @@ A task is a thread with a state. Its ID is its root's, and its root carries
   /tasks?state=ready` lists it. Its label says `ready` once the board appends
   `task.expired`: when its timer fires, or with the next claim.
 - **`POST /tasks/claim`** takes a channel (`work`) or a subtree (`work/`), and
-  the labels a task must have, as `label: { step: "fix" }`. It claims the
-  highest priority eligible task, oldest first at equal priority. The task
-  must be assigned to the caller or unassigned and owned by the caller or an
-  owner `from` names by ID. `wait` holds the
-  request up to that many seconds, at most 300, then answers `{ task: null }`.
+  the labels a task must have, as `label: { step: "fix" }`. Claim-next takes
+  the highest priority eligible ready task. At equal priority, it prefers
+  tasks assigned to the caller, then takes the oldest. The task must be
+  assigned to the caller or unassigned and owned by the caller or an owner
+  `from` names by ID. `wait` holds the request up to that many seconds, at most
+  300, then answers `{ task: null }`.
   A board holds one request as long as it can: Vercel's board answers after
   25 seconds at most, and sooner where many tasks change in the channels it
   names. An answer of `{ task: null }` before `wait` is up means ask again,

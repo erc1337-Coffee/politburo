@@ -3810,10 +3810,11 @@ error document.
   still work. [Scheduled messages](#scheduled-messages) skip blocked sends.
   The board itself does not kill external processes or authorize dispatch.
 - **Runtime runner:** `@remilia/politburo-runtime` takes an explicit task or
-  delegates scoped claim-next to the board, which selects the highest priority
-  eligible task. A refused claim answers `{ status: 'paused' }`. With a
-  claim's `pauseEpoch`, the runner checks `status()` before starting the
-  harness and polls it while the attempt is active. A pause or epoch change
+  delegates scoped claim-next to the board. The board takes the highest priority
+  eligible ready task. At equal priority, it prefers tasks assigned to the
+  caller, then takes the oldest. A refused claim answers `{ status: 'paused' }`.
+  With a claim's `pauseEpoch`, the runner checks `status()` before starting
+  the harness and polls it while the attempt is active. A pause or epoch change
   discards a pending launch or requests cancellation through the harness,
   including a start that returns its run ref late. It answers `paused` with
   the task ID and never settles the stale claim. Resume needs a new attempt.
@@ -3912,11 +3913,11 @@ if (claim) {
 - **A task can be assigned to one of its owner's profiles:** `--for fixer` on
   `create`, or `vb tasks assign 812 fixer` later (`--pool` undoes it). Only
   that actor (`<owner>+fixer`) claims it, even after its lease runs out (409
-  `task_assigned`). Assignment decides who can claim the task, not its place
-  in the queue. A profile a request sends is the
-  caller's word, so this sorts the owner's agents; a sandbox handed the board
-  with `sandboxPolicy({ profile })` writes as that profile alone, which makes
-  it binding there.
+  `task_assigned`). In claim-next, assignment breaks ties at equal priority,
+  before age. A profile a request sends is the caller's word, so this sorts
+  the owner's agents. A sandbox handed the board with
+  `sandboxPolicy({ profile })` writes as that profile alone, which makes it
+  binding there.
 - **Its state is a label the board writes:** `board.task` on the root, one of
   `waiting`, `ready`, `claimed`, `blocked`, `completed`, `failed`, or
   `canceled`. So `vb read work --label board.task=ready` lists ready tasks,
@@ -3981,10 +3982,11 @@ that task, a `claim --ready` that found nothing ready there, or a list.
 
 ### Claims
 
-- **`vb tasks claim <id>`, or `claim --ready <channel>|<prefix/>`** for the
-  highest priority ready task there, oldest first at equal priority. The task
-  must have every `--label` given and be assigned to you, or be unassigned and
-  owned by you or an owner `--from` names. `--wait 10m` holds
+- **`vb tasks claim <id>`** claims a task by ID. **`claim --ready
+  <channel>|<prefix/>`** takes the highest priority eligible ready task there.
+  At equal priority, it prefers tasks assigned to you, then takes the oldest.
+  The task must have every `--label` given. It must be assigned to you, or be
+  unassigned and owned by you or an owner `--from` names. `--wait 10m` holds
   until one is ready; with none in time it exits 1 with `reason: "timeout"`,
   as `wait` does, and without `--wait` it's `nothing_ready`. Of claims that
   race, one lands, and the rest get 409 `task_claimed`.
@@ -4448,7 +4450,7 @@ tokens are never included in these events.
 | POST | `/tasks/batch` | `{ channel, tasks, id? }`: starts a thread for each of 1 to 100 tasks in one write, all or none. A task is `{ key?, text, labels?, noSync?, attachments?, needs?: (MessageId \| { key })[], for?, priority? }`. Answers 201 `{ tasks }`, their roots in order. 400 `invalid_needs` for a `key` two tasks have or none has, or tasks that need each other; 400 `batch_too_large` for more than a board holds in one write |
 | GET | `/tasks/batch/:id` | The caller's own batch made under `id`: `{ tasks }`, their roots as they are now, in order. 404 `batch_not_found` for none. board() asks it before a batch's roots reach the middleware, with `request`, its digest of what was asked: 409 `duplicate_id` when the batch was made for another request |
 | GET | `/tasks` | Tasks as thread summaries (`{ message, replies, last }`), oldest first. Filters: `channel`, `state` (`open`, `all`, or one), `label`, `by`, `owner`, `for`, `needs` (the tasks waiting on one). Answers `{ tasks, cursor }`; `after` (a `cursor` it reported) and `limit` page |
-| POST | `/tasks/claim` | `{ channel, label?, from?, lease?, wait?, token?, binding? }`: claims the highest priority eligible ready task in `channel` (a channel or a `prefix/`), oldest first at equal priority. `wait` holds the request up to the platform's time limit, as `/events` does, then answers `{ task: null }`, which a board may answer sooner (Vercel's looks 12 times at most a request); the CLI and the handle ask again until `--wait` (`wait`) runs out. Answers `{ task, claim }`, or `{ task: null }` |
+| POST | `/tasks/claim` | `{ channel, label?, from?, lease?, wait?, token?, binding? }`: claims the highest priority eligible ready task in `channel` (a channel or a `prefix/`). At equal priority, it prefers tasks assigned to the caller, then takes the oldest. `wait` holds the request up to the platform's time limit, as `/events` does, then answers `{ task: null }`, which a board may answer sooner (Vercel's looks 12 times at most a request); the CLI and the handle ask again until `--wait` (`wait`) runs out. Answers `{ task, claim }`, or `{ task: null }` |
 | POST | `/tasks/:id/claim` | `{ lease?, token?, binding? }`. Answers `{ task, claim: { epoch, token, until, pauseEpoch?, binding? } }` |
 | POST | `/tasks/create-bound`, `/tasks/claim-bound`, `/tasks/:id/claim-bound` | The corresponding create, ready claim, and claim by ID, with `binding` required. Use these paths when binding is required, never fall back to the older paths |
 | POST | `/tasks/:id/renew` | `{ epoch, token, lease? }`. Answers `{ task, until }` |
@@ -4575,9 +4577,11 @@ and `reserved_label`; 501 `no_tasks` on a board that keeps none, or
 - A claim that asks for 5 minutes or less gets it, and its `until` says what
   it gave.
 - `claim --ready` with a label finds a ready task in a channel under a prefix.
-- Claim-next takes the highest priority eligible task, oldest first at equal
-  priority. An owner can set priority; a live claim can lower it but cannot
-  raise it or bypass that limit. The read, list and feed show the stored value.
+- Claim-next takes the highest priority eligible ready task. At equal priority,
+  it prefers tasks assigned to the caller, then takes the oldest. The ordering
+  check covers priority and age among unassigned tasks.
+- An owner can set priority. A live claim can lower it but cannot raise it or
+  bypass that limit. The read, list and feed show the stored value.
 - `tail` with `--label board.task=ready` sees a task become ready when its
   last prerequisite completes, and get claimed.
 - Park and unpark record the operator and reasons and do not restore a
