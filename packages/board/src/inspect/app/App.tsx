@@ -6,11 +6,11 @@ import { setEditing } from './chrome.ts'
 import { Composer } from './composer.tsx'
 import { Feed, Toasts } from './feed.tsx'
 import { Home } from './home.tsx'
+import { HomeEmblem } from './home-emblem.tsx'
 import { Messages, Pendings, type RowOptions } from './message.tsx'
 import { GLOBAL_CHAT, GLOBAL_CHAT_PATH, channelPath, here, Link, navigate, route, useLocation, useNow, useTypeToFocus } from './nav.tsx'
 import { Settings } from './settings.tsx'
 import { Sidebar } from './sidebar.tsx'
-import { HomeEmblem } from './home-emblem.tsx'
 import { actorFor, TaskCard, taskIds } from './task.tsx'
 import { Tasks } from './tasks.tsx'
 import { FilterButton, FilterChips } from './filters.tsx'
@@ -170,9 +170,10 @@ export function App() {
       else focus(fallback)
     }
     if (nav) focus('.sidebar')
-    else if (where.thread !== null && (old?.thread !== where.thread || old.nav || (narrow && !root.querySelector('.pane')?.contains(document.activeElement)))) focus('.pane [data-view-title]')
-    else if (old?.path !== where.path) focus('.main [data-view-title]')
-    else if (old.nav) restore(navOpener.current, '.header [aria-label="Show sidebar"]')
+    else if (old?.nav && old.path === where.path && old.thread === where.thread && narrow) {
+      restore(navOpener.current, `${where.thread === null ? '.main' : '.pane'} .header [aria-label="Show sidebar"]`)
+    } else if (where.thread !== null && (old?.thread !== where.thread || old.nav || (narrow && !root.querySelector('.pane')?.contains(document.activeElement)))) focus('.pane [data-view-title]')
+    else if (old?.path !== where.path || old.nav) focus('.main [data-view-title]')
     else if (old.thread !== null && where.thread === null) restore(threadOpener.current, '.main [data-view-title]')
   }, [where.path, where.thread, nav, narrow, ready])
 
@@ -227,26 +228,30 @@ export function App() {
   const setFilter = (next: Filter) => navigate(here({ filter: next }), true)
   const sources = (state.discovery?.sync ?? []).map((entry) => entry.key)
   const filters = { filter, setFilter, sources, known }
-  const hiddenSidebarLead = !nav && (narrow || sidebar.collapsed) ? (
+  const headerLead = narrow || sidebar.collapsed ? (
     <>
       <HomeEmblem />
       <button
+        type="button"
         className="tool"
-        title="show the sidebar"
+        title="Show sidebar"
         aria-label="Show sidebar"
-        aria-expanded={false}
+        aria-controls="board-sidebar"
+        aria-expanded={nav}
         onClick={(event) => {
           navOpener.current = event.currentTarget
-          sidebar.collapse(false)
           if (narrow) setNav(true)
-          else requestAnimationFrame(() => shell.current?.querySelector<HTMLElement>('.sidebar')?.focus())
+          else {
+            sidebar.collapse(false)
+            requestAnimationFrame(() => shell.current?.querySelector<HTMLElement>('.sidebar')?.focus())
+          }
         }}
       >
-        <PanelLeftOpen size={15} strokeWidth={1.75} />
+        <PanelLeftOpen size={15} strokeWidth={1.75} aria-hidden="true" />
       </button>
     </>
   ) : null
-  const expand = narrow && where.thread !== null ? null : hiddenSidebarLead
+  const expand = narrow && where.thread !== null ? null : headerLead
   return (
     <div
       ref={shell}
@@ -257,20 +262,18 @@ export function App() {
       }}
     >
       {nav && <div className="scrim" onClick={() => setNav(false)} />}
-      {!sidebar.collapsed && (
-        <nav className="sidebar" aria-label="Board navigation" tabIndex={-1} inert={narrow && where.thread !== null && !nav} style={{ width: sidebar.width, opacity: sidebar.fade }}>
-          <Sidebar
-            state={state}
-            current={current}
-            onHome={() => setNav(false)}
-            onCollapse={() => {
-              if (nav) setNav(false)
-              else sidebar.collapse(true)
-            }}
-          />
-          <ResizeHandle side="right" label="resize the sidebar" onDrag={sidebar.drag} onDone={sidebar.done} onStep={sidebar.step} />
-        </nav>
-      )}
+      <nav id="board-sidebar" className="sidebar" aria-label="Board navigation" tabIndex={-1} hidden={!nav && sidebar.collapsed} style={{ width: sidebar.width, opacity: sidebar.fade }}>
+        <Sidebar
+          state={state}
+          current={current}
+          onHome={() => setNav(false)}
+          onCollapse={() => {
+            if (nav) setNav(false)
+            else sidebar.collapse(true)
+          }}
+        />
+        <ResizeHandle side="right" label="resize the sidebar" onDrag={sidebar.drag} onDone={sidebar.done} onStep={sidebar.step} />
+      </nav>
       <main className="main" inert={narrow && (nav || where.thread !== null)}>
         {current.view === 'home' && <Home state={state} now={now} lead={expand} />}
         {current.view === 'presidium' && (
@@ -309,7 +312,7 @@ export function App() {
       {where.thread !== null && (
         <aside className="pane" aria-label="Thread" inert={nav}>
           <ResizeHandle side="left" label="resize the thread" onDrag={pane.drag} onDone={pane.done} onStep={pane.step} />
-          <ThreadPane key={where.thread} id={where.thread} state={state} viewer={viewer} now={now} known={known} lead={narrow ? hiddenSidebarLead : null} />
+          <ThreadPane key={where.thread} id={where.thread} state={state} viewer={viewer} now={now} known={known} lead={narrow ? headerLead : null} />
         </aside>
       )}
       <Toasts />

@@ -1,10 +1,10 @@
 import { Activity, Check, ChevronsUpDown, ClipboardList, House, LayoutGrid, Lock, MessageSquare, PanelLeftClose, Plus, Settings } from 'lucide-react'
-import { HomeEmblem } from './home-emblem.tsx'
 import { useEffect, useMemo, useState } from 'react'
 import type { ChannelView, Me } from '../../api/routes.ts'
 import { compileAccess, type Access } from '../../server/access.ts'
 import * as board from './board.ts'
 import { toast } from './chrome.ts'
+import { HomeEmblem } from './home-emblem.tsx'
 import { Avatar } from './message.tsx'
 import { GLOBAL_CHAT, GLOBAL_CHAT_PATH, channelPath, Link, navigate, type Route } from './nav.tsx'
 import { openTasks, type State } from './store.ts'
@@ -69,8 +69,8 @@ export function Sidebar({ state, current, onHome, onCollapse }: { state: State; 
           <span className="name">{where.name}</span>
           {where.at && <span className="at">{where.at}</span>}
         </span>
-        <button className="tool" title="hide the sidebar" onClick={onCollapse}>
-          <PanelLeftClose size={15} strokeWidth={1.75} />
+        <button type="button" className="tool" title="Hide sidebar" aria-label="Hide sidebar" onClick={onCollapse}>
+          <PanelLeftClose size={15} strokeWidth={1.75} aria-hidden="true" />
         </button>
       </div>
       <div className="sidebar-scroll">

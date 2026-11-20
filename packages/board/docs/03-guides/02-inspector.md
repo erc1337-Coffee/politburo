@@ -25,6 +25,9 @@ The top of the sidebar says which board it is, and so does the tab's title. A
 team's board in Vercel's API shows its name over its host. Any other board
 shows its host over where it's mounted.
 
+Select the top-left Politburo emblem to return to Handoffs. On narrow screens,
+use **Show sidebar** to open the navigation.
+
 | Flag | Does |
 | --- | --- |
 | `--port N` | Listens on that port. Without it, the inspector uses 4747, or any free port when 4747 is taken |

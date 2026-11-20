@@ -106,7 +106,7 @@ input, textarea { font: inherit; color: var(--bright); letter-spacing: inherit; 
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 8px;
+  padding: 0 var(--inset);
   border-bottom: 1px solid var(--hairline);
   background: var(--chrome);
   color: var(--bright);
@@ -116,9 +116,9 @@ input, textarea { font: inherit; color: var(--bright); letter-spacing: inherit; 
 /* Which board this is: its name, and where it is under it. */
 .brand .which { display: grid; min-width: 0; line-height: 1.3; }
 .home-emblem { flex: none; width: 44px; height: 44px; display: grid; place-items: center; border-radius: 4px; }
-.home-emblem img { display: block; object-fit: contain; background: #fff; }
+.home-emblem img { display: block; object-fit: contain; }
 .home-emblem:hover { background: var(--shade-hover); }
-.home-emblem:focus-visible { outline: 2px solid var(--bright); outline-offset: -2px; }
+.home-emblem:focus-visible { outline-offset: -2px; }
 .brand .name, .brand .at { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .brand .at { color: var(--faint); font-size: 11px; font-weight: 400; }
 .sidebar h2 { display: flex; align-items: center; justify-content: space-between; height: 18px; margin: 16px 8px 4px; font-size: 11px; font-weight: 500; color: var(--faint); }
@@ -137,7 +137,6 @@ input, textarea { font: inherit; color: var(--bright); letter-spacing: inherit; 
   font-size: .875rem;
   border: 1px solid transparent;
   border-radius: 4px;
-  cursor: pointer;
 }
 .sidebar .item:hover { background: var(--shade-hover); color: var(--bright); }
 .sidebar .item[aria-current='page'] { background: var(--selected); border-color: var(--hairline); border-inline-start-color: var(--gold); color: var(--accent); font-weight: 700; }
@@ -156,7 +155,7 @@ input, textarea { font: inherit; color: var(--bright); letter-spacing: inherit; 
 .choice svg { color: var(--accent); }
 
 /* --- resize handles: a hairline that lights up --- */
-.resize { position: absolute; top: 0; bottom: 0; width: 7px; z-index: 5; cursor: col-resize; display: flex; justify-content: center; outline: none; }
+.resize { position: absolute; top: 0; bottom: 0; width: 7px; z-index: 5; display: flex; justify-content: center; outline: none; }
 .resize.right { right: -3px; }
 .resize.left { left: -3px; }
 .resize i { width: 2px; height: 100%; }
@@ -169,7 +168,7 @@ input, textarea { font: inherit; color: var(--bright); letter-spacing: inherit; 
 .pane { position: fixed; inset: 0; width: auto !important; background: var(--bg); z-index: var(--overlay-layer); }
 .resize { display: none; }
 @media (min-width: 64rem) {
-  .sidebar { display: flex; }
+  .sidebar:not([hidden]) { display: flex; }
   .pane { position: relative; flex-shrink: 0; width: var(--pane-width) !important; max-width: max(320px, calc(100% - var(--sidebar-width) - 20rem)); border-left: 1px solid var(--hairline); }
   .resize { display: flex; }
 }
@@ -186,6 +185,7 @@ input, textarea { font: inherit; color: var(--bright); letter-spacing: inherit; 
 }
 .header { background: var(--chrome); }
 .header > .tool, .brand > .tool { border: 1px solid var(--hairline); border-radius: 4px; background: var(--chrome); box-shadow: var(--raised); }
+.header > .tool:hover, .brand > .tool:hover { background: var(--shade); }
 .header .title {
   margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--bright);
   font: 700 1.125rem/1.375rem 'Avenir Next Condensed', 'Arial Narrow', 'Liberation Sans Narrow', sans-serif;
@@ -473,7 +473,6 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 .pane .composer-footer .send { margin-left: auto; }
 .send { height: 30px; padding: 0 12px; background: var(--action); color: var(--label); border: 1px solid var(--gold); border-radius: 4px; font-weight: 600; white-space: nowrap; }
 .send:not(:disabled):hover { background: var(--action-hover); }
-button:not(:disabled, [aria-disabled="true"]), a[href] { cursor: pointer; }
 @media (hover: hover) {
   button:not(:disabled, [aria-disabled="true"]):hover { filter: brightness(1.07); }
 }
@@ -482,7 +481,7 @@ button:not(:disabled, [aria-disabled="true"]):active {
   box-shadow: inset 1px 2px 3px var(--shadow), inset -1px -1px var(--gold);
 }
 /* Instant feedback, with no movement or transitions. */
-.button-sounds { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; white-space: nowrap; cursor: pointer; }
+.button-sounds { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; white-space: nowrap; }
 .button-sounds input { accent-color: var(--action); }
 .send.small { height: 28px; padding: 0 10px; }
 .send:disabled { opacity: 0.5; }
@@ -491,17 +490,16 @@ button:not(:disabled, [aria-disabled="true"]):active {
 .page { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 0 16px; }
 .home-view { padding: clamp(16px, 4vw, 40px); }
 .home-view > * { max-width: 52rem; margin-inline: auto; }
-.handoffs-view { padding-block: 12px 16px; }
-.home-intro { padding-bottom: 6px; }
+.handoffs-view { padding-block: 8px 12px; }
+.handoffs-view > * + * { margin-block-start: 8px; }
 .home-view p { margin: 0 0 6px; color: var(--muted); }
+.handoffs-view p { margin: 0; }
 .home-view a { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
 .home-intro a { display: inline-flex; min-height: 32px; align-items: center; }
 .home-view a:focus-visible, .home-view button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-.home-queue { padding: 7px 0 8px; border-top: 1px solid var(--hairline); }
-.home-queue h2 { margin: 0; font-size: 1rem; color: var(--bright); }
+.home-queue h2 { margin: 0; padding-bottom: 2px; border-bottom: 1px solid var(--hairline); font-size: 1rem; color: var(--bright); }
 .handoff-list, .handoff-needs ul { list-style: none; margin: 0; padding: 0; }
-.handoff { padding: 5px 0; overflow-wrap: anywhere; }
-.handoff + .handoff { border-top: 1px solid var(--hairline); }
+.handoff { padding: 4px 0; overflow-wrap: anywhere; }
 .handoff-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 8px; margin-bottom: 2px; }
 .handoff-title { font-weight: 600; }
 .handoff small { color: var(--muted); }

@@ -2,4 +2,4 @@
 "@vercel/board": patch
 ---
 
-Restyle the inspector with compact gray-and-indigo desktop chrome, distinct navigation and thread panes, and clearer keyboard focus.
+Use the top-left Politburo emblem to return to Handoffs. Tighten spacing between handoff sections and keep the sidebar within reach on narrow screens.
