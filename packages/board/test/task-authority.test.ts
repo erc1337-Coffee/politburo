@@ -249,7 +249,7 @@ it('checks binding shape and owner against the claimant on all claim entry point
 it.each(['unbound', 'bound'])('recovers a live %s create-and-claim with the same client id and token', async (kind) => {
   expect((await bo('POST', '/control/pause', { reason: 'stop admitting work' })).status).toBe(200)
   const resumed = await bo('POST', '/control/resume', { reason: 'admit new claims' })
-  expect(resumed.status).toBe(200)
+  expect(resumed).toEqual({ status: 200, body: { paused: false, pauseEpoch: 1 } })
   const binding = kind === 'bound' ? bindingFor() : undefined
   const path = binding ? '/tasks/create-bound' : '/tasks'
   const token = randomBytes(32).toString('base64url')
@@ -264,6 +264,10 @@ it.each(['unbound', 'bound'])('recovers a live %s create-and-claim with the same
   expect([200, 201]).toContain(replay.status)
   expect(replay.body.task.id).toBe(id)
   expect(replay.body.claim).toEqual(made.body.claim)
+  // The stored claim is visible in the feed, without the proof token.
+  expect((await events(ada, id)).filter(({ type }) => type === 'task.claimed')).toMatchObject([
+    { payload: { epoch: made.body.claim.epoch, pauseEpoch: made.body.claim.pauseEpoch } },
+  ])
 
   const renewed = await write(worker, id, 'renew', { ...proofOf(replay.body.claim), lease: 60 })
   expect(renewed.status).toBe(200)
@@ -319,12 +323,17 @@ it('fences all proof writes by generation even with the same actor and token aft
   const id = await make(ada, 'resume work with a new generation')
   const token = randomBytes(32).toString('base64url')
   const binding = bindingFor()
-  const first = await take(worker, id, { token, binding })
+  expect((await bo('POST', '/control/pause', { reason: 'halt new work' })).status).toBe(200)
+  const resumed = await bo('POST', '/control/resume', { reason: 'admit new claims' })
+  expect(resumed).toEqual({ status: 200, body: { paused: false, pauseEpoch: 1 } })
+  const claimed = await write(worker, id, 'claim-bound', { token, binding })
+  expect(claimed.status).toBe(200)
+  const first = claimed.body.claim
+  expect(first).toMatchObject({ token, binding, pauseEpoch: resumed.body.pauseEpoch })
   for (const retry of [{ token }, { token, binding }]) {
     const repeated = await write(worker, id, 'claim', retry)
     expect(repeated.status).toBe(200)
-    expect(repeated.body.claim.epoch).toBe(first.epoch)
-    expect(repeated.body.claim.binding).toEqual(binding)
+    expect(repeated.body.claim).toEqual(first)
   }
   expect(outcome(await write(worker, id, 'claim', { token, binding: { ...binding, session: 'different' } }))).toEqual([409, 'binding_mismatch'])
   // The verified principal can differ even when the actor ID is indistinguishable in text.
@@ -356,8 +365,8 @@ it('fences all proof writes by generation even with the same actor and token aft
   expect(view.task).toMatchObject({ state: 'claimed', epoch: second.epoch, claim: { actor: WORKER, binding: secondBinding } })
   const feed = await events(bo, id)
   expect(feed.filter(({ type }) => type === 'task.claimed')).toMatchObject([
-    { payload: { epoch: first.epoch, binding, by: { principal: ADA, actor: WORKER, profile: 'worker' } } },
-    { payload: { epoch: second.epoch, binding: secondBinding, by: { principal: ADA, actor: WORKER, profile: 'worker' } } },
+    { payload: { epoch: first.epoch, pauseEpoch: first.pauseEpoch, binding, by: { principal: ADA, actor: WORKER, profile: 'worker' } } },
+    { payload: { epoch: second.epoch, pauseEpoch: first.pauseEpoch, binding: secondBinding, by: { principal: ADA, actor: WORKER, profile: 'worker' } } },
   ])
   doesNotExpose([view, feed], token)
   expect((await write(worker, id, 'handoff', { ...proofOf(second), ...packet })).status).toBe(200)
