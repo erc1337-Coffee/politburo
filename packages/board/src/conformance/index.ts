@@ -17,7 +17,7 @@ import type { Board } from '../server/board.ts'
  * every post on the board, and deletes what it posted. The one
  * schema it registers, `conformance@1`, stays: a schema version is never removed.
  * On boards that opt into agent operations, the kit retires its test agent;
- * the disabled entry stays in the roster.
+ * the disabled entries and private intent facts remain on the board.
  */
 
 /** What a check is about, for the report's headings. */
@@ -2750,6 +2750,60 @@ const CHECKS: Check[] = [
         same(listed?.generation, current.generation, 'retired agent generation when listed')
       } finally {
         if (current.status !== 'disabled') await writer.agents.retire(enrolled.id, current.generation).catch(() => {})
+      }
+    },
+  },
+  {
+    group: 'agents',
+    name: 'confirms a claimed run only through a taken and reported status probe',
+    run: async (ctx) => {
+      const { board, channel, labels, agentOps, me } = ctx
+      if (!agentOps) {
+        await rejects(board.agents.health('conformance-missing'), 501, 'no_agent_ops', 'reading health without advertised support')
+        return 'not kept here: agent operations are not advertised'
+      }
+      if (me.principal === 'board:client' || me.principal.startsWith('board:client:')) return 'this run has no verified agent credential'
+      const worker = board.as(`probe-${labels.conformance}`)
+      const { principal, profile } = await worker.me()
+      const agent = await worker.agents.register({ channel, role: 'reviewer', harness: 'conformance' })
+      try {
+        const { task: root } = await task(ctx, 'conformance: run health')
+        const claim = await worker.tasks.claim(root.id)
+        try {
+          same((await board.agents.health(root.id)).state, 'not_confirmed', 'health of a bare claim')
+          const input = { verb: 'status', generation: agent.generation, ttlSeconds: 30, requestId: `probe-${labels.conformance}`, run: { task: root.id, epoch: claim.epoch } } as const
+          const { intents } = await board.agents.issueIntent(agent.id, input)
+          same(intents.length, 1, 'a probe resolves to one intent')
+          const intent = intents[0]!
+          isRef(intent.id, 'intent ID')
+          same(intent.by?.principal, me.principal, 'intent issuer')
+          same(intent.by?.profile, me.profile, 'intent issuer profile')
+          same(intent.agent, agent.id, 'intent recipient')
+          same(intent.state, 'pending', 'issued intent state')
+          same((await board.agents.issueIntent(agent.id, input)).intents[0]?.id, intent.id, 'replayed intent ID')
+          await refused(board.agents.issueIntent(agent.id, { ...input, ttlSeconds: 29 }), 409, 'issuing changed input under the same request ID')
+          same((await worker.agents.intents(agent.id)).intents.map(({ id }) => id).join(), intent.id, 'pending intents')
+          const taken = await worker.agents.takeIntent(intent.id, agent.generation)
+          same(taken.state, 'taken', 'taken intent state')
+          same(taken.taken?.by?.principal, principal, 'taker principal')
+          same(taken.taken?.by?.profile, profile, 'taker profile')
+          same((await worker.agents.intents(agent.id)).intents.length, 0, 'pending intents after take')
+          same((await board.agents.health(root.id)).state, 'not_confirmed', 'health of a taken but unreported probe')
+          const reported = await worker.agents.reportIntent(intent.id, agent.generation, 'running')
+          same(reported.state, 'reported', 'reported intent state')
+          same(reported.report?.by?.principal, principal, 'reporter principal')
+          same(reported.report?.by?.profile, profile, 'reporter profile')
+          same(reported.report?.outcome, 'running', 'report outcome')
+          const health = await board.agents.health(root.id)
+          check(health.state === 'working', `a positive probe on a live claim should confirm health, got ${show(health)}`)
+          const until = Date.parse(health.validUntil)
+          check(until > Date.parse(reported.report!.at) && until <= Math.min(Date.parse(intent.expiresAt), Date.parse(claim.until)), 'health should have a finite window no later than the intent or lease deadline')
+        } finally {
+          await claim.release()
+        }
+        same((await board.agents.health(root.id)).state, 'not_confirmed', 'health after the claim is released')
+      } finally {
+        await worker.agents.retire(agent.id, agent.generation)
       }
     },
   },

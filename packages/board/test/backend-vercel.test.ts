@@ -182,8 +182,9 @@ describe('vercel()', () => {
       "sync: takes an edit of a long message in its sync's inbox, under the longest event ID the protocol allows, and refuses a longer one": 'skipped',
       'sync: hands a sync each message change as a match of its @sync watcher': 'skipped',
       'sync: keeps noSync on a post and a reply, so sync sends neither': 'passed',
-      // The agent registry and operational inbox are not part of Vercel's API.
+      // The agent registry, run health, and operational inbox are not part of Vercel's API.
       'agents: registers, lists, heartbeats, and retires an agent under its verified binding': 'skipped',
+      'agents: confirms a claimed run only through a taken and reported status probe': 'skipped',
       'operational-inbox: keeps operational messages private, supersedes by topic, and keeps receipts once': 'skipped',
     })
     // It leaves the grants as it found them.

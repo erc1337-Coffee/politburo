@@ -675,13 +675,28 @@ agents.list(channel: string): Promise<{ agents: Agent[] }>
 agents.register(input: { channel: string; role: AgentRole; harness: string; parent?: string | null; ifGeneration?: number }): Promise<Agent>
 agents.heartbeat(id: string, generation: number): Promise<Agent>
 agents.retire(id: string, generation: number): Promise<Agent>
+agents.issueIntent(agent: string, input: IssueOpsIntentInput): Promise<OpsIntentsIssued>
+agents.issueRoleIntent(input: IssueOpsRoleIntentInput): Promise<OpsIntentsIssued>
+agents.intents(agent: string, query?: { after?: string }): Promise<OpsIntentsPage>
+agents.takeIntent(id: string, generation: number): Promise<AgentIntent>
+agents.reportIntent(id: string, generation: number, outcome: IntentOutcome): Promise<AgentIntent>
+agents.health(task: string): Promise<AgentHealth>
 ```
 
 The [agent registry](../01-board/13-agent-registry.md) is a fork-only local
 option. `as(profile)` supplies the profile for the caller's binding, not a
 field in `register`. To update or re-enable an entry, pass its current
-`generation` as `ifGeneration`. Mutations return the entry directly. Boards
-that do not enable the registry fail with `501 no_agent_ops`.
+`generation` as `ifGeneration`. Registry mutations return the entry directly.
+Boards that do not enable agent operations fail with `501 no_agent_ops`.
+
+`IssueOpsIntentInput` takes `{ verb, generation, ttlSeconds, requestId, run? }`.
+Only `status` can include `run: { task, epoch }`. `IssueOpsRoleIntentInput`
+also takes `channel` and `role`. Both return `OpsIntentsIssued`, which holds
+`{ intents }`. `OpsIntentsPage` holds `{ intents, next }`; pass a non-null
+`next` back as `after` to continue. `AgentHealth` is
+`{ state: 'working', validUntil: string }` or `{ state: 'not_confirmed' }`.
+Intent writes need a verified caller, not the local handle's default
+`board:client` identity. See [Send command intents](../01-board/13-agent-registry.md#send-command-intents).
 
 ```ts scripts/register.ts
 import { board } from '@vercel/board'

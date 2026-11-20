@@ -147,11 +147,14 @@ export const options = {
   dir: { type: 'string', value: 'dir', description: 'where the board keeps its log (default: .board/)' },
   'no-inspect': { type: 'boolean', description: "don't start the inspector" },
   // Agent registry.
-  'agent-ops': { type: 'boolean', description: 'enable the fork-only agent registry' },
+  'agent-ops': { type: 'boolean', description: 'enable the fork-only agent registry and intents' },
   role: { type: 'string', value: 'role', description: 'required: coordinator, issues, controller, implementation-worker, reviewer, qa-owner, qa-runner, or user-watcher' },
   harness: { type: 'string', value: 'harness', description: 'required: the harness running this agent' },
   parent: { type: 'string', value: 'id', description: 'the ID of a registered parent in the same channel (default: no parent)' },
   generation: { type: 'string', value: 'N', description: 'required: the current generation, as agents list shows it' },
+  ttl: { type: 'string', value: 'duration', description: 'required: how long to keep the intent, e.g. 20s (max 60s, or 30s for a run probe)' },
+  task: { type: 'string', value: 'id', description: 'with status: probe the live claim on this task' },
+  epoch: { type: 'string', value: 'N', description: 'with --task: the epoch of its live claim' },
   // Tasks.
   state: { type: 'string', value: 'state', description: 'in a state: waiting, ready, claimed, blocked, completed, failed, canceled, open, or all (default: open)' },
   needs: { type: 'string', multiple: true, value: 'id', description: 'wait for a task to complete first' },
@@ -199,6 +202,9 @@ const text = (description = 'what it says: - reads it from stdin, and it may be 
 /** An agent registry's channel or agent ID. */
 const agentChannel: CliArgument = { name: 'channel', required: true, description: 'the exact channel, such as work/review' }
 const agentId = () => id('the agent ID, as agents list shows it')
+const intentId = () => id('the intent ID, as agents intents shows it')
+const intentVerb: CliArgument = { name: 'verb', required: true, description: 'inspect, status, pause, interrupt, resume, collect, or poke' }
+const issueOptions = [option('generation'), option('ttl'), option('task'), option('epoch'), option('idempotency-key', 'retry the same issue request without sending it twice')]
 
 /** A task's ID: its thread's root's. */
 const task = (description = "a task's ID, as tasks shows it (#812)"): CliArgument => ({ name: 'id', required: true, description })
@@ -838,7 +844,7 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
   {
     group: 'agents',
     name: 'agents',
-    description: 'the channel roster on a board that opts into the agent registry',
+    description: 'the channel roster, command intents, and task run health on an opt-in board',
     arguments: [],
     options: [],
     examples: [],
@@ -870,6 +876,48 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
         arguments: [agentId()],
         options: [option('generation')],
         examples: [],
+      },
+      {
+        name: 'issue-intent',
+        description: 'send an intent to one agent',
+        arguments: [agentId(), intentVerb],
+        options: issueOptions,
+        examples: [{ name: 'ask an agent for its status', value: 'agents issue-intent "$agent" status --generation 1 --ttl 20s' }],
+      },
+      {
+        name: 'issue-role-intent',
+        description: 'send an intent to the enabled agents of one role in a channel',
+        arguments: [agentChannel, { name: 'role', required: true, description: 'a role, as agents list shows it' }, intentVerb],
+        options: issueOptions,
+        examples: [{ name: 'poke the reviewers', value: 'agents issue-role-intent work reviewer poke --generation 1 --ttl 20s' }],
+      },
+      {
+        name: 'intents',
+        description: 'list pending intents for an agent, oldest first',
+        arguments: [agentId()],
+        options: [option('after', 'continue from the next cursor agents intents printed', 'cursor')],
+        examples: [],
+      },
+      {
+        name: 'take-intent',
+        description: 'take one pending intent addressed to your agent',
+        arguments: [intentId()],
+        options: [option('generation')],
+        examples: [],
+      },
+      {
+        name: 'report-intent',
+        description: 'report an outcome for an intent you took',
+        arguments: [intentId(), { name: 'outcome', required: true, description: 'ok or failed, or for a run probe: running, not_running, or unknown' }],
+        options: [option('generation')],
+        examples: [],
+      },
+      {
+        name: 'health',
+        description: 'show whether a recent probe confirms the task is working',
+        arguments: [task()],
+        options: [],
+        examples: [{ name: 'check task 812', value: 'agents health 812' }],
       },
     ],
   },

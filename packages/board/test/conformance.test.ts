@@ -184,8 +184,8 @@ describe('the conformance kit', () => {
     expect([...new Set(report.checks.map((check) => check.group))]).toEqual(['core', 'network-pause', 'paging', 'search', 'schedules', 'tasks', 'grants', 'schemas', 'attachments', 'watchers', 'sync', 'agents', 'operational-inbox'])
     expect(report.checks.filter((check) => check.group === 'tasks').map((check) => check.status)).toEqual(Array.from({ length: 26 + TASK_AUTHORITY.length }, () => 'passed'))
     expect(report.checks.filter((check) => TASK_AUTHORITY.includes(check.name)).map((check) => check.status)).toEqual(TASK_AUTHORITY.map(() => 'passed'))
-    expect(agentChecks(report)).toMatchObject([{ status: 'passed' }])
-    expect((await client.agents.list('conformance')).agents).toMatchObject([{ status: 'disabled' }])
+    expect(agentChecks(report).map(({ status }) => status)).toEqual(['passed', 'passed'])
+    expect((await client.agents.list('conformance')).agents.map(({ status }) => status)).toEqual(['disabled', 'disabled'])
     const { messages } = await client.channel('conformance').messages({ limit: 500 })
     expect(messages.filter((message) => !message.deleted)).toEqual([])
     // Every task it made went with its root: none is left open, and none still wears a state.
@@ -198,7 +198,7 @@ describe('the conformance kit', () => {
     onTestFinished(() => team.close())
     const report = await conformance(team)
     expect(report.checks.some((check) => check.group === 'network-pause')).toBe(false)
-    expect(agentChecks(report)).toMatchObject([{ status: 'passed' }])
+    expect(agentChecks(report)).toMatchObject([{ status: 'passed' }, { status: 'skipped', detail: 'this run has no verified agent credential' }])
     // The board's own code needs no grant to keep it in what it closes, and no proxy narrows it. Each
     // of its profiles is a principal of its own there, so none is an actor a task of its own could be for.
     expect(skipped(report)).toEqual([
@@ -217,6 +217,7 @@ describe('the conformance kit', () => {
       [NARROWED[3], NO_CAN],
       [NARROWED[4], NO_CAN],
       [NARROWED[5], NO_CAN],
+      ['confirms a claimed run only through a taken and reported status probe', 'this run has no verified agent credential'],
     ])
     expect((await team.me()).actor).toBe('board:client')
   })
@@ -606,6 +607,7 @@ describe('the conformance kit', () => {
       ['attachments', 'skipped', 'not kept here: this board keeps no files'],
       ['attachments', 'skipped', 'not kept here: this board keeps no files'],
       ['attachments', 'skipped', 'not kept here: this board keeps no files'],
+      ['agents', 'skipped', expect.stringMatching(/^not kept here:/)],
       ['agents', 'skipped', expect.stringMatching(/^not kept here:/)],
     ])
   })

@@ -9,7 +9,10 @@ import {
   Author,
   AgentGeneration,
   AgentHarness,
+  AgentIntent,
   AgentRole,
+  IntentOutcome,
+  IntentReceipt,
   ChannelPath,
   Emoji,
   Handle,
@@ -212,6 +215,26 @@ export const boardEvents = {
         heartbeatAt: Until.nullable(),
       }),
     }),
+    /** One private atomic snapshot, with only the issuer facts needed for policy rechecks. */
+    'ops.intents_issued': z.object({
+      intents: z.array(AgentIntent).min(1).max(64),
+      requestKey: z.string(),
+      requestHash: z.string(),
+      issuer: z.object({
+        id: ActorId,
+        kind: z.enum(['person', 'deployment', 'workflow', 'external']),
+        handle: Handle,
+        facts: z.object({
+          issuer: z.enum(['vercel', 'github', 'oidc', 'host']),
+          iss: z.string(),
+          claims: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])),
+        }).optional(),
+        scope: z.string().max(CAN_MAX).optional(),
+        expiresAt: Until.nullable(),
+      }),
+    }),
+    'ops.intent_taken': z.object({ intentId: Ref, receipt: IntentReceipt }),
+    'ops.intent_reported': z.object({ intentId: Ref, receipt: IntentReceipt.extend({ outcome: IntentOutcome }) }),
     'actor.seen': z.object({
       actor: ActorId,
       kind: SeenActorKind,

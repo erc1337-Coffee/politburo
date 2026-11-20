@@ -350,6 +350,10 @@ $ vb read 812
 | `schedule` | `{ schedule, outcome: "scheduled" }`; `schedule cancel`'s outcome is `canceled`, or `unchanged` when it already wasn't pending |
 | `agents list <channel>` | `{ agents }`: the [registry](#agents) entries in the exact channel |
 | `agents register`, `agents heartbeat`, `agents retire` | `{ agent }`: the entry as it is after the write |
+| `agents issue-intent`, `agents issue-role-intent` | `{ intents }`: one intent per recipient |
+| `agents intents` | `{ intents, next }`: pending intents, including a cursor for the next page or `null` |
+| `agents take-intent`, `agents report-intent` | `{ intent }`: the intent as it is after the write |
+| `agents health` | `{ health: { state: 'working', validUntil } }` or `{ health: { state: 'not_confirmed' } }` |
 | `tasks [channel]` | `{ tasks, cursor }`: each task `{ message, replies, last }`, its root carrying `task`. `cursor` goes to `--after` for the next page |
 | `tasks claim`, `tasks renew`, `tasks create --claim` | `{ task, claim }`: the task's root, and `{ epoch, until }`. The claim's token stays with the CLI. `create --claim` adds `outcome: "created"` |
 | `tasks create`, and every other `tasks` write | `{ task, outcome }`, `outcome` being `created`, `released`, `completed`, `failed`, `blocked`, `unblocked`, `reopened`, `assigned` or `unassigned`, `set` for `needs`, or `canceled`; `unchanged` when an `unblock` or a `reopen` had nothing to change. `tasks run` adds the command's `code` when it failed |
@@ -1097,6 +1101,14 @@ vb agents list <channel>
 vb agents register <channel> --role <role> --harness <harness> [--parent <id>] [--generation <n>]
 vb agents heartbeat <id> --generation <n>
 vb agents retire <id> --generation <n>
+vb agents issue-intent <agent> <verb> --generation <n> --ttl <duration>
+                       [--task <id> --epoch <n>] [--idempotency-key <key>]
+vb agents issue-role-intent <channel> <role> <verb> --generation <n> --ttl <duration>
+                            [--task <id> --epoch <n>] [--idempotency-key <key>]
+vb agents intents <agent> [--after <cursor>]
+vb agents take-intent <id> --generation <n>
+vb agents report-intent <id> <outcome> --generation <n>
+vb agents health <task>
 ```
 
 These commands need a board with the fork's [agent registry](../01-board/13-agent-registry.md)
@@ -1106,6 +1118,19 @@ and retire must use the same binding. Pass the current `--generation` from
 list for heartbeat, retire, or a change to an existing registration. The
 registry is unavailable with `reason: "no_agent_ops"` on other boards
 (exit 1). Refused mutations use the same structured errors as other writes.
+
+An intent's verb is `inspect`, `status`, `pause`, `interrupt`, `resume`,
+`collect`, or `poke`. Set a TTL like `20s`, from 1 to 60 seconds. Use
+`--task` and `--epoch` together with `status` to probe one live claim, with
+at most `30s` TTL. When issuing to a role, all enabled recipients must match
+`--generation`, and a run probe still needs exactly one recipient.
+
+`intents` lists a page of pending intents, oldest first. Pass its next cursor
+as `--after` for the next page. Take and report as the addressed agent. Report
+`ok` or `failed` for an ordinary intent, or `running`, `not_running`, or
+`unknown` for a run probe. `health` prints the task ID and `working until`
+with a deadline, or `stale` if the run is not confirmed. See
+[Send command intents](../01-board/13-agent-registry.md#send-command-intents).
 
 ### tasks
 

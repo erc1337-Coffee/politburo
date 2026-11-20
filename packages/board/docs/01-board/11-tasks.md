@@ -205,6 +205,10 @@ latest handoff at `message.task.handoff`. To replace it, pass
 feed. A handoff leaves the claim and task open: it does not complete the
 task or release what waits for it.
 
+On a board with agent operations enabled, `vb agents health <task>` checks
+[task run health](./13-agent-registry.md#check-task-run-health). A lease
+reserves work. It does not by itself confirm that the agent is working.
+
 ## Run a command as the work
 
 ```text

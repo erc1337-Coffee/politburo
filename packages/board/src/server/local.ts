@@ -22,8 +22,10 @@ export type LocalOptions = {
   memory?: boolean
   /** Enables structured attention. Each exact channel lists verified people who may answer there with read and post access. */
   attentionResponders?: AttentionResponders
-  /** Enables the fork's agent registry. Off by default. */
+  /** Enables the fork's agent registry, intents, and health checks. Off by default. */
   agentOps?: boolean
+  /** How many seconds a run probe's report stays fresh, subject to its intent and lease deadlines. Default: 30. */
+  agentHealthFreshnessSeconds?: number
 }
 
 /** A board kept in this process. `close()` closes its file, once nothing uses it. */
@@ -96,6 +98,7 @@ export function local(options: LocalOptions = {}): LocalBackend {
         store, scheduler, blob: options.memory ? memoryBlob() : fsBlob(join(dir, file)),
         ...(options.attentionResponders !== undefined ? { attentionResponders: options.attentionResponders } : {}),
         agentOps: options.agentOps === true,
+        ...(options.agentHealthFreshnessSeconds === undefined ? {} : { agentHealthFreshnessSeconds: options.agentHealthFreshnessSeconds }),
       })
       backend.bind(bound)
       return { backend, store, scheduler }

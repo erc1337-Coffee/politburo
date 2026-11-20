@@ -8,6 +8,7 @@ import type { AttentionResponders } from '../contract/attention.ts'
 import { BOARD_SESSION, type BoardEvent, type BoardEvents } from '../contract/events.ts'
 import { createTrust } from './trust.ts'
 import { createAgents } from './agents.ts'
+import { createAgentIntents } from './agent-intents.ts'
 import { createSchemas } from './schemas.ts'
 import type { ExternalAuthor, Link, Origin } from '../contract/external.ts'
 import { actorsReducer, channelsReducer } from '../contract/reducers.ts'
@@ -63,6 +64,7 @@ export type A2Options = {
   /** Enables structured attention; only these verified people may answer in each exact channel. */
   attentionResponders?: AttentionResponders
   agentOps?: boolean
+  agentHealthFreshnessSeconds?: number
 }
 
 const boardServer = (options: A2Options) =>
@@ -322,6 +324,11 @@ function build(options: A2Options, binding: BoardBinding) {
   }
 
   const agents = options.agentOps === true ? createAgents(writes) : null
+  const intents = agents ? createAgentIntents(writes, binding, options.agentHealthFreshnessSeconds) : null
+  const agentIntents = () => {
+    if (!intents) throw noAgentOps()
+    return intents
+  }
   const agentRegistry = () => {
     if (!agents) throw noAgentOps()
     return agents
@@ -702,6 +709,24 @@ function build(options: A2Options, binding: BoardBinding) {
     },
     async retireOpsAgent(caller, { agent, generation }) {
       return agentRegistry().retire(await agentIdentityOf(caller), agent, generation)
+    },
+    async issueOpsIntent(caller, input) {
+      return agentIntents().issue(caller, input)
+    },
+    async issueOpsRoleIntent(caller, input) {
+      return agentIntents().issue(caller, input)
+    },
+    async listOpsIntents(caller, { agent, after }) {
+      return agentIntents().list(await agentIdentityOf(caller), agent, after)
+    },
+    async takeOpsIntent(caller, { id, generation }) {
+      return agentIntents().take(caller, id, generation)
+    },
+    async reportOpsIntent(caller, { id, generation, outcome }) {
+      return agentIntents().report(caller, id, generation, outcome)
+    },
+    async getOpsHealth(caller, { task }) {
+      return agentIntents().health(await identityOf(caller), task)
     },
 
     tasks: async (caller, query) => tasks.list(await identityOf(caller), query),

@@ -395,14 +395,16 @@ The backend picks them; the protocol only says their shape:
   backends. A missing method answers 501 `no_operational_inbox`.
 - **`@vercel/board/conformance` checks a board through a handle,** `conformance(board())`, all of it, a group
   at a time in the report (`core`, `schedules`, `tasks`, `attachments`,
-  `watchers`, `sync`, and others). It writes to one channel, and for the tasks checks that need two, to `tasks`
+  `watchers`, `sync`, `agents`, and others). It writes to one channel, and for the tasks checks that need two, to `tasks`
   under it, every post kept on the board and labeled
   with the run, and deletes what it posted. Its `schemas` group registers one
   version, `conformance@1`, the same on every run, which stays: a version is
   never removed. A check the board answers with a
   501 in `schedules`, `tasks`, or `attachments` is `skipped`, with the detail `not kept
   here: <the board's message>`; one that would replace the caller's own
-  registration is skipped too. The `operational-inbox` check sends to the
+  registration is skipped too. Without advertised `agent_ops`, the kit reports
+  both agent checks as skipped; on an opted-in board, the run health probe
+  also needs a verified credential. The `operational-inbox` check sends to the
   run's principal, tests replacement, receipts, and privacy, and archives the
   remaining message. It skips a board that answers 501 `no_operational_inbox`.
   `vb conformance` runs it as the CLI's identity,
@@ -4255,6 +4257,10 @@ task: {
 }
 ```
 
+A lease reserves work, but does not confirm that the agent is working.
+The fork's opt-in [run health](#run-health) is a separate read. It leaves the
+`TaskView`, task labels, and claims unchanged.
+
 ### Task events
 
 Task changes are board facts, in the board log:
@@ -4530,9 +4536,9 @@ The runtime and dispatch stay outside the board.
 The fork keeps an optional roster per exact channel. Enable it with
 `local({ agentOps: true })` or `vb serve --agent-ops`. An enabled board's
 `GET /` discovery includes `agent_ops: true`. The HTTP backend forwards
-registry operations only if discovery advertises that flag. Disabled local
+agent operations only if discovery advertises that flag. Disabled local
 boards, unadvertised HTTP boards, and the Vercel backend answer 501
-`no_agent_ops` for registry operations.
+`no_agent_ops` for agent operations.
 
 An `Agent` is `{ id, channel, role, parent, harness, binding, generation,
 status, heartbeatAt }`. `id` is an opaque server-generated `Ref` that stays
@@ -4579,6 +4585,76 @@ The handle exposes `team.agents.list(channel)`, `.register(input)`,
 results as the routes. The CLI sends `agents register --generation` as
 `ifGeneration`. With `--json`, list answers `{ agents }`; a mutation wraps
 its `Agent` as `{ agent }`.
+
+### Command intents
+
+An `AgentIntent` is `{ id, agent, generation, by, createdAt, expiresAt,
+verb, run?, state, taken, report }`. `agent` is a registry ID. `verb` is
+`inspect`, `status`, `pause`, `interrupt`, `resume`, `collect`, or `poke`.
+State is `pending`, `taken`, `reported`, `expired`, or `fenced`. The `taken`
+receipt is `{ by: Author, generation, at }` or `null`. The `report` receipt
+adds an `outcome` or is `null`. The board authors identities and all times.
+
+| Route | Input and result | Access in the target's channel |
+| --- | --- | --- |
+| `POST /ops/agents/:agent/intents` | `{ verb, run?, generation, ttlSeconds, requestId }` → `{ intents: AgentIntent[] }` | `manage`, or `read` and `post` as the target's enabled coordinator or controller parent |
+| `POST /ops/intents` | Same body plus `{ channel, role }` → `{ intents: AgentIntent[] }` | Same, for every recipient |
+| `GET /ops/agents/:agent/intents` | `after?` → `{ intents: AgentIntent[], next: string \| null }` | `read` and either the enabled agent's binding or `manage` |
+| `POST /ops/intents/:id/take` | `{ generation }` → `AgentIntent` | `read`, `post`, and the target's enabled binding |
+| `POST /ops/intents/:id/report` | `{ generation, outcome }` → `AgentIntent` | `read`, `post`, and the target's enabled binding |
+| `GET /ops/health/:task` | `AgentHealth` | `read` in the task's channel |
+
+- **Issue** uses strict bodies and a TTL of 1 to 60 seconds (30 for run
+  probes). Role issue snapshots 1 to 64 enabled agents of that role in one
+  exact channel. All recipients must match the request's generation. The
+  snapshot lands in one write, or nothing lands. Issue dedupes by issuer
+  binding, method, and `requestId`, an opaque `Ref`. Changed input under
+  the same key is 409.
+- **List** pages oldest first and returns only pending intents that are
+  unexpired and match the target's enabled generation. A page scans at most
+  60 intents and returns at most 15. Use `next` as `after` to continue, even
+  on a short or empty page. A read does not write expiry or fence events.
+- **Take** succeeds at most once, even after a lost response. The board
+  rechecks the issuer's authority from stored verified credential facts,
+  scope, and expiry, including the current parent binding for delegated
+  issue. An issuer must be recheckable; board tokens do not qualify. No
+  credential is stored.
+- **Report** requires a take by the target's verified binding and accepts
+  identical retries while the fences still hold. An ordinary intent reports
+  `ok` or `failed`. Take and report require the current generation and an
+  unexpired intent. A stale generation on a permitted target answers 409;
+  a hidden or mismatched target answers 404. Registry configuration advances
+  the generation; it does not rotate the principal.
+- **Storage** is private facts in the same board log. Ops writes do not go
+  to feeds, threads, watchers, or sync. Conditional appends recheck fences
+  against the log position, including task changes. The board does not
+  execute intents, and there is no inbox archive in this slice.
+
+The handle adds `team.agents.issueIntent(agent, input)`,
+`.issueRoleIntent(input)`, `.intents(agent, { after? })`,
+`.takeIntent(id, generation)`, `.reportIntent(id, generation, outcome)`, and
+`.health(task)`. The [CLI](./packages/board/docs/04-reference/01-cli.md#agents)
+puts the corresponding commands under `vb agents`.
+
+### Run health
+
+Only `status` can carry `run: { task: Ref, epoch: positive integer }`.
+A run probe must resolve to exactly one agent. Issue, take, and report check
+an exact live claim in the agent's channel, with that epoch and the binding
+from the `by` on `task.claimed`. The bound agent's verified report on the
+probe is the health receipt. There is no separate receipt route and no
+lease renewal. Probe outcomes are `running`, `not_running`, and `unknown`.
+
+`AgentHealth` is `{ state: 'working', validUntil: ISO }` only when the
+newest reported probe by issue order for the same live claim and enabled
+generation reports `running`. The deadline is the earliest of the intent's
+expiry, the lease's expiry, and the report time plus the freshness window.
+Set `local({ agentOps: true, agentHealthFreshnessSeconds: N })` to change the
+window from 30 seconds. At or after the deadline, or without qualifying
+proof, the result is `{ state: 'not_confirmed' }`. Neither an old report, a
+lease, a heartbeat, nor an ordinary `status` report proves health. The
+report attests to what the harness observes, not to the runtime itself.
+`vb agents health` prints `working` with its deadline or `stale`.
 
 ## Non-goals for v1
 

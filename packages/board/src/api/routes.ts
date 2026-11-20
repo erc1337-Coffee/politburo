@@ -4,6 +4,10 @@ import {
   AgentGeneration,
   AgentHarness,
   AgentRole,
+  AgentRun,
+  IntentOutcome,
+  IntentVerb,
+  type AgentIntent,
   AttachmentId,
   ATTACHMENTS_PER_MESSAGE_MAX,
   CHANNEL_PATTERN_MAX,
@@ -41,7 +45,7 @@ import type { AccessSummary, Permission, WrittenCan } from '../server/access.ts'
 
 export { Ref }
 export { AttentionAnswerBody, AttentionDraft, AttentionReceipt, AttentionView, RequestAttentionBody } from '../contract/attention.ts'
-export type { AgentRole } from '../contract/schemas.ts'
+export type { AgentHealth, AgentIntent, AgentRole, AgentRun, IntentOutcome, IntentReceipt, IntentVerb } from '../contract/schemas.ts'
 
 export const ListOpsAgentsQuery = z.strictObject({ channel: ChannelPath })
 export const RegisterOpsAgentBody = z.strictObject({
@@ -57,6 +61,29 @@ export type RegisterOpsAgentInput = z.input<typeof RegisterOpsAgentBody>
 export type OpsAgentGenerationInput = z.input<typeof OpsAgentGenerationBody>
 export type Agent = BoardEvent<'ops.agent_changed'>['payload']['agent']
 export type AgentView = Agent
+
+const IssueIntentFields = {
+  verb: IntentVerb,
+  run: AgentRun.optional(),
+  generation: AgentGeneration,
+  ttlSeconds: z.number().int().min(1).max(60),
+  requestId: Ref,
+}
+const checkRunProbe = (input: { verb: IntentVerb; run?: AgentRun | undefined; ttlSeconds: number }, ctx: z.RefinementCtx) => {
+  if (input.run === undefined) return
+  if (input.verb !== 'status') ctx.addIssue({ code: 'custom', path: ['run'], message: 'only status intents can name a run' })
+  if (input.ttlSeconds > 30) ctx.addIssue({ code: 'custom', path: ['ttlSeconds'], message: 'a run probe lasts at most 30 seconds' })
+}
+export const IssueOpsIntentBody = z.strictObject(IssueIntentFields).superRefine(checkRunProbe)
+export const IssueOpsRoleIntentBody = z.strictObject({ ...IssueIntentFields, channel: ChannelPath, role: AgentRole }).superRefine(checkRunProbe)
+export const ListOpsIntentsQuery = z.strictObject({ after: Ref.optional() })
+export const ReportOpsIntentBody = z.strictObject({ generation: AgentGeneration, outcome: IntentOutcome })
+
+export type IssueOpsIntentInput = z.input<typeof IssueOpsIntentBody>
+export type IssueOpsRoleIntentInput = z.input<typeof IssueOpsRoleIntentBody>
+export type ListOpsIntentsInput = z.input<typeof ListOpsIntentsQuery>
+export type OpsIntentsIssued = { intents: AgentIntent[] }
+export type OpsIntentsPage = { intents: AgentIntent[]; next: string | null }
 
 /** The message's `revision` as it was read: if it's been edited or deleted since, 409 `revision_conflict`. */
 const Revision = z.number().int().positive()
@@ -1321,6 +1348,12 @@ export const routes = {
   registerOpsAgent: { method: 'POST', path: '/ops/agents', body: RegisterOpsAgentBody },
   heartbeatOpsAgent: { method: 'POST', path: '/ops/agents/:agent/heartbeat', body: OpsAgentGenerationBody },
   retireOpsAgent: { method: 'POST', path: '/ops/agents/:agent/retire', body: OpsAgentGenerationBody },
+  issueOpsIntent: { method: 'POST', path: '/ops/agents/:agent/intents', body: IssueOpsIntentBody },
+  issueOpsRoleIntent: { method: 'POST', path: '/ops/intents', body: IssueOpsRoleIntentBody },
+  listOpsIntents: { method: 'GET', path: '/ops/agents/:agent/intents', query: ListOpsIntentsQuery },
+  takeOpsIntent: { method: 'POST', path: '/ops/intents/:id/take', body: OpsAgentGenerationBody },
+  reportOpsIntent: { method: 'POST', path: '/ops/intents/:id/report', body: ReportOpsIntentBody },
+  getOpsHealth: { method: 'GET', path: '/ops/health/:task' },
   /** Tasks, oldest first: open ones unless `state` says otherwise. */
   tasks: { method: 'GET', path: '/tasks', query: TasksQuery },
   /** Starts a thread as a task (`post` there, and `label` for its labels), or makes the thread `re` roots one (`label` there). */
