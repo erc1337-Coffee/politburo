@@ -5,10 +5,18 @@ import type { Attachment } from '../contract/schemas.ts'
 import type {
   AckBody,
   ActorView,
+  AgentHealth,
+  AgentIntent,
   AgentView,
+  IssueOpsIntentBody,
+  IssueOpsRoleIntentBody,
   ListOpsAgentsQuery,
+  ListOpsIntentsQuery,
   OpsAgentGenerationBody,
+  OpsIntentsIssued,
+  OpsIntentsPage,
   RegisterOpsAgentBody,
+  ReportOpsIntentBody,
   AssignTaskBody,
   TaskNeedsBody,
   BlockTaskBody,
@@ -123,6 +131,14 @@ export type Protocol = {
   registerOpsAgent: { input: Input<typeof RegisterOpsAgentBody>; output: AgentView }
   heartbeatOpsAgent: { input: OpsAgentId & Input<typeof OpsAgentGenerationBody>; output: AgentView }
   retireOpsAgent: { input: OpsAgentId & Input<typeof OpsAgentGenerationBody>; output: AgentView }
+  issueOpsIntent: { input: OpsAgentId & Input<typeof IssueOpsIntentBody>; output: OpsIntentsIssued }
+  issueOpsRoleIntent: { input: Input<typeof IssueOpsRoleIntentBody>; output: OpsIntentsIssued }
+  /** Pending intents, oldest first, with expiry and generation fences applied. */
+  listOpsIntents: { input: OpsAgentId & Input<typeof ListOpsIntentsQuery>; output: OpsIntentsPage }
+  takeOpsIntent: { input: Id & Input<typeof OpsAgentGenerationBody>; output: AgentIntent }
+  reportOpsIntent: { input: Id & Input<typeof ReportOpsIntentBody>; output: AgentIntent }
+  /** Health from a status probe's report for the exact live task claim. */
+  getOpsHealth: { input: { task: string }; output: AgentHealth }
   /** Tasks, oldest first, each as its thread's summary. 501 `no_tasks` where the board keeps none, as every task method answers there. */
   tasks: { input: Input<typeof TasksQuery>; output: TasksPage }
   /** `task` is the task's root. `claim` comes with a task made with `claim`; a retry of one that landed gets the task without it. */

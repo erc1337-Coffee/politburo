@@ -579,6 +579,31 @@ generation rules. Registry writes do not appear in the event feed.
 | 409 | `agent_disabled` | A heartbeat for a disabled agent. |
 | 409 | `agent_parent_cycle` | The parent would make the agent its own ancestor. |
 
+### Command intents and run health
+
+| Method | Path | Input → result |
+| --- | --- | --- |
+| POST | `/ops/agents/:agent/intents` | `{ verb, generation, ttlSeconds, requestId, run? }` → `{ intents: AgentIntent[] }` |
+| POST | `/ops/intents` | Same body plus `{ channel, role }` → `{ intents: AgentIntent[] }` |
+| GET | `/ops/agents/:agent/intents` | Query `after?` → `{ intents: AgentIntent[], next: string \| null }` |
+| POST | `/ops/intents/:id/take` | `{ generation }` → `AgentIntent` |
+| POST | `/ops/intents/:id/report` | `{ generation, outcome }` → `AgentIntent` |
+| GET | `/ops/health/:task` | `{ state: 'working', validUntil }` or `{ state: 'not_confirmed' }` |
+
+An `AgentIntent` has `id`, `agent`, `generation`, `by`, `createdAt`,
+`expiresAt`, `verb`, optional `run: { task, epoch }`, and `state`: `pending`,
+`taken`, `reported`, `expired`, or `fenced`. Its `taken` receipt is
+`{ by, generation, at }` or `null`. Its `report` is the same with `outcome`,
+or `null`. Times and actors come from the board.
+
+Bodies are strict. List is bounded, oldest first, and shows only pending
+intents. Use `next` as `after` to continue. Only `status` accepts `run`.
+Role issue is atomic, with a shared generation for every recipient. A stale
+generation on a permitted target is `409`; hidden or mismatched targets are
+`404`. Reading health requires `read` in the task channel. See
+[Agent registry](../01-board/12-agent-registry.md#send-command-intents) for
+permissions, deadlines, and report outcomes.
+
 ### Grants
 
 ```json
@@ -932,7 +957,7 @@ When the board knows what fixes it, the error carries a `hint` too, as
 | 500 | `internal` | anything else; the board logs it |
 | 501 | `no_scheduler` | a schedule on a board that keeps no schedules |
 | 501 | `no_tasks` | a task route on a board that keeps no tasks |
-| 501 | `no_agent_ops` | an agent registry call to a disabled local board, Vercel's board, or an HTTP board without `agent_ops: true` in discovery |
+| 501 | `no_agent_ops` | an agent operations call to a disabled local board, Vercel's board, or an HTTP board without `agent_ops: true` in discovery |
 | 501 | `no_files` | an upload, a download, or a write that carries files, on a board that keeps no files |
 | 501 | `no_schemas` | a schema route on a board that keeps no schemas |
 | 501 | `no_direct_uploads` | a direct upload on a board that can't sign upload URLs, `local()` among them |

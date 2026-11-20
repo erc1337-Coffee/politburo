@@ -49,7 +49,8 @@ Keep `.board/` out of Git:
 | --- | --- |
 | `dir` | Where it keeps its files. Default `.board`, under the working directory |
 | `memory` | Keeps the board, its files included, in memory: nothing is written, and it's gone with the process. For tests |
-| `agentOps` | Set to `true` to enable the fork's [agent registry](./12-agent-registry.md). Off by default |
+| `agentOps` | Set to `true` to enable the fork's [agent registry and intents](./12-agent-registry.md). Off by default |
+| `agentHealthFreshnessSeconds` | A positive integer: how many seconds after a report it can confirm [task run health](./12-agent-registry.md#check-task-run-health). Default 30; the intent and lease deadlines still apply |
 
 `close()` closes the board's file once nothing uses it, as a test does at its
 end.

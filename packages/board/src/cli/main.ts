@@ -15,7 +15,7 @@ import { board as boardAt, type Board } from '../server/index.ts'
 import { isBoardName } from '../server/board.ts'
 import { isApiMessageId } from '../server/backend-vercel.ts'
 import { normalizeEmoji } from '../contract/emoji.ts'
-import { AgentRole, ATTACHMENTS_PER_MESSAGE_MAX, DIRECT_UPLOAD_BYTES_MAX, MESSAGE_TEXT_MAX, type Attachment, AttachmentId } from '../contract/schemas.ts'
+import { AgentRole, ATTACHMENTS_PER_MESSAGE_MAX, DIRECT_UPLOAD_BYTES_MAX, IntentOutcome, IntentVerb, MESSAGE_TEXT_MAX, type AgentIntent, type Attachment, AttachmentId } from '../contract/schemas.ts'
 import { VERSION } from '../version.ts'
 import { conformance } from '../conformance/index.ts'
 import { explainPrincipalOf, explanationLine, GrantMisuse, grantCanOf, KINDS, patternsIn, principalsIn, type OptionToken } from './grants.ts'
@@ -822,7 +822,13 @@ function doing(): string {
     case 'agents':
       if (a === 'list' || a === 'register') return `${a === 'list' ? 'list agents' : 'register an agent'} in ${b ?? 'a channel'}`
       if (a === 'heartbeat') return `record a heartbeat for agent ${b}`
-      return `retire agent ${b}`
+      if (a === 'retire') return `retire agent ${b}`
+      if (a === 'issue-intent') return `issue an intent to agent ${b}`
+      if (a === 'issue-role-intent') return `issue a role intent in ${b}`
+      if (a === 'intents') return `list intents for agent ${b}`
+      if (a === 'take-intent' || a === 'report-intent') return `${a === 'take-intent' ? 'take' : 'report'} intent ${b}`
+      if (a === 'health') return `check run health for task ${ref(b)}`
+      return 'work with agents'
     case 'tasks': {
       if (a === undefined || !TASK_VERBS.has(a)) return a === undefined ? 'list tasks' : `list tasks in ${a}`
       const one = b === undefined ? 'a task' : `task ${ref(b)}`
@@ -872,7 +878,11 @@ function missing(): string | undefined {
   if (command === 'tasks' && TASK_VERBS.has(a) && b !== undefined && isMessageRef(b)) return `message ${ref(b)}`
   if (command === 'grants' && (a === 'revoke' || a === 'update') && b !== undefined) return `grant ${b}`
   if (command === 'schemas' && a === 'inspect' && b !== undefined) return `schema ${b}`
-  if (command === 'agents' && (a === 'heartbeat' || a === 'retire') && b !== undefined) return `agent ${b}`
+  if (command === 'agents' && b !== undefined) {
+    if (a === 'heartbeat' || a === 'retire' || a === 'intents') return `agent ${b}`
+    if (a === 'take-intent' || a === 'report-intent') return `intent ${b}`
+    if (a === 'health') return `task ${ref(b)}`
+  }
   if (command === 'download') return `attachment ${a}`
   return undefined
 }
@@ -1030,7 +1040,7 @@ function failureOf(error: unknown): Failure {
     // A grant change this caller couldn't take back: it keeps itself in, or says to go ahead.
     if (code === 'grant_lockout' && current.command === 'grants') return theirs('conflict', code, `Can't ${doing()}: it would lock you out.`, lockoutRecoveries())
     if (code === 'agent_generation_conflict' && current.command === 'agents') {
-      const channel = current.args[0] === 'register' ? current.args[1] : undefined
+      const channel = current.args[0] === 'register' || current.args[0] === 'issue-role-intent' ? current.args[1] : undefined
       return theirs('conflict', code, `Can't ${doing()}.`, [
         channel === undefined
           ? { instruction: 'Check the current generation with agents list in its channel' }
@@ -2001,15 +2011,28 @@ function formatAgent(agent: AgentView): string {
   ].join('\n')
 }
 
+function formatIntent(intent: AgentIntent): string {
+  const { id, agent, generation, verb, run, state, expiresAt, report } = intent
+  return [
+    `${lineText(id)}  ${verb} ${state}`,
+    `  agent       ${lineText(agent)}`,
+    `  generation  ${generation}`,
+    `  expires     ${lineText(expiresAt)}`,
+    ...(run ? [`  task        ${lineText(run.task)}`, `  epoch       ${run.epoch}`] : []),
+    ...(report ? [`  outcome     ${report.outcome.replaceAll('_', ' ')}`] : []),
+  ].join('\n')
+}
+
 async function agents(args: string[]): Promise<number> {
-  const [verb, target, ...extra] = args
-  if (verb === undefined) throw usage('Missing the agent command: list, register, heartbeat, or retire.', { reason: 'missing_arguments' })
+  const [verb, ...given] = args
+  if (verb === undefined) throw usage('Missing the agent command.', { reason: 'missing_arguments' })
   const sub = specOf('agents')?.subcommands?.find(({ name }) => name === verb)
   if (!sub) throw usage(`Unknown agent command ${verb}.`, { reason: 'unknown_command' })
   const next = [{ instruction: 'See how to use it', argv: [...cli(), 'agents', verb, '--help'] }]
-  const what = verb === 'list' || verb === 'register' ? 'channel' : 'agent ID'
-  if (!target) throw usage(`Missing the ${what}.`, { reason: 'missing_arguments', next })
-  if (extra.length > 0) throw usage(`agents ${verb} takes one ${what}.`, { next })
+  const missing = sub.arguments.find((arg, i) => arg.required && !given[i])
+  if (missing) throw usage(`Missing <${missing.name}>.`, { reason: 'missing_arguments', next })
+  if (given.length > sub.arguments.length) throw usage(`Too many arguments for agents ${verb}.`, { next })
+  const target = given[0]!
   const seen = new Set<string>()
   for (const { name } of ordered) {
     if (globalOptions.some((option) => option.name === name)) continue
@@ -2025,11 +2048,72 @@ async function agents(args: string[]): Promise<number> {
     return 0
   }
 
-  const value = flags.generation
-  const generation = Number(value)
-  if (value === undefined && verb !== 'register') throw usage('Missing --generation.', { reason: 'missing_arguments', next })
-  if (value !== undefined && (!/^\d+$/.test(value) || !Number.isSafeInteger(generation) || generation < 1))
-    throw usage('--generation takes a positive integer.', { next })
+  if (verb === 'intents') {
+    const page = await client().agents.intents(target, flags.after === undefined ? undefined : { after: flags.after })
+    if (flags.json) result(page)
+    else {
+      out(page.intents.length ? page.intents.map(formatIntent).join('\n\n') : 'no pending intents on this page')
+      if (page.next !== null) out(`next  ${commandLine(rerunWithout(['--after'], `--after=${page.next}`))}`)
+    }
+    return 0
+  }
+  if (verb === 'health') {
+    const id = taskId(target)
+    const health = await client().agents.health(id)
+    if (flags.json) result({ health })
+    else out(`${lineText(id)}  ${health.state === 'working' ? `working until ${lineText(health.validUntil)}` : 'stale'}`)
+    return 0
+  }
+
+  function positive(flag: 'generation' | 'epoch'): number {
+    const value = flags[flag]
+    if (value === undefined) throw usage(`Missing --${flag}.`, { reason: 'missing_arguments', next })
+    const number = Number(value)
+    if (!/^\d+$/.test(value) || !Number.isSafeInteger(number) || number < 1) throw usage(`--${flag} takes a positive integer.`, { next })
+    return number
+  }
+
+  if (verb === 'issue-intent' || verb === 'issue-role-intent') {
+    const byRole = verb === 'issue-role-intent'
+    const command = IntentVerb.safeParse(given[byRole ? 2 : 1])
+    if (!command.success) throw usage('Pass one of the intent verbs shown in help.', { next })
+    if ((flags.task === undefined) !== (flags.epoch === undefined)) throw usage('Pass --task and --epoch together.', { next })
+    const run = flags.task === undefined ? undefined : { task: taskId(flags.task), epoch: positive('epoch') }
+    if (run && command.data !== 'status') throw usage('Only status takes --task and --epoch.', { next })
+    const generation = positive('generation')
+    const max = run ? 30 : 60
+    if (flags.ttl === undefined) throw usage('Missing --ttl.', { reason: 'missing_arguments', next })
+    const ttlSeconds = seconds('ttl')!
+    if (!Number.isInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > max)
+      throw usage(`--ttl takes a whole number of seconds from 1s to ${max}s.`, { next })
+    const input = {
+      verb: command.data,
+      ...(run ? { run } : {}),
+      generation,
+      ttlSeconds,
+      requestId: flags['idempotency-key'] ?? crypto.randomUUID(),
+    }
+    const role = byRole ? AgentRole.safeParse(given[1]) : undefined
+    if (role && !role.success) throw usage('Pass a role as agents list shows it.', { next })
+    const issued = role
+      ? await client().agents.issueRoleIntent({ channel: target, role: role.data, ...input })
+      : await client().agents.issueIntent(target, input)
+    if (flags.json) result(issued)
+    else out(issued.intents.map(formatIntent).join('\n\n'))
+    return 0
+  }
+  if (verb === 'take-intent' || verb === 'report-intent') {
+    const generation = positive('generation')
+    let intent: AgentIntent
+    if (verb === 'report-intent') {
+      const outcome = IntentOutcome.safeParse(given[1])
+      if (!outcome.success) throw usage('Pass one of the outcomes shown in help.', { next })
+      intent = await client().agents.reportIntent(target, generation, outcome.data)
+    } else intent = await client().agents.takeIntent(target, generation)
+    if (flags.json) result({ intent })
+    else out(formatIntent(intent))
+    return 0
+  }
 
   let agent: AgentView
   if (verb === 'register') {
@@ -2043,10 +2127,12 @@ async function agents(args: string[]): Promise<number> {
       role: role.data,
       harness,
       ...(parent !== undefined ? { parent } : {}),
-      ...(value !== undefined ? { ifGeneration: generation } : {}),
+      ...(flags.generation !== undefined ? { ifGeneration: positive('generation') } : {}),
     })
-  } else if (verb === 'heartbeat') agent = await client().agents.heartbeat(target, generation)
-  else agent = await client().agents.retire(target, generation)
+  } else {
+    const generation = positive('generation')
+    agent = verb === 'heartbeat' ? await client().agents.heartbeat(target, generation) : await client().agents.retire(target, generation)
+  }
   if (flags.json) result({ agent })
   else out(formatAgent(agent))
   return 0
@@ -2059,8 +2145,8 @@ const TASK_STATES = ['waiting', 'ready', 'claimed', 'blocked', 'completed', 'fai
 /** A task's ID as you'd write it: `#812` or `812`. */
 const taskId = (value: string | undefined) => messageId(value, 'task ID')
 
-/** `--wait` or `--lease` in seconds: a number and a unit, as `schedule` takes a duration. A lease is 30s to 1h. */
-function seconds(flag: 'wait' | 'lease'): number | undefined {
+/** A duration in seconds: a number and a unit, as `schedule` takes a duration. A lease is 30s to 1h. */
+function seconds(flag: 'wait' | 'lease' | 'ttl'): number | undefined {
   const value = flags[flag]
   if (value === undefined) return undefined
   const found = /^(\d+(?:\.\d+)?)(s|m|h|d)$/.exec(value)

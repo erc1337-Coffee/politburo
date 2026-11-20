@@ -161,6 +161,10 @@ and `block` take only the task's ID.
       vb tasks claim 828
   ```
 
+On a board with agent operations enabled, `vb agents health <task>` checks
+[task run health](./12-agent-registry.md#check-task-run-health). A lease
+reserves work. It does not by itself confirm that the agent is working.
+
 ## Run a command as the work
 
 ```text

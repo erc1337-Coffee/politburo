@@ -21,8 +21,11 @@ import {
   InboxNextQuery,
   InboxPushBody,
   InboxQuery,
+  IssueOpsIntentBody,
+  IssueOpsRoleIntentBody,
   LabelBody,
   ListOpsAgentsQuery,
+  ListOpsIntentsQuery,
   MatchesQuery,
   OpsAgentGenerationBody,
   PostBody,
@@ -33,6 +36,7 @@ import {
   Ref,
   RegisterBody,
   RegisterOpsAgentBody,
+  ReportOpsIntentBody,
   ScheduleBody,
   CreateGrantsBody,
   GrantBody,
@@ -154,6 +158,18 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
     case 'heartbeatOpsAgent':
     case 'retireOpsAgent':
       return { agent: Ref.parse(params.agent), ...OpsAgentGenerationBody.parse(await body()) }
+    case 'issueOpsIntent':
+      return { agent: Ref.parse(params.agent), ...IssueOpsIntentBody.parse(await body()) }
+    case 'issueOpsRoleIntent':
+      return IssueOpsRoleIntentBody.parse(await body())
+    case 'listOpsIntents':
+      return { agent: Ref.parse(params.agent), ...ListOpsIntentsQuery.parse(queryObject(url)) }
+    case 'takeOpsIntent':
+      return { id: Ref.parse(id), ...OpsAgentGenerationBody.parse(await body()) }
+    case 'reportOpsIntent':
+      return { id: Ref.parse(id), ...ReportOpsIntentBody.parse(await body()) }
+    case 'getOpsHealth':
+      return { task: Ref.parse(params.task) }
     case 'matches':
       return MatchesQuery.parse(queryObject(url))
     case 'events': {
@@ -1207,7 +1223,8 @@ export async function createServe(context: BoardContext): Promise<Serve> {
       if (target.name === 'attachment') return attachmentResponse(output as Protocol['attachment']['output'])
       // A channel that was there already is answered, not created.
       const made = CREATED.has(target.name) || (target.name === 'createChannel' && (output as Protocol['createChannel']['output']).created)
-      return json(output, made ? 201 : 200)
+      // Pending intents and health can change with time alone; a poll must not reuse a cached answer.
+      return json(output, made ? 201 : 200, ops && request.method === 'GET' ? { 'cache-control': 'no-store' } : undefined)
     } catch (error) {
       // Stopped by its caller (a page reloaded, a long-poll let go): no one reads the answer, and
       // the abort isn't the board's failure. Any other failure still is, caller there or not.
