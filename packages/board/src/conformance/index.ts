@@ -14,7 +14,9 @@ import type { Board } from '../server/board.ts'
  * `no_operational_inbox` to the inbox read. Where supported, the kit sends short-lived operational
  * messages to the run's own principal and archives the latest. It writes ordinary messages to one
  * channel (`conformance` by default), and for the tasks checks that need two, to `tasks` under it,
- * keeps every post on the board, and deletes what it posted. The one schema it registers,
+ * keeps every post on the board, and deletes what it posted: only where and as whom it made it. A delete of
+ * a message that isn't the one the run created (a mount pointed at another board mid-run, with a message
+ * under the same ID) is skipped, and the check that made it reports what stays. The one schema it registers,
  * `conformance@1`, stays: a schema version is never removed. Invite checks leave terminal invite
  * records, but revoke the grants they make. On boards that opt into agent operations, the kit
  * retires its test agent; the disabled entries and private intent facts remain on the board.
@@ -122,7 +124,7 @@ async function postedWith(ctx: Context, poster: Board, header: string) {
   const posted = await poster.post(ctx.channel, { text: `conformance: with ${header}`, labels: ctx.labels, noSync: true }).catch((error: unknown) => {
     throw new Mismatch(`a post with ${header}, which released clients still send: expected it to land, got ${error instanceof BoardError ? `${error.status} ${error.code}` : String(error)}`)
   })
-  ctx.posted.push(posted.id)
+  await keep(ctx, posted)
   return (await ctx.board.thread(posted.id)).message
 }
 
@@ -158,6 +160,90 @@ function isRef(value: unknown, what: string) {
   check(typeof value === 'string' && value.length >= 1 && value.length <= 128, `${what} should be a string of 1 to 128 characters, got ${show(value)}`)
 }
 
+/**
+ * What a check created, to delete only what it still finds as it made it: its ID, the board it was
+ * created on, the principal it's by, where and when the board says it was made, and the check
+ * that made it.
+ */
+type Made = { id: string; board: string | null; principal: string; channel: string; createdAt: string; check: string }
+
+/**
+ * The board a handle is on, as its discovery names it. A handle on `http()` keeps its first answer,
+ * so this tells one handle's board from another's, not a mount that changes under one handle: that
+ * is what the message itself is read back for (`stays`). Null when it can't be read.
+ */
+async function boardOf(board: Board): Promise<string | null> {
+  try {
+    const { url, audience, team_id, project_id } = await board.discovery()
+    return JSON.stringify([url, audience, team_id ?? null, project_id ?? null])
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Records a message or task this run created: who the board says wrote it, and where and when it was
+ * made, as it reads back right after, since a create's own answer can stamp a moment a read doesn't.
+ */
+async function record(ctx: Context, message: { id: string; channel: string; createdAt: string; by: { principal: string } }): Promise<Made> {
+  const { message: read } = await ctx.board.thread(message.id).catch(() => ({ message }))
+  return { id: message.id, board: await boardOf(ctx.board), principal: read.by.principal, channel: read.channel, createdAt: read.createdAt, check: ctx.running }
+}
+
+/** Records what a check created, for the run to delete when it ends. */
+async function keep(ctx: Context, ...messages: Parameters<typeof record>[1][]) {
+  for (const message of messages) ctx.posted.push(await record(ctx, message))
+}
+
+/**
+ * Why `made` must stay where it is, or null when this run may act on it: the handle is on the board
+ * that created it, and what has its ID now is by the principal that made it, in its channel, at the
+ * time it was made, so it is the message and not another board's with the same ID. A message that's
+ * gone is nothing to act on. `reader` is the handle that reads it.
+ */
+async function stays(ctx: Context, made: Made, reader: Board = ctx.board): Promise<string | null> {
+  const what = `${made.id} is not the message this run created (by ${made.principal} in ${made.channel} at ${made.createdAt}), so it was not touched`
+  const here = await boardOf(ctx.board)
+  if (made.board === null || here !== made.board) return `${what}: it was created on ${made.board ?? 'a board the run could not name'} and the handle is on ${here ?? 'a board the run cannot name'} now`
+  try {
+    const { message } = await reader.thread(made.id)
+    if (message.by.principal !== made.principal || message.channel !== made.channel || message.createdAt !== made.createdAt)
+      return `${what}: it is by ${message.by.principal} in ${message.channel} from ${message.createdAt} now`
+  } catch (error) {
+    if (error instanceof BoardError && error.status === 404) return null
+    // What can't be read can't be told from another's: it stays. Only a status is said, never what the board answered.
+    return `${what}: reading it answered ${error instanceof BoardError && Number.isInteger(error.status) ? `HTTP ${error.status}` : 'nothing'}`
+  }
+  return null
+}
+
+/** Deletes what the run made, with `by` when another handle may (the invitee that wrote it): it isn't touched, and says why, when the board or the principal isn't the one that made it. */
+async function deleteMade(ctx: Context, made: Made, by: Board = ctx.board, options: { revision?: number } = {}): Promise<string | null> {
+  const why = await stays(ctx, made, by)
+  if (why !== null) return why
+  await by.delete(made.id, options)
+  return null
+}
+
+/** What the run made with this ID. */
+const madeOf = (ctx: Context, id: string): Made => {
+  const made = ctx.posted.find((one) => one.id === id)
+  if (!made) throw new Mismatch(`${id} is not something this run created`)
+  return made
+}
+
+/** Deletes what the run made now, as a check of deletes does: a check that can't, because the board has changed under it, fails and names what stays. */
+async function remove(ctx: Context, made: Made | string, by?: Board, options?: { revision?: number }) {
+  const why = await deleteMade(ctx, typeof made === 'string' ? madeOf(ctx, made) : made, by, options)
+  if (why !== null) throw new Mismatch(`a delete the run makes: ${why}`)
+}
+
+/** That a write expected to be refused would go to what the run made: the board and the principal are the ones that made it. */
+async function onMade(ctx: Context, id: string, reader?: Board) {
+  const why = await stays(ctx, madeOf(ctx, id), reader)
+  if (why !== null) throw new Mismatch(`a write the run expects refused: ${why}`)
+}
+
 type Context = {
   board: Board
   channel: string
@@ -168,7 +254,10 @@ type Context = {
   me: Me
   root?: MessageView
   reply?: MessageView
-  posted: string[]
+  /** What this run created, each with where and as whom: the only things it deletes, and only there, by that principal. */
+  posted: Made[]
+  /** The check running now, as `group/name`: what a creation is recorded under. */
+  running: string
   withCan?: (can: string) => Board
   withHeaders?: (headers: Record<string, string>) => Board
   withInviteToken?: ConformanceOptions['withInviteToken']
@@ -513,13 +602,13 @@ async function registerSync(ctx: Context): Promise<{ where: ReturnType<typeof wo
 
 async function post(ctx: Context, text: string, extra: { id?: string; attachments?: string[] } = {}) {
   const message = await ctx.board.post(ctx.channel, { text, labels: ctx.labels, noSync: true, ...extra })
-  ctx.posted.push(message.id)
+  await keep(ctx, message)
   return message
 }
 
 async function reply(ctx: Context, re: string, text: string, extra: { after?: string; id?: string } = {}) {
   const message = await ctx.board.reply(re, { text, noSync: true, ...extra })
-  ctx.posted.push(message.id)
+  await keep(ctx, message)
   return message
 }
 
@@ -527,14 +616,14 @@ async function reply(ctx: Context, re: string, text: string, extra: { after?: st
 async function task(ctx: Context, text: string, options: TaskOptions & { labels?: Record<string, string>; attachments?: string[] } = {}) {
   const { labels, ...rest } = options
   const made = await ctx.board.tasks.create(ctx.channel, { text, labels: { ...ctx.labels, ...labels }, noSync: true, ...rest })
-  ctx.posted.push(made.task.id)
+  await keep(ctx, made.task)
   return made
 }
 
 /** Several tasks of this run's, made in one write: the run deletes their roots at the end, as it does a task's. */
 async function taskBatch(ctx: Context, tasks: TaskInBatch[], opts: { id?: string } = {}) {
   const made = await ctx.board.tasks.createMany(ctx.channel, tasks.map((one) => ({ ...one, labels: { ...one.labels, ...ctx.labels }, noSync: true })), opts)
-  ctx.posted.push(...made.map((root) => root.id))
+  await keep(ctx, ...made)
   return made
 }
 
@@ -548,7 +637,7 @@ const besideOf = (ctx: Context) => `${ctx.channel}/tasks`
 async function taskBeside(ctx: Context, text: string, options: TaskOptions = {}) {
   try {
     const made = await ctx.board.tasks.create(besideOf(ctx), { text, labels: ctx.labels, noSync: true, ...options })
-    ctx.posted.push(made.task.id)
+    await keep(ctx, made.task)
     return made
   } catch (error) {
     if (error instanceof BoardError && error.status === 403) return null
@@ -645,7 +734,7 @@ const CHECKS: Check[] = [
       same(thread.message.text, 'conformance: a root', 'its text')
       ctx.root = root
       const reply = await ctx.board.reply(root.id, { text: 'conformance: a reply', noSync: true })
-      ctx.posted.push(reply.id)
+      await keep(ctx, reply)
       ctx.reply = reply
     },
   },
@@ -670,7 +759,7 @@ const CHECKS: Check[] = [
       same((await ctx.board.thread(root.id)).replies.length, 1, 'the replies after a refused one')
       // One that's since been deleted came after it all the same.
       const deleted = await reply(ctx, root.id, 'conformance: deleted', { after: first.id })
-      await ctx.board.delete(deleted.id)
+      await remove(ctx, deleted.id)
       await rejects(reply(ctx, root.id, 'conformance: after a deleted one', { after: first.id }), 409, 'newer_message', 'a reply after a message a deleted one came after')
       // Racing after the same message, one lands and the rest are refused.
       const racing = await Promise.allSettled([1, 2, 3].map((n) => reply(ctx, root.id, `conformance: racing ${n}`, { after: deleted.id })))
@@ -762,6 +851,7 @@ const CHECKS: Check[] = [
       const second = (await read()).revision
       check(second !== first, `an edit should change the revision from ${first}`)
       await rejects(ctx.board.edit(message.id, 'conformance: stale', { revision: first }), 409, 'revision_conflict', 'an edit at a revision an edit came after')
+      await onMade(ctx, message.id)
       await rejects(ctx.board.delete(message.id, { revision: first }), 409, 'revision_conflict', 'a delete at a revision an edit came after')
       const after = await read()
       check(after.text === 'conformance: edited' && !after.deleted, `refused writes should leave it as it was, got ${show({ text: after.text, deleted: after.deleted })}`)
@@ -774,7 +864,7 @@ const CHECKS: Check[] = [
         check(error instanceof BoardError && error.status === 409 && error.code === 'revision_conflict', `an edit that lost the race should be 409 revision_conflict, got ${error instanceof BoardError ? `${error.status} ${error.code}` : String(error)}`)
       }
       const last = (await read()).revision
-      await ctx.board.delete(message.id, { revision: last })
+      await remove(ctx, message.id, undefined, { revision: last })
       check((await read()).deleted, 'a delete at the revision it has should delete it')
       // Read before the delete, an edit learns it changed since, not that it's gone.
       await rejects(ctx.board.edit(message.id, 'conformance: too late', { revision: last }), 409, 'revision_conflict', 'an edit at a revision a delete came after')
@@ -989,7 +1079,7 @@ const CHECKS: Check[] = [
     name: 'deletes a message, leaving a tombstone',
     run: async (ctx) => {
       const message = await post(ctx, 'conformance: to delete')
-      await ctx.board.delete(message.id)
+      await remove(ctx, message.id)
       const { message: after } = await ctx.board.thread(message.id)
       check(after.deleted && after.text === '', `a deleted message should be deleted with no text, got ${show({ deleted: after.deleted, text: after.text })}`)
     },
@@ -1001,12 +1091,12 @@ const CHECKS: Check[] = [
     run: async (ctx) => {
       const label = { ...ctx.labels, tombstone: ctx.labels.conformance }
       const root = await ctx.board.post(ctx.channel, { text: 'conformance: a labeled root to delete', labels: label, noSync: true })
-      ctx.posted.push(root.id)
+      await keep(ctx, root)
       await reply(ctx, root.id, 'conformance: a reply under it')
       const found = async () => (await ctx.board.threads({ channel: ctx.channel, label })).threads.map((t) => t.message.id)
       const before = await found()
       check(before.includes(root.id), `its labels should find the root's thread before the delete, got ${show(before)}`)
-      await ctx.board.delete(root.id)
+      await remove(ctx, root.id)
       const { labels } = (await ctx.board.thread(root.id)).message
       check(Object.keys(labels).length === 0, `a deleted message should keep no labels, got ${show(labels)}`)
       const after = await found()
@@ -1064,8 +1154,8 @@ const CHECKS: Check[] = [
       same(me.principal, ctx.me.principal, "a narrowed caller's principal, its own")
       alike(me.can, { [ctx.channel]: ['read'] }, 'what a caller narrowed to read says it may do')
       same((await narrowed.thread(root.id)).message.id, root.id, 'a thread read by a caller narrowed to read it')
-      const posting = narrowed.post(ctx.channel, { text: 'conformance: narrowed to read', labels: ctx.labels, noSync: true }).then((message) => {
-        ctx.posted.push(message.id)
+      const posting = narrowed.post(ctx.channel, { text: 'conformance: narrowed to read', labels: ctx.labels, noSync: true }).then(async (message) => {
+        await keep(ctx, message)
         return message
       })
       await refused(posting, 403, 'a post by a caller narrowed to read')
@@ -1079,7 +1169,7 @@ const CHECKS: Check[] = [
       const name = `conformance-${ctx.labels.conformance}`
       const agent = ctx.withHeaders({ 'x-board-profile': `${name}; avatar="${AVATAR}"` })
       const posted = await agent.post(ctx.channel, { text: 'conformance: as a profile, with its avatar', labels: ctx.labels, noSync: true })
-      ctx.posted.push(posted.id)
+      await keep(ctx, posted)
       const { message } = await ctx.board.thread(posted.id)
       same(message.by.principal, ctx.me.principal, "the profile's principal, this run's")
       same(message.by.profile?.toLowerCase(), name, 'the profile its header names')
@@ -1097,7 +1187,7 @@ const CHECKS: Check[] = [
       const as = (name: string) => ctx.withHeaders!({ 'x-board-profile': `conformance-${name}-${ctx.labels.conformance}` })
       const by = async (poster: Board, text: string) => {
         const message = await poster.post(ctx.channel, { text, labels: ctx.labels, noSync: true })
-        ctx.posted.push(message.id)
+        await keep(ctx, message)
         return message
       }
       const profile = as('own')
@@ -1108,6 +1198,7 @@ const CHECKS: Check[] = [
       same((await ctx.board.thread(own.id)).message.text, "conformance: a profile's own, edited by it", "a profile's own message, once it edits it")
       for (const [message, whose] of [[other, "another profile's"], [principal, "its principal's"]] as const) {
         await refused(profile.edit(message.id, 'conformance: not its own'), 403, `an edit, by a profile, of ${whose} message`)
+        await onMade(ctx, message.id)
         await refused(profile.delete(message.id), 403, `a delete, by a profile, of ${whose} message`)
       }
       await ctx.board.edit(other.id, "conformance: another profile's, edited by its principal")
@@ -1115,10 +1206,10 @@ const CHECKS: Check[] = [
       same(edited.text, "conformance: another profile's, edited by its principal", "a profile's message, once its principal edits it")
       same(edited.by.actor, other.by.actor, "who a profile's message is by, once its principal edits it")
       for (const message of [own, other]) {
-        await ctx.board.delete(message.id)
+        await remove(ctx, message.id)
         check((await ctx.board.thread(message.id)).message.deleted, "a profile's message, once its principal deletes it, should be deleted")
       }
-      await profile.delete((await by(profile, "conformance: a profile's own, to delete")).id)
+      await remove(ctx, (await by(profile, "conformance: a profile's own, to delete")).id, profile)
     },
   },
   {
@@ -1221,8 +1312,8 @@ const CHECKS: Check[] = [
     run: async (ctx) => {
       const id = `conformance-task-${ctx.labels.conformance}`
       const under = (landed: string, text: string) =>
-        ctx.board.tasks.create(ctx.channel, { text, labels: ctx.labels, noSync: true, id: landed }).then((made) => {
-          ctx.posted.push(made.task.id)
+        ctx.board.tasks.create(ctx.channel, { text, labels: ctx.labels, noSync: true, id: landed }).then(async (made) => {
+          await keep(ctx, made.task)
           return made
         })
       const { task: first } = await under(id, 'conformance: a task with an ID')
@@ -1327,8 +1418,8 @@ const CHECKS: Check[] = [
       same(await taskState(ctx, stuck.id), 'waiting', 'the task, once what it needs was canceled')
       // What it needs is a task: a thread that isn't one, or the task itself, is refused.
       const plain = await post(ctx, 'conformance: not a task')
-      const waiting = ctx.board.tasks.create(ctx.channel, { text: 'conformance: needs a thread', labels: ctx.labels, noSync: true, needs: [plain.id] }).then((made) => {
-        ctx.posted.push(made.task.id)
+      const waiting = ctx.board.tasks.create(ctx.channel, { text: 'conformance: needs a thread', labels: ctx.labels, noSync: true, needs: [plain.id] }).then(async (made) => {
+        await keep(ctx, made.task)
         return made
       })
       await rejects(waiting, 400, 'invalid_needs', "a task that needs a thread that isn't a task")
@@ -1342,8 +1433,8 @@ const CHECKS: Check[] = [
       const { task: dropped } = await task(ctx, 'conformance: a prerequisite that was canceled')
       await ctx.board.tasks.cancel(dropped.id, 'conformance: not wanted')
       // A task that waited for it would wait for good, so whoever makes one hears at once: a new thread, or one that's there.
-      const waiting = ctx.board.tasks.create(ctx.channel, { text: 'conformance: needs a canceled task', labels: ctx.labels, noSync: true, needs: [dropped.id] }).then((made) => {
-        ctx.posted.push(made.task.id)
+      const waiting = ctx.board.tasks.create(ctx.channel, { text: 'conformance: needs a canceled task', labels: ctx.labels, noSync: true, needs: [dropped.id] }).then(async (made) => {
+        await keep(ctx, made.task)
         return made
       })
       await rejects(waiting, 400, 'invalid_needs', 'a task that needs a canceled one')
@@ -1779,7 +1870,7 @@ const CHECKS: Check[] = [
     async run(ctx) {
       const { task: root } = await task(ctx, 'conformance: a task to hold for structured attention')
       const supporting = await ctx.board.reply(root.id, 'conformance: the evidence for the request')
-      ctx.posted.push(supporting.id)
+      await keep(ctx, supporting)
       same((await ctx.board.tasks.attention(root.id)).attention, null, 'attention on a new task')
       const claim = await ctx.board.tasks.claim(root.id, { lease: 60 })
       const draft: AttentionDraft = {
@@ -1848,7 +1939,7 @@ const CHECKS: Check[] = [
       await rejects(profile.tasks.needs(principals.id, []), 403, 'task_not_owned', "changing what its principal's task needs, by a profile")
       // What it made is its own to change, and no other profile's, which shares its credential.
       const { task: own } = await profile.tasks.create(ctx.channel, { text: "conformance: a profile's own task", labels: ctx.labels, noSync: true })
-      ctx.posted.push(own.id)
+      await keep(ctx, own)
       same(own.task?.owner, ctx.me.principal, "who owns a profile's task: its principal")
       same(own.task?.by, actor.actor, "the actor a profile's task was made as")
       same((await ctx.board.thread(own.id)).message.task?.by, actor.actor, "the actor a profile's task was made as, read as its thread")
@@ -1863,7 +1954,7 @@ const CHECKS: Check[] = [
       same((await principal.tasks.assign(principals.id, actor.actor)).task?.for, actor.actor, "who its principal's task is for, once its principal assigns it")
       // The same owner decides whose edit changes what a task says: a profile's thread, made a task by its principal, is held when the profile edits it.
       const thread = await profile.post(ctx.channel, { text: "conformance: a profile's thread, made a task by its principal", labels: ctx.labels, noSync: true })
-      ctx.posted.push(thread.id)
+      await keep(ctx, thread)
       await principal.tasks.create({ re: thread.id })
       await profile.edit(thread.id, "conformance: a profile's thread, edited by it")
       const edited = (await ctx.board.thread(thread.id)).message
@@ -1898,19 +1989,19 @@ const CHECKS: Check[] = [
       const { task: read } = await task(ctx, 'conformance: a prerequisite its caller reads')
       // It posts on the whole board and reads only the channel: the prerequisite's is closed to it.
       const narrowed = ctx.withCan(`*=post;${ctx.channel}=read,post,label`)
-      const starting = narrowed.tasks.create(ctx.channel, { text: "conformance: needs a task its caller can't read", labels: ctx.labels, noSync: true, needs: [unread.id] }).then((started) => {
-        ctx.posted.push(started.task.id)
+      const starting = narrowed.tasks.create(ctx.channel, { text: "conformance: needs a task its caller can't read", labels: ctx.labels, noSync: true, needs: [unread.id] }).then(async (started) => {
+        await keep(ctx, started.task)
         return started
       })
       await rejects(starting, 400, 'invalid_needs', "a task that needs one its caller can't read")
       const plain = await narrowed.post(ctx.channel, { text: "conformance: a thread that would need a task its caller can't read", labels: ctx.labels, noSync: true })
-      ctx.posted.push(plain.id)
+      await keep(ctx, plain)
       await rejects(narrowed.tasks.create({ re: plain.id }, { needs: [unread.id] }), 400, 'invalid_needs', "making a thread a task that needs one its caller can't read")
       same((await ctx.board.thread(plain.id)).message.task, undefined, 'the thread, after it was refused as a task')
       alike((await ctx.board.tasks.list({ needs: unread.id })).tasks.map((listed) => listed.message.id), [], "the tasks that wait for the one its caller can't read")
       // One it reads is a prerequisite, as for anyone.
       const waits = await narrowed.tasks.create(ctx.channel, { text: 'conformance: needs a task its caller reads', labels: ctx.labels, noSync: true, needs: [read.id] })
-      ctx.posted.push(waits.task.id)
+      await keep(ctx, waits.task)
       same(waits.task.task?.state, 'waiting', 'a task that needs one its caller reads')
     },
   },
@@ -2018,8 +2109,8 @@ const CHECKS: Check[] = [
       const { task: root } = await task(ctx, 'conformance: a task whose label is the board\'s')
       await rejects(ctx.board.label(root.id, { set: { 'board.task': 'completed' } }), 400, 'reserved_label', 'a label write that sets board.task')
       await rejects(ctx.board.label(root.id, { unset: ['board.task'] }), 400, 'reserved_label', 'a label write that unsets board.task')
-      const posting = ctx.board.post(ctx.channel, { text: 'conformance: a post that names itself ready', labels: { ...ctx.labels, 'board.task': 'ready' }, noSync: true }).then((message) => {
-        ctx.posted.push(message.id)
+      const posting = ctx.board.post(ctx.channel, { text: 'conformance: a post that names itself ready', labels: { ...ctx.labels, 'board.task': 'ready' }, noSync: true }).then(async (message) => {
+        await keep(ctx, message)
         return message
       })
       await rejects(posting, 400, 'reserved_label', 'a post whose labels set board.task')
@@ -2419,16 +2510,17 @@ const CHECKS: Check[] = [
         check(read.message.id === root.id, 'the invitee should read the message in the granted channel')
         const post = (channel: string) => joined.post(channel, { text: 'conformance: joined caller', noSync: true })
         const posted = await inviteCall('posting in the granted channel', () => post(ctx.channel))
-        const cleanup = [posted.id]
+        const cleanup = [await record(ctx, posted)]
         try {
           check(posted.by.principal === principal, 'the post should be authored by the invitee')
           const [outside, admin] = await Promise.allSettled([post(`${ctx.channel}/tasks`), joined.invites()])
-          if (outside.status === 'fulfilled') cleanup.push(outside.value.id)
+          if (outside.status === 'fulfilled') cleanup.push(await record(ctx, outside.value))
           check(outside.status === 'rejected' && outside.reason instanceof BoardError && outside.reason.status === 403, 'posting outside the grant should be forbidden')
           check(admin.status === 'rejected' && admin.reason instanceof BoardError && admin.reason.status === 403, 'listing invites as the invitee should be forbidden')
         } finally {
           // Only the author can delete these posts. Do it before revoking the invitee's grant.
-          await inviteCall('deleting the invitee posts', () => Promise.all(cleanup.map((id) => joined.delete(id))))
+          const left = (await inviteCall('deleting the invitee posts', () => Promise.all(cleanup.map((made) => deleteMade(ctx, made, joined))))).filter((why) => why !== null)
+          if (left.length > 0) throw new Mismatch(`deleting the invitee posts: ${left.join('; ')}`)
         }
       })
     },
@@ -2516,8 +2608,8 @@ const CHECKS: Check[] = [
       same(canonical((await post(ctx, 'conformance: no block')).blocks), '[]', 'the blocks of a message with none')
       // One that doesn't match, or names a schema no one registered, isn't written.
       const refusedPost = (body: string) =>
-        ctx.board.post(ctx.channel, { text: body, labels: ctx.labels, noSync: true }).then((wrong) => {
-          ctx.posted.push(wrong.id)
+        ctx.board.post(ctx.channel, { text: body, labels: ctx.labels, noSync: true }).then(async (wrong) => {
+          await keep(ctx, wrong)
           return wrong
         })
       await rejects(refusedPost(block('conformance@1', { run: ctx.labels.conformance, outcome: 'maybe' })), 400, 'invalid_block', "a post whose block doesn't match its schema")
@@ -2938,8 +3030,10 @@ const CHECKS: Check[] = [
     name: 'confirms a claimed run only through a taken and reported status probe',
     run: async (ctx) => {
       const { board, channel, labels, me } = ctx
-      const isNoAgentOps = (error: unknown) => error instanceof BoardError && error.status === 501 && error.code === 'no_agent_ops'
+      const isNoAgentOps = (error: unknown): error is BoardError => error instanceof BoardError && error.status === 501 && error.code === 'no_agent_ops'
+      const isNoTasks = (error: unknown): error is BoardError => error instanceof BoardError && error.status === 501 && error.code === 'no_tasks'
       const notKeptHere = async (error: unknown) => {
+        if (isNoTasks(error)) return `not kept here: ${error.message}`
         if (!isNoAgentOps(error)) throw error
         try {
           await board.agents.list(channel)
@@ -2952,11 +3046,15 @@ const CHECKS: Check[] = [
       const ignoreNoAgentOps = (error: unknown) => {
         if (!isNoAgentOps(error)) throw error
       }
-      // Read before writing: agent calls recheck the mount even if discovery() is cached.
+      // Read before writing: agent calls recheck the mount even if discovery() is cached. A board that keeps
+      // health answers a task it has none of with a 404 that says so. A mount without the route answers its
+      // own `not_found`, or the discovery document a legacy mount gives any GET: it keeps no run health.
       try {
         await board.agents.health('conformance-missing')
       } catch (error) {
-        if (!(error instanceof BoardError && error.status === 404)) return notKeptHere(error)
+        const answered = error instanceof BoardError && error.status === 404 && error.code !== 'not_found'
+        if (error instanceof BoardError && (error.status === 502 && error.code === 'remote_error' || error.status === 404 && error.code === 'not_found')) return 'not kept here: this board serves no run health'
+        if (!answered) return notKeptHere(error)
       }
       if (me.principal === 'board:client' || me.principal.startsWith('board:client:')) return 'this run has no verified agent credential'
 
@@ -3006,7 +3104,11 @@ const CHECKS: Check[] = [
           }
           same((await board.agents.health(root.id)).state, 'not_confirmed', 'health after the claim is released')
         } finally {
-          await worker.agents.retire(agent.id, agent.generation).catch(ignoreNoAgentOps)
+          // An agent that can't be retired stays eligible for runs: that is no pass, however the rest went.
+          await worker.agents.retire(agent.id, agent.generation).catch((error: unknown) => {
+            if (isNoAgentOps(error)) throw new Mismatch(`the probe agent ${agent.id} stays enabled: retiring it was answered with ${error.code}`)
+            throw error
+          })
         }
       } catch (error) {
         return notKeptHere(error)
@@ -3148,6 +3250,7 @@ export async function conformance(board: Board, options: ConformanceOptions = {}
     start: (await board.channel(channel).messages({ limit: 1 })).cursor,
     me,
     posted: [],
+    running: '',
     ...(options.withCan ? { withCan: options.withCan } : options.withHeaders ? { withCan: (can: string) => options.withHeaders!({ 'x-board-can': can }) } : {}),
     ...(options.withHeaders ? { withHeaders: options.withHeaders } : {}),
     ...(options.withInviteToken ? { withInviteToken: options.withInviteToken } : {}),
@@ -3164,6 +3267,7 @@ export async function conformance(board: Board, options: ConformanceOptions = {}
     const selected = options.networkPause ? [NETWORK_PAUSE, ...CHECKS] : CHECKS
     for (const { group, name, requires, taskAuthority, run } of selected) {
       if (requires && info[requires] !== true) continue
+      ctx.running = `${group}/${name}`
       try {
         const skipped = await run(ctx)
         checks.push(skipped ? { group, name, status: 'skipped', detail: skipped } : { group, name, status: 'passed' })
@@ -3179,8 +3283,26 @@ export async function conformance(board: Board, options: ConformanceOptions = {}
       }
     }
   } finally {
-    // What it posted goes, replies first. A failure here leaves a tombstone short, not a wrong report.
-    for (const id of [...ctx.posted].reverse()) await board.delete(id).catch(() => {})
+    // What it posted goes, replies first, and only from the board and by the principal that made it: a mount
+    // swapped for another board mid-run must not lose a message there that has the same ID. What stays is
+    // reported on the check that made it. A failure here leaves a tombstone short, not a wrong report.
+    const staying = new Map<string, string[]>()
+    for (const made of [...ctx.posted].reverse()) {
+      const why = await deleteMade(ctx, made).catch(() => null)
+      if (why !== null) staying.set(made.check, [...(staying.get(made.check) ?? []), why])
+    }
+    for (const [running, reasons] of staying) {
+      const found = checks.find(({ group, name }) => `${group}/${name}` === running)
+      // What already says why it stays isn't said twice.
+      const said = reasons.filter((why) => !found?.detail?.includes(why))
+      if (said.length === 0) continue
+      const detail = said.join('; ')
+      if (found) {
+        found.detail = found.detail ? `${found.detail}; ${detail}` : detail
+        // A run that leaves something behind it can't account for did not pass.
+        if (found.status === 'passed') found.status = 'failed'
+      } else checks.push({ group: 'core', name: 'deletes only what it created', status: 'failed', detail })
+    }
   }
   return { url, checks, ok: checks.every((c) => c.status !== 'failed') }
 }
