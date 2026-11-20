@@ -3,6 +3,38 @@ bonklek decides on this PR
 
 # Work lifecycle and authority
 
+## Status
+
+Partly implemented on `main`. The phased lifecycle, evidence gates and
+evidence-backed dependencies are not built: lifecycle stages
+([#21](https://github.com/remiliacorporation/politburo/pull/21)) and evidence
+gates ([#20](https://github.com/remiliacorporation/politburo/pull/20)) are held.
+What shipped extends the current task routes and states, not a versioned
+`/work/v1` workflow. [SPEC.md: Tasks](../SPEC.md#tasks) says what a board does
+today, and its "Not in this version" section says what is left.
+
+| Section | Status |
+| --- | --- |
+| Problem | Partly implemented. A claim can bind its owner and a base commit, tasks have priority, an operator can park one, and a pause fences leases. `complete` still releases dependents, and nothing gates it on commit evidence. Structured attention ([#10](https://github.com/remiliacorporation/politburo/pull/10)) binds a human answer to a commit string, but it is not a lifecycle gate. |
+| Phases, `Scope`, `ProjectPolicy`, `Gate`, `Evidence`, `Override`, `EdgeRelease`, `WorkView` | Not built (held, #20 and #21). Tasks keep the seven states of `TaskState`, with no `task.work_*` events and no `TaskView.work`. |
+| `Priority` | Implemented in [#11](https://github.com/remiliacorporation/politburo/pull/11), changed. It is `lowest`, `low`, `normal`, `high` or `urgent` (default `normal`), not 1 to 5. `vb tasks priority <id> <level>` takes a level, and `POST /tasks/:id/priority` takes `{ priority, epoch?, token? }`, with both claim fields or neither. The owner or `manage` can raise or lower it, and a live claim can only lower it (403 `priority_raise_forbidden`). `tasks create --priority` sets it. |
+| `Assignment`, `ActorKey`, `Fence` | Implemented in [#19](https://github.com/remiliacorporation/politburo/pull/19), changed. A claim takes `binding` (`vb tasks claim --binding <JSON>`, same fields as `Assignment`). The claimant supplies it, and the board checks that `owner` is its own principal and actor. It also works on claim-next, `run` and `create --claim`, and the local board's in-process handle cannot bind a claim. There is no controller offer and no scope. The claim `epoch` is the generation, and every local claim carries the `pauseEpoch` it was admitted at. |
+| `Packet`, `Handoff` | Partly implemented in #19, changed. `vb tasks handoff <id> <commit> <packet-path> <sha256> [--supersedes <id>]` and `POST /tasks/:id/handoff` append a handoff on a live claim, and the latest shows as `TaskView.handoff`. It has no `round`, and it records metadata only: it moves no phase, writes no submission evidence and keeps the lease. |
+| `Control` | Implemented in [#13](https://github.com/remiliacorporation/politburo/pull/13), changed. `vb status`, `vb pause` and `vb resume` map to `GET /control`, `POST /control/pause` and `POST /control/resume`, and each change is a `work.control` event. A board starts running at epoch 0, not paused, unless `board({ backend: local(), initiallyPaused: true })` says so on an empty log. Any admitted caller can read it, and pause and resume need a reason and a verified person with `manage` everywhere. |
+| `Command` and dispatch routes | Not built. Dispatch stays outside the board, in `packages/runtime`. The opt-in agent command intents of the agent registry ([#12](https://github.com/remiliacorporation/politburo/pull/12)) are a separate feature with their own `take`, not this design's `commands`. |
+| Routes | Partly implemented. `park` and `unpark`, `priority`, `handoff`, and `create-bound`, `claim-bound` and `/:id/claim-bound` exist under `/tasks`, without `ifVersion`. `/work/v1`, `move`, `bind`, `submit`, `evidence`, `override`, `resolve`, `commands` and the task history route are not built. `/tasks/:id/needs` and `/tasks/:id/assign` are the legacy routes. |
+| Transition table | Partly implemented. Claim-next takes priority first, then a task assigned to the caller, then the oldest, with `for` and `from` as before. A park ends the lease. Nothing else is built: scope, submit, review, QA, send-back, reject, and a reopen that bumps a round. |
+| Invariant: scope and gates, evidence and handoff, dependency | Not built (held). `complete` still releases dependents. |
+| Invariant: claim fence | Implemented, changed. The lease `epoch` is the generation, and a worker write needs the live lease, the same principal and actor, and the token. Every local claim also checks the `pauseEpoch` it was admitted at, and the board compares the token's hash with the stored one. The design's separate `session` proof is not built. |
+| Invariant: operator hold | Implemented in #19, changed. `vb tasks park` and `unpark` (`POST /tasks/:id/park`, `/unpark`) need a verified person with `manage`. A park ends the lease, `unblock` cannot lift it, and unpark returns the task to `ready` or `waiting`, never to its lease, or leaves it `blocked` if a non-owner edit added a hold while it was parked. Cancel still ends it. |
+| Invariant: network pause | Implemented in #13, changed. A pause advances the epoch and invalidates existing leases, and a claim then answers 409 `board_paused`. Resume revives none. Offers, commands and `take` do not exist. |
+| Trust model | Partly implemented. The roles (project controller, scoper, attester, operator) are not built, because SPEC.md keeps general board roles a non-goal. Operator authority is a verified person acting as themselves with `manage`, and pause needs `manage` in every channel. A worker needs `label` to claim. |
+| Migration and compat | Changed. There is no cutover, no `workLifecycle` flag and no `work_lifecycle_required`: legacy writes keep working. Bound claims, parks and handoffs advertise `Discovery.task_authority: true`, and `vercel()` and `http()` answer 501 `no_task_authority` for a bound create or claim when the board does not advertise it. Park, unpark and handoff go to the board as they are. The network pause answers 501 `no_network_pause` on Vercel. |
+| Tests | Partly implemented. The `tasks` conformance group has checks for priority, park, bound claims and handoffs, and the authority checks skip on 501 `no_task_authority`. Pause has its own opt-in `network-pause` group. There is no `work-lifecycle` group, and the gate, evidence and dependency checks are not built. |
+| Alternatives | (a) and (b) as proposed: the contract is server-side and the runtime is `packages/runtime`. (c) not adopted. SPEC.md keeps general board roles a non-goal. |
+| Open questions | Open. They concern attesters and evidence retention, which are not built. |
+| Slices 1 to 5 | Partly implemented. Priority, bound claims and handoffs, operator park, and pause landed as separate changes (#11, #19, #13). Role checks, evidence gates, evidence-backed dependencies, and the command fence are not built (held). |
+
 ## Problem
 
 Tigeryard parity gap 1: tasks can be claimed without scoping. `complete`
