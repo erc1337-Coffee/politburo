@@ -1,6 +1,42 @@
 status: proposed
 bonklek decides on this PR
 
+## Status
+
+Implemented on `main` in three PRs, with changes: the operational inbox in
+[#9](https://github.com/remiliacorporation/politburo/pull/9), the agent
+registry in [#12](https://github.com/remiliacorporation/politburo/pull/12),
+and command intents and run health in
+[#22](https://github.com/remiliacorporation/politburo/pull/22), with follow-up fixes in
+[#30](https://github.com/remiliacorporation/politburo/pull/30). The shipped
+contract is [SPEC.md: Agent registry](../SPEC.md#agent-registry) and
+[SPEC.md: Operational inbox](../SPEC.md#operational-inbox), and the user guide
+is [Agent registry](../packages/board/docs/01-board/13-agent-registry.md).
+Inbox mail is board-wide and separate from the registry here, not addressed by
+registry ID and channel as proposed.
+
+| Section | Status |
+| --- | --- |
+| Problem | Implemented. The registry is a roster, the inbox is addressed mail, and `vb agents health` is liveness evidence beyond a lease. |
+| Roles | Implemented in #12, as proposed. The eight roles are `AgentRole` in `contract/schemas.ts`, and they are duties that confer no access or task authority. |
+| Shapes and routes: registry | Implemented in #12, changed. `GET /ops/agents?channel=`, `POST /ops/agents` (register), `POST /ops/agents/:agent/heartbeat` and `POST /ops/agents/:agent/retire` exist, with `team.agents.list`, `register`, `heartbeat` and `retire` and `vb agents list`, `register`, `heartbeat` and `retire`. The board derives `binding` from the caller, and `Agent` adds `heartbeatAt`. There is no `config` route: a re-registration with the current `ifGeneration` changes the role, parent or harness or re-enables an entry. The list is for one exact channel, includes disabled entries and is not paged. A heartbeat records the time and keeps the generation, and a repeated identical registration is a no-op only with no `ifGeneration` or the current one. |
+| Shapes and routes: mail | Implemented in #9, changed. The routes are `POST /operational-inbox`, `GET /operational-inbox`, `POST /operational-inbox/:id/ack` and an archive route, with `team.operationalInbox` and `vb inbox read`, `ack` and `archive`. Mail has no channel, `ttlSeconds`, generation or registry ID. It goes to a verified principal ID or to a role from `board({ inboxRoles })`, takes an optional `expiresAt`, and keeps `seenAt`, `actedAt` and `archivedAt` per principal. `GET /deliveries/:id`, the archive folder and cursor paging are not built. Send is SDK or HTTP only, and `vb inbox <key>` still reads raw sync mail. |
+| Shapes and routes: intents | Implemented in #22, changed. `POST /ops/agents/:agent/intents`, `GET /ops/agents/:agent/intents`, `POST /ops/intents/:id/take` and `/report` exist, with the same verbs and the `{ task, epoch }` run. Intents are not a `Delivery` in the inbox. `POST /ops/intents` (`vb agents issue-role-intent`) sends one to every enabled agent of a role in one exact channel, 1 to 64 of them, in one write. `vb agents issue-intent`, `intents`, `take-intent` and `report-intent` are the CLI. Only `status` carries a run, and a probe must name one agent. |
+| Shapes and routes: health | Implemented in #22, changed. `GET /ops/health/:task` answers `working` with `validUntil` or `not_confirmed`, and `vb agents health` prints `working until <deadline>` or `stale`, and `--json` wraps the result as `{ health }`. |
+| State and storage: registry | Implemented in #12, changed. A new entry is enabled at generation 1, with one role, an optional parent in the same channel and no cycles. Each change advances the generation and clears the heartbeat. One entry per binding per channel, and a retry of an identical registration changes nothing. A change does not rotate the principal. |
+| State and storage: mail | Implemented in #9, changed. A newer send with the same recipient kind, ID and topic supersedes the older, and `acted` also records `seen`. Read returns at most 15 active messages, newest first, and archive hides a message for that principal only. There is no `dismissed` state and no archive read. Expiry is checked on read, ack and archive and not recorded, and a send that is already expired is refused. |
+| State and storage: intents | Implemented in #22. One take, even on retry. TTL is 1 to 60 seconds, at most 30 for a run probe, and an identical report can be retried while the fences hold. A list returns only pending, unexpired intents matching the enabled generation, at most 15 per page, scanning at most 60. A read writes no expiry or fence event. |
+| State and storage: run probes and health | Implemented in #22, changed. A probe checks the live claim, the epoch and the binding from `task.claimed`. A board pause fences the claim, so a probe then answers 409 `claim_lost` until a new claim. `working` needs the newest reported probe for the claim to say `running`, within the earliest of the intent expiry, the lease expiry and a freshness window from the report, 30 seconds by default, set by `local({ agentOps: true, agentHealthFreshnessSeconds })`. |
+| State and storage: log | Implemented. Ops facts are private events in the board log, kept out of feeds, threads, watchers and sync. |
+| Trust model | Implemented, changed. Registry list needs `read`, and enroll and retire need `manage`. Heartbeat, take and report need `read`, `post` and the entry's binding. Mail send needs `post`, and read, ack and archive need `read`, all across the board, not by channel. Issue needs `manage` or an enabled coordinator or controller parent, with a recheckable issuer. Health needs `read` in the task's channel. Board tokens cannot issue, take or report, and the injected `sync.board` handle gets 403 on every inbox call. |
+| Migration and compat | Implemented, changed. `local({ agentOps: true })` or `vb serve --agent-ops` enables the registry, intents and health. Discovery advertises `agent_ops: true` for the registry and `agent_intents: true` for intents and health, and `http()` checks the matching flag on each call (#30). A disabled board, an `http()` board without the flag and `vercel()` answer 501 `no_agent_ops`. The inbox is not behind that flag: `local()` keeps it, `http()` forwards, and `vercel()` answers 501 `no_operational_inbox`. |
+| Tests | Implemented, changed. The conformance kit has `agents` and `operational-inbox` groups. Their checks skip on a 501 from the first call, and the registry and run-health checks follow their own discovery flags. Intent paging past 15 is tested, and the inbox archive folder is not built. |
+| Alternatives | (a) and (b) as proposed. (c) adopted as roles that are duties, not grants: SPEC.md's non-goals say the registry records duties and the inbox role lists are recipient lists, and neither is general role management. |
+| SPEC.md amendments | Changed. Non-goals now says the registry records duties and inbox roles are recipient lists. The proposed edit to the direct-message and receipts non-goal was not made. |
+| Open questions | Archive retention is moot, as there is no archive folder. The probe freshness window is 30 seconds by default and configurable. |
+| Slices 1 to 5 | Implemented as #12 (registry), #9 (mail, receipts and archive, in a different form) and #22 (intents, health, discovery flags). |
+| Beyond the design | `runController` in `packages/runtime` wakes a handler on inbox mail and, when the message is still unacted and `parentOf` names a parent, sends that parent a reference to it ([#23](https://github.com/remiliacorporation/politburo/pull/23)). |
+
 ## Problem
 
 [Gap 3](../briefs/pb-1-TIGERYARD-PARITY.md#3-agents-roles-and-the-operational-inbox) needs a roster, addressed mail, and liveness evidence. Leases only reserve work. [`Registration`](../packages/board/src/server/registry.ts) serves watchers and sync; [`pullInbox`](../packages/board/src/server/registered.ts) pulls platform events.
