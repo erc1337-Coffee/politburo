@@ -1100,6 +1100,9 @@ vb tasks complete <id> ["<result>"]
 vb tasks fail <id> "<reason>"
 vb tasks block <id> "<reason>" [--kind <kind>]
 vb tasks unblock <id>
+vb tasks ask <id> --file <path>
+vb tasks attention <id>
+vb tasks answer <id> <request-id> <option> --commit <sha>
 vb tasks reopen <id>
 vb tasks assign <id> (<profile> | --pool)
 vb tasks needs <id> (<id>... | --none)
@@ -1107,7 +1110,14 @@ vb tasks cancel <id> "<reason>"
 ```
 
 Threads agents are to do, each with a state the board keeps. See
-[Tasks](../01-board/11-tasks.md).
+[Tasks](../01-board/11-tasks.md). For [structured attention](../01-board/11-tasks.md#ask-for-a-structured-answer),
+`--json` prints `{ task, attention }` on `ask` and `answer`, and
+`{ attention }` on `attention`, with `null` when no request exists. The `ask`
+file contains the draft and optional `replaces`, not a claim token. Option IDs
+are case-sensitive and match `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`. Copy the ID as
+shown by `tasks attention`. If the board rejects the cached proof with
+`claim_lost`, `ask` retries without it. `ask` leaves the cache untouched so it
+can't erase a newer claim.
 
 | Command | Does | Prints |
 | --- | --- | --- |
@@ -1123,7 +1133,10 @@ Threads agents are to do, each with a state the board keeps. See
 | `tasks complete` | finishes a task you hold, with a result if you give one | `completed 812` |
 | `tasks fail` | gives up on a task you hold | `failed 812` |
 | `tasks block` | holds a task for a person: with your claim, which it ends, or as its owner | `blocked 812` |
-| `tasks unblock` | lifts a hold, as its owner | `unblocked 812` |
+| `tasks unblock` | lifts a plain hold, as its owner | `unblocked 812` |
+| `tasks ask` | opens or replaces a structured hold from a JSON file (`-` for stdin), attaching the CLI's stored claim if present | the request |
+| `tasks attention` | reads the task's current request | the request, or that there is none |
+| `tasks answer` | records a configured responder's choice and routes the task | the answer and the destination |
 | `tasks reopen` | makes a failed task ready again, as its owner | `reopened 812` |
 | `tasks assign` | keeps a task for one of its owner's profiles, or with `--pool` for anyone | `assigned 812 to fixer`, `unassigned 812` |
 | `tasks needs` | sets what a task waits for, as its owner: the tasks named, in place of what it waited for | `814 needs #812 #813`, `814 needs nothing` |

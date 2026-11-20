@@ -376,6 +376,7 @@ const TAGGED_MAX = 200
 
 /** What Vercel's boards don't do, and with `instead`, what to do there. */
 const notSupported = (what: string, instead?: string) => new HttpError(501, 'not_supported', `Vercel's boards don't support ${what} yet${instead ? `: ${instead}` : ''}`)
+const noTaskAttention = () => { throw new HttpError(501, 'no_task_attention', "Vercel's boards don't support task attention") }
 
 /** What credentials may do when the API doesn't say: read, post, react, and label everywhere, as any it lets in. */
 const DEFAULT_CAN: AccessSummary = { '*': ['read', 'post', 'react', 'label'] }
@@ -3739,6 +3740,10 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
       const body = { reason, ...(kind !== undefined ? { kind } : {}), ...proof }
       return { task: await rootOf(who, await taskWrite(who, `${await taskPath(who, id, signal)}/block`, body, { id, signal })) }
     },
+    requestTaskAttention: async () => noTaskAttention(),
+    taskAttention: async () => noTaskAttention(),
+    answerTaskAttention: async () => noTaskAttention(),
+
     async unblockTask(caller, { id }, signal) {
       const who = whoOf(caller)
       return { task: await rootOf(who, await taskWrite(who, `${await taskPath(who, id, signal)}/unblock`, {}, { id, signal })) }

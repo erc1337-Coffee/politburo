@@ -55,6 +55,9 @@ export const MessageText = z
   .refine((text) => text.trim().length > 0, 'message text is empty')
   .refine(storable, 'message text has a NUL character or a lone surrogate')
 
+/** An opaque wire reference, interpreted by the board that issued it. */
+export const Ref = z.string().min(1).max(128)
+
 /** A message is named by the log index of its `message.posted` event. */
 export const MessageId = z.number().int().positive()
 

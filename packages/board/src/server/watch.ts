@@ -42,6 +42,8 @@ const WATCHED = [
   'task.failed',
   'task.blocked',
   'task.unblocked',
+  'task.attention_requested',
+  'task.attention_answered',
   'task.canceled',
   'task.reopened',
 ] as const

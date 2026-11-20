@@ -1,7 +1,8 @@
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { consumer, createServer, type A2Scheduler, type A2Store, type ConsumerContext } from 'experimental-a2/server'
 import { LEASE_DEFAULT_S, type MessageView, type TaskClaim } from '../api/routes.ts'
 import type { Protocol } from '../api/protocol.ts'
+import type { AttentionAnswerBody, AttentionDraft, AttentionReceipt, AttentionResponders, AttentionView, RequestAttentionBody } from '../contract/attention.ts'
 import { LEASES_SESSION, leasesContract, type LeaseEvents } from '../contract/contract.ts'
 import type { BoardEvent } from '../contract/events.ts'
 import { foldMessages, type Message, type MessagesState, type Task } from '../contract/folds.ts'
@@ -61,11 +62,15 @@ const PAGE = 500
 /** A task's root: the message that carries it. */
 type Root = Message & { task: Task }
 
+type AttentionChange = { task: MessageView; attention: AttentionView }
+
 /** What a claim's own writes show: the `epoch` and `token` its claim answered. */
 type Proof = { epoch: number; token: string }
 
 const conflict = (code: string, message: string) => new HttpError(409, code, message)
 const notATask = (id: number) => notFound(`#${id} isn't a task`, 'not_a_task')
+const staleAttention = () => conflict('attention_stale', 'the attention request or its snapshot is no longer current')
+const attentionExpired = (draft: AttentionDraft, at: number) => !(at < Date.parse(draft.expiresAt))
 
 /** 128 random bits, base64url: a claim's secret, which the board answers once and keeps only the hash of. */
 const newToken = () => randomBytes(16).toString('base64url')
@@ -124,7 +129,8 @@ function ownActor(owner: string, actor: string | null | undefined): string | nul
  * read is still the log's last word, so of writes that race, one lands and the rest look again.
  * A claim's lease is timed outside the board log, which holds only what came of it.
  */
-export function createTasks(options: { store?: A2Store | undefined; scheduler?: A2Scheduler | undefined }) {
+export function createTasks(options: { store?: A2Store | undefined; scheduler?: A2Scheduler | undefined; attentionResponders?: AttentionResponders | undefined }) {
+  const responders = new Map(Object.entries(options.attentionResponders ?? {}).map(([channel, ids]) => [channel, new Set(ids)]))
   let bound: WriteContext | null = null
   const writes = (): WriteContext => {
     if (!bound) throw new Error('tasks used before the board bound them')
@@ -200,6 +206,30 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
     const message = await readable(access, id)
     if (!message.task) throw notATask(id)
     return message as Root
+  }
+
+  /** The root and each cited message are live and unchanged in this one table snapshot. */
+  async function matchesAttention(root: Message, draft: AttentionDraft, position: number): Promise<boolean> {
+    if (root.deleted || (root.revision ?? root.id) !== draft.revision) return false
+    const evidence = draft.evidence.map(({ message, revision }) => ({ id: indexOf(message) ?? 0, revision }))
+    if (evidence.some(({ id }) => id === 0)) return false
+    const replies = [...new Set(evidence.map(({ id }) => id))].filter((id) => id !== root.id)
+    const found = replies.length > 0 ? await writes().reads.tables.messagesAt(replies, position) : null
+    return evidence.every(({ id, revision }) => {
+      const message = id === root.id ? root : found?.get(id)
+      return message && !message.deleted && message.channel === root.channel && message.thread === root.thread &&
+        (message.id === root.id || message.re === root.id) && (message.revision ?? message.id) === revision
+    })
+  }
+
+  /** Show only the public request and receipt. `stale` is a live read, never a timeout write. */
+  function attentionView(attention: NonNullable<Task['attention']>, stale = false): AttentionView {
+    if (attention.status === 'answered') {
+      const { epoch: _epoch, ...answered } = attention
+      return answered
+    }
+    const { epoch: _epoch, ...request } = attention
+    return { ...request, status: stale && attention.status === 'pending' ? 'stale' : attention.status }
   }
 
   /** `message` as `identity` sees it. */
@@ -773,12 +803,80 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
       return { task: await shown(identity, root) }
     },
 
+    /** Opens a hold, converts a plain human hold, or replaces the latest unanswered request. */
+    async requestAttention(identity: Identity, id: number, input: RequestAttentionBody): Promise<AttentionChange> {
+      await taskOf(identity.principal.access, id)
+      const { claim, replaces, ...draft } = input
+      const requestId = randomUUID()
+      const root = await changeTask(identity, id, async (found, position) => {
+        const { task } = found
+        if (claim) await fenced(found, claim, position)
+        else {
+          owns(identity, found)
+          if (stateNow(task, Date.now(), await epochAt(position)) === 'claimed') throw conflict('task_claimed', `#${id} is claimed until ${task.claim!.until}: only its claim holds it`)
+        }
+        // A claimant may open a hold with its proof, but cannot delegate a failure it doesn't own.
+        if (claim && draft.options.some(({ next }) => next === 'fail')) owns(identity, found)
+        if (finished(task) || found.deleted) throw conflict('task_finished', `#${id} is ${task.state}`)
+        if (task.attention?.status === 'pending' ? task.attention.id !== replaces : replaces !== undefined) throw staleAttention()
+        if (task.state === 'blocked' && task.blocked?.kind !== 'needs_input' && task.blocked?.kind !== 'awaiting_approval') {
+          throw conflict('task_blocked', `#${id} is held already: ${task.blocked!.reason}`)
+        }
+        if (!(await matchesAttention(found, draft, position))) throw staleAttention()
+        if (attentionExpired(draft, Date.now())) throw badRequest('expiresAt must be in the future')
+        // The evidence read can take time; don't spend a claim that expired while checking it.
+        if (claim) await fenced(found, claim, position)
+        return [{ type: 'task.attention_requested', payload: { id, thread: found.thread, by: identity.author, requestId, epoch: task.epoch, draft, ...(replaces !== undefined ? { replaces } : {}) } }]
+      })
+      return { task: await shown(identity, root), attention: attentionView(root.task!.attention!) }
+    },
+
+    async attention(identity: Identity, id: number): Promise<{ attention: AttentionView | null }> {
+      const { reads } = writes()
+      await reads.ensure()
+      const position = await reads.tables.position()
+      const root = (await reads.tables.messagesAt([id], position)).get(id)
+      if (!root || !identity.principal.access.readable(root.channel)) throw notFound(`message not found: #${id}`, 'message_not_found')
+      if (!root.task) throw notATask(id)
+      const { attention, epoch, state } = root.task
+      if (!attention) return { attention: null }
+      const stale = attention.status === 'pending' && (
+        state !== 'blocked' || attention.epoch !== epoch || !(await matchesAttention(root, attention, position)) || attentionExpired(attention, Date.now())
+      )
+      return { attention: attentionView(attention, stale) }
+    },
+
+    async answerAttention(identity: Identity, id: number, requestId: string, input: AttentionAnswerBody, verifiedRequest: boolean): Promise<AttentionChange> {
+      const { principal, actor, author } = identity
+      const { channel } = await taskOf(principal.access, id)
+      if (!verifiedRequest || principal.kind !== 'person' || actor.id !== principal.id || author.profile !== null ||
+          !principal.access.can('post', channel) || !responders.get(channel)?.has(principal.id)) {
+        throw forbidden('only a configured responder acting as themselves with read and post access can answer task attention')
+      }
+      const root = await changeTask(identity, id, async (found, position) => {
+        const { task } = found
+        const { attention } = task
+        if (task.state !== 'blocked' || attention?.status !== 'pending' || attention.id !== requestId ||
+            attention.commit !== input.commit || attention.epoch !== task.epoch ||
+            !(await matchesAttention(found, attention, position)) || attentionExpired(attention, Date.now())) throw staleAttention()
+        const option = attention.options.find(({ id }) => id === input.option)
+        if (!option) throw badRequest('option is not available on this attention request')
+        const routedTo = option.next === 'fail' ? 'failed' : (await satisfied(task, position)) ? 'ready' : 'waiting'
+        const at = Date.now()
+        if (attentionExpired(attention, at)) throw staleAttention()
+        const receipt: AttentionReceipt = { option: option.id, by: author, at: new Date(at).toISOString(), routedTo }
+        return [{ type: 'task.attention_answered', payload: { id, thread: found.thread, by: author, requestId, epoch: task.epoch, receipt } }]
+      })
+      return { task: await shown(identity, root), attention: attentionView(root.task!.attention!) }
+    },
+
     /** Lifts a hold: back to ready, or to waiting while a task it needs hasn't completed. One that isn't held is left as it is. */
     async unblock(identity: Identity, id: number): Promise<{ task: MessageView }> {
       owns(identity, await taskOf(identity.principal.access, id))
       const root = await changeTask(identity, id, async (found, position) => {
         if (finished(found.task)) throw conflict('task_finished', `#${id} is ${found.task.state}`)
         if (found.task.state !== 'blocked') return []
+        if (found.task.attention?.status === 'pending') throw conflict('attention_required', `#${id} is held by an attention request`)
         const about = { id, thread: found.thread }
         // The fold puts a task that needs any back to waiting: what it needs may have completed while it was held.
         const ready = found.task.needs.length > 0 && (await satisfied(found.task, position))
@@ -787,12 +885,16 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
       return { task: await shown(identity, root) }
     },
 
-    /** Makes a failed task ready again, in place, so what waits for it still does. One that's open is left as it is. */
+    /** Reopens a failed task in place. One that's open is left as it is. */
     async reopen(identity: Identity, id: number): Promise<{ task: MessageView }> {
       owns(identity, await taskOf(identity.principal.access, id))
-      const root = await changeTask(identity, id, (found) => {
-        if (found.task.state === 'completed' || found.task.state === 'canceled') throw conflict('task_finished', `#${id} is ${found.task.state}`)
-        return found.task.state === 'failed' ? [{ type: 'task.reopened', payload: { id, thread: found.thread, by: identity.author } }] : []
+      const root = await changeTask(identity, id, async (found, position) => {
+        const { task } = found
+        if (task.state === 'completed' || task.state === 'canceled') throw conflict('task_finished', `#${id} is ${task.state}`)
+        if (task.state !== 'failed') return []
+        const attention = task.attention
+        const waiting = attention?.status === 'answered' && attention.receipt.routedTo === 'failed' && !(await satisfied(task, position))
+        return [{ type: 'task.reopened', payload: { id, thread: found.thread, by: identity.author, ...(waiting ? { waiting: true as const } : {}) } }]
       })
       return { task: await shown(identity, root) }
     },

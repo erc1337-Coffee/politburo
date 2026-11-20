@@ -4,6 +4,7 @@ import type { z } from 'zod'
 import { A2Error, idempotentId, reducer } from 'experimental-a2'
 import { consumer, createServer, type A2Scheduler, type ConsumerContext } from 'experimental-a2/server'
 import { boardContract, inboxContract, INBOXES_SESSION, inboxSession, SCHEDULES_SESSION, type InboxEvent } from '../contract/contract.ts'
+import type { AttentionResponders } from '../contract/attention.ts'
 import { BOARD_SESSION, type BoardEvent, type BoardEvents } from '../contract/events.ts'
 import { createTrust } from './trust.ts'
 import { createSchemas } from './schemas.ts'
@@ -57,6 +58,8 @@ export type A2Options = {
    * platform's files where they are. `local()` always passes one.
    */
   blob?: BlobStore
+  /** Enables structured attention; only these verified people may answer in each exact channel. */
+  attentionResponders?: AttentionResponders
 }
 
 const boardServer = (options: A2Options) =>
@@ -246,7 +249,12 @@ function build(options: A2Options, binding: BoardBinding) {
     registered: { state: registry.state, accessNow: (principal) => binding.accessNow(principal) },
   })
   const schedules = createSchedules({ store: log, scheduler: options.scheduler })
-  const tasks = createTasks({ store: log, scheduler: options.scheduler })
+  const attentionEnabled = options.attentionResponders !== undefined
+  const tasks = createTasks({ store: log, scheduler: options.scheduler, attentionResponders: options.attentionResponders })
+  const attentionAt = (id: string) => {
+    if (!attentionEnabled) throw new HttpError(501, 'no_task_attention', 'this board does not keep task attention requests')
+    return messageAt(id)
+  }
   const projection = tablesConsumer(store.tables)
 
   /** Sync's delivery in progress here: its receipts are its consumer's appends, fenced by its attempt. */
@@ -484,6 +492,7 @@ function build(options: A2Options, binding: BoardBinding) {
         audience: url,
         team_id: teamId,
         project_id: id,
+        ...(attentionEnabled ? { task_attention: true } : {}),
         // Its own sync's entries, and those of the syncs registered here.
         sync: await syncEntries(),
       }
@@ -731,6 +740,9 @@ function build(options: A2Options, binding: BoardBinding) {
       taskLimits.kind(kind)
       return tasks.block(await identityOf(caller), messageAt(id), { reason, kind, ...(epoch !== undefined && token !== undefined ? { proof: { epoch, token } } : {}) })
     },
+    requestTaskAttention: async (caller, { id, ...body }) => tasks.requestAttention(await identityOf(caller), attentionAt(id), body),
+    taskAttention: async (caller, { id }) => tasks.attention(await identityOf(caller), attentionAt(id)),
+    answerTaskAttention: async (caller, { id, requestId, ...body }) => tasks.answerAttention(await identityOf(caller), attentionAt(id), requestId, body, fromRequest(caller)),
     unblockTask: async (caller, { id }) => tasks.unblock(await identityOf(caller), messageAt(id)),
     reopenTask: async (caller, { id }) => tasks.reopen(await identityOf(caller), messageAt(id)),
     assignTask: async (caller, { id, for: actor }) => tasks.assign(await identityOf(caller), messageAt(id), actor),

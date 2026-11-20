@@ -1,4 +1,4 @@
-import type { BoardEventView, GrantView, Me, MessageView, PrincipalView, ScheduleView, SourceRead, SyncedView, TaskView, ThreadSummaryView } from '../api/routes.ts'
+import type { AttentionView, BoardEventView, GrantView, Me, MessageView, PrincipalView, ScheduleView, SourceRead, SyncedView, TaskView, ThreadSummaryView } from '../api/routes.ts'
 import { DEFAULT_TASK_PRIORITY, TaskPriority } from '../contract/schemas.ts'
 import { displayEmoji } from '../contract/emoji.ts'
 import { fileSize } from '../contract/files.ts'
@@ -7,6 +7,7 @@ import { extractMentions, isEmail, replaceMentions } from '../contract/mentions.
 import { findBlocks } from '../contract/blocks.ts'
 import { shownName, type Via } from '../contract/profiles.ts'
 import type { CheckResult, ConformanceReport } from '../conformance/index.ts'
+import { wrap } from './help.ts'
 
 /**
  * Text for a terminal. What boards and platforms say can carry control characters, ESC among them,
@@ -398,6 +399,32 @@ export function formatSchedule(schedule: ScheduleView, options: { pad?: string; 
   ].join('\n')
 }
 
+/** The snapshot and choices a responder needs before answering. */
+export function formatAttention(attention: AttentionView): string {
+  const row = (subject: string, value: string) => {
+    const lines = terminalText(value).split('\n').flatMap((line) => wrap(line, 70))
+    return (lines.length ? lines : ['']).map((line, i) => `${(i === 0 ? subject : '').padEnd(10)}${line}`.trimEnd())
+  }
+  const rows = [
+    ...row('request', `${lineText(attention.id)}  ${attention.status}`),
+    ...row('kind', attention.kind),
+    ...row('question', attention.question),
+    ...row('context', attention.context),
+    ...row('commit', attention.commit),
+    ...row('expires', attention.expiresAt),
+    ...row('evidence', attention.evidence.map(({ message, revision }) => `#${lineText(message)} (revision ${revision})`).join(', ')),
+    'options',
+  ]
+  for (const { id, label, consequence, next } of attention.options) {
+    rows.push(`  ${lineText(id)}  ${next}`, ...row('', label), ...row('', consequence))
+  }
+  if (attention.status === 'answered') {
+    const { option, by, at, routedTo } = attention.receipt
+    rows.push(...row('answer', `${lineText(option)}  ${routedTo}`), ...row('by', lineText(by.actor)), ...row('at', at))
+  }
+  return rows.join('\n')
+}
+
 /** One line per live event, for `tail` and `wait`. */
 export function formatEvent(event: BoardEventView): string {
   if (event.type === 'work.control') return `#${event.cursor}  board  ${event.payload.paused ? 'paused' : 'running'}`
@@ -440,6 +467,8 @@ export function formatEvent(event: BoardEventView): string {
     case 'task.completed':
     case 'task.failed':
     case 'task.blocked':
+    case 'task.attention_requested':
+    case 'task.attention_answered':
     case 'task.unblocked':
     case 'task.canceled':
     case 'task.reopened':
@@ -473,6 +502,10 @@ function taskEvent(event: Extract<BoardEventView, { type: `task.${string}` }>): 
       return `failed${by}${more(noteLine(event.payload.reason))}`
     case 'task.blocked':
       return `blocked${by}${more(event.payload.kind, noteLine(event.payload.reason))}`
+    case 'task.attention_requested':
+      return `attention requested${by}${more(noteLine(event.payload.draft.question))}`
+    case 'task.attention_answered':
+      return `attention answered${by}${more(event.payload.receipt.routedTo)}`
     case 'task.canceled':
       return `canceled${by}${more(noteLine(event.payload.reason))}`
     default:

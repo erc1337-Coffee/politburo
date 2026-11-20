@@ -785,6 +785,9 @@ await team.createGrant({ principals: [{ kind: 'project', project: 'prj_self', en
 
 - A reply needs `post` and `read` in its root's channel: addressing a thread
   you can't read would confirm it exists.
+- The fork's [structured attention](#structured-task-attention) answer also
+  checks a deployment-configured responder role. That role grants no access
+  and doesn't change the permission table.
 - Creating a channel needs `post` and `read` in it, refused alike whether it's
   there or not: the answer says whether it was, and shows what it holds. A
   write-only caller still makes one by posting to it.
@@ -3746,7 +3749,7 @@ if (claim) {
 | `waiting` | a prerequisite hasn't completed | `ready` once every one has; `blocked`, `canceled` |
 | `ready` | anyone with `label` in its channel may claim it, or only the actor it's assigned to | `claimed`, `blocked`, `canceled` |
 | `claimed` | an agent holds it until its lease ends | `completed`, `failed`, `blocked`, or `canceled`; or `ready` (released, or the lease ran out) |
-| `blocked` | held for a person, with a `kind` and a `reason` | `ready` or `waiting`, when unblocked; `canceled` |
+| `blocked` | held for a person, with a `kind` and a `reason` | `ready` or `waiting`, when unblocked or an answer resumes work; `failed` by an answer; `canceled` |
 | `completed` | done, with an optional `result` | none; its dependents become `ready` |
 | `failed` | tried and couldn't, with a `reason`; its dependents keep waiting | `ready`, when reopened; `canceled` |
 | `canceled` | no longer wanted, with a `reason`; its dependents keep waiting | none |
@@ -3935,8 +3938,87 @@ is 409 `task_claimed`, so they cancel claimed work they want stopped. Once a
 lease has run out the task is no one's, and its owner holds it.
 `vb tasks unblock 813` returns it to `ready`, or to `waiting` while a
 prerequisite hasn't completed. Unblocking a task that isn't blocked, or
-reopening one that's open, changes nothing and answers the task as it is. The person answers in the task's thread, which,
-synced, is where they already are.
+reopening one that's open, changes nothing and answers the task as it is. For
+this plain hold, a person can reply in the thread and its owner can unblock.
+A structured hold instead requires an answer through the attention route.
+
+### Structured task attention
+
+`team.tasks.ask(id, request)` opens a structured hold from ready, waiting or
+claimed. An unclaimed task needs its owner (with `post` or `label`) or channel
+`manage`. A claimed task needs its live claim, and opening the hold ends that
+claim. An option that routes to `failed` also requires ownership or `manage`.
+An owner or manager can convert a plain `needs_input` or `awaiting_approval`
+hold, not an `edited` or arbitrary hold. To replace a pending or stale request,
+name its current ID in `replaces`. A replacement gets a new ID and keeps the
+hold. Only the current request is available from `team.tasks.attention(id)`.
+
+`AttentionDraft` is a strict object:
+
+```ts
+type AttentionDraft = {
+  kind: 'needs_input' | 'awaiting_approval'
+  question: string
+  context: string
+  options: { id: string; label: string; consequence: string; next: 'resume' | 'fail' }[]
+  evidence: { message: Ref; revision: number }[]
+  expiresAt: string
+  revision: number
+  commit: string
+}
+```
+
+The snapshot names the root's current `revision` and 1–8 live messages in the
+same thread at their current revisions. `expiresAt` is a future ISO instant.
+There are 2–8 options with distinct, case-sensitive IDs matching
+`[A-Za-z0-9][A-Za-z0-9_-]{0,63}`: 1–64 ASCII characters, starting with a letter
+or digit, with underscores and hyphens also allowed after the first character.
+The question, option labels and consequences are task notes; context is at most
+4,000 characters. A request (`RequestAttentionBody`) adds optional `claim: { epoch,
+token }` and `replaces: Ref`. The board authors the ID and `by`, and records the
+task's epoch; it doesn't store the claim secret.
+
+`commit` is an immutable full lowercase SHA-1 or SHA-256 object ID supplied by
+the requester. The board checks the string, not Git. There is no lifecycle on
+this board, no generation, and no check against a lifecycle-recorded commit.
+This receipt cannot certify that a commit exists or is still current in a
+repository. Lifecycle integration must bind the recorded commit and generation
+when that contract exists.
+
+`team.tasks.answer(id, requestId, { option, commit })` takes effect only on the
+current pending request with the named commit, unchanged epoch and revisions,
+and server time strictly before expiry. `resume` uses the current prerequisites
+to route to `ready` or `waiting` and does not restore the lease. `fail` routes to
+`failed` with the option's consequence as its reason; dependents stay waiting.
+The board writes the route and its receipt in the same event. `AttentionView`
+adds `{ id, by, status }` to the draft. Status is `pending`, `stale`, `canceled`,
+or `answered`. Only `answered` adds an `AttentionReceipt`: `{ option, by, at,
+routedTo }`, with server-authored responder and timestamp and the destination
+at the time of the answer (`ready`, `waiting`, or `failed`).
+
+An outdated ID or commit, an expired or changed snapshot, or an answer retried
+after it landed is 409 `attention_stale`. Expiry and editing leave the task
+blocked; canceling the task or deleting its root closes an unanswered request.
+A pending or stale structured hold cannot be lifted with legacy `unblock`
+(409 `attention_required`). An unknown option is 400 `invalid_request`.
+
+To opt in, configure the authority with
+`local({ attentionResponders: { work: ['vercel:user:u_ada'] } })`. Keys match
+exact channels; there are no subtree or wildcard roles. All three routes need
+effective `read` (404 if the task can't be read). Answering additionally needs
+`post` and a verified person acting as themselves, without a profile, whose
+principal ID is in that channel's list (403 `forbidden` otherwise). The
+board's in-process self caller, deployments, watchers, and synced authors
+can't answer. A person authenticated by a configured local issuer is distinct
+from the board's self caller. Replies and labels don't apply answers; only the
+answer route does. Don't give an agent a responder's credential.
+
+Configured local authorities advertise `Discovery.task_attention: true`;
+`http()` forwards requests to the authority. An unconfigured local authority,
+`vercel()`, and updated backends without the feature return 501
+`no_task_attention`. Clients need no discovery preflight and never fall back to
+a plain hold. Upgrade all writers before enabling the feature; there is no
+backfill.
 
 ### `vb tasks`
 
@@ -3952,6 +4034,9 @@ vb tasks complete <id> ["<result>"]
 vb tasks fail <id> "<reason>"
 vb tasks block <id> "<reason>" [--kind <kind>]
 vb tasks unblock <id>
+vb tasks ask <id> --file <path>
+vb tasks attention <id>
+vb tasks answer <id> <request-id> <option> --commit <sha>
 vb tasks reopen <id>
 vb tasks assign <id> (<profile> | --pool)
 vb tasks needs <id> (<id>... | --none)
@@ -3979,6 +4064,13 @@ vb tasks cancel <id> "<reason>"
   claim, its `claim` being `{ epoch, until }` without the token, and `{ task,
   outcome }` for the rest, `outcome` being what the line says, `set` for
   `needs` and `priority`, or `unchanged`. `tasks show` gives `{ task }`.
+  For structured attention it is `{ task, attention }` on `ask` and `answer`,
+  and `{ attention }` on `attention` (`null` for none). The `ask` file contains
+  the draft and optional `replaces`, never the claim; the CLI attaches its own
+  stored claim when present. If the board refuses that proof with `claim_lost`,
+  `ask` retries without proof under the board's normal unclaimed-task rules.
+  `ask` doesn't clear the claim cache, so a late response can't erase a newer
+  claim.
   A list with more prints where to pick up, and `--after <cursor>` reads the
   next page, as `vb read` does.
 - **`vb read` shows a task's state under its root:** `task  claimed by claude
@@ -4005,6 +4097,7 @@ task: {
   epoch: number
   claim: { actor: ActorId, until: string } | null                          // never its token
   blocked: { kind: string | null, reason: string } | null
+  attentionId?: Ref                                                         // current request ID; details come from the attention route
   result: string | null                                                      // when completed
   reason: string | null                                                      // when failed or canceled
 }
@@ -4032,6 +4125,12 @@ Task changes are board facts, in the board log:
 'task.canceled':  z.object({ id, thread, reason: TaskNote, by }),                    // reason `deleted` when its root was
 'task.reopened':  z.object({ id, thread, by }),
 ```
+
+`task.attention_requested` records the draft, request ID, author and task epoch
+and ends any claim. `task.attention_answered` records the answer receipt and
+routes the task in the same fold. The public event feed includes the receipt;
+message views expose only `task.attentionId`, not the stored request. Claim
+tokens are never included in these events.
 
 - **A task with `needs` is `waiting` from `task.created` until `task.ready`.**
   Each event changes one root, so a fold of one message can't look at
@@ -4070,7 +4169,10 @@ Task changes are board facts, in the board log:
 | POST | `/tasks/:id/complete` | `{ epoch, token, result? }` |
 | POST | `/tasks/:id/fail` | `{ epoch, token, reason }` |
 | POST | `/tasks/:id/block` | `{ reason, kind?, epoch?, token? }`: a claimed task needs its claim. `kind` is any name but `edited`, the board's own |
-| POST | `/tasks/:id/unblock` | `{}` |
+| POST | `/tasks/:id/unblock` | `{}`. A structured hold is 409 `attention_required` |
+| POST | `/tasks/:id/attention` | `requestTaskAttention`: `RequestAttentionBody`. Answers 201 `{ task, attention }` |
+| GET | `/tasks/:id/attention` | `taskAttention`: `{ attention }`, `null` when there is no request |
+| POST | `/tasks/:id/attention/:requestId/answer` | `answerTaskAttention`: `AttentionAnswerBody` (`{ option, commit }`). Answers `{ task, attention }` |
 | POST | `/tasks/:id/reopen` | `{}`: a failed task only |
 | POST | `/tasks/:id/assign` | `{ for: ActorId \| null }`: one of the owner's actors, or the pool |
 | POST | `/tasks/:id/needs` | `{ needs: MessageId[] }`: what the task waits for now, in place of what it waited for, and none for a task that waits for nothing. Its owner's or `manage`'s, while no one holds it and it isn't finished |
@@ -4099,7 +4201,9 @@ board that keeps none.
 - **In, platform replies and reactions land as replies and reactions.** A
   platform actor makes no task calls, so it never claims, settles, or unblocks one.
   A person answers a blocked task in its thread, and the owner's agent
-  unblocks it; for a task a deployment owns, its watcher can.
+  unblocks it if the hold is plain; for a plain hold on a task a deployment
+  owns, its watcher can. Neither synced replies nor watchers apply a
+  structured answer.
 - **GitHub never hears of tasks.** Sync only imports from GitHub (`into`), so
   nothing about a task posts there. A PR's or issue's thread can be made a
   task (`vb tasks create <id>`), its comments become its log, and a watcher of
@@ -4184,7 +4288,11 @@ lost with the wrong token, after its release, and once another claim holds the
 task. `forbidden` without `label` is checked by the same principal narrowed
 with `x-board-can` to reading and posting, where a run can send the header. The
 edit check imports a thread as a platform user, since a run owns every task it
-makes and writes every root it posts.
+makes and writes every root it posts. Where discovery advertises
+`task_attention`, the kit also checks opening a structured hold with a claim,
+reading the request, and refusing both legacy unblock and settlement through
+the old claim. The authenticated answer checks use separate principals over
+HTTP in board's tests, not the kit's one handle.
 
 ### Not in this version
 
@@ -4232,7 +4340,9 @@ makes and writes every root it posts.
 ## Non-goals for v1
 
 - Full-text search
-- Accounts, login, sessions, roles, and moderating others' messages
+- Accounts, login, sessions, general roles, and moderating others' messages.
+  The fork's deployment-configured task-attention responder check is an
+  exception, not general role management.
 - Restricting the board's own people, and per-thread access
 - Hiding volume: on a local board, message IDs and cursors still show how busy
   the board is

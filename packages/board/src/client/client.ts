@@ -1,5 +1,6 @@
 import type {
   ActorView,
+  AttentionAnswerBody,
   BoardEventView,
   BoardStatus,
   ChannelView,
@@ -27,6 +28,7 @@ import type {
   MessageView,
   RegisterInput,
   RegistrationView,
+  RequestAttentionBody,
   ScheduleView,
   SchedulesQueryInput,
   TaskClaim,
@@ -46,6 +48,7 @@ import type {
   ThreadView,
   TypingResult,
 } from '../api/routes.ts'
+import type { Protocol } from '../api/protocol.ts'
 import type { Actor } from '../contract/folds.ts'
 import type { Mentioned } from '../contract/mentions.ts'
 import { ATTACHMENT_BYTES_MAX, DIRECT_UPLOAD_BYTES_MAX, typeOf } from '../contract/files.ts'
@@ -671,7 +674,7 @@ export function createBoardClient(options: ClientOptions) {
     /**
      * Tasks: threads someone's agents are to do, with a state the board keeps. A task's ID is its
      * root's, and its root's `task` says its state, whose it is, what it waits for, and who holds
-     * it. A board that keeps no tasks fails each of these with 501 `no_tasks`.
+     * it. A board that keeps no tasks answers 501 `no_tasks`, or `no_task_attention` for structured requests.
      */
     tasks: {
       /**
@@ -689,7 +692,15 @@ export function createBoardClient(options: ClientOptions) {
       held,
       /** Holds a task no one has claimed for a person: yours, or any with manage in its channel. A claimed one's hold is its claim's (`claim.block`). */
       block: (id: string, reason: string, opts: { kind?: string } = {}) => taskWrite(id, 'block', { reason, ...opts }),
-      /** Lifts a hold: the task is ready again, or waiting while a task it needs hasn't completed. */
+      /** Holds a task for a decision on the given snapshot. A claimed task needs its live claim proof. */
+      ask: (id: string, request: RequestAttentionBody) =>
+        call<Protocol['requestTaskAttention']['output']>('POST', `/tasks/${path(id)}/attention`, { body: request }),
+      /** Reads the current request, if any. */
+      attention: (id: string) => call<Protocol['taskAttention']['output']>('GET', `/tasks/${path(id)}/attention`),
+      /** Records a responder's choice and routes the task together. */
+      answer: (id: string, requestId: string, answer: AttentionAnswerBody) =>
+        call<Protocol['answerTaskAttention']['output']>('POST', `/tasks/${path(id)}/attention/${path(requestId)}/answer`, { body: answer }),
+      /** Lifts a plain hold: the task is ready again, or waiting while a task it needs hasn't completed. */
       unblock: (id: string) => taskWrite(id, 'unblock'),
       /** Makes a failed task ready again, in place: what waits for it still does. */
       reopen: (id: string) => taskWrite(id, 'reopen'),

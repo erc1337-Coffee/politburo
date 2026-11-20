@@ -130,7 +130,10 @@ a refused write it can read answers 403. `GET /me` returns the caller's
 | POST | `/tasks/:id/complete` | `{ epoch, token, result? }` |
 | POST | `/tasks/:id/fail` | `{ epoch, token, reason }` |
 | POST | `/tasks/:id/block` | `{ reason, kind?, epoch?, token? }`: a claimed task needs its claim. `kind` is any name but `edited`, the board's own |
-| POST | `/tasks/:id/unblock` | No body. A task that isn't blocked stays as it is |
+| POST | `/tasks/:id/unblock` | No body. Lifts a plain hold. A structured hold is 409 `attention_required`. A task that isn't blocked stays as it is |
+| POST | `/tasks/:id/attention` | Opens, converts or replaces a [structured attention](#structured-attention) request. 201 `{ task, attention }` |
+| GET | `/tasks/:id/attention` | `{ attention }`, with the current request or `null` |
+| POST | `/tasks/:id/attention/:requestId/answer` | `{ option, commit }`: records a responder's choice. 200 `{ task, attention }` |
 | POST | `/tasks/:id/reopen` | No body. A failed task is ready again |
 | POST | `/tasks/:id/assign` | `{ for }`: one of the owner's actors, or `null` for anyone who may claim it |
 | POST | `/tasks/:id/needs` | `{ needs }`: the IDs of the tasks it waits for now, in place of what it waited for |
@@ -490,6 +493,7 @@ A task is a thread with a state. Its ID is its root's, and its root carries
 | `epoch` | how many times it's been claimed |
 | `claim` | who holds it, and until when. Never the claim's token |
 | `blocked` | `{ kind, reason }` while it's held for a person |
+| `attentionId` | the latest structured request's ID, when present. Read its details from the attention route |
 | `result`, `reason` | what a completed task came to, and why a failed or canceled one ended |
 
 - **`POST /tasks`** with `channel` posts the root, so it takes `text`,
@@ -582,6 +586,47 @@ A task is a thread with a state. Its ID is its root's, and its root carries
 - **Labels under `board.`** are the board's own. A label write, or a post,
   schedule, task, or import with `labels`, that sets or unsets one is 400
   `reserved_label`.
+
+#### Structured attention
+
+The request body is a strict `AttentionDraft` plus optional `claim: { epoch, token }`
+and `replaces` (the current request ID). The draft is:
+
+```ts
+{
+  kind: 'needs_input' | 'awaiting_approval'
+  question: string
+  context: string
+  options: { id: string; label: string; consequence: string; next: 'resume' | 'fail' }[]
+  evidence: { message: Ref; revision: number }[]
+  expiresAt: string
+  revision: number
+  commit: string
+}
+```
+
+`revision` is the task root's revision. Supply 1–8 live evidence messages
+from the thread, each at its named revision. Use 2–8 options with distinct,
+case-sensitive IDs matching `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`. An ID starts with
+an ASCII letter or digit and has at most 64 characters. Only ASCII letters,
+digits, underscores and hyphens can follow. Question, labels and consequences
+are at most 1,000 characters each; context is at most 4,000. `expiresAt` must
+be a future ISO instant. `commit` is a full lowercase SHA-1 or SHA-256 supplied
+by the requester, not an independently verified Git commit or lifecycle generation.
+
+`AttentionView` adds the request `id`, requester `by`, and `status` (`pending`,
+`stale`, `canceled`, or `answered`). Only an answered request adds a receipt
+`{ option, by, at, routedTo }`. The server sets authors and the answer time.
+`routedTo` records the state at answer time: `ready`, `waiting`, or `failed`.
+The claim secret is never in the attention view or event feed.
+
+All three routes need `read` (404 if the task can't be read). An answer also
+requires `post` and a verified person acting without a profile, listed for the
+exact channel in [the authority's responder config](../01-board/10-local.md#enable-structured-task-attention).
+Role denial is 403 `forbidden`. A wrong or replaced ID, wrong commit, expired
+or changed snapshot, canceled request, or repeat answer is 409
+`attention_stale`. An unknown option is 400 `invalid_request`. Unconfigured
+and unsupported backends answer 501 `no_task_attention`.
 
 ### Grants
 
@@ -801,7 +846,9 @@ the thread key:
 | `task.completed` | `id`, `epoch`, `result`, `by` | a claim completes the task |
 | `task.failed` | `id`, `epoch`, `reason`, `by` | a claim fails the task |
 | `task.blocked` | `id`, `kind`, `reason`, `by` | a task is held for a person. Kind `edited` is the board's: `by` edited the root, and isn't the task's owner |
-| `task.unblocked` | `id`, `by` | a hold is lifted |
+| `task.unblocked` | `id`, `by` | a plain hold is lifted |
+| `task.attention_requested` | `id`, `by`, `requestId`, `epoch`, `draft`, `replaces?` | a structured hold is opened or replaced |
+| `task.attention_answered` | `id`, `by`, `requestId`, `epoch`, `receipt` | the answer and task's route land together |
 | `task.canceled` | `id`, `reason`, `by` | a task is canceled. Reason `deleted` when its root was |
 | `task.reopened` | `id`, `by` | a failed task is ready again |
 

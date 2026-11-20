@@ -13,6 +13,7 @@ import {
   NewLabels,
   MESSAGE_TEXT_MAX,
   MessageText,
+  Ref,
   SentText,
   platformAvatar,
   storable,
@@ -24,6 +25,7 @@ import {
   TaskState,
   TaskPriority,
 } from '../contract/schemas.ts'
+import { AttentionAnswerBody, RequestAttentionBody } from '../contract/attention.ts'
 import { ExternalAuthor, ExternalEvent, ExternalTarget, Link as LinkSchema, LINKS_PER_MESSAGE_MAX, MENTIONED_PER_MESSAGE_MAX, Origin } from '../contract/external.ts'
 import type { BoardEvent } from '../contract/events.ts'
 import type { Link } from '../contract/external.ts'
@@ -31,12 +33,8 @@ import type { Actor, Channel, ExternalCopy, Message, Task } from '../contract/fo
 import type { Via } from '../contract/profiles.ts'
 import type { AccessSummary, Permission, WrittenCan } from '../server/access.ts'
 
-/**
- * A message's, schedule's, or cursor's ID: a string clients pass back as they got it, and never
- * parse, compare, or count with. Each backend picks its own; a board on `local()` writes decimals,
- * and `s12` for a schedule.
- */
-export const Ref = z.string().min(1).max(128)
+export { Ref }
+export { AttentionAnswerBody, AttentionDraft, AttentionReceipt, AttentionView, RequestAttentionBody } from '../contract/attention.ts'
 
 /** The message's `revision` as it was read: if it's been edited or deleted since, 409 `revision_conflict`. */
 const Revision = z.number().int().positive()
@@ -924,8 +922,10 @@ export type SchemaView = {
  * owner's actors made it one (`by`, who changes it as its owner), what it waits for, and who holds
  * it until when. A claim's token shows nowhere but in the answer that made it.
  */
-export type TaskView = Omit<Task, 'needs' | 'claim' | 'priority'> & {
+export type TaskView = Omit<Task, 'needs' | 'claim' | 'priority' | 'attention'> & {
   priority: TaskPriority
+  /** The current attention request, when the task has one. */
+  attentionId?: string
   /** The tasks it waits for, by their IDs. */
   needs: string[]
   /** Who holds it. One whose `until` has passed is over: the task is claimable, and `ready` once the board says so. */
@@ -1031,6 +1031,8 @@ export type Discovery = {
    * through its Deployment Protection. A board that can't find a project's deployments leaves it out.
    */
   wake_by_path?: boolean
+  /** Whether this board is configured to keep structured task attention requests. */
+  task_attention?: true
 }
 
 /**
@@ -1272,6 +1274,9 @@ export const routes = {
   failTask: { method: 'POST', path: '/tasks/:id/fail', body: FailTaskBody },
   /** Holds a task for a person: its claim while it's claimed, its owner or `manage` in its channel otherwise. */
   blockTask: { method: 'POST', path: '/tasks/:id/block', body: BlockTaskBody },
+  requestTaskAttention: { method: 'POST', path: '/tasks/:id/attention', body: RequestAttentionBody },
+  taskAttention: { method: 'GET', path: '/tasks/:id/attention' },
+  answerTaskAttention: { method: 'POST', path: '/tasks/:id/attention/:requestId/answer', body: AttentionAnswerBody },
   /** What a task's owner does, or `manage` in its channel. */
   unblockTask: { method: 'POST', path: '/tasks/:id/unblock' },
   reopenTask: { method: 'POST', path: '/tasks/:id/reopen' },
