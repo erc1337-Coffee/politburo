@@ -3118,7 +3118,17 @@ function taskFailure(code: string, status: number, hold: TaskHold): { class: Fai
       return { class: 'conflict', message: `Can't ${doing()}. It waits for other tasks.`, next: read('See what it waits for') }
     case 'task_blocked': {
       const board = onSameBoard()
-      if (hold === 'cleared') return { class: 'conflict', message: `Can't ${doing()}. It was held, and the hold is lifted now. Try again.`, next: read('See where it stands', ...board, ...asTyped()) }
+      if (hold === 'cleared') {
+        const skipRetry = command === 'tasks' &&
+          (args[0] === 'cancel' || args[0] === 'unblock')
+        const message = `Can't ${doing()}. ` +
+          'It was held, and the hold is lifted now.'
+        return {
+          class: 'conflict',
+          message: skipRetry ? message : `${message} Try again.`,
+          next: read('See where it stands', ...board, ...asTyped()),
+        }
+      }
       const see = read("See what it's held for", ...board, ...asTyped())
       if (hold === 'unknown') return { class: 'conflict', message: `Can't ${doing()}. It's held, but the CLI couldn't read the task to see why.`, next: see }
       // An operator acts without a profile, even if the failed command named one.

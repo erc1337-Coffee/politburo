@@ -205,6 +205,96 @@ describe("vb tasks, with the claim it keeps", () => {
     })
   })
 
+  it(
+    'does not suggest retrying unblock when the park is lifted',
+    async ({ onTestFinished }) => {
+      const team = localBoard({ url: undefined })
+      let id: string
+      let unblockRefused = false
+      const server = await serve(async (request) => {
+        const { method } = request
+        const path = new URL(request.url).pathname
+        if (method === 'POST' && path === `/api/board/tasks/${id}/unblock`) {
+          const response = await team.fetch(request)
+          unblockRefused = response.status === 409
+          return response
+        }
+        // Unblock reads the task before the write too. Lift only after refusal.
+        if (unblockRefused && method === 'GET' &&
+            path === `/api/board/messages/${id}`) {
+          const headers = new Headers(request.headers)
+          headers.set('content-type', 'application/json')
+          const unpark = new Request(
+            new URL(`/api/board/tasks/${id}/unpark`, request.url),
+            {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({ reason: 'maintenance ended' }),
+            },
+          )
+          const lifted = await team.fetch(unpark)
+          if (!lifted.ok) return lifted
+        }
+        return team.fetch(request)
+      })
+      onTestFinished(async () => {
+        await server.close()
+        await team.close()
+      })
+      const board = `${server.origin}/api/board`
+      const as = {
+        BOARD_URL: board,
+        BOARD_TOKEN: await personToken('u_julian', board),
+      }
+      id = await create('parked', 'deploy to prod', [], as)
+      await ok(['tasks', 'park', id, 'deployment freeze'], as)
+
+      const refused = await vb(
+        ['tasks', 'unblock', id, '--url', board, '--json'], as,
+      )
+      expect(refused).toMatchObject({ code: 1, stdout: '' })
+      const { reason, message, next } = failure(refused)
+      expect({ reason, message }).toEqual({
+        reason: 'task_blocked',
+        message: `Can't unblock task #${id}. ` +
+          'It was held, and the hold is lifted now.',
+      })
+      expect(next?.map(({ when, argv }) => ({ when, argv }))).toEqual([
+        {
+          when: 'See where it stands',
+          argv: ['vb', 'read', id, '--url', board],
+        },
+      ])
+    },
+  )
+
+  it('does not suggest retrying a cancel the board refused for a hold now lifted', async ({ onTestFinished }) => {
+    const team = localBoard({ url: undefined })
+    let id: string
+    // A board that still holds the task when it cancels: the one here cancels a held task.
+    const server = await serve((request) => {
+      if (request.method === 'POST' && new URL(request.url).pathname === `/api/board/tasks/${id}/cancel`)
+        return Promise.resolve(Response.json({ error: { code: 'task_blocked', message: 'the task is held' } }, { status: 409 }))
+      return team.fetch(request)
+    })
+    onTestFinished(async () => {
+      await server.close()
+      await team.close()
+    })
+    const board = `${server.origin}/api/board`
+    const as = { BOARD_URL: board, BOARD_TOKEN: await personToken('u_julian', board) }
+    id = await create('cancel', 'deploy to prod', [], as)
+
+    const refused = await vb(['tasks', 'cancel', id, 'not needed', '--url', board, '--json'], as)
+    expect(refused).toMatchObject({ code: 1, stdout: '' })
+    const { reason, message, next } = failure(refused)
+    expect({ reason, message }).toEqual({
+      reason: 'task_blocked',
+      message: `Can't cancel task #${id}. It was held, and the hold is lifted now.`,
+    })
+    expect(next?.map(({ when, argv }) => ({ when, argv }))).toEqual([{ when: 'See where it stands', argv: ['vb', 'read', id, '--url', board] }])
+  })
+
   it('keeps the claim refusal when reading the held task fails', async ({ onTestFinished }) => {
     const team = localBoard({ url: undefined })
     const server = await serve((request) => {
