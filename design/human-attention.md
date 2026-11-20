@@ -1,6 +1,26 @@
 status: proposed
 bonklek decides on this PR
 
+## Status
+
+Shipped on `main` in [#10](https://github.com/remiliacorporation/politburo/pull/10), with changes. The
+shipped contract is [SPEC.md: Structured task attention](../SPEC.md#structured-task-attention),
+and the user guide is [Tasks](../packages/board/docs/01-board/11-tasks.md).
+
+| Section | Status |
+| --- | --- |
+| Problem | Implemented. `vb tasks ask` opens a request, `tasks attention` reads it, and `tasks answer` binds an option and a commit. `vb tasks block` still makes a plain hold. |
+| Proposal: shapes and routes | Implemented, changed. `POST /tasks/:id/attention`, `GET /tasks/:id/attention` and `POST /tasks/:id/attention/:requestId/answer` exist, with `requestTaskAttention`, `taskAttention` and `answerTaskAttention` on `Protocol`, `team.tasks.ask`, `attention` and `answer` on the handle, and `TaskView.attentionId`. Open and answer return `{ task, attention }`, and the read returns `{ attention }`, `null` for none. The work binding is a flat `commit` (a full lowercase SHA-1 or SHA-256 ID, checked as a string, not against Git), not `WorkRef { commit, generation }`, because there is no lifecycle contract yet. An option routes with `next: 'resume' \| 'fail'`, not `'cancel'`, and a receipt's `routedTo` is `ready`, `waiting` or `failed`. |
+| Proposal: write rules | Implemented, changed. Open, convert a plain `needs_input` or `awaiting_approval` hold, replace, answer, `resume` and legacy `unblock` (409 `attention_required`) behave as proposed. Expiry, an edit to the root or its evidence, a wrong request ID or commit, a changed task epoch and a retried answer make an answer 409 `attention_stale`, and an unknown option is 400 `invalid_request`. A `fail` option fails the task with its consequence as the reason, and `vb tasks reopen` reopens it. Canceling the task or deleting its root closes an unanswered request. 409 `attention_route_blocked` is not built, because no lifecycle gate exists to bar a `resume` (evidence gates, #20, and lifecycle stages, #21, are held). |
+| Events | Implemented. `task.attention_requested` and `task.attention_answered` fold into the task. |
+| Trust model | Implemented, changed. All three routes need `read` (404 when unreadable). A claimed task takes a request only with its live claim. An unclaimed one needs its owner, with `post` or `label`, or `manage`. A `fail` option also needs ownership or `manage`, even with a claim. Answering needs `read`, `post`, and a verified person acting as itself with no profile. The responder list is `local({ attentionResponders: { <channel>: [<principal ID>] } })`, exact channels only, not an `attention-responder` role. |
+| Migration and compat | Implemented, changed. No backfill, and replies do not answer. A configured `local()` board advertises `Discovery.task_attention: true`, and `http()` forwards. An unconfigured board and `vercel()` answer 501 `no_task_attention`. Clients need no discovery check before they write, and never fall back to a plain hold. Upgrade every writer before enabling it. |
+| Tests | Partly implemented. One optional conformance check runs for boards that advertise `task_attention` (open through a claim, then `claim_lost` and `attention_required`). The race, role, expiry, stale-snapshot, replace, cancel and CLI checks are in `packages/board/test/task-attention.test.ts` and `cli-task-attention.test.ts`, over HTTP, not conformance. `task-attention-feed-watch.test.ts` covers watcher delivery and the feed. The design's lifecycle-generation cases are not built. |
+| Alternatives | Decided as proposed. The runtime is `packages/runtime`, apart from `packages/board`. The responder list is a deployment setting, not a general board role. |
+| SPEC.md amendments | Changed. SPEC.md has a new Structured task attention section, plus edits to the sections that name holds, `unblock` and permissions. It does not add a general role. |
+| Open questions | Not built. A channel does not cap the request lifetime, and the inspector does not surface expired requests. The inspector shows a structured hold like a plain one and still offers unblock, which the server refuses with `attention_required`. |
+| Slices 1 to 5 | Implemented as one change: events and views, local open, read and replace, the responder check and atomic answer, HTTP, discovery and the SDK, and the three CLI commands. |
+
 ## Problem
 
 Gap 2 in TIGERYARD-PARITY: `vb tasks block --kind needs_input|awaiting_approval`
