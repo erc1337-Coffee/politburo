@@ -986,6 +986,7 @@ describe('cli', () => {
           '  skipped  confirms a claimed run only through a taken and reported status probe\n' +
           '           not kept here: agent operations are not advertised\n',
       )
+      expect(run.stdout).toContain('\n\noperational-inbox\n  passed   keeps operational messages private')
       // Four grants checks and two agent checks are skipped.
       expect(run.stdout).toMatch(/\n\n\d+ passed, 6 skipped\n$/)
       expect(JSON.parse((await vb(['conformance', '--json', '--channel', 'conformance/json'], as)).stdout)).toMatchObject({ ok: true })

@@ -3,7 +3,9 @@ import type {
   AgentHealth,
   AgentIntent,
   AgentView,
+  AttentionAnswerBody,
   BoardEventView,
+  BoardStatus,
   ChannelView,
   Discovery,
   EventsPage,
@@ -16,6 +18,9 @@ import type {
   ListOpsIntentsInput,
   OpsIntentsIssued,
   OpsIntentsPage,
+  OperationalMessage,
+  OperationalStatus,
+  SendOperationalMessageInput,
   SyncCopiesView,
   SyncFindInput,
   SyncFindView,
@@ -36,6 +41,7 @@ import type {
   RegisterInput,
   RegisterOpsAgentInput,
   RegistrationView,
+  RequestAttentionBody,
   ScheduleView,
   SchedulesQueryInput,
   TaskClaim,
@@ -55,10 +61,11 @@ import type {
   ThreadView,
   TypingResult,
 } from '../api/routes.ts'
+import type { Protocol } from '../api/protocol.ts'
 import type { Actor } from '../contract/folds.ts'
 import type { Mentioned } from '../contract/mentions.ts'
 import { ATTACHMENT_BYTES_MAX, DIRECT_UPLOAD_BYTES_MAX, typeOf } from '../contract/files.ts'
-import type { Attachment } from '../contract/schemas.ts'
+import type { Attachment, TaskPriority } from '../contract/schemas.ts'
 import { normalizeEmoji } from '../contract/emoji.ts'
 import { parseSse } from './sse.ts'
 import { formatProfileHeader } from '../contract/profile-header.ts'
@@ -182,6 +189,7 @@ const scheduleBody = (input: ScheduleOptions) => {
  * same write, for `lease` seconds, with `token` as its token when you bring one.
  */
 export type TaskOptions = {
+  priority?: TaskPriority
   needs?: string[]
   for?: string | null
   claim?: boolean
@@ -200,6 +208,7 @@ export type NewTaskOptions = TaskOptions & Pick<PostOptions, 'text' | 'labels' |
 export type TaskInBatch = Required<Pick<PostOptions, 'text'>> &
   Pick<PostOptions, 'labels' | 'noSync' | 'attachments'> & {
     key?: string
+    priority?: TaskPriority
     needs?: (string | { key: string })[]
     for?: string | null
   }
@@ -215,6 +224,8 @@ export type HeldTask = {
   release(): Promise<MessageView>
   complete(result?: string): Promise<MessageView>
   fail(reason: string): Promise<MessageView>
+  /** Lowers the priority without ending the claim. A claim cannot raise it. */
+  priority(priority: TaskPriority): Promise<MessageView>
   /** Holds the task for a person, which ends the claim: `kind` says what for (`needs_input`, `awaiting_approval`). */
   block(reason: string, opts?: { kind?: string }): Promise<MessageView>
 }
@@ -420,6 +431,7 @@ export function createBoardClient(options: ClientOptions) {
       release: () => taskWrite(id, 'release', { epoch, token }),
       complete: (result) => taskWrite(id, 'complete', { epoch, token, ...(result !== undefined ? { result } : {}) }),
       fail: (reason) => taskWrite(id, 'fail', { epoch, token, reason }),
+      priority: (priority) => taskWrite(id, 'priority', { epoch, token, priority }),
       block: (reason, opts = {}) => taskWrite(id, 'block', { epoch, token, reason, ...opts }),
     }
   }
@@ -455,10 +467,10 @@ export function createBoardClient(options: ClientOptions) {
   }
 
   /**
-   * Claims task `target`, or with `{ channel }` the oldest ready task in that channel (`work`) or
-   * subtree (`work/`) that has every label in `label`: one assigned to you first, then an
-   * unassigned one you own, or whose owner `from` names by ID (400 `invalid_from` for a handle,
-   * which several can share). It needs `label` where the task
+   * Claims task `target`, or with `{ channel }` the highest priority eligible ready task in that
+   * channel (`work`) or subtree (`work/`), oldest first at equal priority. It has every label in
+   * `label` and is assigned to you, or unassigned and owned by you or an owner `from` names by ID
+   * (400 `invalid_from` for a handle, which several can share). It needs `label` where the task
    * is. A task by ID that can't be claimed throws a 409 (`task_claimed`, `task_waiting`, ...); a
    * channel with nothing ready answers null, after waiting up to `wait` seconds for one. `lease`
    * is how long you hold it, in seconds, the board's default without one: a board says how short
@@ -516,6 +528,12 @@ export function createBoardClient(options: ClientOptions) {
       }),
     discovery: () => call<Discovery>('GET', '/', { auth: false }),
     me: () => call<Me>('GET', '/me'),
+    /** Whether the board is admitting work, and its current pause epoch. */
+    status: () => call<BoardStatus>('GET', '/control'),
+    /** Stop new work admission and fence earlier claims. Requires a person with global manage. */
+    pause: (reason: string) => call<BoardStatus>('POST', '/control/pause', { body: { reason } }),
+    /** Reopen work admission. Does not restore fenced claims. Requires a person with global manage. */
+    resume: (reason: string) => call<BoardStatus>('POST', '/control/resume', { body: { reason } }),
     /**
      * A page of the board's channels: `prefix` keeps the ones whose path starts with it (`dev/`), `limit` is how many
      * (100 unless it says, 500 at most), and `after` takes a page's `next`, which is null on the last.
@@ -684,7 +702,7 @@ export function createBoardClient(options: ClientOptions) {
     /**
      * Tasks: threads someone's agents are to do, with a state the board keeps. A task's ID is its
      * root's, and its root's `task` says its state, whose it is, what it waits for, and who holds
-     * it. A board that keeps no tasks fails each of these with 501 `no_tasks`.
+     * it. A board that keeps no tasks answers 501 `no_tasks`, or `no_task_attention` for structured requests.
      */
     tasks: {
       /**
@@ -702,7 +720,15 @@ export function createBoardClient(options: ClientOptions) {
       held,
       /** Holds a task no one has claimed for a person: yours, or any with manage in its channel. A claimed one's hold is its claim's (`claim.block`). */
       block: (id: string, reason: string, opts: { kind?: string } = {}) => taskWrite(id, 'block', { reason, ...opts }),
-      /** Lifts a hold: the task is ready again, or waiting while a task it needs hasn't completed. */
+      /** Holds a task for a decision on the given snapshot. A claimed task needs its live claim proof. */
+      ask: (id: string, request: RequestAttentionBody) =>
+        call<Protocol['requestTaskAttention']['output']>('POST', `/tasks/${path(id)}/attention`, { body: request }),
+      /** Reads the current request, if any. */
+      attention: (id: string) => call<Protocol['taskAttention']['output']>('GET', `/tasks/${path(id)}/attention`),
+      /** Records a responder's choice and routes the task together. */
+      answer: (id: string, requestId: string, answer: AttentionAnswerBody) =>
+        call<Protocol['answerTaskAttention']['output']>('POST', `/tasks/${path(id)}/attention/${path(requestId)}/answer`, { body: answer }),
+      /** Lifts a plain hold: the task is ready again, or waiting while a task it needs hasn't completed. */
       unblock: (id: string) => taskWrite(id, 'unblock'),
       /** Makes a failed task ready again, in place: what waits for it still does. */
       reopen: (id: string) => taskWrite(id, 'reopen'),
@@ -714,6 +740,8 @@ export function createBoardClient(options: ClientOptions) {
        * itself, through however many tasks, throws a 400 `invalid_needs`.
        */
       needs: (id: string, needs: string[]) => taskWrite(id, 'needs', { needs }),
+      /** Sets priority as the task's owner or with manage. Use the live claim if you hold it. */
+      priority: (id: string, priority: TaskPriority) => taskWrite(id, 'priority', { priority }),
       /** Cancels a task that hasn't completed, ending any claim. What waits for it keeps waiting. */
       cancel: (id: string, reason: string) => taskWrite(id, 'cancel', { reason }),
     },
@@ -843,6 +871,16 @@ export function createBoardClient(options: ClientOptions) {
     /** Raw platform events for a sync entry, newest first. */
     inbox: async (key: string, opts: { channel?: string; limit?: number } = {}) =>
       (await call<{ events: InboxEntry[] }>('GET', `/inbox/${key}${queryString(opts)}`)).events,
+    /** Private operational messages, separate from the raw sync inbox. */
+    operationalInbox: {
+      send: (input: SendOperationalMessageInput) =>
+        call<{ message: OperationalMessage }>('POST', '/operational-inbox', { body: input }),
+      read: () => call<{ messages: OperationalMessage[] }>('GET', '/operational-inbox'),
+      ack: (id: string, status: OperationalStatus) =>
+        call<{ message: OperationalMessage }>('POST', `/operational-inbox/${path(id)}/ack`, { body: { status } }),
+      archive: (id: string) =>
+        call<{ message: OperationalMessage }>('POST', `/operational-inbox/${path(id)}/archive`),
+    },
     /** Registers the caller's watchers, replacing its last registration: what a board on `http()` does. */
     register: (input: RegisterInput) =>
       call<RegistrationView>('POST', '/watchers', { body: input }),

@@ -14,15 +14,16 @@ import { credentialed, credentialSource, handTeam, vercel } from '../backend-ver
 import { board as boardAt, type Board } from '../server/index.ts'
 import { isBoardName } from '../server/board.ts'
 import { isApiMessageId } from '../server/backend-vercel.ts'
+import { AttentionAnswerBody, AttentionAskFile } from '../contract/attention.ts'
 import { normalizeEmoji } from '../contract/emoji.ts'
-import { AgentRole, ATTACHMENTS_PER_MESSAGE_MAX, DIRECT_UPLOAD_BYTES_MAX, IntentOutcome, IntentVerb, MESSAGE_TEXT_MAX, type AgentIntent, type Attachment, AttachmentId } from '../contract/schemas.ts'
+import { AgentRole, ATTACHMENTS_PER_MESSAGE_MAX, DIRECT_UPLOAD_BYTES_MAX, IntentOutcome, IntentVerb, MESSAGE_TEXT_MAX, type AgentIntent, type Attachment, AttachmentId, TaskPriority } from '../contract/schemas.ts'
 import { VERSION } from '../version.ts'
 import { conformance } from '../conformance/index.ts'
 import { explainPrincipalOf, explanationLine, GrantMisuse, grantCanOf, KINDS, patternsIn, principalsIn, type OptionToken } from './grants.ts'
 import { formatSchema, formatSchemas } from './schemas.ts'
 import { parseSchemaId } from '../contract/data-schemas.ts'
 import { block } from '../contract/blocks.ts'
-import { actorName, claimLine, formatAccess, formatConformance, formatEvent, formatGrants, grantRow, formatSchedule, formatTasks, lineText, mentionedIn, reactionNames, formatSourceRead, formatSynced, formatThreadSummaries, formatThreads, terminalText, who } from './format.ts'
+import { actorName, claimLine, formatAccess, formatAttention, formatConformance, formatEvent, formatGrants, grantRow, formatOperationalInbox, formatSchedule, formatTasks, lineText, mentionedIn, reactionNames, formatSourceRead, formatSynced, formatThreadSummaries, formatThreads, terminalText, who } from './format.ts'
 import { fileClaims, memoryClaims, tokenClaims, type Claims } from './claims.ts'
 import { runCommand } from './run.ts'
 import { AGENTS, allowRules, cliOf, disallow, installedHook, tilde, uninstallHook, type HookAgent } from './hooks.ts'
@@ -838,6 +839,9 @@ function doing(): string {
       if (a === 'create') return b !== undefined && isMessageRef(b) ? `make ${ref(b)} a task` : `create a task in ${b ?? 'a channel'}`
       if (a === 'renew') return `renew the claim on ${one}`
       if (a === 'needs') return `change what ${one} needs`
+      if (a === 'ask') return `request attention on ${one}`
+      if (a === 'attention') return `read the attention request on ${one}`
+      if (a === 'answer') return `answer the attention request on ${one}`
       return `${a} ${one}`
     }
     case 'grants':
@@ -849,11 +853,19 @@ function doing(): string {
     case 'download':
       return `download ${a ?? 'the attachment'}`
     case 'inbox':
-      return `read ${a}'s inbox`
+      if (a === 'read') return 'read your operational inbox'
+      if (a === 'ack') return `acknowledge inbox message ${b}`
+      if (a === 'archive') return `archive inbox message ${b}`
+      return `read ${a === 'raw' ? b : a}'s inbox`
     case 'tail':
       return `follow ${a ?? 'the board'}`
     case 'wait':
       return `wait on ${a ?? 'the board'}`
+    case 'status':
+      return 'check the board status'
+    case 'pause':
+    case 'resume':
+      return `${command} the board`
     case 'whoami':
       return 'reach the board'
     case 'conformance':
@@ -884,6 +896,7 @@ function missing(): string | undefined {
     if (a === 'health') return `task ${ref(b)}`
   }
   if (command === 'download') return `attachment ${a}`
+  if (command === 'inbox' && (a === 'ack' || a === 'archive') && b !== undefined) return `inbox message ${b}`
   return undefined
 }
 
@@ -972,6 +985,10 @@ function failureOf(error: unknown): Failure {
   const about = taskFailure(code, status)
   // Where the headline is all the board said (`#812 isn't a task`), its words aren't said twice.
   if (about) return { ...theirs(about.class, code, about.message, about.next), ...(about.whole ? { details: [] } : {}) }
+  if (status === 409 && code === 'board_paused')
+    return theirs('conflict', code, `Can't ${doing()}. The board paused work.`, [{ instruction: 'Check whether the board is admitting work', argv: [...cli(), 'status'] }])
+  if (status === 501 && code === 'no_network_pause')
+    return theirs('platform', code, `Can't ${doing()}. This board does not support network pause.`)
   // A block the board refused, written with --schema: what that schema holds is a read away.
   if (status === 400 && code === 'invalid_block' && flags.schema !== undefined && parseSchemaId(flags.schema))
     return theirs('usage', code, `Can't ${doing()}.`, [{ instruction: `See what ${flags.schema} holds`, argv: [...cli(), 'schemas', 'inspect', flags.schema] }])
@@ -1337,6 +1354,24 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       ;(me.can === undefined ? [] : formatAccess(me.can)).forEach((line, index) => rows.push([index === 0 ? 'can' : '', line]))
       const width = Math.max(...rows.map(([subject]) => subject.length))
       for (const [subject, value] of rows) out(`${subject.padEnd(width)}  ${value}`)
+      return 0
+    }
+
+    case 'status':
+    case 'pause':
+    case 'resume': {
+      if (args.length > 0) throw usage(`${command} takes no positional arguments.`)
+      const reason = flags.reason
+      if (command !== 'status' && !reason?.trim()) {
+        throw usage(`Missing why to ${command} the board: pass --reason <reason>.`, {
+          reason: 'missing_arguments',
+          next: [{ instruction: 'Give a reason', argv: [...cli(), command, '--reason', '<REASON>'] }],
+        })
+      }
+      const board = client()
+      const status = command === 'status' ? await board.status() : await board[command](reason!)
+      if (flags.json) result(status)
+      else out(`board  ${status.paused ? 'paused' : 'running'}`)
       return 0
     }
 
@@ -1882,10 +1917,33 @@ async function run(command: string | undefined, args: string[]): Promise<number>
     }
 
     case 'inbox': {
-      const key = args[0]
-      if (!key) throw usage('Missing the sync entry whose inbox to read, such as slack.', { reason: 'missing_arguments' })
+      const [verb, id, status, extra] = args
+      if (verb === 'read' || verb === 'ack' || verb === 'archive') {
+        if (flags.limit !== undefined) throw usage('--limit is for raw sync inboxes.', { reason: 'unknown_option' })
+        if (verb === 'read') {
+          if (args.length > 1) throw usage('inbox read takes no arguments.', { next: [{ instruction: 'For a sync key named read, use raw', argv: [...cli(), 'inbox', 'raw', 'read'] }] })
+          const read = await client().operationalInbox.read()
+          if (flags.json) return result(read), 0
+          return out(formatOperationalInbox(read.messages)), 0
+        }
+        if (!id) throw usage('Missing the message ID from inbox read.', { reason: 'missing_arguments' })
+        if (verb === 'archive') {
+          if (status !== undefined) throw usage('inbox archive takes one message ID.')
+          const archived = await client().operationalInbox.archive(id)
+          if (flags.json) return result(archived), 0
+          return out(`${lineText(archived.message.id)}  archived`), 0
+        }
+        if (status === undefined) throw usage('Missing the receipt: seen or acted.', { reason: 'missing_arguments' })
+        if (status !== 'seen' && status !== 'acted') throw usage('The receipt must be seen or acted.')
+        if (extra !== undefined) throw usage('inbox ack takes a message ID and a receipt.')
+        const acked = await client().operationalInbox.ack(id, status)
+        if (flags.json) return result(acked), 0
+        return out(`${lineText(acked.message.id)}  ${status}`), 0
+      }
+      const [key, channel] = verb === 'raw' ? args.slice(1) : args
+      if (!key) throw usage(verb === 'raw' ? 'Missing the sync entry whose inbox to read, such as slack.' : 'Missing what to read: use inbox read or name a sync entry.', { reason: 'missing_arguments' })
       const events = await client().inbox(key, {
-        ...(args[1] ? { channel: args[1] } : {}),
+        ...(channel ? { channel } : {}),
         ...(flags.limit ? { limit: Number(flags.limit) } : {}),
       })
       if (flags.json) return result({ events }), 0
@@ -2139,11 +2197,17 @@ async function agents(args: string[]): Promise<number> {
 }
 
 /** What `tasks` does to a task, by the word after it: any other word is a channel to list. */
-const TASK_VERBS = new Set(['create', 'claim', 'run', 'renew', 'release', 'complete', 'fail', 'block', 'unblock', 'reopen', 'assign', 'needs', 'cancel'])
+const TASK_VERBS = new Set(['create', 'claim', 'run', 'renew', 'release', 'complete', 'fail', 'block', 'ask', 'attention', 'answer', 'unblock', 'reopen', 'assign', 'needs', 'priority', 'show', 'cancel'])
 const TASK_STATES = ['waiting', 'ready', 'claimed', 'blocked', 'completed', 'failed', 'canceled']
 
 /** A task's ID as you'd write it: `#812` or `812`. */
 const taskId = (value: string | undefined) => messageId(value, 'task ID')
+
+function priorityOf(value: unknown, from: string): TaskPriority {
+  const parsed = TaskPriority.safeParse(value)
+  if (parsed.success) return parsed.data
+  throw usage(`${from} takes ${TaskPriority.options.join(', ')}.`, { reason: 'invalid_priority' })
+}
 
 /** A duration in seconds: a number and a unit, as `schedule` takes a duration. A lease is 30s to 1h. */
 function seconds(flag: 'wait' | 'lease' | 'ttl'): number | undefined {
@@ -2164,7 +2228,7 @@ function seconds(flag: 'wait' | 'lease' | 'ttl'): number | undefined {
  */
 async function createPlan(target: string, text: string | undefined, path: string): Promise<number> {
   if (isMessageRef(target)) throw usage(`--file holds a plan, which starts threads in a channel, and ${ref(target)} is a thread.`)
-  const own = text !== undefined ? 'text' : (['label', 'needs', 'for', 'claim', 'lease', 'no-sync'] as const).find((name) => (flags as Record<string, unknown>)[name] !== undefined && (flags as Record<string, unknown>)[name] !== false)
+  const own = text !== undefined ? 'text' : (['label', 'needs', 'for', 'claim', 'lease', 'no-sync', 'priority'] as const).find((name) => (flags as Record<string, unknown>)[name] !== undefined && (flags as Record<string, unknown>)[name] !== false)
   if (own !== undefined) throw usage(`${own === 'text' ? 'Text' : `--${own}`} is one task's: with --file, each task in the file has its own.`)
   const board = client()
   const tasks = await planFrom(path, board)
@@ -2201,7 +2265,7 @@ async function createPlan(target: string, text: string | undefined, path: string
 }
 
 /** What a task of a plan's `--file` takes, as `tasks.createMany` does. */
-const PLAN_KEYS = ['key', 'text', 'labels', 'needs', 'for', 'noSync', 'attachments']
+const PLAN_KEYS = ['key', 'text', 'labels', 'needs', 'for', 'noSync', 'attachments', 'priority']
 
 /** The help page that says what a plan holds. */
 const planHelp = (): Recovery => ({ instruction: 'See what a plan takes', argv: [...cli(), 'tasks', 'create', '--help'] })
@@ -2249,6 +2313,7 @@ function checkPlan(plan: Record<string, unknown>[], where: string): void {
         next: [planHelp()],
       })
     }
+    if ('priority' in task) priorityOf(task.priority, `Priority on task ${at + 1} of ${where}`)
     if (!('needs' in task)) continue
     const needs = '[{"key": "fix"}, "812"]'
     if (!Array.isArray(task.needs)) throw usage(`Task ${at + 1} of ${where} has needs that aren't a list, such as ${needs}.`, { next: [planHelp()] })
@@ -2290,6 +2355,23 @@ async function planFrom(path: string, board: Board): Promise<TaskInBatch[]> {
     ...(Array.isArray(task.needs) ? { needs: task.needs.map((need) => boardNeed(need, keys)) } : {}),
     ...(typeof task.for === 'string' && !task.for.includes(':') ? { for: profileActor(principal, task.for) } : {}),
   })) as TaskInBatch[]
+}
+
+/** A draft or replacement, never a claim. Don't repeat any part of an invalid JSON body. */
+async function attentionFrom(path: string) {
+  const where = path === '-' ? 'stdin' : path
+  const text = await (path === '-' ? io.stdin() : io.readFile(path)).catch(() => null)
+  if (text === null) throw usage(`Can't read ${where}.`, { reason: 'file_not_found' })
+  const next = [{ instruction: 'See what the draft takes', argv: [...cli(), 'tasks', 'ask', '--help'] }]
+  let draft: unknown
+  try {
+    draft = JSON.parse(typeof text === 'string' ? text : new TextDecoder().decode(text))
+  } catch {
+    throw usage(`${where} isn't JSON.`, { next })
+  }
+  const checked = AttentionAskFile.safeParse(draft)
+  if (!checked.success) throw usage(`${where} must hold an attention draft, with optional replaces and no claim.`, { next })
+  return checked.data
 }
 
 /** `--claim`, on `tasks create`: a flag there (`optionsFor`), where a grant's takes a value. */
@@ -2365,7 +2447,7 @@ async function withClaim<T>(claims: Claims, id: string, write: () => Promise<T>)
 }
 
 /**
- * Claims a task for this run, by its ID or with `--ready` the oldest ready one in `target`, and
+ * Claims a task for this run, by its ID or with `--ready` the highest priority eligible one in `target`, and
  * keeps the claim. With nothing ready it fails: `nothing_ready`, or `timeout` once `--wait` ran
  * out, as `wait` does. Stopped while it waits, it answers the exit code instead.
  */
@@ -2482,8 +2564,10 @@ async function tasks(args: string[]): Promise<number> {
     if (flags.file !== undefined) return createPlan(target, body, flags.file)
     const lease = seconds('lease')
     if (lease !== undefined && !claimFlag()) throw usage('--lease is how long a claim holds the task: pass --claim too.')
+    const priority = flags.priority === undefined ? undefined : priorityOf(flags.priority, '--priority')
     const { board, claims } = tasksOn()
     const about = {
+      ...(priority !== undefined ? { priority } : {}),
       ...(flags.needs?.length ? { needs: flags.needs.map((id) => taskId(id)) } : {}),
       ...(flags.for ? { for: profileActor((await board.me()).principal, flags.for) } : {}),
       ...(claimFlag() ? { claim: true } : {}),
@@ -2607,6 +2691,27 @@ async function tasks(args: string[]): Promise<number> {
   const { board, claims } = tasksOn()
 
   switch (verb) {
+    case 'show': {
+      one(rest[1], 'one task')
+      const { message, replies } = await board.thread(id)
+      if (message.id !== id || !message.task)
+        throw new Failed({ class: 'not_found', reason: 'not_a_task', message: `${ref(id)} isn't a task.` })
+      if (flags.json) result({ task: message })
+      else out(formatTasks([{ message, replies: replies.length, last: replies.at(-1) ?? null }], true))
+      return 0
+    }
+    case 'priority': {
+      one(rest[2], 'a task and a priority')
+      if (rest[1] === undefined) throw usage('Missing the priority.', { reason: 'missing_arguments' })
+      const priority = priorityOf(rest[1], 'Priority')
+      const stored = await claims.get(id)
+      const task = stored
+        ? await withClaim(claims, id, () => board.tasks.held(id, stored).priority(priority))
+        : await board.tasks.priority(id, priority)
+      if (flags.json) result({ task, outcome: 'set' })
+      else out(`${messageRef(id)}  priority ${task.task?.priority ?? priority}`)
+      return 0
+    }
     case 'renew': {
       one(rest[1], 'one task')
       const lease = seconds('lease')
@@ -2650,6 +2755,43 @@ async function tasks(args: string[]): Promise<number> {
       const task = stored ? await withClaim(claims, id, () => board.tasks.held(id, stored).block(why, hold)) : await board.tasks.block(id, why, hold)
       await claims.drop(id)
       printTask(task, 'blocked')
+      return 0
+    }
+    case 'ask': {
+      one(rest[1], 'one task and --file')
+      if (!flags.file) throw usage('Missing --file <path> for the attention draft.', { reason: 'missing_arguments' })
+      const draft = await attentionFrom(flags.file)
+      const stored = await claims.get(id)
+      const request = stored ? { ...draft, claim: { epoch: stored.epoch, token: stored.token } } : draft
+      // Don't drop the cached proof: another process might already have stored the next claim.
+      let answer
+      try {
+        answer = await board.tasks.ask(id, request)
+      } catch (error) {
+        if (!stored || !(error instanceof BoardError) || error.origin !== 'board' || error.code !== 'claim_lost') throw error
+        // The board refused the proof. Let it check ownership and state again without one.
+        answer = await board.tasks.ask(id, draft)
+      }
+      if (flags.json) result(answer)
+      else out(`requested attention on ${ref(id)}  ${answer.attention.id}`)
+      return 0
+    }
+    case 'attention': {
+      one(rest[1], 'one task')
+      const answer = await board.tasks.attention(id)
+      if (flags.json) result(answer)
+      else out(answer.attention ? formatAttention(answer.attention) : `no attention request on ${ref(id)}`)
+      return 0
+    }
+    case 'answer': {
+      one(rest[3], 'a task, a request ID, an option, and --commit')
+      const [, requestId, option] = rest
+      if (!requestId || !option || !flags.commit) throw usage('Missing the request ID, option, or --commit <sha>.', { reason: 'missing_arguments' })
+      const checked = AttentionAnswerBody.safeParse({ option, commit: flags.commit })
+      if (!checked.success) throw usage('Pass an option ID and a full lowercase SHA-1 or SHA-256 with --commit.')
+      const answer = await board.tasks.answer(id, requestId, checked.data)
+      if (flags.json) result(answer)
+      else out(`answered ${ref(id)}  ${answer.task.task?.state ?? ''}`.trimEnd())
       return 0
     }
     case 'unblock':
@@ -2718,6 +2860,8 @@ function taskFailure(code: string, status: number): { class: Failure['class']; m
       return { class: 'conflict', message: `Can't ${doing()}. It's finished.`, next: read('See how it ended') }
     case 'claim_lost':
       return { class: 'conflict', message: `Lost the claim on ${named === undefined ? 'the task' : `task ${ref(named)}`}. Its lease ran out, or the task moved on.`, next: [...read('See where it stands'), ...also('Or claim it again', 'claim', ...asTyped())] }
+    case 'priority_raise_forbidden':
+      return { class: 'permission', message: `Can't ${doing()}. A claim can lower priority, not raise it.`, next: [...read('See the current priority'), { instruction: 'Ask a task owner or channel manager to raise it' }] }
     case 'task_not_owned':
       return { class: 'permission', message: `You can't ${doing()}. It's someone else's.`, next: read('See whose it is') }
     case 'not_a_task':
@@ -2737,6 +2881,11 @@ function taskFailure(code: string, status: number): { class: Failure['class']; m
       return { class: 'limit', message: `Can't ${doing()}. That's too many channels and owners.`, next: [{ instruction: 'Name fewer owners with --from, or a smaller subtree' }] }
     case 'channel_tree_too_large':
       return { class: 'limit', message: `Can't ${doing()}. That's too many channels.`, next: [{ instruction: 'Name a channel, or a smaller subtree' }] }
+    case 'attention_stale':
+    case 'attention_required':
+      return status === 409 ? { class: 'conflict', message: `Can't ${doing()}. ${code === 'attention_required' ? 'It needs a structured answer.' : 'The request or its snapshot is no longer current.'}`, next: also('See the current request', 'attention', ...asTyped()) } : null
+    case 'no_task_attention':
+      return status === 501 ? { class: 'platform', message: `Can't ${doing()}. This board does not support task attention.`, next: [] } : null
     case 'no_tasks':
       return status === 501 ? { class: 'platform', message: `Can't ${doing()}. This board keeps no tasks.`, next: [] } : null
     case 'reserved_label':
@@ -2927,8 +3076,11 @@ function stopped(reason: unknown): Failed {
   const timedOut = reason instanceof Error && reason.name === 'TimeoutError'
   // A subcommand that writes is `channels create`'s first word, `sources <key> join`'s second.
   const sub = current.command === 'sources' ? current.args[1] : current.args[0]
-  // Every task verb writes: a claim, its renewal, and what settles or changes the task.
-  const writes = WRITES.has(current.command ?? '') || ['create', 'update', 'revoke', 'cancel', 'join'].includes(sub ?? '') || (current.command === 'tasks' && TASK_VERBS.has(sub ?? '')) || (current.command === 'agents' && AGENT_WRITES.has(sub ?? ''))
+  // Only show and attention are read-only task verbs.
+  const writes = WRITES.has(current.command ?? '') || ['create', 'update', 'revoke', 'cancel', 'join'].includes(sub ?? '')
+    || (current.command === 'tasks' && sub !== 'show' && sub !== 'attention' && TASK_VERBS.has(sub ?? ''))
+    || (current.command === 'agents' && AGENT_WRITES.has(sub ?? ''))
+    || (current.command === 'inbox' && (sub === 'ack' || sub === 'archive'))
   return new Failed({
     class: timedOut ? 'timeout' : 'canceled',
     reason: timedOut ? 'timeout' : 'canceled',

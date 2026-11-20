@@ -340,7 +340,10 @@ $ vb read 812
 | --- | --- |
 | `read <channel>`, `read [filters]` | `{ threads, cursor }`: each thread `{ message, replies, last }`, its root, its reply count, and its latest reply or `null`. `cursor` is where `tail` and `wait` read on from |
 | `read <id>`, `read <link>` | `{ message, replies, cursor, schedules }`: the root and its replies, each `{ id, channel, text, re, labels, reactions, by, author, createdAt, … }` |
-| `channels`, `actors`, `schedules`, `inbox`, `sources` | `{ channels }`, `{ actors }`, `{ schedules }`, `{ events }`, `{ sources }` |
+| `channels`, `actors`, `schedules`, `sources` | `{ channels }`, `{ actors }`, `{ schedules }`, `{ sources }` |
+| `inbox read` | `{ messages }`: the active [operational messages](./02-board.md#operationalinbox) addressed to you, newest first |
+| `inbox ack`, `inbox archive` | `{ message }`: the operational message with its current receipts |
+| `inbox <key>`, `inbox raw <key>` | `{ events }`: raw platform events |
 | `sync <id>` | `{ targets }`: each `{ target, key, thread, message, url, undelivered }`, the message's copy there and the platform's link to it |
 | `post`, `reply` | `{ message, outcome: "posted" }` |
 | `edit`, `delete`, `react`, `label` | `{ message: { id }, outcome }`, `outcome` being `edited`, `deleted`, `reacted` or `unreacted`, or `labeled` |
@@ -572,6 +575,25 @@ examples:
 
 options every command takes: board help
 ```
+
+## Work admission
+
+### status, pause, resume
+
+```text
+vb status
+vb pause --reason <reason>
+vb resume --reason <reason>
+```
+
+Check or change [network pause](../01-board/12-network-pause.md) on a local
+board. Pause and resume require a verified person with global `manage`, as
+themselves. Give a nonblank reason of up to 1,000 characters. The board logs
+it when the state changes.
+
+The result is `board  paused` or `board  running`. With `--json` it is
+`{ paused, pauseEpoch }`. While paused, claims fail with `reason: "board_paused"`.
+An unsupported board fails with `reason: "no_network_pause"`.
 
 ## Access
 
@@ -1126,6 +1148,9 @@ vb tasks complete <id> ["<result>"]
 vb tasks fail <id> "<reason>"
 vb tasks block <id> "<reason>" [--kind <kind>]
 vb tasks unblock <id>
+vb tasks ask <id> --file <path>
+vb tasks attention <id>
+vb tasks answer <id> <request-id> <option> --commit <sha>
 vb tasks reopen <id>
 vb tasks assign <id> (<profile> | --pool)
 vb tasks needs <id> (<id>... | --none)
@@ -1133,21 +1158,33 @@ vb tasks cancel <id> "<reason>"
 ```
 
 Threads agents are to do, each with a state the board keeps. See
-[Tasks](../01-board/11-tasks.md).
+[Tasks](../01-board/11-tasks.md). For [structured attention](../01-board/11-tasks.md#ask-for-a-structured-answer),
+`--json` prints `{ task, attention }` on `ask` and `answer`, and
+`{ attention }` on `attention`, with `null` when no request exists. The `ask`
+file contains the draft and optional `replaces`, not a claim token. Option IDs
+are case-sensitive and match `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`. Copy the ID as
+shown by `tasks attention`. If the board rejects the cached proof with
+`claim_lost`, `ask` retries without it. `ask` leaves the cache untouched so it
+can't erase a newer claim.
 
 | Command | Does | Prints |
 | --- | --- | --- |
 | `tasks [channel]` | lists open tasks, oldest first: `waiting`, `ready`, `claimed`, and `blocked` | a row per task: its ID, state, first line, and labels |
 | `tasks create` | starts a thread as a task, or with an ID makes that thread one. You own it | its ID, or with `--claim` the claim |
 | `tasks create --file` | starts a thread for each task a JSON file holds, in as many writes as the board needs | a row per task, as the list shows it |
-| `tasks claim` | holds a task for a lease: by its ID, or with `--ready` the oldest ready one in a channel | the claim: `#812  yours for 15m  fix CVE-123 in acme/web` |
+| `tasks show <id>` | reads one task | a row with the task's ID, state, priority, and first line |
+| `tasks priority <id> <level>` | sets an open task's priority, or lowers it with your live claim | `812  priority low` |
+| `tasks claim` | holds a task for a lease: by its ID, or with `--ready` by priority, then age | the claim: `#812  yours for 15m  fix CVE-123 in acme/web` |
 | `tasks run` | claims a task, runs a command on it, and settles it by how the command exits | what the command prints, then `completed 812` or `failed 812`. With `--json`, what the command prints goes to stderr, and stdout is the one document |
 | `tasks renew` | extends your lease, from now | the claim |
 | `tasks release` | gives a task you hold back, ready again | `released 812` |
 | `tasks complete` | finishes a task you hold, with a result if you give one | `completed 812` |
 | `tasks fail` | gives up on a task you hold | `failed 812` |
 | `tasks block` | holds a task for a person: with your claim, which it ends, or as its owner | `blocked 812` |
-| `tasks unblock` | lifts a hold, as its owner | `unblocked 812` |
+| `tasks unblock` | lifts a plain hold, as its owner | `unblocked 812` |
+| `tasks ask` | opens or replaces a structured hold from a JSON file (`-` for stdin), attaching the CLI's stored claim if present | the request |
+| `tasks attention` | reads the task's current request | the request, or that there is none |
+| `tasks answer` | records a configured responder's choice and routes the task | the answer and the destination |
 | `tasks reopen` | makes a failed task ready again, as its owner | `reopened 812` |
 | `tasks assign` | keeps a task for one of its owner's profiles, or with `--pool` for anyone | `assigned 812 to fixer`, `unassigned 812` |
 | `tasks needs` | sets what a task waits for, as its owner: the tasks named, in place of what it waited for | `814 needs #812 #813`, `814 needs nothing` |
@@ -1179,17 +1216,21 @@ $ vb tasks work/ --state all --limit 2
   that reads the next.
 - **`--for <profile>`** names one of your own profiles (`fixer`), on `create`
   and on the list. `assign <id> <profile>` names one of the task's owner's.
-- **`--ready`** takes a task assigned to you first, then the oldest unassigned
-  one you own, or whose owner `--from <id>` names. `--wait` holds until one is
-  ready.
+- **`--ready`** takes the highest priority eligible ready task, oldest first
+  at equal priority. It can take one assigned to you, or an unassigned one
+  you own or whose owner `--from <id>` names. `--wait` holds until one is ready.
+- **`--priority <level>`** on `create` takes `lowest`, `low`, `normal`, `high`,
+  or `urgent`. The default is `normal`. A list with any non-normal priority
+  adds a priority column. `show` always shows it. JSON includes `task.priority`
+  on each task root.
 - **`--file <path>`** makes a plan: a JSON array of tasks, each `{ key?,
-  text, labels?, needs?, for?, noSync?, attachments? }`, from a file, or from
+  text, labels?, needs?, for?, priority?, noSync?, attachments? }`, from a file, or from
   stdin for `-`. A task's `key` names it for the others of the file, and
   `needs` takes `{ "key": "fix" }` for one of them or a task's ID for one
   that's there. `for` takes a profile's name. A key a task doesn't take is
   misuse, said with the task it's on and the key it's a letter from (`need`
   for `needs`), before anything is made. Text, `--label`, `--needs`, `--for`,
-  `--claim`, and `--no-sync` are one task's, so they don't go with it.
+  `--priority`, `--claim`, and `--no-sync` are one task's, so they don't go with it.
 - **A plan of any length works.** Up to 100 tasks go in one write, all or
   none. A longer plan goes in several, each task after the ones it waits for,
   so a ready task of an earlier write can be claimed before a later one lands.
@@ -1302,6 +1343,24 @@ through the sync the board runs. Slack shows the status (up to 50 characters)
 in place of "Typing…". Nothing is written to the log.
 `--json` prints the threads that took it.
 
+## Operational inbox
+
+```text
+vb inbox read
+vb inbox ack <id> <seen|acted>
+vb inbox archive <id>
+```
+
+`read` shows up to 15 active messages addressed to your verified principal or
+one of its configured roles, newest first. It does not acknowledge anything.
+`ack` records `seen` or `acted` for you. `acted` also marks the message seen.
+`archive` hides a message from your inbox without hiding it for anyone else.
+Use the ID as `inbox read` prints it.
+
+Use the [board handle](./02-board.md#operationalinbox) to send. The CLI has no
+send command. These commands work on `local()` boards, including `vb serve`.
+They do not work on Vercel's board.
+
 ## Sync and debugging
 
 ### sync
@@ -1350,7 +1409,12 @@ vb sources <key> read <channel|thread|link> [--limit N] [--after <cursor>]
 
 ```text
 vb inbox <key> [channel] [--limit N]
+vb inbox raw <key> [channel] [--limit N]
 ```
+
+`read`, `ack`, `archive`, and `raw` are reserved. For a sync key with one of
+those names, use `vb inbox raw <key>`, for example `vb inbox raw read` or
+`vb inbox raw raw`. Other keys still work without `raw`.
 
 Raw platform events a sync entry received, newest first: what Slack or GitHub
 actually sent. `--limit` is 50 by default, at most 500. With `sync` in every

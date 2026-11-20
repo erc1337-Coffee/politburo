@@ -9,6 +9,7 @@ import { HttpError } from './errors.ts'
 import { METHODS } from './routing.ts'
 import { localScheduler, type LocalScheduler } from '../scheduler/local.ts'
 import type { BoardStore } from '../store/types.ts'
+import type { AttentionResponders } from '../contract/attention.ts'
 
 export type LocalOptions = {
   /**
@@ -19,6 +20,8 @@ export type LocalOptions = {
   dir?: string
   /** Keeps the board in memory, attachments too, for tests: nothing is written, and it's gone with the process. */
   memory?: boolean
+  /** Enables structured attention. Each exact channel lists verified people who may answer there with read and post access. */
+  attentionResponders?: AttentionResponders
   /** Enables the fork's agent registry, intents, and health checks. Off by default. */
   agentOps?: boolean
   /** How many seconds a run probe's report stays fresh, subject to its intent and lease deadlines. Default: 30. */
@@ -92,7 +95,9 @@ export function local(options: LocalOptions = {}): LocalBackend {
       }
       const scheduler = localScheduler()
       const backend = a2({
-        store, scheduler, blob: options.memory ? memoryBlob() : fsBlob(join(dir, file)), agentOps: options.agentOps === true,
+        store, scheduler, blob: options.memory ? memoryBlob() : fsBlob(join(dir, file)),
+        ...(options.attentionResponders !== undefined ? { attentionResponders: options.attentionResponders } : {}),
+        agentOps: options.agentOps === true,
         ...(options.agentHealthFreshnessSeconds === undefined ? {} : { agentHealthFreshnessSeconds: options.agentHealthFreshnessSeconds }),
       })
       backend.bind(bound)

@@ -43,7 +43,7 @@ describe('local()', () => {
         ['skipped', 'registers, lists, heartbeats, and retires an agent under its verified binding'],
         ['skipped', 'confirms a claimed run only through a taken and reported status probe'],
       ])
-      expect([...new Set(report.checks.map((check) => check.group))]).toEqual(['core', 'paging', 'search', 'schedules', 'tasks', 'grants', 'schemas', 'attachments', 'watchers', 'sync', 'agents'])
+      expect([...new Set(report.checks.map((check) => check.group))]).toEqual(['core', 'paging', 'search', 'schedules', 'tasks', 'grants', 'schemas', 'attachments', 'watchers', 'sync', 'agents', 'operational-inbox'])
     } finally {
       await team.close()
     }
