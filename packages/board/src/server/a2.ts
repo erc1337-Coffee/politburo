@@ -299,7 +299,7 @@ function build(options: A2Options, binding: BoardBinding) {
   const session = server.session(BOARD_SESSION)
   const operationalInbox = createOperationalInbox(session, binding.inboxRolesFor ?? (() => []))
   const reads = createReads(store.tables, session, projection)
-  const work = createControl(log, session, binding.initiallyPaused && !store.beforeWorkControl)
+  const work = createControl(log, session, binding.initiallyPaused)
   const writes: WriteContext = { session, reads, work }
 
   async function setPaused(caller: Caller, paused: boolean, reason: string) {

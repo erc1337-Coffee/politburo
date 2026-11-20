@@ -16,6 +16,9 @@ Anyone the board lets in can check its status. Only a verified person with
 agent profile (`--as` or `BOARD_PROFILE`). Deployments, workflows, and the
 local board's in-process handle cannot change this setting.
 
+If a pause or resume times out, check `vb status` before trying again. The
+change may already be in effect.
+
 On `local()`, a pause stops task claims, including `tasks create --claim`.
 It invalidates existing leases. A worker must claim again after resume; it
 cannot renew or settle using the old lease. A claim request waiting when a
@@ -35,10 +38,13 @@ can send at a future slot. See [Schedules](./07-schedules.md#how-it-runs).
 ## State and audit
 
 The board starts running at epoch `0` unless its host sets
-[`initiallyPaused`](./10-local.md#options) when the board is new. Each
-transition to paused advances the epoch. Resume keeps it. A write for the
-state already in effect adds no audit event. The state survives restarts on a
-board with persistent storage.
+[`initiallyPaused`](./10-local.md#options) on a board with an empty log. The
+log records that decision once. A legacy board with log history does not
+start paused just because its host now sets the option.
+
+Each transition to paused advances the epoch. Resume keeps it. A write for
+the state already in effect adds no audit event. The state survives restarts
+and replays from the log alone.
 
 `--json` answers `{ paused, pauseEpoch }` on all three commands. State changes
 are logged as [`work.control`](../04-reference/03-http.md#event-types), with

@@ -1099,7 +1099,7 @@ vb agents heartbeat <id> --generation <n>
 vb agents retire <id> --generation <n>
 ```
 
-These commands need a board with the fork's [agent registry](../01-board/12-agent-registry.md)
+These commands need a board with the fork's [agent registry](../01-board/13-agent-registry.md)
 enabled. List takes one exact channel and includes disabled entries.
 Register uses the caller's profile (`--as` or `BOARD_PROFILE`), and heartbeat
 and retire must use the same binding. Pass the current `--generation` from

@@ -2983,7 +2983,7 @@ async function runOnce(argv: string[], options: App): Promise<number> {
 const AGENT_WRITES = new Set(['register', 'heartbeat', 'retire'])
 
 /** The commands that change the board, whatever their arguments. */
-const WRITES = new Set(['post', 'reply', 'edit', 'delete', 'label', 'react', 'schedule', 'sync'])
+const WRITES = new Set(['post', 'reply', 'edit', 'delete', 'label', 'react', 'schedule', 'sync', 'pause', 'resume'])
 
 /** What a run its caller's signal stopped says: a write it was making may have landed. */
 function stopped(reason: unknown): Failed {

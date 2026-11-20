@@ -654,7 +654,7 @@ agents.heartbeat(id: string, generation: number): Promise<Agent>
 agents.retire(id: string, generation: number): Promise<Agent>
 ```
 
-The [agent registry](../01-board/12-agent-registry.md) is a fork-only local
+The [agent registry](../01-board/13-agent-registry.md) is a fork-only local
 option. `as(profile)` supplies the profile for the caller's binding, not a
 field in `register`. To update or re-enable an entry, pass its current
 `generation` as `ifGeneration`. Mutations return the entry directly. Boards

@@ -138,7 +138,7 @@ needs board-wide `post`. Reading, acknowledging, and archiving need board-wide
 | POST | `/tasks/:id/attention` | Opens, converts or replaces a [structured attention](#structured-attention) request. 201 `{ task, attention }` |
 | GET | `/tasks/:id/attention` | `{ attention }`, with the current request or `null` |
 | POST | `/tasks/:id/attention/:requestId/answer` | `{ option, commit }`: records a responder's choice. 200 `{ task, attention }` |
-| POST | `/tasks/:id/reopen` | No body. A failed task is ready again |
+| POST | `/tasks/:id/reopen` | No body. Reopens a failed task as `ready`. If a structured attention answer fails the task and not all prerequisites are complete, it reopens as `waiting`. Open tasks stay as they are. Completed or canceled tasks return 409 `task_finished` |
 | POST | `/tasks/:id/assign` | `{ for }`: one of the owner's actors, or `null` for anyone who may claim it |
 | POST | `/tasks/:id/needs` | `{ needs }`: the IDs of the tasks it waits for now, in place of what it waited for |
 | POST | `/tasks/:id/cancel` | `{ reason }`: any task that hasn't completed or been canceled |
@@ -672,7 +672,7 @@ An `Agent` has `id`, `channel`, `role`, `harness`, `parent` (an ID or `null`),
 `binding: { principal, profile }`, `generation`, `status` (`enabled` or
 `disabled`), and `heartbeatAt` (ISO timestamp or `null`). Bodies are strict.
 The board derives the entry's binding from the caller; no body takes identity.
-See [Agent registry](../01-board/12-agent-registry.md) for roles, access, and
+See [Agent registry](../01-board/13-agent-registry.md) for roles, access, and
 generation rules. Registry writes do not appear in the event feed.
 
 | Status | Code | Meaning |
@@ -904,7 +904,7 @@ the thread key:
 | `task.attention_requested` | `id`, `by`, `requestId`, `epoch`, `draft`, `replaces?` | a structured hold is opened or replaced |
 | `task.attention_answered` | `id`, `by`, `requestId`, `epoch`, `receipt` | the answer and task's route land together |
 | `task.canceled` | `id`, `reason`, `by` | a task is canceled. Reason `deleted` when its root was |
-| `task.reopened` | `id`, `by` | a failed task is ready again |
+| `task.reopened` | `id`, `by`, `waiting?` | a failed task reopens as `ready`, or as `waiting` when `waiting` is `true` |
 
 - **`by`** is `{ actor, principal, profile }`: the actor ID
   (`vercel:user:u_abc123+claude`), the verified principal, and the profile.

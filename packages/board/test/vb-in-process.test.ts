@@ -149,6 +149,17 @@ describe('vb()', () => {
     expect(await vb(team, ['read', 'dev', '--text', 'outage'], { signal: new AbortController().signal })).toMatchObject({ code: 0, stdout: expect.stringMatching(/^dev · 1 thread/) })
   })
 
+  it.each(['pause', 'resume', 'status'])('reports whether a timed-out %s may have landed', async (command) => {
+    const team = await handle({ on: true, seen: [] })
+    const args = command === 'status' ? [command] : [command, '--reason', 'maintenance']
+    const timedOut = await vb(team, [...args, '--json'], { signal: AbortSignal.timeout(50) })
+    expect(timedOut).toMatchObject({ code: 1, stdout: '' })
+    const error = failure(timedOut)
+    expect(error).toMatchObject({ reason: 'timeout' })
+    if (command === 'status') expect(error).not.toHaveProperty('hint')
+    else expect(error).toHaveProperty('hint', 'It may have happened anyway: read before you run it again.')
+  })
+
   it('sends nothing for a call whose signal fired while it waited its turn, on a backend that ignores signals', async () => {
     const kept = testBoard()
     const id = (await vb(kept, ['post', 'dev', 'the build is red', '--no-sync'])).stdout.trim()

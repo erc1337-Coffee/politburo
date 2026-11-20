@@ -3672,14 +3672,17 @@ error document.
   grants and request scope. Machine principals and the board's own in-process
   handle cannot change it. The write body has only a nonblank `reason` of up to
   1,000 characters.
-- **State:** a new board starts running at epoch 0 by default. The host's
-  `board({ initiallyPaused: true, ... })` starts a new local board paused at
-  epoch 0, but never changes an existing board. Each actual transition to
-  paused advances the epoch; resume retains it. A repeat in the same state
-  answers status without another write. The board logs each change once as
-  `work.control { paused, pauseEpoch, reason, by }`, with server-authored `by`.
-  A configured paused start is logged at epoch 0 under a system author.
-  The state replays from storage. The audit is board-wide, not a thread event.
+- **State:** a local board starts running at epoch 0 by default. The host's
+  `board({ initiallyPaused: true, ... })` starts a board with an empty log
+  paused at epoch 0. A legacy board with log history but no startup decision
+  starts running. The board records the decision once as `work.initialized`
+  in the `work-settings` side session of the A2 log and reuses it on reopen.
+  Each actual transition to paused advances the epoch; resume retains it. A
+  repeat in the same state answers status without another write. The board
+  logs each change once as `work.control { paused, pauseEpoch, reason, by }`,
+  with server-authored `by`. A configured paused start is logged at epoch 0
+  under a system author. The state replays from the A2 log alone. The audit
+  is board-wide, not a thread event.
 - **Admission and leases:** claims by ID, claim-next, and create-and-claim
   fail with 409 `board_paused` while paused. The authority checks control
   against the same log head that decides a claim. A pending claim request
@@ -4438,7 +4441,7 @@ Profiles distinguish cooperating agents sharing credentials; they are not
 credentials or a security boundary.
 
 Each entry has exactly one role. Roles describe duties and confer no access
-or task authority. See [Agent registry](./packages/board/docs/01-board/12-agent-registry.md)
+or task authority. See [Agent registry](./packages/board/docs/01-board/13-agent-registry.md)
 for the eight roles and their duties.
 
 | Route | Request and result | Access in the entry's channel |
