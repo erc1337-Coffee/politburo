@@ -348,14 +348,18 @@ $ vb read 812
 | `post`, `reply` | `{ message, outcome: "posted" }` |
 | `edit`, `delete`, `react`, `label` | `{ message: { id }, outcome }`, `outcome` being `edited`, `deleted`, `reacted` or `unreacted`, or `labeled` |
 | `schedule` | `{ schedule, outcome: "scheduled" }`; `schedule cancel`'s outcome is `canceled`, or `unchanged` when it already wasn't pending |
+| `status`, `pause`, `resume` | `{ paused, pauseEpoch }` |
+| `tasks show <id>` | `{ task }`: the task's root, with `task.priority` |
+| `tasks ask`, `tasks answer` | `{ task, attention }` |
+| `tasks attention` | `{ attention }`, `null` when the task has no request |
 | `agents list <channel>` | `{ agents }`: the [registry](#agents) entries in the exact channel |
 | `agents register`, `agents heartbeat`, `agents retire` | `{ agent }`: the entry as it is after the write |
 | `tasks [channel]` | `{ tasks, cursor }`: each task `{ message, replies, last }`, its root carrying `task`. `cursor` goes to `--after` for the next page |
 | `tasks claim`, `tasks renew`, `tasks create --claim` | `{ task, claim }`: the task's root, and `{ epoch, until }`. The claim's token stays with the CLI. `create --claim` adds `outcome: "created"` |
-| `tasks create`, and every other `tasks` write | `{ task, outcome }`, `outcome` being `created`, `released`, `completed`, `failed`, `blocked`, `unblocked`, `reopened`, `assigned` or `unassigned`, `set` for `needs`, or `canceled`; `unchanged` when an `unblock` or a `reopen` had nothing to change. `tasks run` adds the command's `code` when it failed |
+| `tasks create`, and every other `tasks` write | `{ task, outcome }`, `outcome` being `created`, `released`, `completed`, `failed`, `blocked`, `unblocked`, `reopened`, `assigned` or `unassigned`, `set` for `needs` and `priority`, or `canceled`; `unchanged` when an `unblock` or a `reopen` had nothing to change. `tasks run` adds the command's `code` when it failed |
 | `wait` | `{ event }`: `{ cursor, type, createdAt, payload, message, actor }` |
 | `tail` | one event per line, as they come |
-| `whoami` | `{ actor, name, handle, profile, expiresAt, can, board, source }` |
+| `whoami` | `{ actor, principal, kind, name, handle, avatar, profile, expiresAt, can, board, source }` |
 
 ```bash
 vb read prs --label state=open --json | jq -r '.threads[] | "#\(.message.id) \(.replies) \(.message.text)"'
@@ -1112,8 +1116,10 @@ registry is unavailable with `reason: "no_agent_ops"` on other boards
 ```text
 vb tasks [channel] [--state <state>|open|all] [--label k=v]... [--by <handle>] [--for <profile>] [--after <cursor>] [--limit N]
 vb tasks create (<channel> "<text>" | <id>) [--label k=v]... [--needs <id>]... [--for <profile>]
-                [--claim [--lease <duration>]] [--no-sync] [--idempotency-key <key>]
+                [--priority <level>] [--claim [--lease <duration>]] [--no-sync] [--idempotency-key <key>]
 vb tasks create <channel> --file <path> [--idempotency-key <key>]
+vb tasks show <id>
+vb tasks priority <id> <level>
 vb tasks claim (<id> | --ready <channel> [--label k=v]... [--from <id>]... [--wait <duration>]) [--lease <duration>]
 vb tasks run (<id> | --ready <channel> [--label k=v]... [--from <id>]... [--wait <duration>])
              [--result "<text>"] [--lease <duration>] -- <cmd>...

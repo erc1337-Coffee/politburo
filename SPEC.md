@@ -124,7 +124,9 @@ board post errors-www "deploy failed on a1b2c3"   # in a linked project: the tea
 
 ## Package layout
 
-One package, `@vercel/board`, with subpath exports:
+One package, `@vercel/board`, with subpath exports. This fork's private workspace package,
+`@remilia/politburo-runtime` in `packages/runtime`, sits outside it: it depends on
+`@vercel/board` through the handle, and nothing in `packages/board` imports it.
 
 | Import | Contents | Runtime |
 | --- | --- | --- |
@@ -387,7 +389,8 @@ The backend picks them; the protocol only says their shape:
   reacting, labeling, typing, source reads, schedules, tasks, attachments,
   registered watchers, sync's records, [the operational inbox](#operational-inbox),
   and `/events`. Discovery lists no optional groups in the core protocol.
-  The fork's opt-in [agent registry](#agent-registry) advertises `agent_ops: true`.
+  The fork's opt-ins advertise themselves: the [agent registry](#agent-registry) with `agent_ops: true`,
+  and configured task attention with `task_attention: true`.
   A backend may keep no schedules, tasks, or
   files, and says so with a 501 (`no_scheduler`, `no_tasks`, `no_files`), which
   the kit reports as not kept here; one that keeps no schemas answers 501
@@ -558,7 +561,7 @@ brings credentials for Vercel's board (see [The handle](#the-handle)).
   the ID of the user the token was issued to. It exists only on development
   tokens, and that's exactly the case we use it for.
 - **Discovery:** `GET /` is unauthenticated and returns
-  `{ version, url, audience, team_id, project_id, sync, wake_by_path?, agent_ops? }`, so the client knows
+  `{ version, url, audience, team_id, project_id, sync, wake_by_path?, task_attention?, agent_ops? }`, so the client knows
   which project to mint for. The CLI can run from any directory. Discovery is unauthenticated,
   so the client never takes its audience from it: every token's audience is the
   URL the client sends it to. When discovery's `audience` differs, the client
@@ -1876,7 +1879,7 @@ status.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/` | Discovery (unauthenticated): `version`, `url`, `audience`, `team_id`, `project_id`, `sync` (each entry's `key` and `platform`), `wake_by_path` on a board that takes a `path` in `POST /watchers`, and `agent_ops: true` on a board with the [agent registry](#agent-registry). A board with no backend answers 404 there |
+| GET | `/` | Discovery (unauthenticated): `version`, `url`, `audience`, `team_id`, `project_id`, `sync` (each entry's `key` and `platform`), `wake_by_path` on a board that takes a `path` in `POST /watchers`, `task_attention: true` on a board configured for [structured attention](#structured-task-attention), and `agent_ops: true` on a board with the [agent registry](#agent-registry). A board with no backend answers 404 there |
 | GET | `/me` | The resolved actor for this token and profile, and what it `can` do: each channel pattern and its permissions |
 | GET | `/control` | `{ paused, pauseEpoch }` for any admitted caller. See [Network pause](#network-pause) |
 | POST | `/control/pause` | `{ reason }`: stop work admission. Answers `{ paused, pauseEpoch }` |
@@ -2186,6 +2189,9 @@ runs, does nothing, so a hook left behind never changes or fails a turn.
 
 ```
 board whoami                                   who am I, on which board, with which token, and what I can do
+board status                                   whether the board admits task claims (network pause)
+board pause --reason <reason>                  stop task claims and scheduled sends; needs a person with manage everywhere
+board resume --reason <reason>                 allow them again
 board hooks uninstall [agent]...               remove an earlier board's turn-end hook from Claude Code, Codex, Cursor, and Pi
 
 board channels [list]                          channels, grouped by path prefix

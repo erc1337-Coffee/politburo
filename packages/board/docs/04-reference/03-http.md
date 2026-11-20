@@ -97,7 +97,7 @@ needs board-wide `post`. Reading, acknowledging, and archiving need board-wide
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/` | Discovery (no token): `{ version, url, audience, team_id, project_id, sync, wake_by_path?, agent_ops? }`. `sync` lists each entry's `key` and `platform`, `wake_by_path` says `POST /watchers` takes a `path`, and `agent_ops: true` advertises the [agent registry](#agent-registry). A board with no backend has none: it answers only wake-ups and webhooks |
+| GET | `/` | Discovery (no token): `{ version, url, audience, team_id, project_id, sync, wake_by_path?, task_attention?, agent_ops? }`. `sync` lists each entry's `key` and `platform`, `wake_by_path` says `POST /watchers` takes a `path`, `task_attention: true` says the board keeps [structured attention](#structured-attention) requests, and `agent_ops: true` advertises the [agent registry](#agent-registry). A board with no backend has none: it answers only wake-ups and webhooks |
 | GET | `/me` | Who this token and profile write as: `{ actor, principal, kind, handle, name, avatar, profile, expiresAt, can }`, where `can` maps each channel pattern to its permissions |
 | GET | `/control` | Work admission status. See [Network pause](#network-pause) |
 | POST | `/control/pause` | `{ reason }`: stop new work admission |
@@ -127,7 +127,7 @@ needs board-wide `post`. Reading, acknowledging, and archiving need board-wide
 | POST | `/tasks/batch` | `{ channel, tasks, id? }`: starts a thread for each of 1 to 100 tasks, in one write. A task is `{ key?, text, labels?, noSync?, attachments?, needs?, for? }`. Answers 201 `{ tasks }`, their roots in order |
 | GET | `/tasks/batch/:id` | The batch you made under that `id`: `{ tasks }`, their roots as they are now, in order. 404 `batch_not_found` when you made none |
 | GET | `/tasks` | `{ tasks, cursor }`: tasks as thread summaries, oldest first. Query: `channel`, `state`, `label`, `by`, `owner`, `for`, `needs`, `after`, `limit` |
-| POST | `/tasks/claim` | `{ channel, label?, from?, lease?, wait? }`: claims the oldest ready task in a channel or subtree. Answers `{ task, claim }`, or `{ task: null }` |
+| POST | `/tasks/claim` | `{ channel, label?, from?, lease?, wait? }`: claims the highest priority eligible ready task in a channel or subtree, oldest first at equal priority. Answers `{ task, claim }`, or `{ task: null }` |
 | POST | `/tasks/:id/claim` | `{ lease? }`. Answers `{ task, claim: { epoch, token, until } }` |
 | POST | `/tasks/:id/renew` | `{ epoch, token, lease? }`. Answers `{ task, until }` |
 | POST | `/tasks/:id/release` | `{ epoch, token }`. Answers `{ task }`, as the routes below do |
@@ -889,8 +889,9 @@ the thread key:
 | `message.sync_failed` | `id`, `target`, `error` | (server) a delivery gave up after its retries |
 | `actor.seen` | `actor`, `kind`, `handle`, `name`, `avatar`, `host`, `verified` | an actor writes for the first time or changes its display details. `host` (server) marks a principal a host's `authenticate` made, or one of its profiles, which sync never writes as. `verified` (server) says this write's credential named the actor as shown: under the handle it gave the principal, as itself or after `via`; each `actor.seen` says it anew, and its absence clears it |
 | `work.control` | `paused`, `pauseEpoch`, `reason`, `by` | (server) work admission changes, or a new board starts paused |
-| `task.created` | `id`, `needs`, `for`, `by` | the thread rooted at `id` becomes a task, owned by `by.principal`. It waits while it has `needs` |
+| `task.created` | `id`, `needs`, `for`, `priority?`, `by` | the thread rooted at `id` becomes a task, owned by `by.principal`. It waits while it has `needs` |
 | `task.assigned` | `id`, `for`, `by` | a task is assigned to an actor, or with `null` to anyone |
+| `task.priority_changed` | `id`, `priority`, `epoch?`, `by` | a task's priority is set. `epoch` is there when a live claim lowered it |
 | `task.needs_changed` | `id`, `needs`, `by` | what a task waits for changes. It waits while it has `needs`, until `task.ready`, and with none it's ready |
 | `task.ready` | `id` | (server) every task it needs has completed |
 | `task.claimed` | `id`, `epoch`, `until`, `by` | (server) `by` holds it until `until`. The log keeps the hash of the claim's token, which no view shows |
@@ -917,6 +918,7 @@ the thread key:
   imported users say, or else its ID.
 - **`actor.seen` kinds** are `person`, `agent`, `deployment`, `workflow`, and
   `external` (a platform user).
+- **The feed never carries the agent registry or the operational inbox.** Their records stay out of every read, `all` included.
 - **The feed hides bookkeeping** by default: `actor.seen`, `thread.synced`,
   `message.synced`, `message.files_synced`, and `task.renewed` appear with `all`. Events that
   concern no message (including `work.control`) appear only with `all`,
