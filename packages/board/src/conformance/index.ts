@@ -173,6 +173,7 @@ type Context = {
 type Check = {
   group: CheckResult['group']
   name: string
+  taskAuthority?: true
   /** Omit the check unless advertised. Once advertised, a 501 is a failure. */
   requires?: 'task_attention'
   run: (ctx: Context) => Promise<void | string>
@@ -465,6 +466,19 @@ function lostRace(racing: PromiseSettledResult<unknown>[]) {
     check(error instanceof BoardError && error.status === 409 && error.code === 'task_claimed', `a claim that lost the race should be 409 task_claimed, got ${error instanceof BoardError ? `${error.status} ${error.code}` : String(error)}`)
   }
 }
+
+/** Only the first extension call can declare that this board has no task authority. */
+async function taskAuthority<T>(attempt: Promise<T>): Promise<T> {
+  try {
+    return await attempt
+  } catch (error) {
+    if (error instanceof BoardError && error.status === 501 && error.code === 'no_task_authority') throw new Skip('not kept here: no task authority')
+    throw error
+  }
+}
+
+const taskFeed = (ctx: Context, after?: string) => ctx.board.poll({ channel: ctx.channel, label: [`conformance=${ctx.labels.conformance}`], ...(after === undefined ? {} : { after }) })
+const handoffPacket = { commit: 'a'.repeat(40), packetPath: 'handoffs/conformance.md', sha256: 'b'.repeat(64) }
 
 const NETWORK_PAUSE: Check = {
   group: 'network-pause',
@@ -1528,6 +1542,124 @@ const CHECKS: Check[] = [
       await ctx.board.tasks.cancel(root.id, 'conformance: done checking')
       await rejects(ctx.board.tasks.claim(root.id), 409, 'task_finished', 'claiming a canceled task')
       await rejects(ctx.board.tasks.cancel(root.id, 'conformance: again'), 409, 'task_finished', 'canceling a canceled task')
+    },
+  },
+  {
+    group: 'tasks',
+    taskAuthority: true,
+    name: 'parks a task only as a verified person with manage, and unpark restores work without the claim',
+    run: async (ctx) => {
+      const { task: root } = await task(ctx, 'conformance: operator park')
+      const reason = 'conformance: hold for an operator'
+      const lifted = 'conformance: approved by an operator'
+      if (ctx.me.kind !== 'person' || ctx.me.profile !== null || !compileAccess(ctx.me.can).can('manage', ctx.channel)) {
+        try {
+          await taskAuthority(ctx.board.tasks.park(root.id, reason))
+        } catch (error) {
+          if (!(error instanceof BoardError) || error.status !== 403 || error.code !== 'forbidden') throw error
+          await rejects(ctx.board.tasks.unpark(root.id, lifted), 403, 'forbidden', 'unparking without a verified person with manage')
+          return
+        }
+        throw new Mismatch('parking without a verified person with manage: expected 403 forbidden, and it succeeded')
+      }
+      const { cursor } = await taskFeed(ctx)
+      const held = await ctx.board.tasks.claim(root.id)
+      const parked = await taskAuthority(ctx.board.tasks.park(root.id, reason))
+      same(parked.task?.state, 'blocked', 'the parked task')
+      same(parked.labels['board.task'], 'blocked', "the parked root's board.task")
+      same(parked.task?.claim, null, 'the claim of a parked task')
+      same(parked.task?.parked?.reason, reason, 'why the task was parked')
+      same(parked.task?.parked?.previous, 'claimed', 'where the task was before it was parked')
+      same(parked.task?.parked?.by.actor, ctx.me.actor, 'who parked the task')
+      await rejects(ctx.board.tasks.claim(root.id), 409, 'task_blocked', 'claiming a parked task')
+      await rejects(ctx.board.tasks.unblock(root.id), 409, 'task_blocked', 'lifting a park with the legacy unblock')
+      if (ctx.withHeaders) {
+        const agent = ctx.withHeaders({ 'x-board-profile': 'conformance' })
+        await rejects(agent.tasks.unpark(root.id, lifted), 403, 'forbidden', 'unparking as a profile')
+      }
+      if (ctx.withCan) {
+        const narrowed = ctx.withCan(`${ctx.channel}=read,label`)
+        await rejects(narrowed.tasks.unpark(root.id, lifted), 403, 'forbidden', 'unparking without manage in the channel')
+      }
+      const resumed = await ctx.board.tasks.unpark(root.id, lifted)
+      same(resumed.task?.state, 'ready', 'the unparked task')
+      same(resumed.task?.claim, null, 'the claim of a task after unpark')
+      await rejects(held.complete(), 409, 'claim_lost', 'settling the claim that was parked and unparked')
+      const { events } = await taskFeed(ctx, cursor)
+      const operatorEvents = events.filter((event) => event.message?.id === root.id && (event.type === 'task.parked' || event.type === 'task.unparked'))
+      alike(operatorEvents.map((event) => {
+        const payload = event.payload as { reason?: string; by?: { actor: string; principal: string } }
+        return [event.type, payload.reason, payload.by?.actor, payload.by?.principal]
+      }), [
+        ['task.parked', reason, ctx.me.actor, ctx.me.principal],
+        ['task.unparked', lifted, ctx.me.actor, ctx.me.principal],
+      ], 'the park and unpark events, with their verified operators and reasons')
+    },
+  },
+  {
+    group: 'tasks',
+    taskAuthority: true,
+    name: 'binds a claim to its verified owner and fences an older generation even with the same token',
+    run: async (ctx) => {
+      const { task: root } = await task(ctx, 'conformance: bound claim')
+      const owner = { principal: ctx.me.principal, actor: ctx.me.actor }
+      const binding = { owner, controller: owner, provider: 'conformance', model: 'example', session: 'first', branch: 'topic/conformance', worktree: '/workspace/conformance', baseCommit: 'a'.repeat(40) }
+      // 32 random bytes encoded as base64url, without Node dependencies. Never put the proof in a diagnostic.
+      const token = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))).replaceAll('+', '-').replaceAll('/', '_').replace(/=$/, '')
+      if (/^board:client(?::|$)/.test(ctx.me.principal)) {
+        await rejects(ctx.board.tasks.claim(root.id, { binding, token }), 403, 'forbidden', 'binding a claim without a verified caller')
+        return
+      }
+      const first = await taskAuthority(ctx.board.tasks.claim(root.id, { binding, token }))
+      const assertBinding = (got: unknown, expected: typeof binding, what: string) => check(canonical(got) === canonical(expected), `${what} should show the complete binding that was supplied`)
+      assertBinding(first.binding, binding, 'the claim')
+      assertBinding((await ctx.board.thread(root.id)).message.task?.claim?.binding, binding, 'the read of the task')
+      const sameClaim = await ctx.board.tasks.claim(root.id, { token })
+      same(sameClaim.epoch, first.epoch, 'the generation on retry with the live token')
+      assertBinding(sameClaim.binding, binding, 'a retry with no binding supplied')
+      const next = { ...binding, session: 'second' }
+      await rejects(ctx.board.tasks.claim(root.id, { token, binding: next }), 409, 'binding_mismatch', 'changing the binding of a live claim on retry')
+      await first.release()
+      await rejects(ctx.board.tasks.claim(root.id, { binding: { ...binding, owner: { principal: 'vercel:user:u_not_claimant', actor: 'vercel:user:u_not_claimant' } } }), 403, 'forbidden', 'naming an unverified owner in the binding')
+      const second = await ctx.board.tasks.claim(root.id, { token, binding: next })
+      same(second.epoch, first.epoch + 1, 'the next generation')
+      check(second.token === first.token && first.token === token, 'both generations should use the supplied token')
+      await rejects(first.complete(), 409, 'claim_lost', 'settling a previous generation with the current token')
+      same((await second.complete()).task?.state, 'completed', 'the result of settling the current generation')
+    },
+  },
+  {
+    group: 'tasks',
+    taskAuthority: true,
+    name: 'records an immutable handoff and accepts only one of two replacements naming the same predecessor',
+    run: async (ctx) => {
+      const { task: root } = await task(ctx, 'conformance: immutable handoff')
+      const { cursor } = await taskFeed(ctx)
+      const claim = await ctx.board.tasks.claim(root.id)
+      const first = (await taskAuthority(claim.handoff(handoffPacket))).task?.handoff
+      check(first, 'the handoff write should answer a handoff record')
+      isRef(first.id, 'the handoff id')
+      same(first.commit, handoffPacket.commit, 'the handoff commit')
+      same(first.packetPath, handoffPacket.packetPath, 'the handoff packet path')
+      same(first.sha256, handoffPacket.sha256, 'the handoff packet hash')
+      same(first.by?.actor, ctx.me.actor, 'the handoff author')
+      same(first.generation, claim.epoch, 'the handoff generation')
+      await rejects(claim.handoff(handoffPacket), 409, 'handoff_conflict', 'replacing a handoff without naming it')
+      const racing = await Promise.allSettled(['c', 'd'].map((digit) => claim.handoff({ ...handoffPacket, commit: digit.repeat(40), supersedes: first.id })))
+      const won = racing.filter((result) => result.status === 'fulfilled')
+      same(won.length, 1, 'the number of supersessions that won the race')
+      const lost = racing.find((result) => result.status === 'rejected')
+      check(lost?.reason instanceof BoardError && lost.reason.status === 409 && lost.reason.code === 'handoff_conflict', 'the other supersession should lose with 409 handoff_conflict')
+      const latest = (await ctx.board.thread(root.id)).message.task?.handoff
+      check(latest && latest.id !== first.id, 'the task should show a new, distinct handoff')
+      same(latest.supersedes, first.id, 'the predecessor of the latest handoff')
+      same(latest.commit, won[0]!.value.task?.handoff?.commit, 'the commit of the replacement that won')
+      const { events } = await taskFeed(ctx, cursor)
+      const history = events.filter((event) => event.type === 'task.handoff' && event.message?.id === root.id).map((event) => (event.payload as { handoff: unknown }).handoff)
+      check(canonical(history) === canonical([first, latest]), 'the feed should retain the original handoff and the one replacement, unchanged')
+      check(!show(history).includes(claim.token), 'the handoff feed must not reveal the claim token')
+      await claim.release()
+      await rejects(claim.handoff({ ...handoffPacket, supersedes: latest.id }), 409, 'claim_lost', 'publishing a handoff with a released claim')
     },
   },
   {
@@ -2769,13 +2901,14 @@ export async function conformance(board: Board, options: ConformanceOptions = {}
   }
   try {
     const selected = options.networkPause ? [NETWORK_PAUSE, ...CHECKS] : CHECKS
-    for (const { group, name, requires, run } of selected) {
+    for (const { group, name, requires, taskAuthority, run } of selected) {
       if (requires && info[requires] !== true) continue
       try {
         const skipped = await run(ctx)
         checks.push(skipped ? { group, name, status: 'skipped', detail: skipped } : { group, name, status: 'passed' })
       } catch (error) {
-        if (!requires && OPTIONAL.has(group) && error instanceof BoardError && error.status === 501) checks.push({ group, name, status: 'skipped', detail: `not kept here: ${error.message}` })
+        if (taskAuthority && error instanceof Skip) checks.push({ group, name, status: 'skipped', detail: error.message })
+        else if (!requires && OPTIONAL.has(group) && error instanceof BoardError && error.status === 501 && (!taskAuthority || error.code === 'no_tasks')) checks.push({ group, name, status: 'skipped', detail: `not kept here: ${error.message}` })
         // Vercel's API takes watchers only from a deployment: a run as anyone else can't check them.
         else if (group === 'watchers' && error instanceof BoardError && error.code === 'watchers_need_project') checks.push({ group, name, status: 'skipped', detail: 'only a deployment registers watchers here' })
         // Vercel's API takes no GitHub or OIDC principal in a grant.

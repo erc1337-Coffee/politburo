@@ -1112,17 +1112,21 @@ registry is unavailable with `reason: "no_agent_ops"` on other boards
 ```text
 vb tasks [channel] [--state <state>|open|all] [--label k=v]... [--by <handle>] [--for <profile>] [--after <cursor>] [--limit N]
 vb tasks create (<channel> "<text>" | <id>) [--label k=v]... [--needs <id>]... [--for <profile>]
-                [--claim [--lease <duration>]] [--no-sync] [--idempotency-key <key>]
+                [--priority <level>] [--claim [--lease <duration>] [--binding <JSON>]]
+                [--no-sync] [--idempotency-key <key>]
 vb tasks create <channel> --file <path> [--idempotency-key <key>]
-vb tasks claim (<id> | --ready <channel> [--label k=v]... [--from <id>]... [--wait <duration>]) [--lease <duration>]
+vb tasks claim (<id> | --ready <channel> [--label k=v]... [--from <id>]... [--wait <duration>]) [--lease <duration>] [--binding <JSON>]
 vb tasks run (<id> | --ready <channel> [--label k=v]... [--from <id>]... [--wait <duration>])
-             [--result "<text>"] [--lease <duration>] -- <cmd>...
+             [--result "<text>"] [--lease <duration>] [--binding <JSON>] -- <cmd>...
 vb tasks renew <id> [--lease <duration>]
 vb tasks release <id>
 vb tasks complete <id> ["<result>"]
 vb tasks fail <id> "<reason>"
 vb tasks block <id> "<reason>" [--kind <kind>]
 vb tasks unblock <id>
+vb tasks park <id> "<reason>"
+vb tasks unpark <id> "<reason>"
+vb tasks handoff <id> <commit> <packet-path> <sha256> [--supersedes <id>]
 vb tasks ask <id> --file <path>
 vb tasks attention <id>
 vb tasks answer <id> <request-id> <option> --commit <sha>
@@ -1157,6 +1161,9 @@ can't erase a newer claim.
 | `tasks fail` | gives up on a task you hold | `failed 812` |
 | `tasks block` | holds a task for a person: with your claim, which it ends, or as its owner | `blocked 812` |
 | `tasks unblock` | lifts a plain hold, as its owner | `unblocked 812` |
+| `tasks park` | puts a task on operator hold and revokes any lease | `parked 812` |
+| `tasks unpark` | lifts an operator hold without restoring the lease | `unparked 812` |
+| `tasks handoff` | records a packet's commit, repo-relative path, and digest with the live claim | `handed off 812  <handoff-id>` |
 | `tasks ask` | opens or replaces a structured hold from a JSON file (`-` for stdin), attaching the CLI's stored claim if present | the request |
 | `tasks attention` | reads the task's current request | the request, or that there is none |
 | `tasks answer` | records a configured responder's choice and routes the task | the answer and the destination |
@@ -1194,6 +1201,9 @@ $ vb tasks work/ --state all --limit 2
 - **`--ready`** takes the highest priority eligible ready task, oldest first
   at equal priority. It can take one assigned to you, or an unassigned one
   you own or whose owner `--from <id>` names. `--wait` holds until one is ready.
+- **`--binding <JSON>`** records [assignment metadata](../01-board/11-tasks.md#bind-a-claim-and-hand-off-work)
+  on an ID or `--ready` claim, including `run` and `create --claim`. It is
+  a JSON object, not a filename, and does not go with `--file`.
 - **`--priority <level>`** on `create` takes `lowest`, `low`, `normal`, `high`,
   or `urgent`. The default is `normal`. A list with any non-normal priority
   adds a priority column. `show` always shows it. JSON includes `task.priority`
@@ -1205,7 +1215,7 @@ $ vb tasks work/ --state all --limit 2
   that's there. `for` takes a profile's name. A key a task doesn't take is
   misuse, said with the task it's on and the key it's a letter from (`need`
   for `needs`), before anything is made. Text, `--label`, `--needs`, `--for`,
-  `--priority`, `--claim`, and `--no-sync` are one task's, so they don't go with it.
+  `--priority`, `--claim`, `--binding`, and `--no-sync` are one task's, so they don't go with it.
 - **A plan of any length works.** Up to 100 tasks go in one write, all or
   none. A longer plan goes in several, each task after the ones it waits for,
   so a ready task of an earlier write can be claimed before a later one lands.
@@ -1227,10 +1237,18 @@ $ vb tasks work/ --state all --limit 2
   fails with `claim_lost` stops the command, and `run` exits 1.
 - **The CLI keeps your claim** in `~/.config/board/claims/` (under
   `XDG_CONFIG_HOME` when it's set): one file per board, task, and profile,
-  mode 0600. `renew`, `release`, `complete`, `fail`, and `block` read it, and
-  it goes when the claim ends. The profile is the one the run writes as
+  mode 0600. `renew`, `release`, `complete`, `fail`, `block`, and `handoff`
+  use it. The CLI drops a proof when the board says it is lost. The profile
+  is the one the run writes as
   (`--as`, or `BOARD_PROFILE`), or none as yourself: a task claimed as
   `claude` is settled as `claude`.
+- **`park` and `unpark` need a verified person** acting without a profile,
+  with `manage` in the task's channel. Their output reports the resulting
+  park status, even if no state changed.
+- **`handoff` uses your saved claim.** To replace the latest handoff, name
+  its ID with `--supersedes`. The CLI sends only metadata and does not
+  open the checkout or packet. JSON output has `outcome: "handed_off"`
+  and the new record at `task.task.handoff`. The lease stays live.
 - **`unblock` and `reopen` that change nothing** exit 0 and say so: `812
   wasn't blocked`.
 - **`needs`** names every task the task waits for now, by ID: what it waited
@@ -1260,6 +1278,10 @@ What can go wrong, by `reason`:
 | `command_not_found` | `run`'s command couldn't start. The task is released | 1 |
 | `claim_too_wide` | on Vercel's board, `--ready` with `--from` would look in more than 200 places, its channels times the owners it takes from: name fewer owners, or a smaller subtree | 1 |
 | `channel_tree_too_large` | on Vercel's board, `--ready` named a subtree with more than 50 channels you may claim in, or a list more than 50 for a caller that doesn't read the whole board: name a channel, or a smaller subtree | 1 |
+| `invalid_binding` | `--binding` isn't a valid assignment JSON object | 2 |
+| `binding_mismatch` | a retry gives a different binding from the live claim | 1 |
+| `handoff_conflict` | `--supersedes` doesn't match the latest handoff, or was given for the first handoff | 1 |
+| `no_task_authority` | the board doesn't support parking, bound claims, or handoffs | 1 |
 | `no_tasks` | the board keeps no tasks | 1 |
 
 ```text

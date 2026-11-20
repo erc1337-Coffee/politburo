@@ -558,7 +558,7 @@ brings credentials for Vercel's board (see [The handle](#the-handle)).
   the ID of the user the token was issued to. It exists only on development
   tokens, and that's exactly the case we use it for.
 - **Discovery:** `GET /` is unauthenticated and returns
-  `{ version, url, audience, team_id, project_id, sync, wake_by_path?, agent_ops? }`, so the client knows
+  `{ version, url, audience, team_id, project_id, sync, wake_by_path?, agent_ops?, task_attention?, task_authority? }`, so the client knows
   which project to mint for. The CLI can run from any directory. Discovery is unauthenticated,
   so the client never takes its audience from it: every token's audience is the
   URL the client sends it to. When discovery's `audience` differs, the client
@@ -3704,7 +3704,7 @@ the handle's `tasks`, the reserved `board.` labels (on every backend, since
 `board()` refuses them), the `tasks` conformance group, and the CLI: `vb tasks`
 and its claims directory, the task line in `vb read`, task events in `vb
 tail`, and the `tasks` command a `reserved_label` failure names. `vercel()`
-maps the routes onto Vercel's API. Next: the inspector, and sync re-rendering
+maps the legacy routes onto Vercel's API. Next: the inspector, and sync re-rendering
 a copy when its task changes.
 
 A task is a thread that someone's agents are to do: its root says what, its
@@ -3833,7 +3833,7 @@ if (claim) {
 | `waiting` | a prerequisite hasn't completed | `ready` once every one has; `blocked`, `canceled` |
 | `ready` | anyone with `label` in its channel may claim it, or only the actor it's assigned to | `claimed`, `blocked`, `canceled` |
 | `claimed` | an agent holds it until its lease ends | `completed`, `failed`, `blocked`, or `canceled`; or `ready` (released, or the lease ran out) |
-| `blocked` | held for a person, with a `kind` and a `reason` | `ready` or `waiting`, when unblocked or an answer resumes work; `failed` by an answer; `canceled` |
+| `blocked` | held for a person, with a `kind` and a `reason`, or parked by an operator | `ready` or `waiting` when the applicable hold is lifted or an answer resumes work; `failed` by an answer; `canceled` |
 | `completed` | done, with an optional `result` | none; its dependents become `ready` |
 | `failed` | tried and couldn't, with a `reason`; its dependents keep waiting | `ready`, when reopened; `canceled` |
 | `canceled` | no longer wanted, with a `reason`; its dependents keep waiting | none |
@@ -3871,8 +3871,8 @@ that task, a `claim --ready` that found nothing ready there, or a list.
 - **The CLI holds the claim for whoever it writes as.** A claim answers
   `{ epoch, token }`, and the CLI keeps both in `~/.config/board/claims/`, per
   board, task, and profile (`--as`). So `renew`, `release`, `complete`,
-  `fail`, and `block` as that profile need nothing more, and a run as another
-  profile gets `claim_not_held`, with `vb tasks claim <id>` as its way
+  `fail`, `block`, and `handoff` as that profile need no additional proof.
+  A run as another profile gets `claim_not_held`, with `vb tasks claim <id>` as its way
   out. In code, `claim()` answers a claim with those methods, or `null`.
 - **A claim's file is its user's alone.** The directory follows
   `XDG_CONFIG_HOME`, as the CLI's tokens do. Each claim is one file, mode 0600
@@ -3892,10 +3892,10 @@ that task, a `claim --ready` that found nothing ready there, or a list.
   so a retry is safe. Two claims by one run then share a token, and only the
   epoch tells them apart.
 - **The board fences what a claim does.** Each claim raises the task's
-  `epoch`. A write with an older epoch or the wrong token, or after its claim
-  ended (released, blocked, or canceled), is 409 `claim_lost` and changes
-  nothing, so an agent that stalls past its lease can't settle a task another
-  agent has since taken over.
+  `epoch`. On `local()` a claim write needs the same principal and actor,
+  the current epoch, the token, and a live lease, checked at the deciding
+  append. A stale proof is 409 `claim_lost` and changes nothing, so an agent
+  that stalls past its lease can't settle a task another has taken over.
 - **`vb tasks run <id> -- <cmd>`** (or `run --ready …`) claims, renews while
   the command runs, completes on exit 0 (with `--result "<text>"`), fails on
   any other exit (`exited <code>`, or `killed by <signal>`), releases on
@@ -3908,6 +3908,48 @@ that task, a `claim --ready` that found nothing ready there, or a list.
   on the CLI's machine.
 - **`vb tasks create … --claim`** creates a task and claims it in one write,
   for a single step an agent is about to do.
+
+### Assignment binding and handoffs
+
+A claim can include `binding`, on an ID claim, claim-next, or create or adopt
+with `claim: true`. `vb` takes it as `--binding <JSON>` on `claim`, `run`,
+and `create --claim`, not on a plan. Omit it for a legacy claim.
+
+```ts
+type ActorKey = { principal: string; actor: string }
+type TaskBindingInput = {
+  controller: ActorKey; owner: ActorKey
+  provider: string; model: string; session: string
+  branch: string; worktree: string; baseCommit: string
+}
+```
+
+The board requires an authenticated claimant and checks that `owner` matches
+its principal and exact actor. A local board's in-process handle cannot make
+a bound claim. This is the owner of the claim, not
+`task.owner`, which still owns the task. The controller and other metadata
+are the claimant's attestations. The controller's actor must belong to the
+named principal by its syntax; naming it grants no authority. `baseCommit`
+is a full lowercase Git SHA (40 or 64 hex digits). The binding is visible
+with the live claim and on its `task.claimed` event. Do not put secrets in it.
+A live-token retry by ID may omit the binding or repeat it unchanged;
+a different binding is 409 `binding_mismatch`. The existing `epoch` is the
+claim generation; there is no separate generation counter. Reusing a task
+creation idempotency key cannot substitute a different binding either.
+
+A live claimant records `{ commit, packetPath, sha256, supersedes? }` with
+`claim.handoff(packet)` or `team.tasks.held(id, { epoch, token }).handoff(packet)`.
+The deciding append checks the claim proof and the latest handoff together.
+`commit` is a full lowercase Git SHA, `packetPath` is a repo-relative path
+without traversal segments, and `sha256` is a 64-digit lowercase hex digest
+of the packet bytes. Neither the server nor CLI opens the checkout or
+packet. The recipient verifies the bytes at the named commit before use.
+
+Each handoff has a server-authored ID, author, time, and generation.
+`task.handoff` on the root is the latest one; each record stays in its own
+`task.handoff` event. The first has no `supersedes`. A replacement must name
+the latest record's ID or receives 409 `handoff_conflict`. A handoff doesn't
+end the lease, complete the task, or release its dependents.
 
 ### Dependencies
 
@@ -4104,20 +4146,41 @@ Configured local authorities advertise `Discovery.task_attention: true`;
 a plain hold. Upgrade all writers before enabling the feature; there is no
 backfill.
 
+### Parking for an operator
+
+`park` and `unpark` take a reason and require a verified person acting as
+themselves (no profile), with `manage` in the task's channel. Neither
+in-process handles nor deployment identities can act as the operator. Keep
+operator credentials out of workers; an unrestricted person's credential can
+act without a profile. The server writes the operator and reason on each transition. This hold uses
+the existing `blocked` state and label, but is separate from `block` and
+`unblock` and cannot be lifted through them.
+
+A `waiting`, `ready`, or `claimed` task can be parked. Parking records its
+previous state and revokes any lease in the same write. Unparking rechecks
+prerequisites and returns the task to `waiting` or `ready`, never to the old
+claim. Parking an already parked task or unparking an unparked nonterminal task
+changes nothing. A legacy block cannot be parked over. Canceling or deleting
+the task still ends it. A park affects only that task, not its channel or
+board.
+
 ### `vb tasks`
 
 ```text
 vb tasks [<channel>|<prefix/>] [--state <state>|open|all] [--label k=v]... [--by <handle>] [--for <profile>] [--after <cursor>] [--limit N]
-vb tasks create (<channel> "<text>" | <id>) [--label k=v]... [--needs <id>]... [--for <profile>] [--priority <level>] [--claim] [--lease <duration>] [--no-sync] [--idempotency-key <key>]   - as the text reads it from stdin
+vb tasks create (<channel> "<text>" | <id>) [--label k=v]... [--needs <id>]... [--for <profile>] [--priority <level>] [--claim [--lease <duration>] [--binding <JSON>]] [--no-sync] [--idempotency-key <key>]   - as the text reads it from stdin
 vb tasks create <channel> --file <path> [--idempotency-key <key>]                                   a plan: a JSON array of tasks, - for stdin, in as many writes as it takes
-vb tasks claim (<id> | --ready <channel>|<prefix/> [--label k=v]... [--from <id>]... [--wait <duration>]) [--lease <duration>]
-vb tasks run (<id> | --ready …) [--result "<text>"] [--lease <duration>] -- <cmd>
+vb tasks claim (<id> | --ready <channel>|<prefix/> [--label k=v]... [--from <id>]... [--wait <duration>]) [--lease <duration>] [--binding <JSON>]
+vb tasks run (<id> | --ready …) [--result "<text>"] [--lease <duration>] [--binding <JSON>] -- <cmd>
 vb tasks renew <id> [--lease <duration>]
 vb tasks release <id>
 vb tasks complete <id> ["<result>"]
 vb tasks fail <id> "<reason>"
 vb tasks block <id> "<reason>" [--kind <kind>]
 vb tasks unblock <id>
+vb tasks park <id> "<reason>"
+vb tasks unpark <id> "<reason>"
+vb tasks handoff <id> <commit> <packet-path> <sha256> [--supersedes <id>]
 vb tasks ask <id> --file <path>
 vb tasks attention <id>
 vb tasks answer <id> <request-id> <option> --commit <sha>
@@ -4147,7 +4210,10 @@ vb tasks cancel <id> "<reason>"
 - **`--json`** is `{ tasks, cursor }` for a list, `{ task, claim }` for a
   claim, its `claim` being `{ epoch, until }` without the token, and `{ task,
   outcome }` for the rest, `outcome` being what the line says, `set` for
-  `needs` and `priority`, or `unchanged`. `tasks show` gives `{ task }`.
+  `needs` and `priority`, `unchanged`, or `handed_off` for a handoff. A
+  handoff prints its record ID in text and returns it at `task.task.handoff`
+  in JSON. `park` and `unpark` print the resulting park status even for a
+  no-op. `tasks show` gives `{ task }`.
   For structured attention it is `{ task, attention }` on `ask` and `answer`,
   and `{ attention }` on `attention` (`null` for none). The `ask` file contains
   the draft and optional `replaces`, never the claim; the CLI attaches its own
@@ -4179,8 +4245,10 @@ task: {
   for: ActorId | null                                                        // the profile it's assigned to
   needs: MessageId[]
   epoch: number
-  claim: { actor: ActorId, until: string } | null                          // never its token
+  claim: { actor: ActorId, until: string, binding?: TaskBindingInput } | null // never its token
   blocked: { kind: string | null, reason: string } | null
+  parked?: { reason: string, by: Author, previous: 'waiting' | 'ready' | 'claimed' } | null
+  handoff?: { id: string, commit: string, packetPath: string, sha256: string, supersedes?: string, by: Author, at: string, generation: number } | null
   attentionId?: Ref                                                         // current request ID; details come from the attention route
   result: string | null                                                      // when completed
   reason: string | null                                                      // when failed or canceled
@@ -4198,7 +4266,7 @@ Task changes are board facts, in the board log:
 'task.priority_changed': z.object({ id, thread, priority: TaskPriority, epoch: Epoch.optional(), by }), // optional claim epoch
 'task.needs_changed': z.object({ id, thread, needs: z.array(MessageId), by }),       // what it waits for now, in place of what it waited for
 'task.ready':     z.object({ id, thread }),                                          // (server) every prerequisite has completed
-'task.claimed':   z.object({ id, thread, epoch, until, token, by }),                 // (server) until: ISO; token: the SHA-256 of the claim's secret, in no view
+'task.claimed':   z.object({ id, thread, epoch, pauseEpoch: z.number().int().nonnegative().optional(), until, token, by, binding: TaskBinding.optional() }), // token hash stays private; absent pauseEpoch means zero
 'task.renewed':   z.object({ id, thread, epoch, until, by }),
 'task.released':  z.object({ id, thread, epoch, by }),
 'task.expired':   z.object({ id, thread, epoch }),                                   // (server) its lease ran out
@@ -4206,6 +4274,9 @@ Task changes are board facts, in the board log:
 'task.failed':    z.object({ id, thread, epoch, reason: TaskNote, by }),
 'task.blocked':   z.object({ id, thread, kind: TaskHoldKind.nullable(), reason: TaskNote, by }), // kind `edited`: the board's, `by` whoever edited the root
 'task.unblocked': z.object({ id, thread, by }),
+'task.parked':    z.object({ id, thread, reason: TaskNote, by, previous }),
+'task.unparked':  z.object({ id, thread, reason: TaskNote, by }),
+'task.handoff':   z.object({ id, thread, handoff: TaskHandoff }),
 'task.canceled':  z.object({ id, thread, reason: TaskNote, by }),                    // reason `deleted` when its root was
 'task.reopened':  z.object({ id, thread, by }),
 ```
@@ -4242,18 +4313,22 @@ tokens are never included in these events.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| POST | `/tasks` | `{ channel, text, labels?, noSync?, attachments?, needs?, for?, priority?, claim?, lease?, id? }` starts a thread as a task (its root takes files as a post does, and may be empty with one), or `{ re, needs?, for?, priority?, claim?, lease? }` makes the thread `re` one. Answers 201 `{ task, claim? }`, where `task` is its root. Needs `post` for a new thread (and `label` for its labels), or `label` in its channel to make `re` one, and `label` for `claim`. `re` is a root that's there: 409 `already_a_task` for one that's a task. A retry with the same `id` answers the task that landed, without the claim it was made with, whose token was answered once |
+| POST | `/tasks` | `{ channel, text, labels?, noSync?, attachments?, needs?, for?, priority?, claim?, lease?, token?, binding?, id? }` starts a thread as a task (its root takes files as a post does, and may be empty with one), or `{ re, needs?, for?, priority?, claim?, lease?, token?, binding? }` makes the thread `re` one. Answers 201 `{ task, claim? }`, where `task` is its root. Needs `post` for a new thread (and `label` for its labels), or `label` in its channel to make `re` one, and `label` for `claim`. `re` is a root that's there: 409 `already_a_task` for one that's a task. A retry with the same `id` answers the task that landed, without the claim it was made with, whose token was answered once |
 | POST | `/tasks/batch` | `{ channel, tasks, id? }`: starts a thread for each of 1 to 100 tasks in one write, all or none. A task is `{ key?, text, labels?, noSync?, attachments?, needs?: (MessageId \| { key })[], for?, priority? }`. Answers 201 `{ tasks }`, their roots in order. 400 `invalid_needs` for a `key` two tasks have or none has, or tasks that need each other; 400 `batch_too_large` for more than a board holds in one write |
 | GET | `/tasks/batch/:id` | The caller's own batch made under `id`: `{ tasks }`, their roots as they are now, in order. 404 `batch_not_found` for none. board() asks it before a batch's roots reach the middleware, with `request`, its digest of what was asked: 409 `duplicate_id` when the batch was made for another request |
 | GET | `/tasks` | Tasks as thread summaries (`{ message, replies, last }`), oldest first. Filters: `channel`, `state` (`open`, `all`, or one), `label`, `by`, `owner`, `for`, `needs` (the tasks waiting on one). Answers `{ tasks, cursor }`; `after` (a `cursor` it reported) and `limit` page |
-| POST | `/tasks/claim` | `{ channel, label?, from?, lease?, wait? }`: the highest priority eligible ready task in `channel` (a channel or a `prefix/`), oldest first at equal priority, claimed. `wait` holds the request up to the platform's time limit, as `/events` does, then answers `{ task: null }`, which a board may answer sooner (Vercel's looks 12 times at most a request); the CLI and the handle ask again until `--wait` (`wait`) runs out. Answers `{ task, claim }`, or `{ task: null }` |
-| POST | `/tasks/:id/claim` | `{ lease? }`. Answers `{ task, claim: { epoch, token, until } }` |
+| POST | `/tasks/claim` | `{ channel, label?, from?, lease?, wait?, token?, binding? }`: claims the highest priority eligible ready task in `channel` (a channel or a `prefix/`), oldest first at equal priority. `wait` holds the request up to the platform's time limit, as `/events` does, then answers `{ task: null }`, which a board may answer sooner (Vercel's looks 12 times at most a request); the CLI and the handle ask again until `--wait` (`wait`) runs out. Answers `{ task, claim }`, or `{ task: null }` |
+| POST | `/tasks/:id/claim` | `{ lease?, token?, binding? }`. Answers `{ task, claim: { epoch, token, until, binding? } }` |
+| POST | `/tasks/create-bound`, `/tasks/claim-bound`, `/tasks/:id/claim-bound` | The corresponding create, ready claim, and claim by ID, with `binding` required. Use these paths when binding is required, never fall back to the older paths |
 | POST | `/tasks/:id/renew` | `{ epoch, token, lease? }`. Answers `{ task, until }` |
 | POST | `/tasks/:id/release` | `{ epoch, token }`. Answers `{ task }`, as the routes below do |
 | POST | `/tasks/:id/complete` | `{ epoch, token, result? }` |
 | POST | `/tasks/:id/fail` | `{ epoch, token, reason }` |
 | POST | `/tasks/:id/block` | `{ reason, kind?, epoch?, token? }`: a claimed task needs its claim. `kind` is any name but `edited`, the board's own |
-| POST | `/tasks/:id/unblock` | `{}`. A structured hold is 409 `attention_required` |
+| POST | `/tasks/:id/unblock` | `{}`: only lifts a plain hold, not an operator hold or a structured hold (409 `attention_required`) |
+| POST | `/tasks/:id/park` | `{ reason }`: park a task, revoking its lease |
+| POST | `/tasks/:id/unpark` | `{ reason }`: lift an operator hold, without restoring its lease |
+| POST | `/tasks/:id/handoff` | `{ epoch, token, commit, packetPath, sha256, supersedes? }`: append a handoff on a live claim |
 | POST | `/tasks/:id/attention` | `requestTaskAttention`: `RequestAttentionBody`. Answers 201 `{ task, attention }` |
 | GET | `/tasks/:id/attention` | `taskAttention`: `{ attention }`, `null` when there is no request |
 | POST | `/tasks/:id/attention/:requestId/answer` | `answerTaskAttention`: `AttentionAnswerBody` (`{ option, commit }`). Answers `{ task, attention }` |
@@ -4268,9 +4343,11 @@ are seconds, as `/events`'s `wait` is: a `wait` of at most 300, and a lease as
 long as the backend gives (the local board takes 30 to 3600). Errors: 404
 `not_a_task` for a thread that isn't one; 403 `forbidden` (a claim without `label`), `task_not_owned`, and `priority_raise_forbidden`; 409
 `task_claimed`, `task_assigned`, `task_waiting`, `task_blocked`, `task_finished`,
-`already_a_task`, `board_paused` (see [Network pause](#network-pause)), and
-`claim_lost`; 400 `invalid_needs`, `invalid_from`, and `reserved_label`; 501 `no_tasks` on a
-board that keeps none.
+`already_a_task`, `board_paused` (see [Network pause](#network-pause)),
+`claim_lost`, `binding_mismatch`, and `handoff_conflict`; 400 `invalid_needs`,
+`invalid_from`, `invalid_request` for malformed assignment or packet metadata,
+and `reserved_label`; 501 `no_tasks` on a board that keeps none, or
+`no_task_authority` on Vercel's board for parking, bound claims, and handoffs.
 
 ### Tasks and sync
 
@@ -4318,6 +4395,9 @@ board that keeps none.
   their own beside threads, aren't board tasks: their routes stay as they are
   for the tools that call them, and `vb tasks` neither lists nor changes
   them. What a caller can notice there, against `local()`:
+  - **Parking, bound claims, and handoffs are not supported.** They fail
+    with 501 `no_task_authority`; a bound claim is never sent as a legacy
+    claim. `http()` forwards these operations to the board that keeps the log.
   - **A lease is at most 5 minutes,** so the default comes back `yours for
     5m`.
   - **Nothing times a lease.** `task.expired` is written by the next task
@@ -4330,6 +4410,12 @@ board that keeps none.
   whoever claims, and keeps only its hash, since it keeps each answer to
   replay a retry with. So `vercel()` makes the token itself, and answers it
   as the routes here say.
+- **Over HTTP**, `GET /` advertises `task_authority: true` only when the board
+  supports it. For a bound write, `http()` checks discovery first (501
+  `no_task_authority` if not advertised) and uses only the bound-only paths.
+  An older server cannot land a write on those paths, even if discovery reached
+  a newer server. Upgrade all serving instances before using bound claims;
+  unbound writes use the original paths and need no capability.
 - **A backend that keeps no tasks** answers 501 `no_tasks`, which the kit
   reports as not kept here.
 
@@ -4363,6 +4449,16 @@ board that keeps none.
   raise it or bypass that limit. The read, list and feed show the stored value.
 - `tail` with `--label board.task=ready` sees a task become ready when its
   last prerequisite completes, and get claimed.
+- Park and unpark record the operator and reasons and do not restore a
+  revoked lease. A park cannot be lifted with `unblock`.
+- A bound claim retains its binding on retry. A previous generation cannot
+  use the same token to settle the new claim.
+- Two handoffs that name the same predecessor have one winner. The feed
+  retains the original handoff and the replacement.
+
+The last three checks skip on a backend that answers 501
+`no_task_authority` on their first authority call. This does not skip the
+legacy task checks.
 
 What the kit checks today, through the one handle a run has: all of the above
 but what needs a second principal (another's claim and completion, another's
@@ -4380,12 +4476,20 @@ HTTP in board's tests, not the kit's one handle.
 
 ### Not in this version
 
+The work-lifecycle proposal describes a future versioned workflow. This
+slice extends the current task routes and states, with capability discovery
+and separate HTTP paths for required bindings. Operator authority uses verified people and `manage`,
+not a role registry. Bindings come from the claimant, not a controller's
+one-use offer, and do not require the task to be scoped. A handoff records
+metadata; it does not move a phase, establish evidence, or close the lease.
+There is no project scope or lifecycle review or acceptance gate. Task
+priority and [network pause](#network-pause) are independent of this lifecycle.
+The runtime and dispatch stay outside the board.
+
 - Handing a task to another owner (offer and accept).
 - Assigning a task to another principal's profile (`--for ada/fixer`): it
   names an actor by handle, which needs handles the board verifies.
 - Moving a task to another channel: a thread's channel never changes.
-- Creating several tasks in one write: `--needs` and idempotency keys converge
-  on retry.
 - Typed data on a task: a task has no `data` field, and its `result` is text.
   Its text and labels carry what it needs, and a typed record (a commit, a
   pull request's state, an outcome) belongs in its thread, as a

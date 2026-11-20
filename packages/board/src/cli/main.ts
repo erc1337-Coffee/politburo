@@ -17,6 +17,7 @@ import { isApiMessageId } from '../server/backend-vercel.ts'
 import { AttentionAnswerBody, AttentionAskFile } from '../contract/attention.ts'
 import { normalizeEmoji } from '../contract/emoji.ts'
 import { AgentRole, ATTACHMENTS_PER_MESSAGE_MAX, DIRECT_UPLOAD_BYTES_MAX, MESSAGE_TEXT_MAX, type Attachment, AttachmentId, TaskPriority } from '../contract/schemas.ts'
+import { TaskBinding, TaskPacket } from '../contract/task-authority.ts'
 import { VERSION } from '../version.ts'
 import { conformance } from '../conformance/index.ts'
 import { explainPrincipalOf, explanationLine, GrantMisuse, grantCanOf, KINDS, patternsIn, principalsIn, type OptionToken } from './grants.ts'
@@ -832,6 +833,7 @@ function doing(): string {
       if (a === 'create' && flags.file !== undefined) return `create tasks in ${b ?? 'a channel'}`
       if (a === 'create') return b !== undefined && isMessageRef(b) ? `make ${ref(b)} a task` : `create a task in ${b ?? 'a channel'}`
       if (a === 'renew') return `renew the claim on ${one}`
+      if (a === 'handoff') return `record a handoff for ${one}`
       if (a === 'needs') return `change what ${one} needs`
       if (a === 'ask') return `request attention on ${one}`
       if (a === 'attention') return `read the attention request on ${one}`
@@ -2111,7 +2113,7 @@ async function agents(args: string[]): Promise<number> {
 }
 
 /** What `tasks` does to a task, by the word after it: any other word is a channel to list. */
-const TASK_VERBS = new Set(['create', 'claim', 'run', 'renew', 'release', 'complete', 'fail', 'block', 'ask', 'attention', 'answer', 'unblock', 'reopen', 'assign', 'needs', 'priority', 'show', 'cancel'])
+const TASK_VERBS = new Set(['create', 'claim', 'run', 'renew', 'release', 'complete', 'fail', 'block', 'ask', 'attention', 'answer', 'unblock', 'park', 'unpark', 'handoff', 'reopen', 'assign', 'needs', 'priority', 'show', 'cancel'])
 const TASK_STATES = ['waiting', 'ready', 'claimed', 'blocked', 'completed', 'failed', 'canceled']
 
 /** A task's ID as you'd write it: `#812` or `812`. */
@@ -2142,7 +2144,7 @@ function seconds(flag: 'wait' | 'lease'): number | undefined {
  */
 async function createPlan(target: string, text: string | undefined, path: string): Promise<number> {
   if (isMessageRef(target)) throw usage(`--file holds a plan, which starts threads in a channel, and ${ref(target)} is a thread.`)
-  const own = text !== undefined ? 'text' : (['label', 'needs', 'for', 'claim', 'lease', 'no-sync', 'priority'] as const).find((name) => (flags as Record<string, unknown>)[name] !== undefined && (flags as Record<string, unknown>)[name] !== false)
+  const own = text !== undefined ? 'text' : (['label', 'needs', 'for', 'claim', 'lease', 'binding', 'no-sync', 'priority'] as const).find((name) => (flags as Record<string, unknown>)[name] !== undefined && (flags as Record<string, unknown>)[name] !== false)
   if (own !== undefined) throw usage(`${own === 'text' ? 'Text' : `--${own}`} is one task's: with --file, each task in the file has its own.`)
   const board = client()
   const tasks = await planFrom(path, board)
@@ -2291,6 +2293,23 @@ async function attentionFrom(path: string) {
 /** `--claim`, on `tasks create`: a flag there (`optionsFor`), where a grant's takes a value. */
 const claimFlag = () => (flags as { claim?: unknown }).claim === true
 
+/** Assignment metadata is JSON, never a filename. Report a bad flag without echoing its input. */
+function bindingFlag() {
+  if (flags.binding === undefined) return undefined
+  let value: unknown
+  try {
+    value = JSON.parse(flags.binding)
+  } catch {
+    throw usage('--binding takes a JSON object.', { reason: 'invalid_binding' })
+  }
+  const binding = TaskBinding.safeParse(value)
+  if (!binding.success) throw usage('--binding takes a complete assignment.', {
+    reason: 'invalid_binding',
+    next: [{ instruction: 'Provide controller, owner, provider, model, session, branch, worktree, and a full baseCommit' }],
+  })
+  return binding.data
+}
+
 /**
  * The profile this run writes as, as an actor's ID has it: `--as`'s, or the environment's
  * (`BOARD_PROFILE`), or null as yourself. `vb()`'s board is a handle that already is someone, so
@@ -2365,12 +2384,17 @@ async function withClaim<T>(claims: Claims, id: string, write: () => Promise<T>)
  * keeps the claim. With nothing ready it fails: `nothing_ready`, or `timeout` once `--wait` ran
  * out, as `wait` does. Stopped while it waits, it answers the exit code instead.
  */
-async function claimFor(board: Board, claims: Claims, target: string | undefined): Promise<ClaimedTask | number> {
+async function claimFor(board: Board, claims: Claims, target: string | undefined, binding?: TaskBinding): Promise<ClaimedTask | number> {
   const lease = seconds('lease')
+  const options = {
+    ...(lease !== undefined ? { lease } : {}),
+    ...(binding !== undefined ? { binding } : {}),
+    ...(io.claimToken !== undefined ? { token: io.claimToken } : {}),
+  }
   if (!flags.ready) {
     for (const given of ['label', 'from', 'wait'] as const)
       if (flags[given] !== undefined) throw usage(`--${given} goes with --ready, which claims the next ready task in a channel.`)
-    const claim = await board.tasks.claim(taskId(target), { ...(lease !== undefined ? { lease } : {}), ...(io.claimToken !== undefined ? { token: io.claimToken } : {}) })
+    const claim = await board.tasks.claim(taskId(target), options)
     await claims.put(claim.task.id, { epoch: claim.epoch, token: claim.token, until: claim.until })
     return claim
   }
@@ -2390,8 +2414,7 @@ async function claimFor(board: Board, claims: Claims, target: string | undefined
         // Owners by their IDs: a handle names no owner.
         ...(flags.from?.length ? { from: flags.from } : {}),
         ...(wait !== undefined ? { wait } : {}),
-        ...(lease !== undefined ? { lease } : {}),
-        ...(io.claimToken !== undefined ? { token: io.claimToken } : {}),
+        ...options,
       },
       { signal: controller.signal },
     )
@@ -2422,6 +2445,9 @@ async function claimFor(board: Board, claims: Claims, target: string | undefined
 /** `tasks`: the list, or what the word after it does to a task. */
 async function tasks(args: string[]): Promise<number> {
   const [verb, ...rest] = args
+  if (flags.binding !== undefined && verb !== 'claim' && verb !== 'run' && verb !== 'create')
+    throw usage('--binding goes with tasks claim, tasks run, or tasks create --claim.')
+  if (flags.supersedes !== undefined && verb !== 'handoff') throw usage('--supersedes goes with tasks handoff.')
   if (verb === undefined || !TASK_VERBS.has(verb)) {
     if (rest.length > 0) {
       // Two words, the first no verb: the list takes one channel, so it's a command this one doesn't have.
@@ -2478,6 +2504,8 @@ async function tasks(args: string[]): Promise<number> {
     if (flags.file !== undefined) return createPlan(target, body, flags.file)
     const lease = seconds('lease')
     if (lease !== undefined && !claimFlag()) throw usage('--lease is how long a claim holds the task: pass --claim too.')
+    if (flags.binding !== undefined && !claimFlag()) throw usage('--binding on tasks create needs --claim.')
+    const binding = bindingFlag()
     const priority = flags.priority === undefined ? undefined : priorityOf(flags.priority, '--priority')
     const { board, claims } = tasksOn()
     const about = {
@@ -2486,6 +2514,7 @@ async function tasks(args: string[]): Promise<number> {
       ...(flags.for ? { for: profileActor((await board.me()).principal, flags.for) } : {}),
       ...(claimFlag() ? { claim: true } : {}),
       ...(lease !== undefined ? { lease } : {}),
+      ...(binding !== undefined ? { binding } : {}),
       ...(claimFlag() && io.claimToken !== undefined ? { token: io.claimToken } : {}),
     }
     let made: Awaited<ReturnType<Board['tasks']['create']>>
@@ -2524,8 +2553,9 @@ async function tasks(args: string[]): Promise<number> {
   if (verb === 'claim') {
     if (rest.length > 1) throw usage(`tasks claim takes one ${flags.ready ? 'channel' : 'task'}: ${rest[1]} is one too many.`)
     if (!flags.ready && rest[0] === undefined) throw usage('Missing the task to claim: its ID, or --ready and a channel.', { reason: 'missing_arguments' })
+    const binding = bindingFlag()
     const { board, claims } = tasksOn()
-    const claim = await claimFor(board, claims, rest[0])
+    const claim = await claimFor(board, claims, rest[0], binding)
     if (typeof claim === 'number') return claim
     printClaim(claim.task, claim)
     return 0
@@ -2542,8 +2572,9 @@ async function tasks(args: string[]): Promise<number> {
     if (!flags.ready && before[0] === undefined) throw usage('Missing the task to run it on: its ID, or --ready and a channel.', { reason: 'missing_arguments' })
     // It runs a command on this machine, and holds every other call for as long as it runs.
     if (io.board) throw usage("tasks run isn't available in-process: it runs a command on this machine.", { reason: 'not_available', next: [] })
+    const binding = bindingFlag()
     const { board, claims } = tasksOn()
-    const claim = await claimFor(board, claims, before[0])
+    const claim = await claimFor(board, claims, before[0], binding)
     if (typeof claim === 'number') return claim
     const id = claim.task.id
     const lease = seconds('lease')
@@ -2601,6 +2632,28 @@ async function tasks(args: string[]): Promise<number> {
     const given = rest[1]?.trim()
     if (!given) throw usage(`Missing ${what}, in a line.`, { reason: 'missing_arguments' })
     return given
+  }
+  if (verb === 'park' || verb === 'unpark') {
+    one(rest[2], 'a task and a reason, quoted')
+    const why = reason(verb === 'park' ? 'why it is being parked' : 'why it is being unparked')
+    const task = await client().tasks[verb](id, why)
+    printTask(task, verb === 'park' ? 'parked' : 'unparked')
+    return 0
+  }
+  if (verb === 'handoff') {
+    if (rest[4] !== undefined) throw usage('tasks handoff takes a task, commit, packet path, and SHA-256.')
+    const [, commit, packetPath, sha256] = rest
+    if (!commit || !packetPath || !sha256)
+      throw usage('Pass a full commit ID, a repo-relative packet path, and its SHA-256 digest.', { reason: 'missing_arguments' })
+    const packet = TaskPacket.safeParse({ commit, packetPath, sha256, supersedes: flags.supersedes })
+    if (!packet.success) throw usage('Use a full commit ID, a repo-relative packet path, and a lowercase SHA-256 digest.')
+    const { board, claims } = tasksOn()
+    const held = await heldBy(board, claims, id)
+    const task = await withClaim(claims, id, () => held.handoff(packet.data))
+    const handoff = task.task?.handoff
+    if (flags.json) result({ task, outcome: 'handed_off' })
+    else out(`handed off ${messageRef(task.id)}${handoff ? `  ${handoff.id}` : ''}`)
+    return 0
   }
   const { board, claims } = tasksOn()
 
@@ -2768,10 +2821,20 @@ function taskFailure(code: string, status: number): { class: Failure['class']; m
       return { class: 'conflict', message: `Can't ${doing()}. It's assigned to another profile.`, next: [...read("See whom it's for"), ...also('Or, as its owner, return it to the pool', 'assign', '--pool')] }
     case 'task_waiting':
       return { class: 'conflict', message: `Can't ${doing()}. It waits for other tasks.`, next: read('See what it waits for') }
-    case 'task_blocked':
-      return { class: 'conflict', message: `Can't ${doing()}. It's held for a person.`, next: [...read("See what it's held for"), ...also('Or, as its owner, lift the hold', 'unblock')] }
+    case 'task_blocked': {
+      const see = read("See what it's held for")
+      // `unblock` refuses operator holds. Don't suggest the same command again.
+      if (command === 'tasks' && args[0] === 'unblock') return { class: 'conflict', message: `Can't ${doing()}. It's parked.`, next: see }
+      return { class: 'conflict', message: `Can't ${doing()}. It's held for a person.`, next: [...see, ...also('Or, as its owner, lift the hold', 'unblock')] }
+    }
     case 'task_finished':
       return { class: 'conflict', message: `Can't ${doing()}. It's finished.`, next: read('See how it ended') }
+    case 'binding_mismatch':
+      return { class: 'conflict', message: `Can't ${doing()}. The live claim has a different binding.`, next: read('See the current claim') }
+    case 'handoff_conflict':
+      return { class: 'conflict', message: `Can't ${doing()}. Use --supersedes only to name the current handoff.`, next: read('See the current handoff') }
+    case 'no_task_authority':
+      return status === 501 ? { class: 'platform', message: `Can't ${doing()}. This board does not support parking, assignment bindings, or handoffs.`, next: [] } : null
     case 'claim_lost':
       return { class: 'conflict', message: `Lost the claim on ${named === undefined ? 'the task' : `task ${ref(named)}`}. Its lease ran out, or the task moved on.`, next: [...read('See where it stands'), ...also('Or claim it again', 'claim', ...asTyped())] }
     case 'priority_raise_forbidden':

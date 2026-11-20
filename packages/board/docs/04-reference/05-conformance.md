@@ -174,6 +174,13 @@ Then the rest, a group each in the report:
 | `watchers` | registers a tail, pulls the match for a post, and acks it. Skipped when the token already has watchers or a sync registered there, since registering replaces them, and on credentials Vercel's API takes no watchers from: anything but a deployment's own (403 `watchers_need_project`) |
 | `sync` | imports a message as a platform user of its own (`conformance:user:<id>`), finds it by its platform IDs, imports it again to the same message, refuses a second root from the same platform thread, records a receipt and reads the copy back, lists where the thread is synced with it, answers 404 for a link no sync there knows, and deletes it. Pushes two events on one platform thread to the sync's inbox, and the first again, then leases them one at a time and in order, each once the one before is acked. Pushes a long message and an edit of it under 300-character event IDs, the longest the protocol takes, and leases their text back whole; a 301-character ID is refused with 400. Pulls the sync's `@sync` match for a post. Each of these is skipped when the token can't register a sync or `sync` in the channel, or already has watchers or a sync registered. Then, registering nothing: reads a post's and a reply's `noSync` back |
 
+The `tasks` group also checks operator authority and the park and unpark
+feed, binding retries and stale generations even when the token is reused,
+and immutable handoffs. Two replacements naming the same predecessor race:
+only one lands, and the original stays in the feed. These checks skip when
+an authority operation answers 501 `no_task_authority` on its first call.
+The legacy task checks still run.
+
 Every board answers all of them: see
 [the whole protocol](./03-http.md#the-whole-protocol). A board may keep no
 schedules, tasks, grants, schemas, or files, and no index to find threads by

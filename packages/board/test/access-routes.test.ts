@@ -144,32 +144,47 @@ const WALK: Record<RouteName, Walk> = {
     { method: 'POST', path: `/tasks/${secret.task}/claim`, body: {}, status: 404 },
     { method: 'POST', path: `/tasks/${open.task}/claim`, body: {}, status: 403 },
   ],
-  // What a claim does takes the claim: one it can't read isn't there, and one it reads is lost without the claim's secret.
+  // Proof writes take both label in the channel and the claim: a reader gets 403 even before validation of the proof.
   renewTask: ({ secret, open }) => [
     { method: 'POST', path: `/tasks/${secret.task}/renew`, body: { epoch: 1, token: 'guess' }, status: 404 },
-    { method: 'POST', path: `/tasks/${open.task}/renew`, body: { epoch: 1, token: 'guess' }, status: 409 },
+    { method: 'POST', path: `/tasks/${open.task}/renew`, body: { epoch: 1, token: 'guess' }, status: 403 },
   ],
   releaseTask: ({ secret, open }) => [
     { method: 'POST', path: `/tasks/${secret.task}/release`, body: { epoch: 1, token: 'guess' }, status: 404 },
-    { method: 'POST', path: `/tasks/${open.task}/release`, body: { epoch: 1, token: 'guess' }, status: 409 },
+    { method: 'POST', path: `/tasks/${open.task}/release`, body: { epoch: 1, token: 'guess' }, status: 403 },
   ],
   completeTask: ({ secret, open }) => [
     { method: 'POST', path: `/tasks/${secret.task}/complete`, body: { epoch: 1, token: 'guess' }, status: 404 },
-    { method: 'POST', path: `/tasks/${open.task}/complete`, body: { epoch: 1, token: 'guess' }, status: 409 },
+    { method: 'POST', path: `/tasks/${open.task}/complete`, body: { epoch: 1, token: 'guess' }, status: 403 },
   ],
   failTask: ({ secret, open }) => [
     { method: 'POST', path: `/tasks/${secret.task}/fail`, body: { epoch: 1, token: 'guess', reason: 'mine now' }, status: 404 },
-    { method: 'POST', path: `/tasks/${open.task}/fail`, body: { epoch: 1, token: 'guess', reason: 'mine now' }, status: 409 },
+    { method: 'POST', path: `/tasks/${open.task}/fail`, body: { epoch: 1, token: 'guess', reason: 'mine now' }, status: 403 },
   ],
   blockTask: ({ secret, open }) => [
     { method: 'POST', path: `/tasks/${secret.task}/block`, body: { reason: 'mine now' }, status: 404 },
     { method: 'POST', path: `/tasks/${open.task}/block`, body: { reason: 'mine now' }, status: 403 },
-    { method: 'POST', path: `/tasks/${open.task}/block`, body: { reason: 'mine now', epoch: 1, token: 'guess' }, status: 409 },
+    { method: 'POST', path: `/tasks/${open.task}/block`, body: { reason: 'mine now', epoch: 1, token: 'guess' }, status: 403 },
   ],
   unblockTask: ({ secret, open }) => [
     { method: 'POST', path: `/tasks/${secret.task}/unblock`, status: 404 },
     { method: 'POST', path: `/tasks/${open.task}/unblock`, status: 403 },
   ],
+  parkTask: ({ secret, open }) => [
+    { method: 'POST', path: `/tasks/${secret.task}/park`, body: { reason: 'hold' }, status: 404 },
+    { method: 'POST', path: `/tasks/${open.task}/park`, body: { reason: 'hold' }, status: 403 },
+  ],
+  unparkTask: ({ secret, open }) => [
+    { method: 'POST', path: `/tasks/${secret.task}/unpark`, body: { reason: 'resume' }, status: 404 },
+    { method: 'POST', path: `/tasks/${open.task}/unpark`, body: { reason: 'resume' }, status: 403 },
+  ],
+  handoffTask: ({ secret, open }) => {
+    const body = { epoch: 1, token: 'guess', commit: 'a'.repeat(40), packetPath: 'handoffs/check.md', sha256: 'b'.repeat(64) }
+    return [
+      { method: 'POST', path: `/tasks/${secret.task}/handoff`, body, status: 404 },
+      { method: 'POST', path: `/tasks/${open.task}/handoff`, body, status: 403 },
+    ]
+  },
   requestTaskAttention: ({ secret, open }) => [
     { method: 'POST', path: `/tasks/${secret.task}/attention`, body: draft(secret.task), status: 404 },
     { method: 'POST', path: `/tasks/${open.task}/attention`, body: draft(open.task), status: 403 },

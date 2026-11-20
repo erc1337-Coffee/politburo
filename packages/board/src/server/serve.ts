@@ -18,6 +18,8 @@ import {
   CreateTasksBody,
   CreatedTasksQuery,
   FailTaskBody,
+  HandoffTaskBody,
+  ParkTaskBody,
   ReleaseTaskBody,
   RenewTaskBody,
   TasksQuery,
@@ -81,7 +83,7 @@ import { badRequest, batchTooLarge, forbidden, HttpError, json, noAgentOps, notF
 import { extractMentions, settleMentions, type Mentioned, type MentionedActor } from '../contract/mentions.ts'
 import { DroppedError, runMiddleware, type Write, type WriteSource } from './middleware.ts'
 import { ATTENTION_METHODS, createRouter, isAgentOpsMethod, isOperationalInboxMethod, METHODS, openapi, queryObject, readCapped, readJson, type BoardRoute } from './routing.ts'
-import { FULL_ACCESS, parseCan, type Access } from './access.ts'
+import { authorize, FULL_ACCESS, parseCan, type Access } from './access.ts'
 import { syncTarget, type SyncTarget } from './targets.ts'
 import { SYNC_ACTOR, type WriteOrigin } from './origin.ts'
 import type { WatcherContext } from './watcher.ts'
@@ -221,6 +223,11 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
       return { id, ...FailTaskBody.parse(await body()) }
     case 'blockTask':
       return { id, ...BlockTaskBody.parse(await body()) }
+    case 'parkTask':
+    case 'unparkTask':
+      return { id, ...ParkTaskBody.parse(await body()) }
+    case 'handoffTask':
+      return { id, ...HandoffTaskBody.parse(await body()) }
     case 'requestTaskAttention':
       return { id, ...RequestAttentionBody.parse(await body()) }
     case 'answerTaskAttention':
@@ -999,6 +1006,7 @@ export async function createServe(context: BoardContext): Promise<Serve> {
       }
       case 'createTask': {
         const body = input as Protocol['createTask']['input']
+        if (body.binding !== undefined && backend.supportsTaskAuthority === false) return backend.createTask(caller, body, signal)
         ownLabels(body.labels)
         // A thread that's there becomes a task as it is: nothing is posted, so the middleware has nothing to see.
         if (body.channel === undefined) return backend.createTask(caller, body, signal)
@@ -1010,7 +1018,18 @@ export async function createServe(context: BoardContext): Promise<Serve> {
           caller = { ...caller, origin: { ...caller.origin, claimEpoch: status.pauseEpoch } }
         }
         // A new one's root is a post: its blocks are checked and the middleware sees it, as any post's.
-        const { channel, labels, noSync, attachments, id } = body
+        const { channel, labels, noSync, attachments, id, claim, binding } = body
+        // Check claim authority before screening the root. A proxy cannot infer the upstream claimant.
+        if (claim) {
+          const access = accessOf(caller)
+          if (access) authorize(access, 'label', channel)
+          if (binding && backend.keeps) {
+            if (!('identity' in caller)) throw forbidden('a bound claim needs a verified claimant')
+            const { principal, actor } = caller.identity
+            if (binding.owner.principal !== principal.id || binding.owner.actor !== actor.id)
+              throw forbidden('the binding owner must be the verified claimant')
+          }
+        }
         // It may be empty when the root has files, as a post's may.
         const sent = body.text ?? ''
         await checkWrite(caller, sent, { channel }, signal)
@@ -1206,6 +1225,7 @@ export async function createServe(context: BoardContext): Promise<Serve> {
     const sync = capabilities?.sync ?? Object.entries(entries).map(([key, entry]) => ({ key, platform: entry.platform }))
     return {
       version: VERSION, url, audience: url, team_id: teamId, project_id: projectId, sync,
+      ...(backend.supportsTaskAuthority === true ? { task_authority: true } : {}),
       ...(capabilities?.task_attention === true ? { task_attention: true } : {}),
       ...(capabilities?.agent_ops === true ? { agent_ops: true } : {}),
     }
@@ -1255,6 +1275,7 @@ export async function createServe(context: BoardContext): Promise<Serve> {
       if (target.kind === 'board') return await serve(target.name, caller, request, url, match.params)
 
       const input = await inputOf(target.name, request, url, match.params)
+      if (match.requiresTaskBinding && !(input as { binding?: unknown }).binding) throw badRequest('a bound task request needs binding')
       if (target.name === 'events' && (request.headers.get('accept') ?? '').includes('text/event-stream'))
         return await sse(caller, input as Protocol['events']['input'], request, asked ? () => callerOf(asked) : null)
       const output = injected && 'platform' in injected ? await asPlatform(target.name, injected, input, request.signal) : await invoke(target.name, caller, input, request.signal)
