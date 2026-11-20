@@ -42,3 +42,52 @@ const outcome = await runTask({
   stop; collect confirms it. There is no checkout, cost enforcement, artifact
   validation, or task settlement. `@remilia/politburo-runtime/conformance`
   exports the shared Node test suite for adapters.
+
+## Remote work
+
+`localGit({ repoDir, identity })` exchanges UTF-8 text files (up to 64 KiB)
+under `remote/<agent>/brief`, `control`, `inbox`, and `status`. Use a Git
+repo root and keep exchange branches out of the worktree. Read returns the
+file and the head it came from. Pass that head to `write`, or `null` to
+create a branch with an empty tree. A stale write throws `RefConflict`;
+read again before retrying. The store never fetches or pushes. Sync with
+ordinary fast-forward Git pushes and fetches. Use `refs/heads/<branch>` on
+both sides of the refspec; remote-tracking refs are not read by the store.
+
+```ts
+import { ghCodeHost, localGit, reviewGate, watchRemote } from '@remilia/politburo-runtime'
+import type { GhOptions, Verdict } from '@remilia/politburo-runtime'
+
+async function pollWork(repoDir: string, token: string, key: Uint8Array,
+    verdicts: readonly Verdict[], withHeadLock: GhOptions['withHeadLock']) {
+  const refs = localGit({ repoDir, identity: { name: 'Worker', email: 'worker@example.test' } })
+  const host = ghCodeHost({ repo: 'acme/web', base: 'main', requiredCheckNames: ['ci'], token, withHeadLock })
+  const watcher = watchRemote({ refs, host })
+  const result = await watcher.poll({
+    statusBranch: 'remote/worker/status', branch: 'work/worker', title: 'Finish worker task',
+  })
+  if (result.status === 'checked') {
+    const gate = reviewGate({ host, key, checkFor: watcher.checkFor, verdictsFor: () => verdicts })
+    return gate.markReadyIfAllowed(result.pr)
+  }
+  return result
+}
+```
+
+- The worker writes `{"state":"finished"}` to `status.json` after publishing
+  its work branch. A missing file or `{"state":"working"}` does nothing.
+  Keep one watcher owner per work branch. Polls reuse the existing PR even
+  if it has closed. Check results are held by SHA in the watcher instance.
+- The GitHub adapter uses `gh` with a caller-supplied token or `exec`. It
+  reads the named GitHub check runs for the exact commit; configure CI to
+  run on PRs or pushes. It does not dispatch workflows.
+- Reviewers call `signVerdict({ sha, reviewer, outcome }, key)`. Pass a
+  shared secret from the caller, not from the exchange files. The gate
+  returns a typed refusal unless there is a pass and a valid clean verdict
+  on the current SHA. A later push needs its own check and review. The gate
+  does not convert an already-ready PR back to draft.
+- GitHub has no atomic compare-head-and-mark-ready operation. The adapter
+  refuses with `readiness_unfenced` unless `withHeadLock` excludes **all**
+  head updates through the transition. A local mutex does not fence pushes
+  on GitHub. Use a host-enforced immutable head or a coordinated write path
+  that can also keep the head fenced if the mutation outcome is uncertain.
