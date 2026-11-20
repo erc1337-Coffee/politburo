@@ -844,6 +844,11 @@ function doing(): string {
       return `follow ${a ?? 'the board'}`
     case 'wait':
       return `wait on ${a ?? 'the board'}`
+    case 'status':
+      return 'check the board status'
+    case 'pause':
+    case 'resume':
+      return `${command} the board`
     case 'whoami':
       return 'reach the board'
     case 'conformance':
@@ -957,6 +962,10 @@ function failureOf(error: unknown): Failure {
   const about = taskFailure(code, status)
   // Where the headline is all the board said (`#812 isn't a task`), its words aren't said twice.
   if (about) return { ...theirs(about.class, code, about.message, about.next), ...(about.whole ? { details: [] } : {}) }
+  if (status === 409 && code === 'board_paused')
+    return theirs('conflict', code, `Can't ${doing()}. The board paused work.`, [{ instruction: 'Check whether the board is admitting work', argv: [...cli(), 'status'] }])
+  if (status === 501 && code === 'no_network_pause')
+    return theirs('platform', code, `Can't ${doing()}. This board does not support network pause.`)
   // A block the board refused, written with --schema: what that schema holds is a read away.
   if (status === 400 && code === 'invalid_block' && flags.schema !== undefined && parseSchemaId(flags.schema))
     return theirs('usage', code, `Can't ${doing()}.`, [{ instruction: `See what ${flags.schema} holds`, argv: [...cli(), 'schemas', 'inspect', flags.schema] }])
@@ -1310,6 +1319,24 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       ;(me.can === undefined ? [] : formatAccess(me.can)).forEach((line, index) => rows.push([index === 0 ? 'can' : '', line]))
       const width = Math.max(...rows.map(([subject]) => subject.length))
       for (const [subject, value] of rows) out(`${subject.padEnd(width)}  ${value}`)
+      return 0
+    }
+
+    case 'status':
+    case 'pause':
+    case 'resume': {
+      if (args.length > 0) throw usage(`${command} takes no positional arguments.`)
+      const reason = flags.reason
+      if (command !== 'status' && !reason?.trim()) {
+        throw usage(`Missing why to ${command} the board: pass --reason <reason>.`, {
+          reason: 'missing_arguments',
+          next: [{ instruction: 'Give a reason', argv: [...cli(), command, '--reason', '<REASON>'] }],
+        })
+      }
+      const board = client()
+      const status = command === 'status' ? await board.status() : await board[command](reason!)
+      if (flags.json) result(status)
+      else out(`board  ${status.paused ? 'paused' : 'running'}`)
       return 0
     }
 

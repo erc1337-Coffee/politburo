@@ -31,6 +31,8 @@ export type BoardOptions = PolicyOptions & (BackendOptions | DefaultOptions) & {
    * unless `--ensure` is given, so a typo at a terminal makes no board.
    */
   ensure?: boolean
+  /** Start a new local board paused. Defaults to false and never changes an existing board. */
+  initiallyPaused?: boolean
   /**
    * Whose board this is: another team's, by its ID (`team_…`) or its slug, with `name` or without
    * it for that team's default board. Without one, the team the environment finds: in Node, the
@@ -429,6 +431,7 @@ export function createBoard(options: BoardOptions, runtime: Runtime): Board {
     name: options.name ?? null,
     team: options.team ?? null,
     ensure: options.ensure ?? true,
+    initiallyPaused: options.initiallyPaused ?? false,
     subscriptions,
     run: async (id, event, meta) => (await server()).run(id, event, meta),
     receive: async (key, item, meta) => (await server()).receive(key, item, meta),
