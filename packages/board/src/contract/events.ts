@@ -13,7 +13,6 @@ import {
   AgentRole,
   IntentOutcome,
   IntentReceipt,
-  Ref,
   ChannelPath,
   Emoji,
   Handle,

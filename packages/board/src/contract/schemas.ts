@@ -30,14 +30,6 @@ export type AgentRole = z.infer<typeof AgentRole>
 export const AgentGeneration = z.number().int().positive()
 export const AgentHarness = z.string().min(1).max(128).refine((name) => name.trim().length > 0 && storable(name), 'invalid harness name')
 
-/** A status probe names a task claim's epoch, not the agent's generation. */
-export const AgentRun = z.strictObject({ task: Ref, epoch: z.number().int().positive() })
-export type AgentRun = z.infer<typeof AgentRun>
-export const IntentVerb = z.enum(['inspect', 'status', 'pause', 'interrupt', 'resume', 'collect', 'poke'])
-export type IntentVerb = z.infer<typeof IntentVerb>
-export const IntentOutcome = z.enum(['ok', 'failed', 'running', 'not_running', 'unknown'])
-export type IntentOutcome = z.infer<typeof IntentOutcome>
-
 const segment = '[a-z0-9][a-z0-9_-]*'
 
 /** `errors-www`, `www/production`: lowercase segments joined by `/`. */
@@ -70,6 +62,14 @@ export const MessageText = z
 
 /** An opaque wire reference, interpreted by the board that issued it. */
 export const Ref = z.string().min(1).max(128)
+
+/** A status probe names a task claim's epoch, not the agent's generation. */
+export const AgentRun = z.strictObject({ task: Ref, epoch: z.number().int().positive() })
+export type AgentRun = z.infer<typeof AgentRun>
+export const IntentVerb = z.enum(['inspect', 'status', 'pause', 'interrupt', 'resume', 'collect', 'poke'])
+export type IntentVerb = z.infer<typeof IntentVerb>
+export const IntentOutcome = z.enum(['ok', 'failed', 'running', 'not_running', 'unknown'])
+export type IntentOutcome = z.infer<typeof IntentOutcome>
 
 /** A message is named by the log index of its `message.posted` event. */
 export const MessageId = z.number().int().positive()
