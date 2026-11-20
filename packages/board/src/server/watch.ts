@@ -8,7 +8,7 @@ import type { BoardEvent, BoardEvents } from '../contract/events.ts'
 import { actorsReducer } from '../contract/reducers.ts'
 import type { Message, MessagesState } from '../contract/folds.ts'
 import { FULL_ACCESS, type Access } from './access.ts'
-import { compileFilter, eventView, foldEvent, loadBefore, OWN_CODE, view as messageView } from './feed.ts'
+import { compileFilter, eventActor, eventView, foldEvent, loadBefore, OWN_CODE, view as messageView } from './feed.ts'
 import { compileWatcher, type Compiled } from './watch-spec.ts'
 import type { BoardReads } from './reads.ts'
 import type { Registration, RegistryState, StoredPrincipal } from './registry.ts'
@@ -31,6 +31,7 @@ const WATCHED = [
   'thread.synced',
   'task.created',
   'task.assigned',
+  'task.priority_changed',
   'task.needs_changed',
   'task.ready',
   'task.claimed',
@@ -41,6 +42,11 @@ const WATCHED = [
   'task.failed',
   'task.blocked',
   'task.unblocked',
+  'task.parked',
+  'task.unparked',
+  'task.handoff',
+  'task.attention_requested',
+  'task.attention_answered',
   'task.canceled',
   'task.reopened',
 ] as const
@@ -150,14 +156,14 @@ export function createWatchers(options: {
 
   /** Matches one board event; the message before or after it must match, as in a tail. */
   async function dispatch(ctx: ConsumerContext<BoardEvents>) {
-    const event = ctx.event as BoardEvent
+    const event = ctx.event as BoardEvent<(typeof WATCHED)[number]>
     const through = event.index - 1
     const [messages, { state: actors }] = await Promise.all([
       messagesBefore(event, ctx.signal),
       ctx.session.state(actorsReducer, { through }),
     ])
     const { id, before, after } = foldEvent(messages, actors, event)
-    const by = (event.payload as { by?: { actor?: string } }).by?.actor
+    const by = eventActor(event)
     // A schedule's send is how a watcher asks to be woken later: its own still wakes it.
     const scheduled = event.type === 'message.posted' && event.payload.schedule !== undefined
     const message = after ?? before

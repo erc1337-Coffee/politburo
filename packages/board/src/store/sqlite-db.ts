@@ -21,7 +21,16 @@ export function sqliteDb(path: string): Db {
   if (path !== ':memory:') mkdirSync(dirname(resolve(/* turbopackIgnore: true */ path)), { recursive: true })
   const db: DatabaseSync = new Database(path)
   db.exec('pragma busy_timeout = 5000')
-  for (const statement of ddl()) db.exec(statement)
+  // Serialize first opens.
+  db.exec('begin immediate')
+  try {
+    for (const statement of ddl()) db.exec(statement)
+    db.exec('commit')
+  } catch (error) {
+    db.exec('rollback')
+    db.close()
+    throw error
+  }
 
   const statements = new Map<string, StatementSync>()
   const run = (query: Sql) => {
