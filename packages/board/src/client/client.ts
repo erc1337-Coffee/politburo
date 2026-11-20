@@ -49,7 +49,7 @@ import type {
 import type { Actor } from '../contract/folds.ts'
 import type { Mentioned } from '../contract/mentions.ts'
 import { ATTACHMENT_BYTES_MAX, DIRECT_UPLOAD_BYTES_MAX, typeOf } from '../contract/files.ts'
-import type { Attachment } from '../contract/schemas.ts'
+import type { Attachment, TaskPriority } from '../contract/schemas.ts'
 import { normalizeEmoji } from '../contract/emoji.ts'
 import { parseSse } from './sse.ts'
 import { formatProfileHeader } from '../contract/profile-header.ts'
@@ -173,6 +173,7 @@ const scheduleBody = (input: ScheduleOptions) => {
  * same write, for `lease` seconds, with `token` as its token when you bring one.
  */
 export type TaskOptions = {
+  priority?: TaskPriority
   needs?: string[]
   for?: string | null
   claim?: boolean
@@ -191,6 +192,7 @@ export type NewTaskOptions = TaskOptions & Pick<PostOptions, 'text' | 'labels' |
 export type TaskInBatch = Required<Pick<PostOptions, 'text'>> &
   Pick<PostOptions, 'labels' | 'noSync' | 'attachments'> & {
     key?: string
+    priority?: TaskPriority
     needs?: (string | { key: string })[]
     for?: string | null
   }
@@ -206,6 +208,8 @@ export type HeldTask = {
   release(): Promise<MessageView>
   complete(result?: string): Promise<MessageView>
   fail(reason: string): Promise<MessageView>
+  /** Lowers the priority without ending the claim. A claim cannot raise it. */
+  priority(priority: TaskPriority): Promise<MessageView>
   /** Holds the task for a person, which ends the claim: `kind` says what for (`needs_input`, `awaiting_approval`). */
   block(reason: string, opts?: { kind?: string }): Promise<MessageView>
 }
@@ -411,6 +415,7 @@ export function createBoardClient(options: ClientOptions) {
       release: () => taskWrite(id, 'release', { epoch, token }),
       complete: (result) => taskWrite(id, 'complete', { epoch, token, ...(result !== undefined ? { result } : {}) }),
       fail: (reason) => taskWrite(id, 'fail', { epoch, token, reason }),
+      priority: (priority) => taskWrite(id, 'priority', { epoch, token, priority }),
       block: (reason, opts = {}) => taskWrite(id, 'block', { epoch, token, reason, ...opts }),
     }
   }
@@ -446,10 +451,10 @@ export function createBoardClient(options: ClientOptions) {
   }
 
   /**
-   * Claims task `target`, or with `{ channel }` the oldest ready task in that channel (`work`) or
-   * subtree (`work/`) that has every label in `label`: one assigned to you first, then an
-   * unassigned one you own, or whose owner `from` names by ID (400 `invalid_from` for a handle,
-   * which several can share). It needs `label` where the task
+   * Claims task `target`, or with `{ channel }` the highest priority eligible ready task in that
+   * channel (`work`) or subtree (`work/`), oldest first at equal priority. It has every label in
+   * `label` and is assigned to you, or unassigned and owned by you or an owner `from` names by ID
+   * (400 `invalid_from` for a handle, which several can share). It needs `label` where the task
    * is. A task by ID that can't be claimed throws a 409 (`task_claimed`, `task_waiting`, ...); a
    * channel with nothing ready answers null, after waiting up to `wait` seconds for one. `lease`
    * is how long you hold it, in seconds, the board's default without one: a board says how short
@@ -696,6 +701,8 @@ export function createBoardClient(options: ClientOptions) {
        * itself, through however many tasks, throws a 400 `invalid_needs`.
        */
       needs: (id: string, needs: string[]) => taskWrite(id, 'needs', { needs }),
+      /** Sets priority as the task's owner or with manage. Use the live claim if you hold it. */
+      priority: (id: string, priority: TaskPriority) => taskWrite(id, 'priority', { priority }),
       /** Cancels a task that hasn't completed, ending any claim. What waits for it keeps waiting. */
       cancel: (id: string, reason: string) => taskWrite(id, 'cancel', { reason }),
     },

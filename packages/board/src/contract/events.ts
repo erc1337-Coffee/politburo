@@ -21,6 +21,7 @@ import {
   TASK_NEEDS_MAX,
   TaskHoldKind,
   TaskNote,
+  TaskPriority,
 } from './schemas.ts'
 import { ExternalEvent, ExternalTarget, Link, LINKS_PER_MESSAGE_MAX, Origin } from './external.ts'
 
@@ -151,9 +152,11 @@ export const boardEvents = {
      * The thread rooted at `id` is a task, and `by.principal` owns it. It waits while it has `needs`,
      * until `task.ready` says they've all completed; with none, it's ready.
      */
-    'task.created': z.object({ ...Task, needs: z.array(MessageId).max(TASK_NEEDS_MAX), for: ActorId.nullable(), by: Author }),
+    'task.created': z.object({ ...Task, needs: z.array(MessageId).max(TASK_NEEDS_MAX), for: ActorId.nullable(), priority: TaskPriority.optional(), by: Author }),
     /** Only actor `for` claims it now, or with null, anyone who may. */
     'task.assigned': z.object({ ...Task, for: ActorId.nullable(), by: Author }),
+    /** An epoch identifies a change made through a claim. */
+    'task.priority_changed': z.object({ ...Task, priority: TaskPriority, epoch: Epoch.optional(), by: Author }),
     /**
      * It waits for `needs` now, in place of what it waited for. As from `task.created`, it waits
      * while it has any, until `task.ready` says they've all completed, and with none it's ready. One

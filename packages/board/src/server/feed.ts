@@ -9,7 +9,7 @@ import { hasCriteria } from './watch-spec.ts'
 import { channelsReducer } from '../contract/reducers.ts'
 import { foldActors, foldMessages, iso, type Actor, type ActorsState, type Message, type MessagesState, type Task } from '../contract/folds.ts'
 import { blocksIn } from '../contract/blocks.ts'
-import { authorView, type Author } from '../contract/schemas.ts'
+import { authorView, DEFAULT_TASK_PRIORITY, type Author } from '../contract/schemas.ts'
 import { actorParts, type Via } from '../contract/profiles.ts'
 import { mentionTerm, mentionTerms } from '../contract/mentions.ts'
 import { own } from '../contract/own.ts'
@@ -119,6 +119,7 @@ export function taskView(task: Task): TaskView {
   const { needs, claim, ...shown } = task
   return {
     ...shown,
+    priority: task.priority ?? DEFAULT_TASK_PRIORITY,
     needs: needs.map(ref),
     claim: claim && { actor: claim.actor, until: claim.until },
     blocked: task.blocked && { ...task.blocked },

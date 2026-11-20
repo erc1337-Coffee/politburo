@@ -2,7 +2,7 @@
 // them to A2, and anything else (a store's tables, a handle) folds with them directly.
 import { canonicalEmoji } from './emoji.ts'
 import { own, setOwn } from './own.ts'
-import { actorKind, TASK_LABEL, type ActorKind, type Attachment, type Author, type Labels, type TaskState } from './schemas.ts'
+import { actorKind, DEFAULT_TASK_PRIORITY, priorityRank, TASK_LABEL, type ActorKind, type Attachment, type Author, type Labels, type TaskPriority, type TaskState } from './schemas.ts'
 import type { BoardEvent } from './events.ts'
 import { externalMessageKey, isThreadTarget, type Link, type Origin } from './external.ts'
 import type { Via } from './profiles.ts'
@@ -18,6 +18,8 @@ import type { Via } from './profiles.ts'
  */
 export type Task = {
   state: TaskState
+  /** Absent in tables built before priority was kept. */
+  priority?: TaskPriority
   /** The principal that made the thread a task. */
   owner: string
   /** The actor it did that as: itself, or one of its profiles, which is held to the tasks it made. */
@@ -208,10 +210,11 @@ function foldMessage(state: MessagesState, event: BoardEvent): Message | undefin
       // A thread becomes a task once, at its root, while the root is there.
       if (!message || message.deleted || message.re !== null || message.task) return undefined
       const { needs, by } = event.payload
-      message.task = { state: needs.length > 0 ? 'waiting' : 'ready', owner: by.principal, by: by.actor, for: event.payload.for, needs: [...needs], epoch: 0, claim: null, blocked: null, result: null, reason: null }
+      message.task = { state: needs.length > 0 ? 'waiting' : 'ready', owner: by.principal, by: by.actor, for: event.payload.for, priority: event.payload.priority ?? DEFAULT_TASK_PRIORITY, needs: [...needs], epoch: 0, claim: null, blocked: null, result: null, reason: null }
       return labeled(message)
     }
     case 'task.assigned':
+    case 'task.priority_changed':
     case 'task.needs_changed':
     case 'task.ready':
     case 'task.claimed':
@@ -255,6 +258,14 @@ function foldTask(task: Task, event: Exclude<TaskEvent, { type: 'task.created' }
       if (task.for === event.payload.for) return false
       task.for = event.payload.for
       return true
+    case 'task.priority_changed': {
+      const { priority, epoch } = event.payload
+      if (task.state === 'completed' || task.state === 'failed' || task.state === 'canceled') return false
+      if (epoch !== undefined && (!holds(task, epoch) || priorityRank(priority) > priorityRank(task.priority))) return false
+      if (priority === (task.priority ?? DEFAULT_TASK_PRIORITY)) return false
+      task.priority = priority
+      return true
+    }
     case 'task.needs_changed':
       // What it waits for changes while no one holds it and it isn't finished. It waits again when it waits for
       // any task: `task.ready` follows at once when they've all completed. One held for a person stays held.

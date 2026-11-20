@@ -1,7 +1,9 @@
+import { DEFAULT_TASK_PRIORITY } from '../contract/schemas.ts'
 import {
   AckBody,
   AssignTaskBody,
   TaskNeedsBody,
+  TaskPriorityBody,
   BlockTaskBody,
   CancelTaskBody,
   ClaimReadyTaskBody,
@@ -201,6 +203,8 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
       return { id, ...AssignTaskBody.parse(await body()) }
     case 'setTaskNeeds':
       return { id, ...TaskNeedsBody.parse(await body()) }
+    case 'setTaskPriority':
+      return { id, ...TaskPriorityBody.parse(await body()) }
     case 'cancelTask':
       return { id, ...CancelTaskBody.parse(await body()) }
     case 'createGrant':
@@ -627,11 +631,11 @@ export async function createServe(context: BoardContext): Promise<Serve> {
 
   /**
    * A digest of what a batch asks for, as it was given: its channel and its tasks, as many, in the
-   * same order, each with the same key, text, labels, `noSync`, files, needs, and assignee. A field
-   * left out is its empty value. A batch made under an `id` is that `id`'s only for the same one.
+   * same order, each with the same key, text, labels, `noSync`, files, needs, assignee and priority.
+   * Omitted priority and `normal` keep the digest of a batch made before priority existed.
    */
   async function batchRequest(body: Pick<Protocol['createTasks']['input'], 'channel' | 'tasks'>): Promise<string> {
-    const tasks = body.tasks.map((task) => [task.key ?? null, task.text, Object.entries(task.labels ?? {}).sort(([a], [b]) => (a < b ? -1 : 1)), task.noSync ?? false, task.attachments ?? [], task.needs ?? [], task.for ?? null])
+    const tasks = body.tasks.map((task) => [task.key ?? null, task.text, Object.entries(task.labels ?? {}).sort(([a], [b]) => (a < b ? -1 : 1)), task.noSync ?? false, task.attachments ?? [], task.needs ?? [], task.for ?? null, ...((task.priority ?? DEFAULT_TASK_PRIORITY) === DEFAULT_TASK_PRIORITY ? [] : [task.priority])])
     return (await sha256(JSON.stringify([body.channel, tasks]))).slice(0, 32)
   }
 

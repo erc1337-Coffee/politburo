@@ -31,6 +31,7 @@ const WATCHED = [
   'thread.synced',
   'task.created',
   'task.assigned',
+  'task.priority_changed',
   'task.needs_changed',
   'task.ready',
   'task.claimed',

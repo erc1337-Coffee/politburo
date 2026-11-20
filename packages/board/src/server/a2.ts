@@ -658,7 +658,7 @@ function build(options: A2Options, binding: BoardBinding) {
       taskLimits.lease(body.lease)
       const identity = await identityOf(caller)
       const { principal } = identity
-      const about = { needs: body.needs, for: body.for, claim: body.claim, lease: body.lease, token: body.token }
+      const about = { needs: body.needs, for: body.for, priority: body.priority, claim: body.claim, lease: body.lease, token: body.token }
       if (body.re !== undefined) return tasks.adopt(identity, messageAt(body.re), about)
       // A new thread, posted as any is: `post` where it lands, and `label` for the labels it carries.
       const proofs = await authorizePost(writes, principal.access, { channel: body.channel, labels: body.labels })
@@ -734,6 +734,8 @@ function build(options: A2Options, binding: BoardBinding) {
     unblockTask: async (caller, { id }) => tasks.unblock(await identityOf(caller), messageAt(id)),
     reopenTask: async (caller, { id }) => tasks.reopen(await identityOf(caller), messageAt(id)),
     assignTask: async (caller, { id, for: actor }) => tasks.assign(await identityOf(caller), messageAt(id), actor),
+    setTaskPriority: async (caller, { id, priority, epoch, token }) =>
+      tasks.priority(await identityOf(caller), messageAt(id), priority, epoch !== undefined && token !== undefined ? { epoch, token } : undefined),
     async setTaskNeeds(caller, { id, needs }) {
       taskLimits.needs(needs)
       return tasks.needs(await identityOf(caller), messageAt(id), needs)

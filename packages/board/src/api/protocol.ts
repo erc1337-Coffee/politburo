@@ -7,6 +7,7 @@ import type {
   ActorView,
   AssignTaskBody,
   TaskNeedsBody,
+  TaskPriorityBody,
   BlockTaskBody,
   BoardStatus,
   ControlBody,
@@ -136,7 +137,7 @@ export type Protocol = {
    * there's none. With `request`, 409 `duplicate_id` when the batch was made for another one.
    */
   createdTasks: { input: Id & Input<typeof CreatedTasksQuery>; output: { tasks: MessageView[] } }
-  /** The oldest ready task there, claimed, or `{ task: null }` when there's none, after waiting up to `wait` seconds. */
+  /** The highest priority eligible ready task (oldest first on ties), claimed, or `{ task: null }` when there's none, after waiting up to `wait` seconds. */
   claimReadyTask: { input: Input<typeof ClaimReadyTaskBody>; output: { task: MessageView; claim: TaskClaim } | { task: null } }
   /** 409 `task_claimed` while someone holds it, and of claims that race, for all but one. */
   claimTask: { input: Id & Input<typeof ClaimTaskBody>; output: { task: MessageView; claim: TaskClaim } }
@@ -153,6 +154,7 @@ export type Protocol = {
   assignTask: { input: Id & Input<typeof AssignTaskBody>; output: { task: MessageView } }
   /** 400 `invalid_needs` for a prerequisite that isn't one, or that would make the task wait for itself. The same set is left as it is. */
   setTaskNeeds: { input: Id & Input<typeof TaskNeedsBody>; output: { task: MessageView } }
+  setTaskPriority: { input: Id & Input<typeof TaskPriorityBody>; output: { task: MessageView } }
   cancelTask: { input: Id & Input<typeof CancelTaskBody>; output: { task: MessageView } }
   /** The board's grants: needs `manage` at `*`, or a team owner. 501 `no_grants` where the board keeps none. */
   grants: { input: Nothing; output: { grants: GrantView[] } }

@@ -149,7 +149,8 @@ export const options = {
   // Tasks.
   state: { type: 'string', value: 'state', description: 'in a state: waiting, ready, claimed, blocked, completed, failed, canceled, open, or all (default: open)' },
   needs: { type: 'string', multiple: true, value: 'id', description: 'wait for a task to complete first' },
-  ready: { type: 'boolean', description: 'the oldest ready task in a channel, or under a prefix (work/)' },
+  ready: { type: 'boolean', description: 'the highest priority ready task in a channel or under a prefix' },
+  priority: { type: 'string', value: 'level', description: 'lowest, low, normal (default), high, or urgent' },
   from: { type: 'string', multiple: true, value: 'id', description: "with --ready: take this owner's tasks too, by their ID" },
   wait: { type: 'string', value: 'duration', description: 'with --ready: how long to wait for one, e.g. 10m' },
   lease: { type: 'string', value: 'duration', description: 'how long to hold it: 30s to 1h (default: 15m, or what the board gives)' },
@@ -606,10 +607,11 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
         options: [
           option('label', 'label it, to route it', 'k=v'),
           option('needs'),
+          option('priority'),
           option('for', 'only this profile of yours claims it', 'profile'),
           claimNow,
           option('lease', 'with --claim: how long to hold it'),
-          option('file', 'a plan, from a JSON file (- reads stdin): an array of tasks, each { key?, text, labels?, needs?, for?, noSync?, attachments? }, all made, in as many writes as it takes'),
+          option('file', 'a plan, from a JSON file (- reads stdin): an array of tasks, each { key?, text, labels?, needs?, for?, priority?, noSync?, attachments? }, all made, in as many writes as it takes'),
           option('no-sync'),
           option('idempotency-key', 'sending the same one again makes it once'),
         ],
@@ -621,8 +623,22 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
         ],
       },
       {
+        name: 'show',
+        description: 'show one task, including its priority',
+        arguments: [task()],
+        options: [],
+        examples: [{ name: 'show a task', value: 'tasks show 812' }],
+      },
+      {
+        name: 'priority',
+        description: 'set a task’s priority; with your claim, only lower it',
+        arguments: [task(), { name: 'level', required: true, description: options.priority.description }],
+        options: [],
+        examples: [{ name: 'set a task’s priority', value: 'tasks priority 812 high' }],
+      },
+      {
         name: 'claim',
-        description: 'hold a task for a lease, by its ID, or with --ready the oldest ready one in a channel',
+        description: 'hold a task by ID, or claim the highest priority ready task with --ready',
         arguments: [{ name: 'id|channel', required: true, description: "a task's ID, or with --ready a channel or a path prefix (work/)" }],
         options: [option('ready'), option('label', 'with --ready: one whose root has this label', 'k=v'), option('from'), option('wait'), option('lease')],
         examples: [
