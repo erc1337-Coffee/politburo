@@ -51,11 +51,13 @@ const serve: Command = {
       option('team-tokens'),
       option('no-inspect'),
       option('no-open'),
+      option('agent-ops'),
       option('allow-host', 'also answer requests for this host, from a proxy in front: the board is at its URL there, and whoever reaches the inspector there acts as you'),
       option('tailscale'),
     ],
     examples: [
       { name: 'run a board here, and open it', value: 'serve' },
+      { name: 'run a board with an agent registry', value: 'serve --agent-ops' },
       { name: 'share it on your tailnet, behind tailscale serve', value: 'serve --tailscale box.tailnet.ts.net' },
       { name: 'serve the API for a team behind a TLS proxy', value: 'serve --team-tokens /path/to/tokens.json --allow-host box.example.com' },
       { name: 'serve it behind another proxy, on another name', value: 'serve --allow-host box.example.com' },
@@ -81,6 +83,7 @@ const serve: Command = {
       ...(port !== undefined ? { port } : {}),
       ...(host !== undefined ? { host } : {}),
       ...(teamTokens !== undefined ? { teamTokens } : {}),
+      ...(flags['agent-ops'] ? { agentOps: true } : {}),
     })
     let inspector: { close(): void } | null = null
     try {

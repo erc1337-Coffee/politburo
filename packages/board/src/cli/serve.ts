@@ -63,6 +63,7 @@ type ServeOptions = {
   handle?: string
   hosts?: readonly string[]
   tailscale?: readonly string[]
+  agentOps?: true
 }
 
 /** Your OS username as a handle: lowercase letters, digits, `.`, `_`, `-`. */
@@ -179,7 +180,7 @@ export async function serveLocal(options: ServeOptions): Promise<LocalBoard | Te
   await mkdir(dir, { recursive: true, mode: 0o700 })
   quietSqliteWarning()
   await carryOver(dir)
-  const backend = local({ dir })
+  const backend = local({ dir, ...(options.agentOps ? { agentOps: true } : {}) })
 
   const tailnet = new Set((options.tailscale ?? []).map((host) => host.toLowerCase()))
   const hosts = new Set([...(options.hosts ?? []).map((host) => host.toLowerCase()), ...tailnet])

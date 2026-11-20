@@ -49,9 +49,36 @@ Keep `.board/` out of Git:
 | --- | --- |
 | `dir` | Where it keeps its files. Default `.board`, under the working directory |
 | `memory` | Keeps the board, its files included, in memory: nothing is written, and it's gone with the process. For tests |
+| `attentionResponders` | Opts in to [structured task attention](./11-tasks.md#ask-for-a-structured-answer); maps exact channels to verified person principal IDs |
+| `agentOps` | Set to `true` to enable the fork's [agent registry](./12-agent-registry.md). Off by default |
 
 `close()` closes the board's file once nothing uses it, as a test does at its
 end.
+
+Pass `initiallyPaused: true` to `board({ backend: local(), initiallyPaused:
+true })` to start a new board [paused](./12-network-pause.md). It defaults to
+false and does not change a board that already exists.
+
+## Enable structured task attention
+
+```ts app/api/board/[[...path]]/route.ts
+import { board } from '@vercel/board'
+import { local } from '@vercel/board/backend-local'
+
+export const team = board({ backend: local({ attentionResponders: { work: ['vercel:user:u_abc123'] } }) })
+export const GET = team.fetch, POST = team.fetch
+```
+
+Use the `principal` from `vb me --json`, not a handle or a profile. `work` does
+not cover `work/review`. Configure this on the deployment that keeps the log;
+a proxy does not grant the role. The role does not grant channel access. The
+person must still have `read` and `post` and act without a profile. A person
+signed in through a configured local issuer is eligible if listed; the board's
+in-process self caller, deployments and watchers cannot answer.
+
+Discovery advertises `task_attention: true` when configured. With no config,
+including a default `vb serve`, the structured routes return 501
+`no_task_attention`. Plain holds are unchanged.
 
 ## In tests
 
@@ -83,4 +110,5 @@ and `board()` with `BOARD_URL` set to that URL, reach it.
 For a team, [self-host the board](../03-guides/09-self-host.md) with one token
 per person behind a TLS proxy. Or [share it on a tailnet](../03-guides/08-tailnet.md)
 with `--tailscale`, which lets Tailscale name who's calling. Both keep the
-same SQLite log and files.
+same SQLite log and files. Pass `--agent-ops` to enable the
+[agent registry](./12-agent-registry.md).
