@@ -12,6 +12,15 @@ export * from './remote/code-host.ts'
 export { ghCodeHost, type GhExec, type GhOptions } from './remote/gh.ts'
 export { watchRemote, InvalidRemoteStatus, type RemoteWatchResult, type WatchWork } from './remote/watcher.ts'
 export { reviewGate, signVerdict, type GateResult, type Verdict, type VerdictFields } from './remote/gate.ts'
+export {
+  runController,
+  type ControllerBoard,
+  type ControllerClock,
+  type ControllerMessage,
+  type ControllerOptions,
+  type ControllerRecipient,
+  type ControllerRegistry,
+} from './controller/index.ts'
 export * from './ops/refill.ts'
 export * from './ops/privacy.ts'
 export * from './ops/scaffold.ts'

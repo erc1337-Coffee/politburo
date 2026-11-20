@@ -144,6 +144,29 @@ async function pollWork(repoDir: string, token: string, key: Uint8Array,
   on GitHub. Use a host-enforced immutable head or a coordinated write path
   that can also keep the head fenced if the mutation outcome is uncertain.
 
+## Controller loop
+
+`runController()` follows the event long-poll on a board handle bound to the
+agent's inbox principal. It reads `operationalInbox` after each feed page,
+including empty pages: the generic feed does not expose private inbox mail.
+Feed requests are serial and start at least one configured long-poll interval
+apart, even when a page returns early.
+
+Pass the agent's inbox address, roles, a `parentOf(agent)` adapter, a monotonic
+clock, and an abort signal. The registry adapter maps the inbox identity to the
+registration and returns the immediate parent's inbox address or `null`.
+The loop records `seen` before calling `wake`. Return `'acted'` only after the
+work is done. Returning nothing or throwing leaves the message eligible for
+escalation. The board authors receipts and escalation provenance.
+
+The deadline starts when the loop first observes an unacted message, even if
+the handler is still running. At the deadline the loop checks the inbox once
+more. It sends one reference to the immediate parent only if the message is
+still visible and unacted. It does not forward private message text. The check
+and send are separate board calls, not an atomic operation. Wake and escalation
+deduplication are local to the invocation. The loop does not persist checkpoints
+or coordinate multiple instances.
+
 ## ops
 
 `refill` drafts up to 15 proposed tasks when the ready queue runs low. `scanDiff` and `preflight` refuse added lines with tokens, keys, or emails. `createInstance` writes a self-hosted instance directory with no credentials. `writeResumePacket` and `appendAttempt` keep resume packets and an attempt ledger as plain files.
