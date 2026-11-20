@@ -200,6 +200,28 @@ it('omits a pending run probe after its claim is released', async () => {
   expect((await worker.agents.intents(agent.id)).intents).toEqual([])
 })
 
+it('omits a pending run probe after its lease expires', async ({ onTestFinished }) => {
+  const advance = clock(onTestFinished)
+  const { worker, agent, issue, take } = await runFixture()
+  advance(5_000)
+  const probe = await issue('before-lease-expiry')
+  expect((await worker.agents.intents(agent.id)).intents.map(({ id }) => id)).toEqual([probe.id])
+
+  advance(26_000)
+  await expect(take(probe)).rejects.toMatchObject({ status: 409, code: 'claim_lost' })
+  expect((await worker.agents.intents(agent.id)).intents).toEqual([])
+})
+
+it('omits a pending run probe after its task is deleted', async () => {
+  const { client, worker, agent, task, issue, take } = await runFixture()
+  const probe = await issue('before-delete')
+  expect((await worker.agents.intents(agent.id)).intents.map(({ id }) => id)).toEqual([probe.id])
+
+  await client.delete(task.id)
+  await expect(take(probe)).rejects.toMatchObject({ status: 404, code: 'not_a_task' })
+  expect((await worker.agents.intents(agent.id)).intents).toEqual([])
+})
+
 it.for(['paused', 'resumed'] as const)('does not confirm run health when the board has %s until a new claim is probed', async (phase, { onTestFinished }) => {
   clock(onTestFinished)
   const { client, worker, agent, task, health, issue, take, report } = await runFixture()
@@ -431,8 +453,12 @@ it('rechecks agent capabilities on the same HTTP handle when the mount changes',
   onTestFinished(() => full.close())
   onTestFinished(() => disabled.close())
   const { fetch: registryFetch, attempted } = registryOnlyMount(full.fetch)
+  const cachedDiscovery = await (await full.fetch(new Request(BOARD_URL))).json()
   let mount = full.fetch
-  const client = via((request) => mount(request), await personToken()).as('worker')
+  const client = via((request) => {
+    if (request.url === BOARD_URL && request.cache !== 'no-store') return Promise.resolve(Response.json(cachedDiscovery))
+    return mount(request)
+  }, await personToken()).as('worker')
   expect(await client.discovery()).toMatchObject({ agent_ops: true, agent_intents: true })
   const agent = await client.agents.register(config)
   const issued = await client.agents.issueIntent(agent.id, command)
@@ -462,6 +488,33 @@ it("never returns an older mount's discovery document as health", async ({ onTes
   await expect(client.agents.health('missing')).rejects.toMatchObject(noOps)
   expect(attempted).toEqual([])
 })
+
+it('rejects discovery JSON from the health route even when the mount advertises intents', async ({ onTestFinished }) => {
+  const team = localBoard({ agentOps: true })
+  onTestFinished(() => team.close())
+  const client = via((request) => new URL(request.url).pathname.startsWith(`${new URL(BOARD_URL).pathname}/ops/health/`)
+    ? team.fetch(new Request(BOARD_URL))
+    : team.fetch(request), await personToken())
+
+  await expect(client.agents.health('missing')).rejects.toMatchObject({ status: 502, code: 'remote_error' })
+})
+
+it('skips run-health conformance when the mount becomes registry-only during the run', async ({ onTestFinished }) => {
+  const team = localBoard({ agentOps: true })
+  onTestFinished(() => team.close())
+  const { fetch: registryFetch } = registryOnlyMount(team.fetch)
+  let mount = team.fetch
+  const client = via(async (request) => {
+    const response = await mount(request)
+    if (response.ok && request.method === 'POST' && /\/ops\/agents\/[^/]+\/retire$/.test(new URL(request.url).pathname)) mount = registryFetch
+    return response
+  }, await personToken())
+
+  const report = await conformance(client)
+  expect(report.checks.find(({ name }) => name === 'confirms a claimed run only through a taken and reported status probe')).toMatchObject({
+    status: 'skipped', detail: 'not kept here: agent intents are not advertised',
+  })
+}, 30_000)
 
 it('passes registry conformance but skips run health on a registry-only board', async ({ onTestFinished }) => {
   const { client } = await registryOnly(onTestFinished)

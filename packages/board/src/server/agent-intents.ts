@@ -88,7 +88,8 @@ export function createAgentIntents(ctx: WriteContext, { accessNow }: BoardBindin
     return root
   }
 
-  async function findRun(view: Snapshot, run: AgentRun, agent: Agent, access: Access) {
+  async function findRun(view: Snapshot, run: AgentRun, agent: Agent, access: Access,
+    getStatus = async () => (await ctx.work.at(view.index)).status) {
     const root = await taskAt(run.task, view.index, access)
     if (root.channel !== agent.channel) throw missingTask()
     const { task } = root
@@ -96,7 +97,7 @@ export function createAgentIntents(ctx: WriteContext, { accessNow }: BoardBindin
     if (!claim) throw claimLost()
     const by = own(view.state.claims, runKey(root.id, run.epoch))
     if (!by || by.actor !== claim.actor || !sameBinding(agent.binding, by)) throw missingTask()
-    if (claimFenced(task, (await ctx.work.at(view.index)).status)) throw claimLost()
+    if (claimFenced(task, await getStatus())) throw claimLost()
     return Date.parse(claim.until)
   }
 
@@ -211,7 +212,8 @@ export function createAgentIntents(ctx: WriteContext, { accessNow }: BoardBindin
   return {
     issue,
     async list({ author, principal: { access } }: Identity, id: string, after: string | undefined) {
-      const { state, index } = await snapshot()
+      const view = await snapshot()
+      const { state, index } = view
       const agent = own(state.agents, id)
       if (!agent || !access.readable(agent.channel) || (!access.can('manage', agent.channel) &&
           !(agent.status === 'enabled' && sameBinding(agent.binding, author)))) throw missingAgent()
@@ -223,15 +225,16 @@ export function createAgentIntents(ctx: WriteContext, { accessNow }: BoardBindin
       const now = Date.now()
       const intents: AgentIntent[] = []
       let status: WorkState | undefined
+      const getStatus = async () => (status ??= (await ctx.work.at(index)).status)
       for (; i < stop && intents.length < PAGE; i++) {
         const intent = effective(state.intents[ids[i]!]!.intent, agent, now)
         if (intent.state !== 'pending') continue
         if (intent.run) {
-          const root = await readTaskAt(intent.run.task, index, access)
-          if (root) {
-            if (!claimForRun(root.task, intent.run)) continue
-            status ??= (await ctx.work.at(index)).status
-            if (claimFenced(root.task, status)) continue
+          try {
+            if (await findRun(view, intent.run, agent, access, getStatus) <= now) continue
+          } catch (error) {
+            if (error instanceof HttpError && (error.code === 'not_a_task' || error.code === 'claim_lost')) continue
+            throw error
           }
         }
         intents.push(intent)

@@ -175,7 +175,6 @@ type Context = {
   /** The board's own Vercel team, as its discovery names it. */
   team: string | null
   agentOps: boolean
-  agentIntents: boolean
 }
 
 type Check = {
@@ -2937,20 +2936,37 @@ const CHECKS: Check[] = [
     group: 'agents',
     name: 'confirms a claimed run only through a taken and reported status probe',
     run: async (ctx) => {
-      const { board, channel, labels, agentOps, agentIntents, me } = ctx
-      if (!agentIntents) {
-        await rejects(board.agents.health('conformance-missing'), 501, 'no_agent_ops', 'reading health without advertised support')
-        return agentOps ? 'not kept here: agent intents are not advertised' : 'not kept here: agent operations are not advertised'
+      const { board, channel, labels, me } = ctx
+      // Agent calls recheck the mount; discovery() on an HTTP handle can be cached.
+      const notKeptHere = async (error: unknown) => {
+        if (!(error instanceof BoardError && error.status === 501 && error.code === 'no_agent_ops')) throw error
+        try {
+          await board.agents.list(channel)
+        } catch (error) {
+          if (error instanceof BoardError && error.status === 501 && error.code === 'no_agent_ops') return 'not kept here: agent operations are not advertised'
+          throw error
+        }
+        return 'not kept here: agent intents are not advertised'
       }
-      if (me.principal === 'board:client' || me.principal.startsWith('board:client:')) return 'this run has no verified agent credential'
+      if (me.principal === 'board:client' || me.principal.startsWith('board:client:')) {
+        try {
+          await board.agents.health('conformance-missing')
+        } catch (error) {
+          if (!(error instanceof BoardError && error.status === 404)) return notKeptHere(error)
+        }
+        return 'this run has no verified agent credential'
+      }
       const worker = board.as(`probe-${labels.conformance}`)
       const { principal, profile } = await worker.me()
-      const agent = await worker.agents.register({ channel, role: 'reviewer', harness: 'conformance' })
+      const agent = await worker.agents.register({ channel, role: 'reviewer', harness: 'conformance' }).catch(notKeptHere)
+      if (typeof agent === 'string') return agent
       try {
         const { task: root } = await task(ctx, 'conformance: run health')
         const claim = await worker.tasks.claim(root.id)
         try {
-          same((await board.agents.health(root.id)).state, 'not_confirmed', 'health of a bare claim')
+          const bareHealth = await board.agents.health(root.id).catch(notKeptHere)
+          if (typeof bareHealth === 'string') return bareHealth
+          same(bareHealth.state, 'not_confirmed', 'health of a bare claim')
           const input = { verb: 'status', generation: agent.generation, ttlSeconds: 30, requestId: `probe-${labels.conformance}`, run: { task: root.id, epoch: claim.epoch } } as const
           const { intents } = await board.agents.issueIntent(agent.id, input)
           same(intents.length, 1, 'a probe resolves to one intent')
@@ -3133,7 +3149,6 @@ export async function conformance(board: Board, options: ConformanceOptions = {}
     },
     team: info.team_id ?? null,
     agentOps: info.agent_ops === true,
-    agentIntents: info.agent_intents === true,
   }
   try {
     const selected = options.networkPause ? [NETWORK_PAUSE, ...CHECKS] : CHECKS

@@ -1,9 +1,11 @@
+import { z } from 'zod'
 import { BoardStatus, routes, type Discovery, type EventsPage } from '../api/routes.ts'
 import { boundTaskPaths } from '../api/task-authority.ts'
 import type { Method, Protocol } from '../api/protocol.ts'
 import { BoardError, createBoardClient, type BoardClient, type ProfileOption } from '../client/client.ts'
 import { DERIVED_ID, keyId } from '../client/ids.ts'
-import { ATTACHMENT_BYTES_MAX, type Attachment } from '../contract/schemas.ts'
+import { boardEvents } from '../contract/events.ts'
+import { AgentIntent, ATTACHMENT_BYTES_MAX, type AgentHealth, type Attachment } from '../contract/schemas.ts'
 import { type Backend, type BoardBinding, type Caller, type ProtocolMethods, type SelfCaller } from './backend.ts'
 import { HttpError, noAgentOps } from './errors.ts'
 import { isAgentIntentMethod, isAgentOpsMethod, METHODS } from './routing.ts'
@@ -41,6 +43,26 @@ export type Environment = {
 /** A watcher's or client's name is the profile its writes are by. */
 const PROFILE = /^[A-Za-z][A-Za-z0-9-]{0,31}$/
 const PROFILE_RULE = 'ids start with a letter and use up to 32 letters, numbers, and hyphens'
+
+const Agent = boardEvents['ops.agent_changed'].shape.agent
+const IssuedIntents = z.object({ intents: z.array(AgentIntent) })
+// The contract exports AgentHealth as a type, not a runtime schema.
+const AgentHealthResponse = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('working'), validUntil: z.iso.datetime() }),
+  z.object({ state: z.literal('not_confirmed') }),
+]) satisfies z.ZodType<AgentHealth>
+const agentResponses: Partial<Record<Method, z.ZodType>> = {
+  listOpsAgents: z.object({ agents: z.array(Agent) }),
+  registerOpsAgent: Agent,
+  heartbeatOpsAgent: Agent,
+  retireOpsAgent: Agent,
+  issueOpsIntent: IssuedIntents,
+  issueOpsRoleIntent: IssuedIntents,
+  listOpsIntents: IssuedIntents.extend({ next: z.string().nullable() }),
+  takeOpsIntent: AgentIntent,
+  reportOpsIntent: AgentIntent,
+  getOpsHealth: AgentHealthResponse,
+}
 
 const describe = (error: unknown) => ((error instanceof Error ? error.message : String(error)) || 'unknown error').slice(0, 500)
 
@@ -277,6 +299,12 @@ export function createHttp(url: string | undefined, options: HttpOptions, enviro
       const status = BoardStatus.safeParse(await response.json().catch(() => null))
       if (!status.success) throw new HttpError(502, 'remote_error', 'the remote board did not answer with a control status')
       return status.data
+    }
+    const schema = agentResponses[method]
+    if (schema) {
+      const body: unknown = await response.json().catch(() => null)
+      if (!schema.safeParse(body).success) throw new HttpError(502, 'remote_error', `the remote board did not answer ${routes[method].path} with the expected response`)
+      return body
     }
     return response.json()
   }
