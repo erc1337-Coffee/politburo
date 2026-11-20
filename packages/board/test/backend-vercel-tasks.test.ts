@@ -95,13 +95,18 @@ describe("vercel()'s tasks", () => {
       'makes several tasks in one write, in the order given: each waits for the ones it names, of the batch or there already, and an id makes them once': 'passed',
       'makes none of a batch when one of its tasks can not be made, wherever it comes in it': 'passed',
       'holds a task for a person, by its owner or its claim, and gives it back when unblocked': 'passed',
+      'parks a task only as a verified person with manage, and unpark restores work without the claim': 'skipped: not kept here: no task authority',
+      'binds a claim to its verified owner and fences an older generation even with the same token': 'skipped: not kept here: no task authority',
+      'records an immutable handoff and accepts only one of two replacements naming the same predecessor': 'skipped: not kept here: no task authority',
       'keeps a task assigned to a profile for that actor alone': 'passed',
       // This run sends no headers of its own: the kit's run with them, in backend-vercel.test.ts, checks it.
       'lets a profile change only the tasks it made, and its principal all of them': "skipped: this run can't call the board with headers of its own",
       // This run sends no x-board-can: the kit's run with headers, in backend-vercel.test.ts, checks it.
       'takes label in its channel to claim a task: a caller narrowed to reading and posting claims none': "skipped: this run can't call the board with an x-board-can header",
       "takes read in a prerequisite's channel to wait for it: a caller narrowed out of it makes no task that needs it": "skipped: this run can't call the board with an x-board-can header",
-      'claims the oldest ready task in a channel or its subtree that has the labels asked for, and waits for one': 'passed',
+      'claims the oldest ready task at equal priority in a channel or its subtree, and waits for one': 'passed',
+      'keeps task priority and claims highest priority first, then oldest': 'passed',
+      'lets task writers set priority and live claims only lower it': 'passed',
       'shows a feed that filters on board.task=ready a task becoming ready and being claimed, and never a token': 'passed',
       'keeps labels under board. its own: a label write or a post that sets one is refused': 'passed',
     }
@@ -111,6 +116,27 @@ describe("vercel()'s tasks", () => {
     // A deployment does: its sync's platform user is a profile of its own project, and still never the task's owner.
     expect(await statuses('project:prj_pong:production')).toEqual({ ...kept, [edited]: 'passed' })
   }, 60_000)
+
+  it('refuses task authority writes without forwarding a legacy write to the upstream board', async () => {
+    const team = handleOn(fakeMessageboard())
+    const { task } = await team.tasks.create('work', { text: 'review this release' })
+    const thread = await team.post('work', 'adopt me')
+    const { actor, principal } = await team.me()
+    const who = { actor, principal }
+    const binding = { owner: who, controller: who, provider: 'test', model: 'test', session: 'test', branch: 'topic/test', worktree: '/fixture/test', baseCommit: 'a'.repeat(40) }
+    const received = team.sent.length
+    for (const write of [
+      () => team.tasks.park(task.id, 'wait'),
+      () => team.tasks.unpark(task.id, 'resume'),
+      () => team.tasks.claim(task.id, { binding }),
+      () => team.tasks.claim({ channel: 'work', binding }),
+      () => team.tasks.create('work', { text: 'do not make a task', claim: true, binding }),
+      () => team.tasks.create({ re: thread.id }, { claim: true, binding }),
+      () => team.tasks.handoff(task.id, { epoch: 1, token: 'fixture', commit: 'b'.repeat(40), packetPath: 'handoffs/check.md', sha256: 'c'.repeat(64) }),
+    ]) await expect(write()).rejects.toMatchObject({ status: 501, code: 'no_task_authority' })
+    expect(team.sent.slice(received).filter((request) => request.method !== 'GET').map((request) => [request.method, request.path])).toEqual([])
+    expect((await team.tasks.claim(task.id)).task.task?.state).toBe('claimed')
+  })
 
   it("finds no task on the thread routes that carried them before: the fake API has only version 2's task routes, as the API does", async () => {
     const api = fakeMessageboard()
@@ -209,7 +235,7 @@ describe("vercel()'s tasks", () => {
     // A task is its root: its ID is the root message's, and it reads as its thread does.
     expect(fix.id).toMatch(/^msg_[0-9a-f-]{36}_1$/)
     expect(fix).toMatchObject({ channel: 'work', text: 'fix CVE-123 in acme/web', re: null, labels: { step: 'fix', 'board.task': 'ready' } })
-    expect(fix.task).toEqual({ state: 'ready', owner: JULIAN, by: JULIAN, for: null, needs: [], epoch: 0, claim: null, blocked: null, result: null, reason: null })
+    expect(fix.task).toEqual({ state: 'ready', priority: 'normal', owner: JULIAN, by: JULIAN, for: null, needs: [], epoch: 0, claim: null, blocked: null, result: null, reason: null })
     // What it waits for is named by its root's ID, as the board names a task, where the API names its thread.
     expect(review.task).toMatchObject({ state: 'waiting', needs: [fix.id], for: `${JULIAN}+reviewer` })
     expect(review.labels['board.task']).toBe('waiting')
@@ -1102,7 +1128,7 @@ describe("vercel()'s tasks", () => {
     expect((await few.tasks.claim({ channel: 'many/', lease: 60 }))?.task.id).toBe(far.id)
   })
 
-  it("claims its own task from behind any number of other owners', and by its labels only among the oldest 25 it may take in each place", async () => {
+  it("claims its own task from behind other owners', then ranks eligible tasks that match its labels", async () => {
     const api = fakeMessageboard()
     const julian = handleOn(api)
     const ada = handleOn(api, 'user:u_ada')
@@ -1114,20 +1140,12 @@ describe("vercel()'s tasks", () => {
     expect(await julian.tasks.claim({ channel: 'queue' })).toBeNull()
     expect((await julian.tasks.claim({ channel: 'queue', from: [ADA], lease: 60 }))?.task.text).toBe("ada's 0")
 
-    // What's left to look through is its own, and only labels narrow it: the API reads the 25 oldest of an owner's in a
-    // channel, so a task with the labels asked for behind those isn't found until one of them is claimed.
-    for (let n = 0; n < 25; n++) await julian.tasks.create('steps', { text: `review ${n}`, labels: { step: 'review' } })
+    for (let n = 0; n < 25; n++) await julian.tasks.create('steps', { text: `review ${n}`, priority: 'urgent', labels: { step: 'review' } })
     const { task: fix } = await julian.tasks.create('steps', { text: 'fix, behind 25 reviews', labels: { step: 'fix' } })
-    expect(await julian.tasks.claim({ channel: 'steps', label: { step: 'fix' } })).toBeNull()
-    expect((await julian.tasks.claim({ channel: 'steps', label: { step: 'review' }, lease: 60 }))?.task.text).toBe('review 0')
     expect((await julian.tasks.claim({ channel: 'steps', label: { step: 'fix' }, lease: 60 }))?.task.id).toBe(fix.id)
-    // One assigned to the caller's profile is in a place of its own, so those don't hide it either.
-    const { task: given } = await julian.tasks.create('steps', { text: 'for the fixer', labels: { step: 'fix' }, for: `${JULIAN}+fixer` })
+    const { task: given } = await julian.tasks.create('steps', { text: 'for the fixer', priority: 'urgent', labels: { step: 'fix' }, for: `${JULIAN}+fixer` })
+    expect((await julian.as('fixer').tasks.claim({ channel: 'steps', lease: 60 }))?.task.text).toBe('review 0')
     expect((await julian.as('fixer').tasks.claim({ channel: 'steps', label: { step: 'fix' }, lease: 60 }))?.task.id).toBe(given.id)
-    // And what's assigned to it goes first, before older tasks of its principal's that anyone may take.
-    const { task: later } = await julian.tasks.create('steps', { text: 'for the fixer too', for: `${JULIAN}+fixer` })
-    expect((await julian.as('fixer').tasks.claim({ channel: 'steps', lease: 60 }))?.task.id).toBe(later.id)
-    expect((await julian.as('fixer').tasks.claim({ channel: 'steps', lease: 60 }))?.task.text).toBe('review 1')
   })
 
   it("is told when a claim of the next task names more channels and owners than the API looks through: 200 places", async () => {
@@ -1409,9 +1427,9 @@ describe("vercel()'s tasks", () => {
     const agent = { actor: `${JULIAN}+claude`, principal: JULIAN, profile: 'claude' }
     const expected = [
       ['message.posted', fix.id, null],
-      ['task.created', fix.id, { ...about(fix.id), needs: [], for: null, by }],
+      ['task.created', fix.id, { ...about(fix.id), needs: [], for: null, priority: 'normal', by }],
       ['message.posted', review.id, null],
-      ['task.created', review.id, { ...about(review.id), needs: [fix.id], for: `${JULIAN}+reviewer`, by }],
+      ['task.created', review.id, { ...about(review.id), needs: [fix.id], for: `${JULIAN}+reviewer`, priority: 'normal', by }],
       ['task.claimed', fix.id, { ...about(fix.id), epoch: 1, until: claim.until, by: agent }],
       ['task.renewed', fix.id, { ...about(fix.id), epoch: 1, until: renewed.until, by: agent }],
       ['task.released', fix.id, { ...about(fix.id), epoch: 1, by: agent }],
