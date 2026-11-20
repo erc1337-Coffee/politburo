@@ -43,6 +43,8 @@ export type BoardOptions = PolicyOptions & (BackendOptions | DefaultOptions) & {
    * Each calls `next()` to pass the write on; one that doesn't drops it.
    */
   middleware?: readonly Middleware[]
+  /** Operational inbox roles and their verified principal IDs (as `me().principal` reports them). */
+  inboxRoles?: Readonly<Record<string, readonly string[]>>
   /** Tails the board runs for you, keyed by an id you choose: `{ triage: { tail: 'firehose', run } }`. */
   watch?: Record<string, Watcher>
   /**
@@ -261,6 +263,14 @@ export function createBoard(options: BoardOptions, runtime: Runtime): Board {
   if (options.ensure && options.name === undefined) throw new Error('board: ensure makes the board `name` names: pass name too')
   const backend = options.backend ?? runtime.backend(options.fetch)
   const policy = createPolicy(options, backend.keeps, runtime.serving, backend.trust ?? null)
+  const inboxRolesByPrincipal = new Map<string, Set<string>>()
+  for (const [role, principals] of Object.entries(options.inboxRoles ?? {})) {
+    for (const principal of principals) {
+      let roles = inboxRolesByPrincipal.get(principal)
+      if (!roles) inboxRolesByPrincipal.set(principal, (roles = new Set()))
+      roles.add(role)
+    }
+  }
   const watch = options.watch ?? {}
   const entries = options.sync ?? {}
   const state: BoardContext['state'] = { learned: null }
@@ -451,6 +461,7 @@ export function createBoard(options: BoardOptions, runtime: Runtime): Board {
     },
     typing: async (messages, status) => (await server()).typing(messages, status),
     accessNow: (principal, grants) => policy.accessNow(principal, grants),
+    inboxRolesFor: (principal) => [...(inboxRolesByPrincipal.get(principal) ?? [])],
     explain: (principal, channel) => policy.explain(principal, channel),
     project: () => policy.project(),
     logins: policy.logins,

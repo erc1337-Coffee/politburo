@@ -2,7 +2,7 @@ import { carried } from './carried.ts'
 import type { z } from 'zod'
 import type { ActorView, Filters, LinkView, MessageView, BoardEventView, TaskView } from '../api/routes.ts'
 import type { ParsedFilters } from '../api/routes.ts'
-import type { BoardEvent } from '../contract/events.ts'
+import { isPublicBoardEvent, type BoardEvent, type PublicBoardEvent } from '../contract/events.ts'
 import type { Link } from '../contract/external.ts'
 import { FULL_ACCESS, type Access } from './access.ts'
 import { hasCriteria } from './watch-spec.ts'
@@ -337,7 +337,7 @@ export function foldEvent(messages: MessagesState, actors: ActorsState, event: B
 }
 
 /** An event as subscribers receive it, with its message as it is afterwards. */
-export function eventView(event: BoardEvent, after: Message | undefined, actors: ActorsState, reader: Reader): BoardEventView {
+export function eventView(event: PublicBoardEvent, after: Message | undefined, actors: ActorsState, reader: Reader): BoardEventView {
   const by = (event.payload as { by?: { actor?: string } }).by?.actor
   const actor = by ? own(actors.byId, by) : undefined
   const { links } = event.payload as { links?: Link[] }
@@ -426,6 +426,7 @@ export class FeedProjection {
   }
 
   async step(event: BoardEvent, signal?: AbortSignal): Promise<FeedItem> {
+    if (!isPublicBoardEvent(event)) return { index: event.index, view: null }
     await loadInto(this.reads, this.messages, this.loaded, event, signal)
     const { id, before, after } = foldEvent(this.messages, this.actors, event)
     const message = after ?? before

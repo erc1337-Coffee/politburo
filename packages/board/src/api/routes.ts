@@ -21,9 +21,11 @@ import {
   SentTaskHoldKind,
   SentTaskNote,
   TaskState,
+  type Author,
 } from '../contract/schemas.ts'
 import { ExternalAuthor, ExternalEvent, ExternalTarget, Link as LinkSchema, LINKS_PER_MESSAGE_MAX, MENTIONED_PER_MESSAGE_MAX, Origin } from '../contract/external.ts'
-import type { BoardEvent } from '../contract/events.ts'
+import type { PublicBoardEvent } from '../contract/events.ts'
+import { OperationalRecipient, OperationalStatus, OperationalTopic } from '../contract/operational-inbox.ts'
 import type { Link } from '../contract/external.ts'
 import type { Actor, Channel, ExternalCopy, Message, Task } from '../contract/folds.ts'
 import type { Via } from '../contract/profiles.ts'
@@ -185,6 +187,31 @@ export const PostBody = z
 /** `30m`, `1d`: a number and a unit, `s`, `m`, `h`, or `d`. */
 const Duration = z.string().regex(/^\d+(\.\d+)?(s|m|h|d)$/, 'durations look like 30s, 30m, 12h, or 1d')
 const Instant = z.string().datetime({ offset: true })
+
+export const SendOperationalMessageBody = z.strictObject({
+  to: OperationalRecipient,
+  topic: OperationalTopic,
+  text: MessageText,
+  expiresAt: Instant.optional(),
+})
+export const AckOperationalMessageBody = z.strictObject({ status: OperationalStatus })
+
+export type SendOperationalMessageInput = z.input<typeof SendOperationalMessageBody>
+export type { OperationalRecipient, OperationalStatus }
+
+/** A private message and the calling principal's receipts for it. */
+export type OperationalMessage = {
+  id: string
+  to: OperationalRecipient
+  topic: string
+  text: string
+  by: Author
+  sentAt: string
+  expiresAt: string | null
+  seenAt: string | null
+  actedAt: string | null
+  archivedAt: string | null
+}
 
 /**
  * A message to post later, as the caller: once (`in` or `at`), or repeating
@@ -978,7 +1005,7 @@ type PayloadView<P> = {
 }
 
 /** A board event as subscribers get it. Checking `type` narrows `payload` to that event's. */
-export type BoardEventView = BoardEvent extends infer E
+export type BoardEventView = PublicBoardEvent extends infer E
   ? E extends { type: infer T; payload: infer P }
     ? {
         /** Where this event is in the board's order: pass it as `after` to read on from here. */
@@ -1271,6 +1298,12 @@ export const routes = {
   createSchema: { method: 'POST', path: '/schemas', body: SchemaBody },
   /** The caller's own post with the client ID it gave: what `POST /messages` answered, for telling a retry before posting. */
   posted: { method: 'GET', path: '/posts/:id' },
+  /** Sends a private operational message. Requires board-wide post. */
+  sendOperationalMessage: { method: 'POST', path: '/operational-inbox', body: SendOperationalMessageBody },
+  /** The caller's latest active operational messages, newest first. Requires board-wide read. */
+  readOperationalInbox: { method: 'GET', path: '/operational-inbox' },
+  ackOperationalMessage: { method: 'POST', path: '/operational-inbox/:id/ack', body: AckOperationalMessageBody },
+  archiveOperationalMessage: { method: 'POST', path: '/operational-inbox/:id/archive' },
   /** Raw platform events in a sync key's inbox, newest first: the caller's own, and the board's with `sync` everywhere. */
   inbox: { method: 'GET', path: '/inbox/:key', query: InboxQuery },
   /** Pushes platform events into the caller's inbox for a sync key, deduplicated by their platform IDs. */

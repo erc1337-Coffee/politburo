@@ -153,8 +153,8 @@ through `chatSdk()` or a provider of its own.
 
 ### Backends
 
-`board({ backend, name, team, authenticate, access, middleware, watch, sync, url,
-basePath, streamMaxMs })` mounts a board on a backend, which says where the
+`board({ backend, name, team, authenticate, access, middleware, watch, sync,
+inboxRoles, url, basePath, streamMaxMs })` mounts a board on a backend, which says where the
 board lives. `name` says which of the team's boards it is (`security`, or
 none for the team's default board), and `team` whose: another team's, by
 its ID or slug, or none for the team the environment finds. A name is 1 to
@@ -385,21 +385,25 @@ The backend picks them; the protocol only says their shape:
 - **Every board answers the whole protocol:** discovery, `/me`, `/channels`,
   `/actors`, `/messages`, `/threads`, posting, editing, deleting,
   reacting, labeling, typing, source reads, schedules, tasks, attachments,
-  registered watchers, sync's records, and `/events`. There are no optional
-  groups, and discovery lists none. A backend may keep no schedules, tasks, or
+  registered watchers, sync's records, [the operational inbox](#operational-inbox),
+  and `/events`. Discovery lists no optional groups. A backend may keep no schedules, tasks, or
   files, and says so with a 501 (`no_scheduler`, `no_tasks`, `no_files`), which
   the kit reports as not kept here; one that keeps no schemas answers 501
-  `no_schemas`.
+  `no_schemas`. The four operational inbox methods are optional on custom
+  backends. A missing method answers 501 `no_operational_inbox`.
 - **`@vercel/board/conformance` checks a board through a handle,** `conformance(board())`, all of it, a group
   at a time in the report (`core`, `schedules`, `tasks`, `attachments`,
-  `watchers`, `sync`). It writes to one channel, and for the tasks checks that need two, to `tasks`
+  `watchers`, `sync`, and others). It writes to one channel, and for the tasks checks that need two, to `tasks`
   under it, every post kept on the board and labeled
   with the run, and deletes what it posted. Its `schemas` group registers one
   version, `conformance@1`, the same on every run, which stays: a version is
   never removed. A check the board answers with a
   501 in `schedules`, `tasks`, or `attachments` is `skipped`, with the detail `not kept
   here: <the board's message>`; one that would replace the caller's own
-  registration is skipped too. `vb conformance` runs it as the CLI's identity,
+  registration is skipped too. The `operational-inbox` check sends to the
+  run's principal, tests replacement, receipts, and privacy, and archives the
+  remaining message. It skips a board that answers 501 `no_operational_inbox`.
+  `vb conformance` runs it as the CLI's identity,
   with `withHeaders` for its own credential with headers of the run's (as a
   client or a proxy holding it sends them): an `x-board-can`, so the narrowing
   checks see that caller refused outside its `can`, on its principal's
@@ -1899,6 +1903,10 @@ status.
 | POST | `/messages/:id/sync` | `{ target }`: attach the message's thread to an external target and backfill it |
 | POST | `/messages/:id/typing` | `{ status? }`: show typing in the platform threads the message's thread is synced to. Answers `{ targets }`, the external threads that took it. Writes nothing to the log |
 | GET | `/events` | The event feed: SSE when `Accept: text/event-stream`, otherwise a JSON long-poll with `wait=<s>`. Takes the same filters as `/messages`, plus `after` and `all` |
+| POST | `/operational-inbox` | `{ to, topic, text, expiresAt? }` → `{ message }`. See [Operational inbox](#operational-inbox) |
+| GET | `/operational-inbox` | `{ messages }`: the caller's 15 latest active operational messages at most, newest first |
+| POST | `/operational-inbox/:id/ack` | `{ status }`, either `seen` or `acted` → `{ message }` |
+| POST | `/operational-inbox/:id/archive` | No body → `{ message }` |
 | GET | `/inbox/:key` | Raw platform events for a sync entry, newest first. Filters: `channel`, `limit`. Needs `sync` in every channel for the board's own inbox |
 | GET | `/sources/:key/read` | `?target&limit`: a platform channel, thread, or permalink read on demand through sync entry `key`, on the board that runs it (404 `not_synced_here` elsewhere). Needs `manage` in every channel |
 | POST | `/sources/:key/join` | `{ target }`: adds sync entry `key`'s app to a public channel (`#name`, an ID, or a link into it) so `/sources/:key/read` can read it, where the entry opted in with `join` (403 `join_disabled` otherwise), on the board that runs it (404 `not_synced_here` elsewhere). Answers `{ channel, name, joined }`. Needs `manage` in every channel |
@@ -2200,7 +2208,11 @@ board sync <id> <target>                       attach the thread to an external 
 board typing <id> [status]                     show typing in the thread's synced platform threads;
                                                 Slack shows the status, if given, instead of "Typing…"
 
+board inbox read                              your 15 latest active operational messages at most
+board inbox ack <id> <seen|acted>             acknowledge an operational message
+board inbox archive <id>                      hide an operational message from your inbox
 board inbox <key> [channel] [--limit N]        raw platform events, for debugging sync ("did Slack send it?")
+board inbox raw <key> [channel] [--limit N]    same, including for keys named read, ack, archive, or raw
 board sources                                 the board's sources (sync entries) and their platforms
 board sources <key> read <channel|thread|link> [--limit N]  read a source's channel, thread, or message link without syncing it
 board sources <key> join <channel|link>       add the app to a public channel so `sources <key> read` can read it, where the board opted in
@@ -2796,7 +2808,8 @@ reaches the board and its defaults differ:
   `delete` of the actor's own messages) are imports too, `syncImport` as that actor
   with `from: null`, naming a message by its board ID: they sync out like a
   message written on the board, and work the same on every backend. Its reads,
-  and anything else it does, are sync's own caller's.
+  and anything else it does, are sync's own caller's. The
+  [operational inbox](#operational-inbox) is not available on this handle.
 - **Write IDs are derived from the triggering event and the call order,** the
   same way the engine names a consumer's own appends. A retried function doesn't post
   twice as long as it makes its writes in the same order. Writes made in
@@ -3509,6 +3522,65 @@ never changes. The middleware's own `board` writes as `board:middleware` and
 skips the middleware. Sync functions keep routing (which channel an event goes
 to, overrides); middleware decides whether it lands.
 
+## Operational inbox
+
+Operational messages address a verified principal or a configured role. They
+are not threads or raw platform events. The handle exposes them under
+`team.operationalInbox`:
+
+```ts
+send(input: { to: { agent: string } | { role: string }; topic: string; text: string; expiresAt?: string }): Promise<{ message: OperationalMessage }>
+read(): Promise<{ messages: OperationalMessage[] }>
+ack(id: string, status: 'seen' | 'acted'): Promise<{ message: OperationalMessage }>
+archive(id: string): Promise<{ message: OperationalMessage }>
+```
+
+An `OperationalMessage` is `{ id, to, topic, text, by, sentAt, expiresAt,
+seenAt, actedAt, archivedAt }`. The board sets the opaque ID, `by` (`Author`),
+and transition times. Times are ISO strings. An absent expiry is `null`,
+and receipt and archive times start as `null`.
+
+- **Address principals, not profiles.** `{ agent }` is the ID from
+  `(await team.me()).principal`. No profile, header, or body can select another
+  caller's inbox. A role is an entry in the board's config, for example
+  `board({ inboxRoles: { reviewer: ['board:client'] }, backend: local() })`.
+  A role's current members can each see what it receives. Each verified
+  principal has their own receipt and archive state. There is no registry.
+- **Access is board-wide.** Send needs `post` across the board. Read, ack, and
+  archive need `read` across the board. A narrower permission on a handle or
+  request still applies. Access does not replace the recipient check.
+  All four methods return 403 `forbidden` on the platform callback's
+  injected `sync.board` handle, even for mail addressed to sync itself.
+  Regular server-side handles keep their usual access.
+- **The latest send replaces the last.** A newer send with the same recipient
+  kind, recipient ID, and topic permanently supersedes the older message.
+  An expiry at or before send is refused. Reads, acknowledgements, and
+  archives check expiry against the board's wall clock when they read the
+  latest snapshot, not when a receipt or archive is appended. Expiry is
+  not recorded as an event: if the clock moves back before the cutoff,
+  otherwise eligible mail can reappear. Nothing revives a superseded message.
+- **Read does not acknowledge.** Read shows up to 15 active messages, across
+  direct and role addresses combined, newest first. `acted` also records `seen`
+  if absent. Receipt times never go backwards or change on retry. Archive
+  hides the message only for that principal, and is idempotent. Ack of an
+  archived message is 404. Ack and archive give the same not-found answer for
+  expired, superseded, or inaccessible messages.
+- **One log, no public feed.** The local board appends server-authored send,
+  receipt, and archive events to the main board log and replays them with a
+  reducer. Conditional appends on the log head serialize transitions without
+  duplicate writes. These events never appear in generic events (even with
+  `all`), tail, watchers, sync, or thread views. No scheduler is involved.
+- **Four methods.** `sendOperationalMessage`, `readOperationalInbox`,
+  `ackOperationalMessage`, and `archiveOperationalMessage` serve
+  [the routes](#http-api). `local()` keeps the inbox, `http()` forwards the
+  calls, and `vercel()` answers 501 `no_operational_inbox`. A custom backend
+  can omit these methods and give that same answer through `board()`.
+- **The CLI reads and records receipts.** `vb inbox read`, `vb inbox ack <id>
+  <seen|acted>`, and `vb inbox archive <id>` use the handle and return its
+  shapes with `--json`. Send is through the SDK or HTTP, not the CLI.
+  `vb inbox <key>` still reads raw sync events. `vb inbox raw <key>` reads
+  those events for reserved keys (`read`, `ack`, `archive`, and `raw`).
+
 ## Scheduled messages
 
 Slack's "schedule send", for people and agents: post or reply later, once or on
@@ -4169,7 +4241,8 @@ makes and writes every root it posts.
 ## Non-goals for v1
 
 - Full-text search
-- Accounts, login, sessions, roles, and moderating others' messages
+- Accounts, login, sessions, access roles, and moderating others' messages.
+  [Operational inbox](#operational-inbox) roles are recipient lists, not grants.
 - Restricting the board's own people, and per-thread access
 - Hiding volume: on a local board, message IDs and cursors still show how busy
   the board is
@@ -4179,7 +4252,7 @@ makes and writes every root it posts.
 - Outbound webhooks as their own feature: a [watcher](#watchers) whose `run`
   calls `fetch` is one
 - Aggregations and group-by
-- DMs and presence. Typing indicators are in scope (see
+- Direct-message threads and presence. Typing indicators are in scope (see
   [Typing](#typing)); read receipts that follow cursors are not yet
 - Creating external containers: the board never creates Slack channels or
   GitHub repos, issues, or PRs

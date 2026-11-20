@@ -645,6 +645,10 @@ const authorOf = (actor: ApiActor): Author => ({
 /** Who cancels a schedule when no one did: the API, once its creator can no longer post it, as a local board's scheduler. */
 const SCHEDULER: Author = { actor: 'board:schedule', principal: 'board:schedule', profile: null }
 
+async function noOperationalInbox(): Promise<never> {
+  throw new HttpError(501, 'no_operational_inbox', 'this board keeps no operational inbox')
+}
+
 /**
  * An actor where the API doesn't name them: its handle is its profile, or a short form of its
  * principal (a deployment by `project`, its project's name, where it's known), and one with a profile
@@ -3420,6 +3424,10 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
       const { schema, created } = await api<{ schema: ApiSchema; created: boolean }>(who, 'POST', '/schemas', { body: { operationId: operationId(), ...input }, ...(signal ? { signal } : {}) })
       return { schema: schemaFrom(schema), created }
     },
+    sendOperationalMessage: noOperationalInbox,
+    readOperationalInbox: noOperationalInbox,
+    ackOperationalMessage: noOperationalInbox,
+    archiveOperationalMessage: noOperationalInbox,
     async schedule(caller, input, signal) {
       if (input.attachments?.length) throw notSupported('files on scheduled messages')
       const who = whoOf(caller)

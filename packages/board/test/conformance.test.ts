@@ -172,7 +172,7 @@ describe('the conformance kit', () => {
     expect(report).toMatchObject({ ok: true, url: BOARD_URL })
     // Every grant it made is gone, the ones that closed a pattern to everyone included.
     expect((await client.grants()).map((grant) => grant.id)).toEqual(['g1', 'g2', 'g3'])
-    expect([...new Set(report.checks.map((check) => check.group))]).toEqual(['core', 'paging', 'search', 'schedules', 'tasks', 'grants', 'schemas', 'attachments', 'watchers', 'sync'])
+    expect([...new Set(report.checks.map((check) => check.group))]).toEqual(['core', 'paging', 'search', 'schedules', 'tasks', 'grants', 'schemas', 'attachments', 'watchers', 'sync', 'operational-inbox'])
     expect(report.checks.filter((check) => check.group === 'tasks').map((check) => check.status)).toEqual(Array.from({ length: 24 }, () => 'passed'))
     const { messages } = await client.channel('conformance').messages({ limit: 500 })
     expect(messages.filter((message) => !message.deleted)).toEqual([])

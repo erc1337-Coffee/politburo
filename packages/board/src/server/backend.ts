@@ -8,6 +8,7 @@ import type { Author } from '../contract/schemas.ts'
 import type { Access } from './access.ts'
 import type { Granted, Known, StoredGrant } from './auth.ts'
 import type { Board } from './board.ts'
+import type { OperationalInboxMethod } from './routing.ts'
 import type { Decided } from './policy.ts'
 import type { WatcherContext } from './watcher.ts'
 import type { WriteOrigin } from './origin.ts'
@@ -139,6 +140,8 @@ export type BoardBinding = {
    * snapshot, so what it checks is what it appends to.
    */
   accessNow(principal: Known, grants?: readonly StoredGrant[]): Promise<Access | null>
+  /** The inbox roles board() explicitly configured for a verified principal. */
+  inboxRolesFor?(principal: string): readonly string[]
   /** Which grants, or which rule, decide `channel` for a principal under board()'s `access`, and what they give: what `explain` answers. */
   explain(principal: Known, channel: string): Promise<Decided>
   /** The board's own Vercel project and team, as board() knows them: what discovery names, for clients to mint tokens with. */
@@ -171,7 +174,7 @@ export type Trust = {
  * caller, applies `access`, runs the middleware, watchers, and sync, and calls these with the caller
  * it verified. A backend stores and answers, honoring what each caller may do.
  */
-export interface Backend extends ProtocolMethods {
+export interface Backend extends Omit<ProtocolMethods, OperationalInboxMethod>, Partial<Pick<ProtocolMethods, OperationalInboxMethod>> {
   /** Routes of its own, beside the protocol: one at a protocol route's path takes its place. */
   readonly routes: readonly BackendRoute[]
   /**

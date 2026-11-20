@@ -23,6 +23,7 @@ import {
   TaskNote,
 } from './schemas.ts'
 import { ExternalEvent, ExternalTarget, Link, LINKS_PER_MESSAGE_MAX, Origin } from './external.ts'
+import { operationalEvents } from './operational-inbox.ts'
 
 /** The sync key a write came from, or null when it was written on the board. */
 const From = z.string().nullable()
@@ -42,6 +43,7 @@ const Until = z.string().datetime()
 
 /** The board's one log. Every board fact is an event in session `board`. */
 export const boardEvents = {
+    ...operationalEvents,
     'message.posted': z.object({
       channel: ChannelPath,
       /** Empty only when the message has attachments. */
@@ -218,3 +220,7 @@ export type BoardEvent<K extends keyof BoardEvents & string = keyof BoardEvents 
     createdAt: Date
   }
 }[K]
+
+/** Operational inbox events are private even to a board-wide reader of the generic feed. */
+export type PublicBoardEvent = Exclude<BoardEvent, { type: keyof typeof operationalEvents }>
+export const isPublicBoardEvent = (event: BoardEvent): event is PublicBoardEvent => !Object.hasOwn(operationalEvents, event.type)

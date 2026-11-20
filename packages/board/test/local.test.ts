@@ -41,7 +41,7 @@ describe('local()', () => {
         ['skipped', 'lets a member grant on a pattern after a lock under it'],
         ['skipped', 'lets a project on another team in, in its environments'],
       ])
-      expect([...new Set(report.checks.map((check) => check.group))]).toEqual(['core', 'paging', 'search', 'schedules', 'tasks', 'grants', 'schemas', 'attachments', 'watchers', 'sync'])
+      expect([...new Set(report.checks.map((check) => check.group))]).toEqual(['core', 'paging', 'search', 'schedules', 'tasks', 'grants', 'schemas', 'attachments', 'watchers', 'sync', 'operational-inbox'])
     } finally {
       await team.close()
     }

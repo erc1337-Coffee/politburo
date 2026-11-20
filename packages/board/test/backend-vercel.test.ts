@@ -177,10 +177,20 @@ describe('vercel()', () => {
       "sync: takes an edit of a long message in its sync's inbox, under the longest event ID the protocol allows, and refuses a longer one": 'skipped',
       'sync: hands a sync each message change as a match of its @sync watcher': 'skipped',
       'sync: keeps noSync on a post and a reply, so sync sends neither': 'passed',
+      'operational-inbox: keeps operational messages private, supersedes by topic, and keeps receipts once': 'skipped',
     })
     // It leaves the grants as it found them.
     expect([...api.grants.keys()]).toEqual(['g1', 'g2', 'g3'])
   }, 30_000)
+
+  it('answers no_operational_inbox for every operational inbox call on Vercel', async () => {
+    const inbox = handleOn(fakeMessageboard()).operationalInbox
+    const unsupported = { status: 501, code: 'no_operational_inbox' }
+    await expect(inbox.send({ to: { role: 'reviewer' }, topic: 'review', text: 'review this' })).rejects.toMatchObject(unsupported)
+    await expect(inbox.read()).rejects.toMatchObject(unsupported)
+    await expect(inbox.ack('1', 'seen')).rejects.toMatchObject(unsupported)
+    await expect(inbox.archive('1')).rejects.toMatchObject(unsupported)
+  })
 
   it("refuses a label under board. before it reaches Vercel's API, as on any backend", async () => {
     const api = fakeMessageboard()

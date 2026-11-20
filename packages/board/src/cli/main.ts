@@ -22,7 +22,7 @@ import { explainPrincipalOf, explanationLine, GrantMisuse, grantCanOf, KINDS, pa
 import { formatSchema, formatSchemas } from './schemas.ts'
 import { parseSchemaId } from '../contract/data-schemas.ts'
 import { block } from '../contract/blocks.ts'
-import { actorName, claimLine, formatAccess, formatConformance, formatEvent, formatGrants, grantRow, formatSchedule, formatTasks, mentionedIn, reactionNames, formatSourceRead, formatSynced, formatThreadSummaries, formatThreads, terminalText, who } from './format.ts'
+import { actorName, claimLine, formatAccess, formatConformance, formatEvent, formatGrants, grantRow, formatOperationalInbox, formatSchedule, formatTasks, mentionedIn, reactionNames, formatSourceRead, formatSynced, formatThreadSummaries, formatThreads, lineText, terminalText, who } from './format.ts'
 import { fileClaims, memoryClaims, tokenClaims, type Claims } from './claims.ts'
 import { runCommand } from './run.ts'
 import { AGENTS, allowRules, cliOf, disallow, installedHook, tilde, uninstallHook, type HookAgent } from './hooks.ts'
@@ -839,7 +839,10 @@ function doing(): string {
     case 'download':
       return `download ${a ?? 'the attachment'}`
     case 'inbox':
-      return `read ${a}'s inbox`
+      if (a === 'read') return 'read your operational inbox'
+      if (a === 'ack') return `acknowledge inbox message ${b}`
+      if (a === 'archive') return `archive inbox message ${b}`
+      return `read ${a === 'raw' ? b : a}'s inbox`
     case 'tail':
       return `follow ${a ?? 'the board'}`
     case 'wait':
@@ -869,6 +872,7 @@ function missing(): string | undefined {
   if (command === 'grants' && (a === 'revoke' || a === 'update') && b !== undefined) return `grant ${b}`
   if (command === 'schemas' && a === 'inspect' && b !== undefined) return `schema ${b}`
   if (command === 'download') return `attachment ${a}`
+  if (command === 'inbox' && (a === 'ack' || a === 'archive') && b !== undefined) return `inbox message ${b}`
   return undefined
 }
 
@@ -1855,10 +1859,33 @@ async function run(command: string | undefined, args: string[]): Promise<number>
     }
 
     case 'inbox': {
-      const key = args[0]
-      if (!key) throw usage('Missing the sync entry whose inbox to read, such as slack.', { reason: 'missing_arguments' })
+      const [verb, id, status, extra] = args
+      if (verb === 'read' || verb === 'ack' || verb === 'archive') {
+        if (flags.limit !== undefined) throw usage('--limit is for raw sync inboxes.', { reason: 'unknown_option' })
+        if (verb === 'read') {
+          if (args.length > 1) throw usage('inbox read takes no arguments.', { next: [{ instruction: 'For a sync key named read, use raw', argv: [...cli(), 'inbox', 'raw', 'read'] }] })
+          const read = await client().operationalInbox.read()
+          if (flags.json) return result(read), 0
+          return out(formatOperationalInbox(read.messages)), 0
+        }
+        if (!id) throw usage('Missing the message ID from inbox read.', { reason: 'missing_arguments' })
+        if (verb === 'archive') {
+          if (status !== undefined) throw usage('inbox archive takes one message ID.')
+          const archived = await client().operationalInbox.archive(id)
+          if (flags.json) return result(archived), 0
+          return out(`${lineText(archived.message.id)}  archived`), 0
+        }
+        if (status === undefined) throw usage('Missing the receipt: seen or acted.', { reason: 'missing_arguments' })
+        if (status !== 'seen' && status !== 'acted') throw usage('The receipt must be seen or acted.')
+        if (extra !== undefined) throw usage('inbox ack takes a message ID and a receipt.')
+        const acked = await client().operationalInbox.ack(id, status)
+        if (flags.json) return result(acked), 0
+        return out(`${lineText(acked.message.id)}  ${status}`), 0
+      }
+      const [key, channel] = verb === 'raw' ? args.slice(1) : args
+      if (!key) throw usage(verb === 'raw' ? 'Missing the sync entry whose inbox to read, such as slack.' : 'Missing what to read: use inbox read or name a sync entry.', { reason: 'missing_arguments' })
       const events = await client().inbox(key, {
-        ...(args[1] ? { channel: args[1] } : {}),
+        ...(channel ? { channel } : {}),
         ...(flags.limit ? { limit: Number(flags.limit) } : {}),
       })
       if (flags.json) return result({ events }), 0
@@ -2754,7 +2781,7 @@ function stopped(reason: unknown): Failed {
   // A subcommand that writes is `channels create`'s first word, `sources <key> join`'s second.
   const sub = current.command === 'sources' ? current.args[1] : current.args[0]
   // Every task verb writes: a claim, its renewal, and what settles or changes the task.
-  const writes = WRITES.has(current.command ?? '') || ['create', 'update', 'revoke', 'cancel', 'join'].includes(sub ?? '') || (current.command === 'tasks' && TASK_VERBS.has(sub ?? ''))
+  const writes = WRITES.has(current.command ?? '') || ['create', 'update', 'revoke', 'cancel', 'join'].includes(sub ?? '') || (current.command === 'tasks' && TASK_VERBS.has(sub ?? '')) || (current.command === 'inbox' && (sub === 'ack' || sub === 'archive'))
   return new Failed({
     class: timedOut ? 'timeout' : 'canceled',
     reason: timedOut ? 'timeout' : 'canceled',
