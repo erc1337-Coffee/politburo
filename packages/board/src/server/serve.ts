@@ -71,6 +71,7 @@ import {
   type MessageView,
 } from '../api/routes.ts'
 import type { Method, Protocol } from '../api/protocol.ts'
+import { boundTaskPaths } from '../api/task-authority.ts'
 import type { ExternalAuthor } from '../contract/external.ts'
 import type { Actor } from '../contract/folds.ts'
 import { ATTACHMENT_BYTES_MAX, MESSAGE_TEXT_MAX, RESERVED_LABEL_PREFIX, TASK_BATCH_MAX, type Attachment, type Labels } from '../contract/schemas.ts'
@@ -1360,7 +1361,7 @@ export async function createServe(context: BoardContext): Promise<Serve> {
     async inject(request, caller, trigger, writes) {
       // What it posts, a task's new thread included, gets an ID from what triggered it, so a retry posts once.
       const pathname = new URL(request.url).pathname
-      if (trigger !== null && request.method === 'POST' && (pathname.endsWith('/messages') || pathname.endsWith('/tasks') || pathname.endsWith('/tasks/batch'))) {
+      if (trigger !== null && request.method === 'POST' && (pathname.endsWith('/messages') || pathname.endsWith('/tasks') || pathname.endsWith('/tasks/batch') || pathname.endsWith(boundTaskPaths.createTask))) {
         const body = ((await request.json()) ?? {}) as Record<string, unknown>
         if (pathname.endsWith('/messages') || body.channel !== undefined) body.id ??= await derivedId('board-inbound', trigger, 'client', String(writes.made++))
         request = new Request(request.url, { method: 'POST', headers: request.headers, body: JSON.stringify(body) })
