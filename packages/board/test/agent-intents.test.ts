@@ -563,6 +563,8 @@ it('rejects discovery JSON from the health route even when the mount advertises 
   await expect(client.agents.health('missing')).rejects.toMatchObject({ status: 502, code: 'remote_error' })
 })
 
+const runHealthCheck = 'confirms a claimed run only through a taken and reported status probe'
+
 it('skips run-health conformance when the mount becomes registry-only during the run', async ({ onTestFinished }) => {
   const team = localBoard({ agentOps: true })
   onTestFinished(() => team.close())
@@ -575,16 +577,75 @@ it('skips run-health conformance when the mount becomes registry-only during the
   }, await personToken())
 
   const report = await conformance(client)
-  expect(report.checks.find(({ name }) => name === 'confirms a claimed run only through a taken and reported status probe')).toMatchObject({
+  expect(report.checks.find(({ name }) => name === runHealthCheck)).toMatchObject({
     status: 'skipped', detail: 'not kept here: agent intents are not advertised',
   })
 }, 30_000)
 
-it('passes registry conformance but skips run health on a registry-only board', async ({ onTestFinished }) => {
+it('passes registry conformance but skips run health on a registry-only board without leaving a probe', async ({ onTestFinished }) => {
   const { client } = await registryOnly(onTestFinished)
-  const report = await conformance(client)
+  const channel = 'conformance'
+  const { cursor: start } = await client.channel(channel).messages()
+  const report = await conformance(client, { channel })
   expect(report.checks.filter(({ group }) => group === 'agents')).toMatchObject([
     { name: 'registers, lists, heartbeats, and retires an agent under its verified binding', status: 'passed' },
-    { name: 'confirms a claimed run only through a taken and reported status probe', status: 'skipped', detail: expect.stringContaining('not kept here') },
+    { name: runHealthCheck, status: 'skipped', detail: expect.stringContaining('not kept here') },
   ])
+  // Only the registry check leaves an entry.
+  expect((await client.agents.list(channel)).agents).toMatchObject([{ status: 'disabled' }])
+  // A tombstone no longer has the task's text. Read the channel's posts from before the run.
+  for (let after = start; ; ) {
+    const { events, cursor } = await client.poll({ channel, after, wait: 0 })
+    expect(events.filter(({ type, message }) => type === 'message.posted' && message?.text === 'conformance: run health')).toEqual([])
+    if (cursor === after) break
+    after = cursor
+  }
+}, 30_000)
+
+// The third POST is the one that would normally be refused with 409 for changed input.
+it.for([1, 3])('skips run-health conformance and cleans up when the mount becomes registry-only on intent POST %i', { timeout: 30_000 }, async (attempt, { onTestFinished }) => {
+  const team = localBoard({ agentOps: true })
+  onTestFinished(() => team.close())
+  const { fetch: registryFetch } = registryOnlyMount(team.fetch)
+  const channel = 'conformance'
+  let mount = team.fetch
+  let issued = 0
+  let probe: { agent: string; run: AgentRun } | undefined
+  const client = via(async (request) => {
+    const issuing = request.method === 'POST' && /\/ops\/agents\/([^/]+)\/intents$/.exec(new URL(request.url).pathname)
+    if (issuing && ++issued === attempt) {
+      // Discovery still advertised intents when this request was sent.
+      mount = registryFetch
+      const { run } = await request.json() as { run: AgentRun }
+      probe = { agent: decodeURIComponent(issuing[1]!), run }
+      return Response.json({ error: { code: noOps.code, message: 'this board does not advertise agent intents or run health' } }, { status: noOps.status })
+    }
+    return mount(request)
+  }, await personToken())
+
+  const report = await conformance(client, { channel })
+  expect(report.checks.find(({ name }) => name === runHealthCheck)).toMatchObject({
+    status: 'skipped', detail: 'not kept here: agent intents are not advertised',
+  })
+  expect(probe).toBeDefined()
+  const { agent, run } = probe!
+  expect((await client.agents.list(channel)).agents.find(({ id }) => id === agent)).toMatchObject({ status: 'disabled' })
+  const { events } = await client.poll({ re: run.task, after: run.task, wait: 0 })
+  expect(events.map(({ type }) => type)).toContain('task.released')
+})
+
+it('skips run-health conformance without registering a probe agent on a board that keeps no tasks', async ({ onTestFinished }) => {
+  const team = localBoard({ agentOps: true })
+  onTestFinished(() => team.close())
+  const channel = 'conformance'
+  const client = via(async (request) => {
+    if (!/\/tasks(?:\/|$)/.test(new URL(request.url).pathname)) return team.fetch(request)
+    return Response.json({ error: { code: 'no_tasks', message: 'this board keeps no tasks' } }, { status: 501 })
+  }, await personToken())
+
+  const report = await conformance(client, { channel })
+  expect(report.checks.find(({ name }) => name === runHealthCheck)).toMatchObject({
+    status: 'skipped', detail: 'not kept here: this board keeps no tasks',
+  })
+  expect((await client.agents.list(channel)).agents).toMatchObject([{ status: 'disabled' }])
 }, 30_000)
