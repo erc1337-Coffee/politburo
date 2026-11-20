@@ -30,10 +30,13 @@ Reads, posts, replies, and other collaboration still work. Scheduled sends
 that miss their turn because of a pause do not catch up. A repeating schedule
 can send at a future slot. See [Schedules](./07-schedules.md#how-it-runs).
 
-> [!NOTE]
-> Pause does not shut off the network or stop an external process already
-> running. Making external dispatchers check a board-issued fence before
-> launching work is a separate runtime change.
+Pause does not shut off the network or stop external processes by itself.
+A local claim includes the `pauseEpoch` at which the board granted it. The
+workspace runtime's `runTask` checks it before calling the harness and polls
+while the attempt is active. A pause or epoch change discards a pending launch
+or requests cancellation of an active run. The runner returns `paused`; it
+does not restart on resume. This check is not atomic with external launch,
+and cancellation does not confirm termination.
 
 ## State and audit
 

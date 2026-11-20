@@ -3703,11 +3703,23 @@ error document.
   against the same log head that decides a claim. A pending claim request
   retains its starting epoch; it cannot acquire work across pause and resume.
   Earlier leases cannot renew or settle (`claim_lost`). Resume does not revive
-  them. Task labels and historical views are not proof of a live claim.
+  them. A local claim answers with the server's `pauseEpoch` at admission,
+  even if the response arrives after a pause. Task labels and historical
+  views are not proof of a live claim.
 - **Collaboration:** reads, messages, sync, and task creation without a claim
   still work. [Scheduled messages](#scheduled-messages) skip blocked sends.
-  Pause does not kill external processes or authorize dispatch. An external
-  dispatcher checking a board-issued launch fence is a separate runtime change.
+  The board itself does not kill external processes or authorize dispatch.
+- **Runtime runner:** `@remilia/politburo-runtime` takes an explicit task or
+  delegates scoped claim-next to the board, which selects the highest priority
+  eligible task. A refused claim answers `{ status: 'paused' }`. With a
+  claim's `pauseEpoch`, the runner checks `status()` before starting the
+  harness and polls it while the attempt is active. A pause or epoch change
+  discards a pending launch or requests cancellation through the harness,
+  including a start that returns its run ref late. It answers `paused` with
+  the task ID and never settles the stale claim. Resume needs a new attempt.
+  The check is not atomic with external launch or a guarantee of immediate
+  termination. Without a server-issued pause epoch, the runner uses lease
+  fencing alone.
 - **Backends:** `http()` forwards the requests to the board that keeps the log.
   Vercel's board and custom backends without the optional control methods
   answer 501 `no_network_pause`. Clients never emulate the gate.
@@ -4337,7 +4349,7 @@ tokens are never included in these events.
 | GET | `/tasks/batch/:id` | The caller's own batch made under `id`: `{ tasks }`, their roots as they are now, in order. 404 `batch_not_found` for none. board() asks it before a batch's roots reach the middleware, with `request`, its digest of what was asked: 409 `duplicate_id` when the batch was made for another request |
 | GET | `/tasks` | Tasks as thread summaries (`{ message, replies, last }`), oldest first. Filters: `channel`, `state` (`open`, `all`, or one), `label`, `by`, `owner`, `for`, `needs` (the tasks waiting on one). Answers `{ tasks, cursor }`; `after` (a `cursor` it reported) and `limit` page |
 | POST | `/tasks/claim` | `{ channel, label?, from?, lease?, wait?, token?, binding? }`: claims the highest priority eligible ready task in `channel` (a channel or a `prefix/`), oldest first at equal priority. `wait` holds the request up to the platform's time limit, as `/events` does, then answers `{ task: null }`, which a board may answer sooner (Vercel's looks 12 times at most a request); the CLI and the handle ask again until `--wait` (`wait`) runs out. Answers `{ task, claim }`, or `{ task: null }` |
-| POST | `/tasks/:id/claim` | `{ lease?, token?, binding? }`. Answers `{ task, claim: { epoch, token, until, binding? } }` |
+| POST | `/tasks/:id/claim` | `{ lease?, token?, binding? }`. Answers `{ task, claim: { epoch, token, until, pauseEpoch?, binding? } }` |
 | POST | `/tasks/create-bound`, `/tasks/claim-bound`, `/tasks/:id/claim-bound` | The corresponding create, ready claim, and claim by ID, with `binding` required. Use these paths when binding is required, never fall back to the older paths |
 | POST | `/tasks/:id/renew` | `{ epoch, token, lease? }`. Answers `{ task, until }` |
 | POST | `/tasks/:id/release` | `{ epoch, token }`. Answers `{ task }`, as the routes below do |

@@ -1018,7 +1018,14 @@ export type TaskHandoffWrite = z.input<typeof HandoffTaskBody>
 export type { TaskBinding, TaskHandoff, TaskPark } from '../contract/task-authority.ts'
 
 /** What a claim answers: `epoch` and `token` go on every write the claim makes, until `until`. */
-export type TaskClaim = { epoch: number; token: string; until: string; binding?: TaskBinding }
+export type TaskClaim = {
+  epoch: number
+  token: string
+  until: string
+  /** Board pause epoch at admission, when the backend supports network pause. */
+  pauseEpoch?: number
+  binding?: TaskBinding
+}
 
 /**
  * `kind` says who wrote it: a `person` or a platform user (`external`), an agent (`profile`), or a deployment or workflow.

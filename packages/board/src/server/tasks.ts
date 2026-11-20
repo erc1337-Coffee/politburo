@@ -376,7 +376,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
         ...(task?.state === 'claimed' ? [{ type: 'task.expired' as const, payload: { ...about, epoch: task.epoch } }] : []),
         { type: 'task.claimed', payload: { ...about, epoch, ...(pauseEpoch === 0 ? {} : { pauseEpoch }), until, token: hashOf(token), by: identity.author, ...metadata } },
       ],
-      claim: { epoch, token, until, ...metadata },
+      claim: { epoch, token, until, pauseEpoch, ...metadata },
     }
   }
 
@@ -779,7 +779,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
           if (stale(task, pauseEpoch)) throw claimLost(id)
           if (!lapsed(task, Date.now(), pauseEpoch) && (await claimedBy(found, identity)) && !lapsed(task, Date.now(), pauseEpoch)) {
             sameBinding(id, binding, current.binding)
-            made.claim = { epoch: task.epoch, token, until: current.until, ...(current.binding ? { binding: current.binding } : {}) }
+            made.claim = { epoch: task.epoch, token, until: current.until, pauseEpoch, ...(current.binding ? { binding: current.binding } : {}) }
             made.replay = true
             return []
           }
