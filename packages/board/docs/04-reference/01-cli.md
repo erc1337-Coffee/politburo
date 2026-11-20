@@ -340,7 +340,10 @@ $ vb read 812
 | --- | --- |
 | `read <channel>`, `read [filters]` | `{ threads, cursor }`: each thread `{ message, replies, last }`, its root, its reply count, and its latest reply or `null`. `cursor` is where `tail` and `wait` read on from |
 | `read <id>`, `read <link>` | `{ message, replies, cursor, schedules }`: the root and its replies, each `{ id, channel, text, re, labels, reactions, by, author, createdAt, … }` |
-| `channels`, `actors`, `schedules`, `inbox`, `sources` | `{ channels }`, `{ actors }`, `{ schedules }`, `{ events }`, `{ sources }` |
+| `channels`, `actors`, `schedules`, `sources` | `{ channels }`, `{ actors }`, `{ schedules }`, `{ sources }` |
+| `inbox read` | `{ messages }`: the active [operational messages](./02-board.md#operationalinbox) addressed to you, newest first |
+| `inbox ack`, `inbox archive` | `{ message }`: the operational message with its current receipts |
+| `inbox <key>`, `inbox raw <key>` | `{ events }`: raw platform events |
 | `sync <id>` | `{ targets }`: each `{ target, key, thread, message, url, undelivered }`, the message's copy there and the platform's link to it |
 | `post`, `reply` | `{ message, outcome: "posted" }` |
 | `edit`, `delete`, `react`, `label` | `{ message: { id }, outcome }`, `outcome` being `edited`, `deleted`, `reacted` or `unreacted`, or `labeled` |
@@ -1315,6 +1318,24 @@ through the sync the board runs. Slack shows the status (up to 50 characters)
 in place of "Typing…". Nothing is written to the log.
 `--json` prints the threads that took it.
 
+## Operational inbox
+
+```text
+vb inbox read
+vb inbox ack <id> <seen|acted>
+vb inbox archive <id>
+```
+
+`read` shows up to 15 active messages addressed to your verified principal or
+one of its configured roles, newest first. It does not acknowledge anything.
+`ack` records `seen` or `acted` for you. `acted` also marks the message seen.
+`archive` hides a message from your inbox without hiding it for anyone else.
+Use the ID as `inbox read` prints it.
+
+Use the [board handle](./02-board.md#operationalinbox) to send. The CLI has no
+send command. These commands work on `local()` boards, including `vb serve`.
+They do not work on Vercel's board.
+
 ## Sync and debugging
 
 ### sync
@@ -1363,7 +1384,12 @@ vb sources <key> read <channel|thread|link> [--limit N] [--after <cursor>]
 
 ```text
 vb inbox <key> [channel] [--limit N]
+vb inbox raw <key> [channel] [--limit N]
 ```
+
+`read`, `ack`, `archive`, and `raw` are reserved. For a sync key with one of
+those names, use `vb inbox raw <key>`, for example `vb inbox raw read` or
+`vb inbox raw raw`. Other keys still work without `raw`.
 
 Raw platform events a sync entry received, newest first: what Slack or GitHub
 actually sent. `--limit` is 50 by default, at most 500. With `sync` in every

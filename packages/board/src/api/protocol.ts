@@ -4,6 +4,9 @@ import type { Mentioned } from '../contract/mentions.ts'
 import type { Attachment } from '../contract/schemas.ts'
 import type {
   AckBody,
+  AckOperationalMessageBody,
+  OperationalMessage,
+  SendOperationalMessageBody,
   ActorView,
   AgentView,
   ListOpsAgentsQuery,
@@ -239,6 +242,11 @@ export type Protocol = {
   syncFind: { input: Input<typeof SyncFindQuery>; output: SyncFindView }
   /** Messages' copies on platforms that the caller's sync recorded, by target: another sync's never show. */
   syncCopies: { input: Input<typeof SyncCopiesQuery>; output: SyncCopiesView }
+  /** Private mail to a verified principal or a configured role. A board that keeps none answers 501 `no_operational_inbox`. */
+  sendOperationalMessage: { input: Input<typeof SendOperationalMessageBody>; output: { message: OperationalMessage } }
+  readOperationalInbox: { input: Nothing; output: { messages: OperationalMessage[] } }
+  ackOperationalMessage: { input: Id & Input<typeof AckOperationalMessageBody>; output: { message: OperationalMessage } }
+  archiveOperationalMessage: { input: Id; output: { message: OperationalMessage } }
   /** Platform events into the caller's inbox, deduplicated by their platform IDs. */
   inboxPush: { input: Key & Input<typeof InboxPushBody>; output: { ok: true } }
   /** The caller's next inbox events, leased, one platform thread at a time and in order. */

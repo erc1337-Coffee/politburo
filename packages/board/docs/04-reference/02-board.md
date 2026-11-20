@@ -902,6 +902,57 @@ refuses with `channel_granted`.
 `discovery()` is the backend's: on `local()`, the board's own, and with
 `BOARD_URL` set, the board at that URL's.
 
+### operationalInbox
+
+```ts scripts/inbox.ts
+import { board } from '@vercel/board'
+import { local } from '@vercel/board/backend-local'
+
+const team = board({
+  backend: local({ memory: true }),
+  inboxRoles: { reviewer: ['board:client'] },
+})
+await team.operationalInbox.send({
+  to: { role: 'reviewer' },
+  topic: 'release-review',
+  text: 'Review the release notes before publishing.',
+})
+const { messages } = await team.operationalInbox.read()
+const [message] = messages
+if (message) {
+  await team.operationalInbox.ack(message.id, 'seen')
+  // Review the release notes.
+  await team.operationalInbox.ack(message.id, 'acted')
+  await team.operationalInbox.archive(message.id)
+}
+```
+
+For a direct message, send to `{ agent: '<verified-principal-id>' }`.
+`(await team.me()).principal` is the ID to give a sender. The role map is
+configured on the board that keeps the log. A role message goes to each of its
+current members, and each member has their own receipts and archive state.
+Profiles of the same principal share one inbox.
+
+`send` needs board-wide `post`. `read`, `ack`, and `archive` need board-wide
+`read`. A narrowed handle still needs those permissions. Sending to an exact
+recipient and topic replaces the previous message for that pair, even if the
+replacement later expires or is archived. `expiresAt` is optional and must be
+a future ISO timestamp when supplied.
+
+`read()` returns `{ messages }` with up to 15 active messages, newest first,
+without marking any seen. `send`, `ack`, and `archive` return `{ message }`.
+The `OperationalMessage` type contains `id`, `to`, `topic`, `text`, `by`,
+`sentAt`, `expiresAt`, `seenAt`, `actedAt`, and `archivedAt`. The board sets
+`by` and the receipt times. The optional times are `null` until set. `acted`
+also marks the message seen. Repeating an acknowledgement keeps its original
+time. Archive hides the message only for you and can be repeated. An expired,
+replaced, or inaccessible message is not found. An archived message cannot be
+acknowledged.
+
+The operational inbox is separate from threads, sync, and `inbox(key)`.
+It works on `local()` and over HTTP to a board that keeps it. Vercel's board
+answers 501 `no_operational_inbox`.
+
 ### inbox and readSource
 
 ```ts

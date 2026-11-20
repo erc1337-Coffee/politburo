@@ -538,11 +538,48 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
     name: 'inbox',
     description: 'raw platform events, for debugging sync',
     arguments: [
-      { name: 'key', required: true, description: 'the sync entry, e.g. slack' },
+      { name: 'key', required: true, description: 'the sync entry, e.g. slack; use raw for read, ack, archive, or raw' },
       { name: 'channel', required: false, description: 'the board channel its events went to' },
     ],
     options: [option('limit', 'events to list')],
+    runsWithoutSubcommand: true,
     examples: [{ name: "list Slack's latest events", value: 'inbox slack' }],
+    subcommands: [
+      {
+        name: 'read',
+        description: 'read your 15 latest active operational messages',
+        arguments: [],
+        options: [],
+        examples: [{ name: 'read your operational inbox', value: 'inbox read' }],
+      },
+      {
+        name: 'ack',
+        description: 'mark an operational message seen or acted',
+        arguments: [
+          { name: 'id', required: true, description: 'the ID inbox read shows' },
+          { name: 'seen|acted', required: true },
+        ],
+        options: [],
+        examples: [{ name: 'mark a message seen', value: 'inbox ack 812 seen' }],
+      },
+      {
+        name: 'archive',
+        description: 'hide an operational message from your inbox',
+        arguments: [{ name: 'id', required: true, description: 'the ID inbox read shows' }],
+        options: [],
+        examples: [{ name: 'archive a message', value: 'inbox archive 812' }],
+      },
+      {
+        name: 'raw',
+        description: 'read raw platform events, including for reserved sync keys',
+        arguments: [
+          { name: 'key', required: true, description: 'the sync entry' },
+          { name: 'channel', required: false, description: 'the board channel its events went to' },
+        ],
+        options: [option('limit', 'events to list')],
+        examples: [{ name: 'list events for a sync entry named read', value: 'inbox raw read' }],
+      },
+    ],
   },
   {
     group: 'messages',

@@ -29,6 +29,10 @@ const AGENT_OPS_METHODS = ['listOpsAgents', 'registerOpsAgent', 'heartbeatOpsAge
 export type AgentOpsMethod = (typeof AGENT_OPS_METHODS)[number]
 export const isAgentOpsMethod = (name: string): name is AgentOpsMethod => (AGENT_OPS_METHODS as readonly string[]).includes(name)
 
+export const OPERATIONAL_INBOX_METHODS = ['sendOperationalMessage', 'readOperationalInbox', 'ackOperationalMessage', 'archiveOperationalMessage'] as const
+export type OperationalInboxMethod = (typeof OPERATIONAL_INBOX_METHODS)[number]
+export const isOperationalInboxMethod = (name: Method): name is OperationalInboxMethod => (OPERATIONAL_INBOX_METHODS as readonly Method[]).includes(name)
+
 /** Every protocol method, by the route it's served at. */
 export const METHODS: readonly Method[] = [
   'discovery', 'me', 'channels', 'createChannel', 'actors', 'channelMessages', 'threads', 'message', 'post', 'posted', 'edit', 'delete', 'react', 'label',
@@ -39,6 +43,7 @@ export const METHODS: readonly Method[] = [
   'requestTaskAttention', 'taskAttention', 'answerTaskAttention',
   'grants', 'createGrant', 'createGrants', 'updateGrant', 'explain', 'revokeGrant', 'schemas', 'schema', 'createSchema', 'upload', 'attachment', 'uploadStart', 'uploadFinish', 'watchers', 'register', 'matches', 'ack', 'events',
   'syncImport', 'syncReceipt', 'syncThread', 'syncFind', 'syncCopies', 'inboxPush', 'inboxNext', 'inboxAck', 'inbox',
+  ...OPERATIONAL_INBOX_METHODS,
   'typing', 'readSource', 'joinSource', 'synced', 'linked',
 ]
 

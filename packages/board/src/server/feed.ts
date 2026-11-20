@@ -430,7 +430,6 @@ export class FeedProjection {
   }
 
   async step(event: BoardEvent, signal?: AbortSignal): Promise<FeedItem> {
-    // Registry records are not feed events, even with `all`.
     if (!isPublicBoardEvent(event)) return { index: event.index, view: null }
     await loadInto(this.reads, this.messages, this.loaded, event, signal)
     const { id, before, after } = foldEvent(this.messages, this.actors, event)

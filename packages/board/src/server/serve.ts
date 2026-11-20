@@ -1,6 +1,8 @@
 import { DEFAULT_TASK_PRIORITY } from '../contract/schemas.ts'
 import {
   AckBody,
+  AckOperationalMessageBody,
+  SendOperationalMessageBody,
   AssignTaskBody,
   AttentionAnswerBody,
   RequestAttentionBody,
@@ -78,7 +80,7 @@ import { avatarSvg } from './avatars.ts'
 import { badRequest, batchTooLarge, forbidden, HttpError, json, noAgentOps, notFound, toErrorResponse } from './errors.ts'
 import { extractMentions, settleMentions, type Mentioned, type MentionedActor } from '../contract/mentions.ts'
 import { DroppedError, runMiddleware, type Write, type WriteSource } from './middleware.ts'
-import { ATTENTION_METHODS, createRouter, isAgentOpsMethod, METHODS, openapi, queryObject, readCapped, readJson, type BoardRoute } from './routing.ts'
+import { ATTENTION_METHODS, createRouter, isAgentOpsMethod, isOperationalInboxMethod, METHODS, openapi, queryObject, readCapped, readJson, type BoardRoute } from './routing.ts'
 import { FULL_ACCESS, parseCan, type Access } from './access.ts'
 import { syncTarget, type SyncTarget } from './targets.ts'
 import { SYNC_ACTOR, type WriteOrigin } from './origin.ts'
@@ -86,7 +88,7 @@ import type { WatcherContext } from './watcher.ts'
 import { VERSION } from '../version.ts'
 
 /** The methods whose answer is something new. */
-const CREATED = new Set<Method>(['post', 'schedule', 'createTask', 'createTasks', 'requestTaskAttention', 'upload', 'uploadFinish'])
+const CREATED = new Set<Method>(['post', 'schedule', 'createTask', 'createTasks', 'requestTaskAttention', 'upload', 'uploadFinish', 'sendOperationalMessage'])
 const CONTROL = new Set<Method>(['status', 'pause', 'resume'])
 
 /**
@@ -136,10 +138,17 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
     case 'grants':
     case 'schemas':
     case 'status':
+    case 'readOperationalInbox':
       return {}
     case 'pause':
     case 'resume':
       return ControlBody.parse(await body())
+    case 'sendOperationalMessage':
+      return SendOperationalMessageBody.parse(await body())
+    case 'ackOperationalMessage':
+      return { id: Ref.parse(id), ...AckOperationalMessageBody.parse(await body()) }
+    case 'archiveOperationalMessage':
+      return { id: Ref.parse(id) }
     case 'message':
       return { id, ...ThreadQuery.parse(queryObject(url)) }
     case 'posted':
@@ -970,6 +979,15 @@ export async function createServe(context: BoardContext): Promise<Serve> {
 
   /** The protocol method `name`, as board() serves it: what it posts, edits, and imports goes through the middleware. */
   async function invoke(name: Method, caller: Caller, input: unknown, signal: AbortSignal): Promise<unknown> {
+    if (isOperationalInboxMethod(name)) {
+      const permission = name === 'sendOperationalMessage' ? 'post' : 'read'
+      const access = accessOf(caller)
+      if (access !== null && !access.everywhere(permission))
+        throw forbidden(`this token needs ${permission} in every channel to use the operational inbox`)
+      const method = backend[name] as ((caller: Caller, input: unknown, signal: AbortSignal) => Promise<unknown>) | undefined
+      if (!method) throw new HttpError(501, 'no_operational_inbox', 'this board keeps no operational inbox')
+      return method.call(backend, caller, input, signal)
+    }
     switch (name) {
       case 'post':
         ownLabels((input as Protocol['post']['input']).labels)
@@ -1225,9 +1243,12 @@ export async function createServe(context: BoardContext): Promise<Serve> {
       const ops = target.kind === 'protocol' && isAgentOpsMethod(target.name)
       if (!injected && !policy.open) throw ops ? noAgentOps() : servesOnly()
       if (!injected && target.kind === 'protocol' && target.name === 'discovery') return json(await discovery(request, audienceOf(at), request.signal))
-      if (target.kind === 'protocol' && !CONTROL.has(target.name) && !ATTENTION_METHODS.has(target.name) && typeof backend[target.name] !== 'function')
+      if (target.kind === 'protocol' && !CONTROL.has(target.name) && !ATTENTION_METHODS.has(target.name)
+        && !isOperationalInboxMethod(target.name) && typeof backend[target.name] !== 'function')
         throw ops ? noAgentOps() : notFound(`no route: ${request.method} ${url.pathname}`)
-      // A sync callback's client does everything but its own writes as sync.
+      // A sync callback's client does everything but its own writes as sync, except private mail.
+      if (injected && 'platform' in injected && target.kind === 'protocol' && isOperationalInboxMethod(target.name))
+        throw forbidden('platform callbacks cannot use the operational inbox')
       const own = injected && 'platform' in injected ? engine!.caller : injected
       const asked = own ? null : requestOf(request, at)
       const caller: Caller = own ?? (await callerOf(asked!))
@@ -1240,7 +1261,7 @@ export async function createServe(context: BoardContext): Promise<Serve> {
       if (target.name === 'attachment') return attachmentResponse(output as Protocol['attachment']['output'])
       // A channel that was there already is answered, not created.
       const made = CREATED.has(target.name) || (target.name === 'createChannel' && (output as Protocol['createChannel']['output']).created)
-      return json(output, made ? 201 : 200)
+      return json(output, made ? 201 : 200, isOperationalInboxMethod(target.name) ? { 'cache-control': 'private, no-store' } : undefined)
     } catch (error) {
       // Stopped by its caller (a page reloaded, a long-poll let go): no one reads the answer, and
       // the abort isn't the board's failure. Any other failure still is, caller there or not.

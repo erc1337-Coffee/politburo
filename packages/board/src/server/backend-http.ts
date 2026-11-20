@@ -211,6 +211,7 @@ export function createHttp(url: string | undefined, options: HttpOptions, enviro
         })
         .catch(rethrow)
     } else if (route.method === 'GET') response = await client.request(`${path}${queryString(fields)}`, { signal }).catch(rethrow)
+    else if (method === 'archiveOperationalMessage') response = await client.request(path, { method: 'POST', signal }).catch(rethrow)
     else
       response = await client
         .request(path, { method: route.method, body: new TextEncoder().encode(JSON.stringify(fields)), headers: { 'content-type': 'application/json' }, signal })

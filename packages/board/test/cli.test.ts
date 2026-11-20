@@ -982,6 +982,7 @@ describe('cli', () => {
       expect(run.stdout).toContain(
         '\n\nagents\n  skipped  registers, lists, heartbeats, and retires an agent under its verified binding\n           not kept here: agent operations are not advertised\n',
       )
+      expect(run.stdout).toContain('\n\noperational-inbox\n  passed   keeps operational messages private')
       // Four grants checks and the agent registry are skipped.
       expect(run.stdout).toMatch(/\n\n\d+ passed, 5 skipped\n$/)
       expect(JSON.parse((await vb(['conformance', '--json', '--channel', 'conformance/json'], as)).stdout)).toMatchObject({ ok: true })

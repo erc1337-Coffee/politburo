@@ -29,6 +29,7 @@ import { createReads, tablesConsumer } from './reads.ts'
 import { createdBy, createSchedules, type Schedule } from './schedules.ts'
 import { createControl, publicStatus } from './control.ts'
 import { createTasks, taskLimits } from './tasks.ts'
+import { createOperationalInbox } from './operational-inbox.ts'
 import type { BoardStore, MessageFilter, ThreadPosition } from '../store/types.ts'
 import { compileWatcher, createWatchers, ID, registrantSession } from './watch.ts'
 import { ack, pull, pullInbox, type QueueSession } from './registered.ts'
@@ -296,6 +297,7 @@ function build(options: A2Options, binding: BoardBinding) {
     consumers,
   })
   const session = server.session(BOARD_SESSION)
+  const operationalInbox = createOperationalInbox(session, binding.inboxRolesFor ?? (() => []))
   const reads = createReads(store.tables, session, projection)
   const work = createControl(log, session, binding.initiallyPaused && !store.beforeWorkControl)
   const writes: WriteContext = { session, reads, work }
@@ -526,6 +528,18 @@ function build(options: A2Options, binding: BoardBinding) {
         can: principal.access.summary(),
       }
       return body
+    },
+    async sendOperationalMessage(caller, input, signal) {
+      return operationalInbox.send((await identityOf(caller)).author, input, signal)
+    },
+    async readOperationalInbox(caller) {
+      return operationalInbox.read((await identityOf(caller)).principal.id)
+    },
+    async ackOperationalMessage(caller, { id, status }, signal) {
+      return operationalInbox.change((await identityOf(caller)).author, id, status, signal)
+    },
+    async archiveOperationalMessage(caller, { id }, signal) {
+      return operationalInbox.change((await identityOf(caller)).author, id, 'archive', signal)
     },
     async channels(caller, { prefix, after, limit = CHANNELS_LIMIT_DEFAULT }) {
       const { principal } = (await identityOf(caller))

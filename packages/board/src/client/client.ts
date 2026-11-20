@@ -10,6 +10,9 @@ import type {
   FiltersInput,
   InboxEntry,
   InboxItem,
+  OperationalMessage,
+  OperationalStatus,
+  SendOperationalMessageInput,
   SyncCopiesView,
   SyncFindInput,
   SyncFindView,
@@ -852,6 +855,16 @@ export function createBoardClient(options: ClientOptions) {
     /** Raw platform events for a sync entry, newest first. */
     inbox: async (key: string, opts: { channel?: string; limit?: number } = {}) =>
       (await call<{ events: InboxEntry[] }>('GET', `/inbox/${key}${queryString(opts)}`)).events,
+    /** Private operational messages, separate from the raw sync inbox. */
+    operationalInbox: {
+      send: (input: SendOperationalMessageInput) =>
+        call<{ message: OperationalMessage }>('POST', '/operational-inbox', { body: input }),
+      read: () => call<{ messages: OperationalMessage[] }>('GET', '/operational-inbox'),
+      ack: (id: string, status: OperationalStatus) =>
+        call<{ message: OperationalMessage }>('POST', `/operational-inbox/${path(id)}/ack`, { body: { status } }),
+      archive: (id: string) =>
+        call<{ message: OperationalMessage }>('POST', `/operational-inbox/${path(id)}/archive`),
+    },
     /** Registers the caller's watchers, replacing its last registration: what a board on `http()` does. */
     register: (input: RegisterInput) =>
       call<RegistrationView>('POST', '/watchers', { body: input }),

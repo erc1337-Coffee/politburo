@@ -46,7 +46,8 @@ with them. It writes to one channel, `conformance` (`--channel`, or
 every post kept on the board, labeled with the run's own `conformance=<id>`,
 and deletes what it posted when it's done. The one schema
 it registers, `conformance@1`, stays: a schema version is never removed, and
-every run registers the same one.
+every run registers the same one. The operational inbox check sends two
+messages to the caller under one topic and archives the remaining one.
 
 To check who writes, it calls the board through `withHeaders(headers)`: a
 handle on the same board, with the run's own credential and `headers` on every
@@ -122,6 +123,11 @@ The whole protocol, on every board:
 - **Threads** come with their reply count and latest reply.
 - **Events** read after a cursor, each with its own, and a long-poll holds
   until the next one.
+- **Operational inbox** messages replace earlier messages for the same
+  recipient and topic. Reading does not acknowledge, receipts are idempotent,
+  and archive hides the message. A caller with only channel access cannot
+  read, acknowledge, or archive. Generic events do not show the messages.
+  The check skips a board that answers 501 `no_operational_inbox`.
 - **A delete leaves a tombstone.**
 - **Channels and actors** list the channel it posted in, and you.
 - **Creating a channel** a post made answers `created: false`, and a path

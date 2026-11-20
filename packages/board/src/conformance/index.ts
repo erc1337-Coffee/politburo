@@ -10,7 +10,9 @@ import type { Board } from '../server/board.ts'
  * Checks that a board speaks the protocol, through a handle on it (`conformance(board())`), as
  * `vb` and agents use it: every board answers all of it. A board may keep no schedules, tasks, or
  * files, or no index to find threads by what their messages say or who wrote them, and says so with a
- * 501, which the kit reports as not kept here. It writes to one channel
+ * 501, which the kit reports as not kept here. A board may also answer 501 `no_operational_inbox`
+ * to the inbox read. Where supported, the kit sends short-lived operational messages to the run's
+ * own principal and archives the latest. It writes ordinary messages to one channel
  * (`conformance` by default), and for the tasks checks that need two, to `tasks` under it, keeps
  * every post on the board, and deletes what it posted. The one
  * schema it registers, `conformance@1`, stays: a schema version is never removed.
@@ -19,7 +21,7 @@ import type { Board } from '../server/board.ts'
  */
 
 /** What a check is about, for the report's headings. */
-export type CheckGroup = 'core' | 'paging' | 'search' | 'schedules' | 'tasks' | 'network-pause' | 'grants' | 'schemas' | 'attachments' | 'watchers' | 'sync' | 'agents'
+export type CheckGroup = 'core' | 'paging' | 'search' | 'schedules' | 'tasks' | 'network-pause' | 'grants' | 'schemas' | 'attachments' | 'watchers' | 'sync' | 'agents' | 'operational-inbox'
 
 export type CheckResult = {
   group: CheckGroup
@@ -2616,6 +2618,61 @@ const CHECKS: Check[] = [
         same(listed?.generation, current.generation, 'retired agent generation when listed')
       } finally {
         if (current.status !== 'disabled') await writer.agents.retire(enrolled.id, current.generation).catch(() => {})
+      }
+    },
+  },
+  {
+    group: 'operational-inbox',
+    name: 'keeps operational messages private, supersedes by topic, and keeps receipts once',
+    run: async (ctx) => {
+      const inbox = ctx.board.operationalInbox
+      try {
+        await inbox.read()
+      } catch (error) {
+        if (error instanceof BoardError && error.status === 501 && error.code === 'no_operational_inbox') return `not kept here: ${error.message}`
+        throw error
+      }
+      const { cursor } = await ctx.board.poll({ all: true })
+      const topic = `conformance inbox ${ctx.labels.conformance}`
+      const input = { to: { agent: ctx.me.principal }, topic, expiresAt: new Date(Date.now() + 60_000).toISOString() }
+      const forTopic = async () => (await inbox.read()).messages.filter((message) => message.topic === topic)
+      const { message: older } = await inbox.send({ ...input, text: 'older' })
+      let latest = older
+      try {
+        ;({ message: latest } = await inbox.send({ ...input, text: 'latest' }))
+        const read = await forTopic()
+        same(show(read.map((m) => m.id)), show([latest.id]), 'which message with the same recipient and topic remains')
+        same(read[0]!.text, 'latest', 'the new message, read back')
+        same(read[0]!.by.principal, ctx.me.principal, 'who authored it')
+        same(read[0]!.seenAt, null, 'reading does not acknowledge it')
+        same(read[0]!.actedAt, null, 'an unread receipt has no acted time')
+        same(read[0]!.archivedAt, null, 'the message has not been archived')
+        await refused(inbox.ack(older.id, 'seen'), 404, 'acknowledging the superseded message')
+
+        const narrow = ctx.withCan?.(`${ctx.channel}=all`) ?? ctx.board.as(ctx.me.profile, { can: { [ctx.channel]: 'all' } })
+        await refused(narrow.operationalInbox.read(), 403, 'reading with only channel access')
+        await refused(narrow.operationalInbox.ack(latest.id, 'seen'), 403, 'acknowledging with only channel access')
+        await refused(narrow.operationalInbox.archive(latest.id), 403, 'archiving with only channel access')
+        await refused(narrow.operationalInbox.send({ ...input, text: 'narrowed' }).then(({ message }) => { latest = message }), 403, 'sending with only channel access')
+
+        const { message: seen } = await inbox.ack(latest.id, 'seen')
+        check(seen.seenAt && Number.isFinite(Date.parse(seen.seenAt)), 'seen should record a timestamp')
+        const { message: acted } = await inbox.ack(latest.id, 'acted')
+        check(acted.actedAt && Date.parse(acted.actedAt) >= Date.parse(seen.seenAt), 'acted should record a timestamp at or after seen')
+        same(acted.seenAt, seen.seenAt, 'acted preserves seen')
+        const { message: repeated } = await inbox.ack(latest.id, 'seen')
+        same(repeated.seenAt, seen.seenAt, 'repeating seen preserves its timestamp')
+        same(repeated.actedAt, acted.actedAt, 'repeating seen cannot undo acted')
+
+        const { message: archived } = await inbox.archive(latest.id)
+        check(archived.archivedAt && Date.parse(archived.archivedAt) >= Date.parse(acted.actedAt), 'archive should record a timestamp at or after acted')
+        same((await inbox.archive(latest.id)).message.archivedAt, archived.archivedAt, 'repeating archive preserves its timestamp')
+        same((await forTopic()).length, 0, 'archiving hides the message without reviving its predecessor')
+        await refused(inbox.ack(latest.id, 'acted'), 404, 'acknowledging the archived message')
+        const { events } = await ctx.board.poll({ all: true, after: cursor })
+        check(!show(events).includes(topic), 'the generic event feed should not expose the operational topic')
+      } finally {
+        await inbox.archive(latest.id).catch(() => {})
       }
     },
   },

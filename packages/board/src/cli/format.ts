@@ -1,4 +1,4 @@
-import type { AttentionView, BoardEventView, GrantView, Me, MessageView, PrincipalView, ScheduleView, SourceRead, SyncedView, TaskView, ThreadSummaryView } from '../api/routes.ts'
+import type { AttentionView, BoardEventView, GrantView, Me, MessageView, OperationalMessage, PrincipalView, ScheduleView, SourceRead, SyncedView, TaskView, ThreadSummaryView } from '../api/routes.ts'
 import { DEFAULT_TASK_PRIORITY, TaskPriority } from '../contract/schemas.ts'
 import { displayEmoji } from '../contract/emoji.ts'
 import { fileSize } from '../contract/files.ts'
@@ -49,6 +49,22 @@ const indent = (text: string, prefix: string) =>
     .split('\n')
     .map((line) => `${prefix}${line}`)
     .join('\n')
+
+/** Operational messages are grouped by ID and topic; the text is what the sender wrote. */
+export function formatOperationalInbox(messages: OperationalMessage[]): string {
+  if (messages.length === 0) return 'no messages'
+  return messages.map((message) => {
+    const to = 'agent' in message.to ? message.to.agent : `role ${message.to.role}`
+    const receipt = message.actedAt ? 'acted' : message.seenAt ? 'seen' : 'unseen'
+    return [
+      `${lineText(message.id)}  ${lineText(message.topic)}`,
+      `  from  ${lineText(message.by.actor)}`,
+      `  to    ${lineText(to)}`,
+      `  ${receipt}`,
+      indent(message.text.replace(/\r\n/g, '\n'), '  '),
+    ].join('\n')
+  }).join('\n\n')
+}
 
 function labels(message: MessageView): string {
   const entries = Object.entries(message.labels)

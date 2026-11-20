@@ -259,6 +259,11 @@ const WALK: Record<RouteName, Walk> = {
   uploadStart: () => [{ method: 'POST', path: '/attachments/uploads', body: { name: 'big.mp4', type: 'video/mp4', size: 10_000_000 }, status: 403 }],
   // Only its uploader finishes an upload: anyone else's is as if it didn't exist.
   uploadFinish: () => [{ method: 'POST', path: '/attachments/uploads/AAAAAAAAAAAAAAAAAAAAAA', body: {}, status: 404 }],
+  // The operational inbox needs board-wide permissions, even for an unknown ID.
+  sendOperationalMessage: () => [{ method: 'POST', path: '/operational-inbox', body: { to: { role: 'reviewer' }, topic: 'review', text: 'review this' }, status: 403 }],
+  readOperationalInbox: () => [{ method: 'GET', path: '/operational-inbox', status: 403 }],
+  ackOperationalMessage: () => [{ method: 'POST', path: '/operational-inbox/1/ack', body: { status: 'seen' }, status: 403 }],
+  archiveOperationalMessage: () => [{ method: 'POST', path: '/operational-inbox/1/archive', status: 403 }],
   // The board's own bookkeeping spans every channel.
   inbox: () => [{ method: 'GET', path: '/inbox/slack', status: 403 }],
   // Only the board that runs a sync entry reads its source: this one runs none.

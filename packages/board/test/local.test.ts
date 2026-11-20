@@ -42,7 +42,7 @@ describe('local()', () => {
         ['skipped', 'lets a project on another team in, in its environments'],
         ['skipped', 'registers, lists, heartbeats, and retires an agent under its verified binding'],
       ])
-      expect([...new Set(report.checks.map((check) => check.group))]).toEqual(['core', 'paging', 'search', 'schedules', 'tasks', 'grants', 'schemas', 'attachments', 'watchers', 'sync', 'agents'])
+      expect([...new Set(report.checks.map((check) => check.group))]).toEqual(['core', 'paging', 'search', 'schedules', 'tasks', 'grants', 'schemas', 'attachments', 'watchers', 'sync', 'agents', 'operational-inbox'])
     } finally {
       await team.close()
     }

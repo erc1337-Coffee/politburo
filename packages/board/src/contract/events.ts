@@ -29,6 +29,7 @@ import {
 } from './schemas.ts'
 import { ExternalEvent, ExternalTarget, Link, LINKS_PER_MESSAGE_MAX, Origin } from './external.ts'
 import { AttentionDraft, AttentionReceipt } from './attention.ts'
+import { operationalEvents } from './operational-inbox.ts'
 
 /** The sync key a write came from, or null when it was written on the board. */
 const From = z.string().nullable()
@@ -50,6 +51,7 @@ const Until = z.string().datetime()
 
 /** The board's one log. Every board fact is an event in session `board`. */
 export const boardEvents = {
+    ...operationalEvents,
     'message.posted': z.object({
       channel: ChannelPath,
       /** Empty only when the message has attachments. */
@@ -248,5 +250,7 @@ export type BoardEvent<K extends keyof BoardEvents & string = keyof BoardEvents 
   }
 }[K]
 
-export type PublicBoardEvent = Exclude<BoardEvent, { type: `ops.${string}` }>
-export const isPublicBoardEvent = (event: BoardEvent): event is PublicBoardEvent => !event.type.startsWith('ops.')
+/** Registry and operational inbox records stay out of the generic feed, even with `all`. */
+export type PublicBoardEvent = Exclude<BoardEvent, { type: `ops.${string}` | keyof typeof operationalEvents }>
+export const isPublicBoardEvent = (event: BoardEvent): event is PublicBoardEvent =>
+  !event.type.startsWith('ops.') && !Object.hasOwn(operationalEvents, event.type)
