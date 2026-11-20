@@ -75,6 +75,33 @@ beforeEach(async () => {
 })
 afterEach(() => team.close())
 
+it('claims the highest priority unparked work after a network pause, and fences an older bound handoff', async () => {
+  const low = await make(ada, 'lower priority', { priority: 'low' })
+  const high = await make(ada, 'higher priority', { priority: 'high' })
+  const urgent = await make(ada, 'parked urgent task', { priority: 'urgent' })
+  expect(outcome(await write(bo, urgent, 'park', { reason: 'hold this task only' }))).toEqual([200, undefined])
+  const before = await take(worker, high, { binding: bindingFor() })
+  const nextBinding = { ...bindingFor(), session: 'after-resume' }
+  const claimNext = () => worker('POST', '/tasks/claim-bound', { channel: 'work', binding: nextBinding })
+
+  expect(outcome(await bo('POST', '/control/pause', { reason: 'stop admitting work' }))).toEqual([200, undefined])
+  expect(outcome(await claimNext())).toEqual([409, 'board_paused'])
+  expect(outcome(await bo('POST', '/control/resume', { reason: 'admit new claims' }))).toEqual([200, undefined])
+  expect(outcome(await write(worker, high, 'handoff', { ...proofOf(before), ...packet }))).toEqual(CLAIM_LOST)
+
+  const taken = await claimNext()
+  expect(outcome(taken)).toEqual([200, undefined])
+  expect(taken.body.task.id).toBe(high)
+  expect(taken.body.claim.binding).toEqual(nextBinding)
+  const proof = proofOf(taken.body.claim)
+  expect(proof.epoch).toBe(before.epoch + 1)
+  const handoff = await write(worker, high, 'handoff', { ...proof, ...packet })
+  expect(outcome(handoff)).toEqual([200, undefined])
+  expect(handoff.body.task.task.handoff).toMatchObject({ ...packet, generation: proof.epoch })
+  expect((await read(ada, low)).task?.state).toBe('ready')
+  expect((await read(ada, urgent)).task?.state).toBe('blocked')
+})
+
 describe('operator parking', () => {
   it('takes a verified bare person with manage in that channel, and records each operator and reason', async () => {
     const id = await make(ada, 'review the release')

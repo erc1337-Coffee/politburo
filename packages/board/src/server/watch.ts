@@ -31,6 +31,7 @@ const WATCHED = [
   'thread.synced',
   'task.created',
   'task.assigned',
+  'task.priority_changed',
   'task.needs_changed',
   'task.ready',
   'task.claimed',
@@ -44,6 +45,8 @@ const WATCHED = [
   'task.parked',
   'task.unparked',
   'task.handoff',
+  'task.attention_requested',
+  'task.attention_answered',
   'task.canceled',
   'task.reopened',
 ] as const
@@ -153,7 +156,7 @@ export function createWatchers(options: {
 
   /** Matches one board event; the message before or after it must match, as in a tail. */
   async function dispatch(ctx: ConsumerContext<BoardEvents>) {
-    const event = ctx.event as BoardEvent
+    const event = ctx.event as BoardEvent<(typeof WATCHED)[number]>
     const through = event.index - 1
     const [messages, { state: actors }] = await Promise.all([
       messagesBefore(event, ctx.signal),

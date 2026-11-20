@@ -2,14 +2,14 @@ import { carried } from './carried.ts'
 import type { z } from 'zod'
 import type { ActorView, Filters, LinkView, MessageView, BoardEventView, TaskView } from '../api/routes.ts'
 import type { ParsedFilters } from '../api/routes.ts'
-import type { BoardEvent } from '../contract/events.ts'
+import { isPublicBoardEvent, type BoardEvent, type PublicBoardEvent } from '../contract/events.ts'
 import type { Link } from '../contract/external.ts'
 import { FULL_ACCESS, type Access } from './access.ts'
 import { hasCriteria } from './watch-spec.ts'
 import { channelsReducer } from '../contract/reducers.ts'
 import { foldActors, foldMessages, iso, type Actor, type ActorsState, type Message, type MessagesState, type Task } from '../contract/folds.ts'
 import { blocksIn } from '../contract/blocks.ts'
-import { authorView, type Author } from '../contract/schemas.ts'
+import { authorView, DEFAULT_TASK_PRIORITY, type Author } from '../contract/schemas.ts'
 import { actorParts, type Via } from '../contract/profiles.ts'
 import { mentionTerm, mentionTerms } from '../contract/mentions.ts'
 import { own } from '../contract/own.ts'
@@ -116,9 +116,11 @@ export const indexOf = (value: string): number | null => (/^(0|[1-9]\d{0,15})$/.
 
 /** A task as every reader sees it: the tasks it waits for as refs, and its claim without the token, hashed or not. */
 export function taskView(task: Task): TaskView {
-  const { needs, claim, handoff, parked, ...shown } = task
+  const { needs, claim, attention, handoff, parked, ...shown } = task
   return {
     ...shown,
+    priority: task.priority ?? DEFAULT_TASK_PRIORITY,
+    ...(attention ? { attentionId: attention.id } : {}),
     needs: needs.map(ref),
     claim: claim && { actor: claim.actor, until: claim.until, ...(claim.binding ? { binding: structuredClone(claim.binding) } : {}) },
     blocked: task.blocked && { ...task.blocked },
@@ -344,7 +346,7 @@ export const eventActor = (event: BoardEvent) => event.type === 'task.handoff'
   : (event.payload as { by?: { actor?: string } }).by?.actor
 
 /** An event as subscribers receive it, with its message as it is afterwards. */
-export function eventView(event: BoardEvent, after: Message | undefined, actors: ActorsState, reader: Reader): BoardEventView {
+export function eventView(event: PublicBoardEvent, after: Message | undefined, actors: ActorsState, reader: Reader): BoardEventView {
   const by = eventActor(event)
   const actor = by ? own(actors.byId, by) : undefined
   const { links } = event.payload as { links?: Link[] }
@@ -374,6 +376,8 @@ function payloadView(event: BoardEvent, links: LinkView[] | undefined): Record<s
     const { handoff } = event.payload
     shown.handoff = { ...handoff, by: authorView(handoff.by) }
   }
+  const receipt = shown.receipt as { by: Author } | undefined
+  if (receipt) shown.receipt = { ...receipt, by: authorView(receipt.by) }
   const schedule = shown.schedule as { id: number; n: number } | undefined
   if (schedule) shown.schedule = { id: scheduleRef(schedule.id), n: schedule.n }
   if (links) shown.links = links
@@ -438,6 +442,7 @@ export class FeedProjection {
   }
 
   async step(event: BoardEvent, signal?: AbortSignal): Promise<FeedItem> {
+    if (!isPublicBoardEvent(event)) return { index: event.index, view: null }
     await loadInto(this.reads, this.messages, this.loaded, event, signal)
     const { id, before, after } = foldEvent(this.messages, this.actors, event)
     const message = after ?? before
@@ -553,6 +558,12 @@ async function asNow(options: FeedOptions, events: BoardEventView[], head: numbe
     if (id === null || !event.message) return [event]
     const current = now.get(id)
     if (!current || !options.access.readable(current.channel)) return []
+    if (event.type === 'task.attention_requested') {
+      const task = current.task
+      // A task keeps its latest request for the attention route even after it stops holding the task.
+      if (current.deleted || task?.state !== 'blocked' || task.attention?.status !== 'pending' ||
+          task.attention.id !== event.payload.requestId) return []
+    }
     const message = view(current, options.actors, reader)
     if (byWords && (message.deleted || message.text !== event.message.text)) return []
     const payload: Record<string, unknown> = { ...(event.payload as Record<string, unknown>) }
