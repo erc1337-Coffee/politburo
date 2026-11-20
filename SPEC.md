@@ -391,7 +391,8 @@ The backend picks them; the protocol only says their shape:
   registered watchers, [invites](#invites), sync's records,
   [the operational inbox](#operational-inbox), and `/events`. Discovery lists
   no optional groups in the core protocol. The fork's opt-in
-  [agent registry](#agent-registry) advertises `agent_ops: true`.
+  [agent registry](#agent-registry) advertises `agent_ops: true`; command
+  intents and run health use the separate `agent_intents: true` capability.
   A backend may keep no schedules, tasks, or files, and says so with a 501
   (`no_scheduler`, `no_tasks`, `no_files`), which the kit reports as not kept
   here. A backend that keeps no schemas or invites answers 501 `no_schemas`
@@ -412,9 +413,9 @@ The backend picks them; the protocol only says their shape:
   never removed. A check the board answers with a
   501 in `schedules`, `tasks`, or `attachments` is `skipped`, with the detail `not kept
   here: <the board's message>`; one that would replace the caller's own
-  registration is skipped too. Without advertised `agent_ops`, the kit reports
-  both agent checks as skipped; on an opted-in board, the run health probe
-  also needs a verified credential. The `operational-inbox` check sends to the
+  registration is skipped too. The kit skips the registry check without
+  `agent_ops` and the run health check without `agent_intents`. The run health
+  probe also needs a verified credential. The `operational-inbox` check sends to the
   run's principal, tests replacement, receipts, and privacy, and archives the
   remaining message. It skips a board that answers 501 `no_operational_inbox`.
   `vb conformance` runs it as the CLI's identity,
@@ -575,7 +576,7 @@ brings credentials for Vercel's board (see [The handle](#the-handle)).
   the ID of the user the token was issued to. It exists only on development
   tokens, and that's exactly the case we use it for.
 - **Discovery:** `GET /` is unauthenticated and returns
-  `{ version, url, audience, team_id, project_id, sync, wake_by_path?, agent_ops?, task_attention?, task_authority? }`, so the client knows
+  `{ version, url, audience, team_id, project_id, sync, wake_by_path?, agent_ops?, agent_intents?, task_attention?, task_authority? }`, so the client knows
   which project to mint for. The CLI can run from any directory. Discovery is unauthenticated,
   so the client never takes its audience from it: every token's audience is the
   URL the client sends it to. When discovery's `audience` differs, the client
@@ -1931,7 +1932,7 @@ status.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/` | Discovery (unauthenticated): `version`, `url`, `audience`, `team_id`, `project_id`, `sync` (each entry's `key` and `platform`), `wake_by_path` on a board that takes a `path` in `POST /watchers`, and `agent_ops: true` on a board with the [agent registry](#agent-registry). A board with no backend answers 404 there |
+| GET | `/` | Discovery (unauthenticated): `version`, `url`, `audience`, `team_id`, `project_id`, `sync` (each entry's `key` and `platform`), `wake_by_path` on a board that takes a `path` in `POST /watchers`, `agent_ops: true` on a board with the [agent registry](#agent-registry), and `agent_intents: true` on a board with [command intents](#command-intents) and run health. A board with no backend answers 404 there |
 | GET | `/me` | The resolved actor for this token and profile, and what it `can` do: each channel pattern and its permissions |
 | GET | `/control` | `{ paused, pauseEpoch }` for any admitted caller. See [Network pause](#network-pause) |
 | POST | `/control/pause` | `{ reason }`: stop work admission. Answers `{ paused, pauseEpoch }` |
@@ -4709,10 +4710,11 @@ scoreboard and incidents in the operator console.
 
 The fork keeps an optional roster per exact channel. Enable it with
 `local({ agentOps: true })` or `vb serve --agent-ops`. An enabled board's
-`GET /` discovery includes `agent_ops: true`. The HTTP backend forwards
-agent operations only if discovery advertises that flag. Disabled local
-boards, unadvertised HTTP boards, and the Vercel backend answer 501
-`no_agent_ops` for agent operations.
+`GET /` discovery includes `agent_ops: true` for the registry and
+`agent_intents: true` for command intents and run health. The HTTP backend
+forwards calls only when discovery advertises the corresponding flag.
+Disabled local boards, HTTP boards without that flag, and the Vercel
+backend answer 501 `no_agent_ops` for those calls.
 
 An `Agent` is `{ id, channel, role, parent, harness, binding, generation,
 status, heartbeatAt }`. `id` is an opaque server-generated `Ref` that stays

@@ -115,6 +115,37 @@ describe("vb tasks, with the claim it keeps", () => {
     expect(await vb(['tasks', 'block', id])).toMatchObject({ code: 2, stderr: expect.stringMatching(/^error: Missing what you need from a person, in a line\.\n/) })
   }, 60_000)
 
+  it('suggests unpark for a parked task and unblock for a plain hold', async () => {
+    const id = await create('parked', 'deploy to prod')
+    await ok(['tasks', 'block', id, 'waiting for approval'])
+    const held = await vb(['tasks', 'claim', id])
+    expect(held.code).toBe(1)
+    expect(held.stderr).toContain(`error: Can't claim task #${id}. It's held for a person.\n`)
+    expect(held.stderr).toContain(`    vb tasks unblock ${id}\n`)
+    expect(held.stderr).not.toContain('vb tasks unpark')
+    await ok(['tasks', 'unblock', id])
+
+    await ok(['tasks', 'park', id, 'deployment freeze'])
+    const parked = await vb(['tasks', 'claim', id])
+    expect(parked).toMatchObject({ code: 1, stdout: '' })
+    const [headline, , ...recovery] = parked.stderr.split('\n')
+    expect([headline, ...recovery]).toEqual([
+      `error: Can't claim task #${id}. It's parked.`,
+      '',
+      "  See what it's held for:",
+      `    vb read ${id}`,
+      '  Or, as an operator, lift the park:',
+      `    vb tasks unpark ${id} 'resume work'`,
+      '',
+    ])
+
+    const refused = failure(await vb(['tasks', 'claim', id, '--json']))
+    expect(refused.reason).toBe('task_blocked')
+    const lift = refused.next?.find(({ argv }) => argv[2] === 'unpark')
+    expect(lift).toBeDefined()
+    expect(await ok(lift!.argv.slice(1))).toBe(`unparked ${id}\n`)
+  }, 60_000)
+
   it("assigns a task to one of its owner's profiles, the only one that claims it, and returns it to the pool", async () => {
     const id = await create('assigned', 'fix CVE-123')
     expect(await ok(['tasks', 'assign', id, 'Fixer'])).toBe(`assigned ${id} to fixer\n`)

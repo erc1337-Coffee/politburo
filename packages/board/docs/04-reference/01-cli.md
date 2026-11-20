@@ -1353,7 +1353,8 @@ $ vb tasks work/ --state all --limit 2
   `claude` is settled as `claude`.
 - **`park` and `unpark` need a verified person** acting without a profile,
   with `manage` in the task's channel. Their output reports the resulting
-  park status, even if no state changed.
+  park status, even if no state changed. A failed claim on a parked task
+  suggests `unpark` with a reason. A plain hold still suggests `unblock`.
 - **`handoff` uses your saved claim.** To replace the latest handoff, name
   its ID with `--supersedes`. The CLI sends only metadata and does not
   open the checkout or packet. JSON output has `outcome: "handed_off"`
@@ -1378,7 +1379,7 @@ What can go wrong, by `reason`:
 | `timeout` | `--wait` ran out with none ready | 1 |
 | `claim_not_held` | you hold no claim on the task as who this run writes as, a profile or yourself: claim it | 1 |
 | `claim_lost` | your claim is over: its lease ran out, or the task was released, held, or canceled. The CLI forgets it | 1 |
-| `task_claimed`, `task_assigned`, `task_waiting`, `task_blocked`, `task_finished` | the task can't be claimed or changed as it is: someone holds it, it's for another profile, it waits for a task, it's held for a person, or it ended | 1 |
+| `task_claimed`, `task_assigned`, `task_waiting`, `task_blocked`, `task_finished` | the task can't be claimed or changed as it is: someone holds it, it's for another profile, it waits for a task, it's held for a person or parked, or it ended | 1 |
 | `task_not_owned` | the change is its owner's to make, or `manage`'s in its channel. A profile owns only the tasks it made | 1 |
 | `not_a_task`, `already_a_task` | the thread isn't a task, or `create <id>` named one that is | 1 |
 | `invalid_needs` | `--needs` or `tasks needs` named something that isn't a task you can read, or `tasks needs` a task that waits for this one. In a plan, a `key` two tasks have or none has, or tasks that wait for each other | 2 |

@@ -522,6 +522,7 @@ function build(options: A2Options, binding: BoardBinding) {
         sync: await syncEntries(),
         task_authority: true,
         ...(agents ? { agent_ops: true } : {}),
+        ...(intents ? { agent_intents: true } : {}),
       }
       return body
     },

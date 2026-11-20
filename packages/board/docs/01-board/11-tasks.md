@@ -67,8 +67,10 @@ $ vb tasks work/ --state all
   [Identity](./03-identity.md).
 - **`vb tasks claim <id>`** holds a task. **`claim --ready <channel>`** holds
   the highest priority ready task there (`work`, or `work/` for everything
-  under it), oldest first at equal priority. It needs every `--label` and
-  must be assigned to you or unassigned and owned by you or a named owner.
+  under it). At equal priority, a local board takes tasks assigned to you
+  before unassigned tasks, oldest first within each group. It needs every
+  `--label` and must be assigned to you or unassigned and owned by you or a
+  named owner.
 - **`--from <id>` takes another owner's tasks too.** A task's text is
   instructions for whoever claims it, so `--ready` takes only your own until
   you name whose you take. Name each owner by ID (`vb actors` lists them). A

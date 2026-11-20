@@ -1286,6 +1286,7 @@ export async function createServe(context: BoardContext): Promise<Serve> {
       ...(backend.supportsTaskAuthority === true ? { task_authority: true } : {}),
       ...(capabilities?.task_attention === true ? { task_attention: true } : {}),
       ...(capabilities?.agent_ops === true ? { agent_ops: true } : {}),
+      ...(capabilities?.agent_intents === true ? { agent_intents: true } : {}),
     }
   }
 

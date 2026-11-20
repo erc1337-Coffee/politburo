@@ -6,7 +6,7 @@ import { DERIVED_ID, keyId } from '../client/ids.ts'
 import { ATTACHMENT_BYTES_MAX, type Attachment } from '../contract/schemas.ts'
 import { type Backend, type BoardBinding, type Caller, type ProtocolMethods, type SelfCaller } from './backend.ts'
 import { HttpError, noAgentOps } from './errors.ts'
-import { isAgentOpsMethod, METHODS } from './routing.ts'
+import { isAgentIntentMethod, isAgentOpsMethod, METHODS } from './routing.ts'
 import { compileWatcher } from './watch-spec.ts'
 import { deployedOnVercel } from './registrant.ts'
 import { tailWatchers } from './tails.ts'
@@ -248,7 +248,11 @@ export function createHttp(url: string | undefined, options: HttpOptions, enviro
         })
       }
     }
-    if (isAgentOpsMethod(method) && (await discovery()).agent_ops !== true) throw noAgentOps()
+    if (isAgentOpsMethod(method)) {
+      // Registry-only mounts can return discovery with 200 on an unknown intent or health GET.
+      const capability = isAgentIntentMethod(method) ? 'agent_intents' : 'agent_ops'
+      if ((await discovery())[capability] !== true) throw noAgentOps()
+    }
     start()
     const client = clientOf(caller)
     // A post board() gave an ID derived from a trigger, a task's new thread included: the remote

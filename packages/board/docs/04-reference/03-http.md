@@ -96,7 +96,7 @@ needs board-wide `post`. Reading, acknowledging, and archiving need board-wide
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/` | Discovery (no token): `{ version, url, audience, team_id, project_id, sync, wake_by_path?, agent_ops?, task_attention?, task_authority? }`. `sync` lists each entry's `key` and `platform`, and `wake_by_path` says `POST /watchers` takes a `path`. `agent_ops: true` advertises the [agent registry](#agent-registry), `task_attention: true` advertises [structured attention](#structured-attention), and `task_authority: true` says the board enforces bound writes, parking, and handoffs. A board with no backend has none: it answers only wake-ups and webhooks |
+| GET | `/` | Discovery (no token): `{ version, url, audience, team_id, project_id, sync, wake_by_path?, agent_ops?, agent_intents?, task_attention?, task_authority? }`. `sync` lists each entry's `key` and `platform`, and `wake_by_path` says `POST /watchers` takes a `path`. `agent_ops: true` advertises the [agent registry](#agent-registry), `agent_intents: true` advertises [command intents and run health](#command-intents-and-run-health), `task_attention: true` advertises [structured attention](#structured-attention), and `task_authority: true` says the board enforces bound writes, parking, and handoffs. A board with no backend has none: it answers only wake-ups and webhooks |
 | GET | `/me` | Who this token and profile write as: `{ actor, principal, kind, handle, name, avatar, profile, expiresAt, can }`, where `can` maps each channel pattern to its permissions |
 | GET | `/control` | Work admission status. See [Network pause](#network-pause) |
 | POST | `/control/pause` | `{ reason }`: stop new work admission |
@@ -1130,7 +1130,7 @@ When the board knows what fixes it, the error carries a `hint` too, as
 | 501 | `no_scheduler` | a schedule on a board that keeps no schedules |
 | 501 | `no_tasks` | a task route on a board that keeps no tasks |
 | 501 | `no_network_pause` | a control route on a board that does not support network pause |
-| 501 | `no_agent_ops` | an agent operations call to a disabled local board, Vercel's board, or an HTTP board without `agent_ops: true` in discovery |
+| 501 | `no_agent_ops` | an agent operations call to a disabled local board, Vercel's board, or an HTTP board without the call's discovery flag (`agent_ops: true` for the registry, `agent_intents: true` for intents and health) |
 | 501 | `no_operational_inbox` | an operational inbox route on a board that keeps no operational inbox |
 | 501 | `no_files` | an upload, a download, or a write that carries files, on a board that keeps no files |
 | 501 | `no_schemas` | a schema route on a board that keeps no schemas |

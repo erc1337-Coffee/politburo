@@ -1,6 +1,7 @@
 import { expect, it, vi } from 'vitest'
 import type { AgentIntent, AgentRun } from '../src/api/routes.ts'
 import { http } from '../src/backend-http/index.ts'
+import { conformance } from '../src/conformance/index.ts'
 import { bearer, board, BOARD_URL, caller, localBoard, personToken, testBoard, workflowToken } from './harness.ts'
 
 const config = { channel: 'work', role: 'reviewer', harness: 'shell' } as const
@@ -14,6 +15,30 @@ const receiptPath = (id: string, action: 'take' | 'report') => `/ops/intents/${e
 
 function via(fetch: (request: Request) => Promise<Response>, token: string) {
   return board({ backend: http(BOARD_URL, { fetch: bearer((input, init) => fetch(new Request(input, init)), token) }) }).as(null)
+}
+
+/** An older mount backed by a real board for the registry and the rest of the protocol. */
+async function registryOnly(onTestFinished: (cleanup: () => Promise<void>) => void) {
+  const team = localBoard({ agentOps: true })
+  onTestFinished(() => team.close())
+  const attempted: string[] = []
+  const mount = new URL(BOARD_URL).pathname
+  const discovery = async () => {
+    const { agent_intents: _, ...info } = await (await team.fetch(new Request(BOARD_URL))).json()
+    return Response.json(info)
+  }
+  const client = via(async (request) => {
+    const path = new URL(request.url).pathname.slice(mount.length).replace(/\/$/, '')
+    if (path === '') return discovery()
+    if (/^\/ops\/(?:agents\/[^/]+\/intents$|intents(?:\/|$)|health\/)/.test(path)) {
+      attempted.push(`${request.method} ${path}`)
+      // Old mounts return discovery with 200 for an unknown GET.
+      if (request.method === 'GET') return discovery()
+      return Response.json({ error: { code: 'not_found', message: 'no such route' } }, { status: 404 })
+    }
+    return team.fetch(request)
+  }, await personToken())
+  return { client, attempted }
 }
 
 // Only replace Date; HTTP, store concurrency and scheduler timers still run normally.
@@ -134,6 +159,22 @@ it.for(['issue', 'take', 'report'] as const)('rejects run probe %s after a pause
 
   const attempt = action === 'issue' ? issue('after-resume') : action === 'take' ? take(probe!) : report(probe!)
   await expect(attempt).rejects.toMatchObject({ status: 409, code: 'claim_lost' })
+})
+
+it('omits a pending run probe fenced by a board pause, even after resume', async ({ onTestFinished }) => {
+  clock(onTestFinished)
+  const { client, worker, agent, issue, take } = await runFixture()
+  const probe = await issue('before-pause')
+  const { intents: [ordinary] } = await client.agents.issueIntent(agent.id, command)
+  const listed = async () => (await worker.agents.intents(agent.id)).intents.map(({ id }) => id)
+  expect(await listed()).toEqual([probe.id, ordinary!.id])
+
+  await client.pause('fence active runs')
+  await expect(take(probe)).rejects.toMatchObject({ status: 409, code: 'claim_lost' })
+  expect(await listed()).toEqual([ordinary!.id])
+
+  await client.resume('allow new runs')
+  expect(await listed()).toEqual([ordinary!.id])
 })
 
 it.for(['paused', 'resumed'] as const)('does not confirm run health when the board has %s until a new claim is probed', async (phase, { onTestFinished }) => {
@@ -337,3 +378,41 @@ it('answers no_agent_ops locally and does not forward intents or health without 
   const send = caller(local.fetch, token)
   expect(await send('GET', '/ops/health/missing')).toMatchObject({ status: 501, body: { error: { code: 'no_agent_ops' } } })
 })
+
+it('advertises agent intents in discovery on an opted-in local board', async ({ onTestFinished }) => {
+  const local = localBoard({ agentOps: true })
+  onTestFinished(() => local.close())
+  const response = await local.fetch(new Request(BOARD_URL))
+  expect(response.status).toBe(200)
+  expect(await response.json()).toMatchObject({ agent_ops: true, agent_intents: true })
+  expect(await local.discovery()).toMatchObject({ agent_ops: true, agent_intents: true })
+})
+
+it('forwards registry calls but no intent requests to a registry-only board', async ({ onTestFinished }) => {
+  const { client, attempted } = await registryOnly(onTestFinished)
+  const { agents } = client.as('worker')
+  const agent = await agents.register(config)
+  expect(await agents.list(config.channel)).toEqual({ agents: [agent] })
+
+  await expect(agents.issueIntent(agent.id, command)).rejects.toMatchObject(noOps)
+  await expect(agents.issueRoleIntent({ ...command, channel: config.channel, role: config.role })).rejects.toMatchObject(noOps)
+  await expect(agents.intents(agent.id)).rejects.toMatchObject(noOps)
+  await expect(agents.takeIntent('missing', agent.generation)).rejects.toMatchObject(noOps)
+  await expect(agents.reportIntent('missing', agent.generation, 'ok')).rejects.toMatchObject(noOps)
+  expect(attempted).toEqual([])
+})
+
+it("never returns an older mount's discovery document as health", async ({ onTestFinished }) => {
+  const { client, attempted } = await registryOnly(onTestFinished)
+  await expect(client.agents.health('missing')).rejects.toMatchObject(noOps)
+  expect(attempted).toEqual([])
+})
+
+it('passes registry conformance but skips run health on a registry-only board', async ({ onTestFinished }) => {
+  const { client } = await registryOnly(onTestFinished)
+  const report = await conformance(client)
+  expect(report.checks.filter(({ group }) => group === 'agents')).toMatchObject([
+    { name: 'registers, lists, heartbeats, and retires an agent under its verified binding', status: 'passed' },
+    { name: 'confirms a claimed run only through a taken and reported status probe', status: 'skipped', detail: expect.stringContaining('not kept here') },
+  ])
+}, 30_000)
