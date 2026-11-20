@@ -7,7 +7,7 @@ import type { AttentionAnswerBody, AttentionDraft, AttentionReceipt, AttentionRe
 import { LEASES_SESSION, leasesContract, type LeaseEvents } from '../contract/contract.ts'
 import { ALONG_MAX, type BoardEvent } from '../contract/events.ts'
 import { foldMessages, type Message, type MessagesState, type Task } from '../contract/folds.ts'
-import { actorsReducer, channelsReducer } from '../contract/reducers.ts'
+import { actorsReducer, channelsReducer, type WorkState } from '../contract/reducers.ts'
 import { DEFAULT_TASK_PRIORITY, OPEN_TASK_STATES, priorityRank, TASK_BATCH_MAX, TASK_KEY_MAX, TASK_LABEL, TASK_NEEDS_MAX, TASK_NOTE_MAX, TaskHoldKind, TaskPriority, type TaskState } from '../contract/schemas.ts'
 import { batchPlan, type BatchNeed } from '../contract/task-batch.ts'
 import { authorize, type Access, type Permission } from './access.ts'
@@ -99,8 +99,13 @@ const hashes = (token: string, hash: string) => timingSafeEqual(Buffer.from(hash
 /** A lease asked for in seconds, as this board gives it, in milliseconds. */
 const leaseOf = (seconds: number | undefined) => Math.min(seconds ?? LEASE_DEFAULT_S, LEASE_CAP_S) * 1000
 
-/** Whether a task's claim has run out its lease: it's claimable at once, whatever its label still says. */
+/** Whether a claim was made in an earlier pause epoch than the board's: a pause fenced it. */
 const stale = (task: Task, pauseEpoch: number) => task.claim !== null && (task.claim.pauseEpoch ?? 0) !== pauseEpoch
+
+/** A pause fences outstanding claims, and resume does not revive them. */
+export const claimFenced = (task: Task, status: WorkState) => status.paused || stale(task, status.pauseEpoch)
+
+/** Whether a task's claim has run out its lease or was fenced: it's claimable at once, whatever its label still says. */
 const lapsed = (task: Task, at: number, pauseEpoch: number) => task.state === 'claimed' && (stale(task, pauseEpoch) || Date.parse(task.claim!.until) <= at)
 
 /** A claim whose lease ran out or was fenced by pause no longer holds the task. */

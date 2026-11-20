@@ -116,6 +116,10 @@ window. Otherwise the CLI prints `stale` (`not_confirmed` in JSON). A claim,
 heartbeat, or ordinary `status` report does not confirm health. The task's
 own state is unchanged.
 
+Pausing the board fences existing claims. Run probe issue, take, and report
+return `409 claim_lost` for those claims, and health reads `stale` even after
+resume. A new claim needs a new probe.
+
 To try it on the local board above, act as both the issuer and the harness:
 
 ```bash

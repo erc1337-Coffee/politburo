@@ -8,6 +8,7 @@ import type { Known } from './auth.ts'
 import type { BoardBinding, Caller, Identity } from './backend.ts'
 import { badRequest, duplicateId, forbidden, HttpError, notFound } from './errors.ts'
 import { indexOf } from './feed.ts'
+import { claimFenced } from './tasks.ts'
 import { appendFrom, untilApplied, type Events, type WriteContext } from './writes.ts'
 
 type Agent = AgentIntentsState['agents'][string]
@@ -19,6 +20,7 @@ const missingAgent = () => notFound('agent not found', 'agent_not_found')
 const missingIntent = () => notFound('intent not found', 'intent_not_found')
 const missingTask = () => notFound('task not found', 'not_a_task')
 const conflict = (code: string, message: string) => new HttpError(409, code, message)
+const claimLost = () => conflict('claim_lost', 'the run no longer holds the task')
 const sameBinding = (a: Agent['binding'], b: Agent['binding']) => a.principal === b.principal && a.profile === b.profile
 const mayReceive = (access: Access, channel: string) => access.readable(channel) && access.can('post', channel)
 const iso = (at: number) => new Date(at).toISOString()
@@ -82,9 +84,10 @@ export function createAgentIntents(ctx: WriteContext, { accessNow }: BoardBindin
     const root = await taskAt(run.task, view.index, access)
     if (root.channel !== agent.channel) throw missingTask()
     const { task } = root
-    if (task.epoch !== run.epoch || !task.claim) throw conflict('claim_lost', 'the run no longer holds the task')
+    if (task.epoch !== run.epoch || !task.claim) throw claimLost()
     const by = own(view.state.claims, runKey(root.id, run.epoch))
     if (!by || by.actor !== task.claim.actor || !sameBinding(agent.binding, by)) throw missingTask()
+    if (claimFenced(task, (await ctx.work.at(view.index)).status)) throw claimLost()
     return Date.parse(task.claim.until)
   }
 
@@ -140,7 +143,7 @@ export function createAgentIntents(ctx: WriteContext, { accessNow }: BoardBindin
       if (run && agents.length !== 1) throw badRequest('a run probe must address exactly one agent', 'invalid_run_probe')
       const leaseUntil = run ? await findRun(view, run, agents[0]!, access) : Infinity
       const now = Date.now()
-      if (leaseUntil <= now) throw conflict('claim_lost', 'the run no longer holds the task')
+      if (leaseUntil <= now) throw claimLost()
       const intents = agents.map((agent): AgentIntent => ({
         id: crypto.randomUUID(), agent: agent.id, generation, by: author,
         createdAt: iso(now), expiresAt: iso(now + ttlSeconds * 1000), verb,
@@ -183,7 +186,7 @@ export function createAgentIntents(ctx: WriteContext, { accessNow }: BoardBindin
       if (outcome === undefined && issuer.expiresAt !== null && Date.parse(issuer.expiresAt) <= now)
         throw new HttpError(403, 'issuer_revoked', 'the issuer credential has expired')
       if (Date.parse(intent.expiresAt) <= now) throw conflict('intent_expired', 'the intent has expired')
-      if (leaseUntil <= now) throw conflict('claim_lost', 'the run no longer holds the task')
+      if (leaseUntil <= now) throw claimLost()
       const receipt = { by: author, generation, at: iso(now) }
       if (outcome === undefined)
         return { answer: { ...intent, state: 'taken', taken: receipt }, events: [{ type: 'ops.intent_taken', payload: { intentId: id, receipt } }] }
@@ -232,6 +235,7 @@ export function createAgentIntents(ctx: WriteContext, { accessNow }: BoardBindin
       const by = own(state.claims, key)
       if (agent?.status !== 'enabled' || agent.channel !== channel || agent.generation !== intent.generation ||
           !by || by.actor !== task.claim.actor || !sameBinding(agent.binding, by)) return notConfirmed
+      if (claimFenced(task, (await ctx.work.at(index)).status)) return notConfirmed
       const validUntil = Math.min(Date.parse(intent.expiresAt), Date.parse(intent.report.at) + freshnessSeconds * 1000, Date.parse(task.claim.until))
       return Date.now() < validUntil ? { state: 'working', validUntil: iso(validUntil) } : notConfirmed
     },

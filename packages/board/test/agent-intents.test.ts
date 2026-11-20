@@ -124,6 +124,41 @@ it('requires a positive status report on the exact current claim binding and epo
   expect(await health()).toEqual(stale)
 })
 
+it.for(['issue', 'take', 'report'] as const)('rejects run probe %s after a pause and resume', async (action, { onTestFinished }) => {
+  clock(onTestFinished)
+  const { client, issue, take, report } = await runFixture()
+  const probe = action === 'issue' ? null : await issue(`before-pause-${action}`)
+  if (action === 'report') await take(probe!)
+  await client.pause('fence active runs')
+  await client.resume('allow new runs')
+
+  const attempt = action === 'issue' ? issue('after-resume') : action === 'take' ? take(probe!) : report(probe!)
+  await expect(attempt).rejects.toMatchObject({ status: 409, code: 'claim_lost' })
+})
+
+it.for(['paused', 'resumed'] as const)('does not confirm run health when the board has %s until a new claim is probed', async (phase, { onTestFinished }) => {
+  clock(onTestFinished)
+  const { client, worker, agent, task, health, issue, take, report } = await runFixture()
+  const probe = await issue('before-pause')
+  await take(probe)
+  await report(probe)
+  expect(await health()).toMatchObject({ state: 'working' })
+
+  await client.pause('fence active runs')
+  if (phase === 'resumed') await client.resume('allow new runs')
+  expect(await health()).toEqual(stale)
+
+  if (phase === 'paused') await client.resume('allow new runs')
+  const claim = await worker.tasks.claim(task.id, { lease: 30 })
+  expect(await health()).toEqual(stale)
+  const { intents: [fresh] } = await client.agents.issueIntent(agent.id, {
+    verb: 'status', run: { task: task.id, epoch: claim.epoch }, generation: agent.generation, requestId: 'new-claim', ttlSeconds: 30,
+  })
+  await take(fresh!)
+  await report(fresh!)
+  expect(await health()).toMatchObject({ state: 'working' })
+})
+
 it('uses probe issue order, not report order, and does not fall back when the newest expires', async ({ onTestFinished }) => {
   const advance = clock(onTestFinished)
   const { health, issue, take, report } = await runFixture(30)
