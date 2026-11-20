@@ -613,7 +613,7 @@ describe('cli', () => {
     expect((await vb(['read'])).stdout).toMatch(/^all channels · \d+ threads · cursor \d+\n/)
     // One of a thing is one, not ones.
     const lone = (await vb(['post', 'lone-work', 'just me'])).stdout.trim()
-    expect((await vb(['channels'])).stdout).toContain(`\nlone-work  1 thread · 1 message · last #${lone}\n`)
+    expect((await vb(['channels'])).stdout.split('\n')).toContain(`lone-work  1 thread · 1 message · last #${lone}`)
 
     // On a thread, --after and --label keep its root and the replies they match, from the one read of it.
     const texts = async (...flags: string[]) => {
@@ -643,7 +643,8 @@ describe('cli', () => {
     expect(await vb(['read', 'open-wrok'])).toMatchObject({ code: 1, stdout: '', stderr: expect.stringMatching(/^error: Couldn't find channel open-wrok\. Did you mean open-work\?\n/) })
     expect(await vb(['read', 'open-work', '--text', 'nothing like this'])).toMatchObject({ code: 0, stdout: expect.stringMatching(/^open-work · 0 threads · cursor \d+\n\nnew since then: vb read open-work --text 'nothing like this' --after \d+\n$/) })
     expect(await vb(['read', 'open-work', '--messages'])).toMatchObject({ code: 2 })
-  })
+    // This case starts dozens of CLI subprocesses in sequence.
+  }, 60_000)
 
   it("posts once for an idempotency key, and reads by a message's source", async () => {
     const once = await vb(['post', 'retries', 'deploy failed', '--idempotency-key', 'deploy-a1b2c3'])
@@ -969,7 +970,7 @@ describe('cli', () => {
   })
 
   it('checks that the board speaks the protocol, a group at a time', async () => {
-    // The whole protocol, schedules included, so a board with a scheduler.
+    // The core protocol, schedules included, on a board that hasn't opted into agent operations.
     const scheduled = await serve(testBoard({ url: undefined, scheduler: fakeQueue().scheduler }).fetch)
     const board = `${scheduled.origin}/api/board`
     const as = { BOARD_URL: board, BOARD_TOKEN: await personToken('u_julian', board) }
@@ -979,8 +980,16 @@ describe('cli', () => {
       expect(run.stdout).toMatch(/^core\n  passed   says in its discovery where it is\n  passed   posts a message, and reads it back by its ID\n/)
       expect(run.stdout).toContain('\n\nschedules\n  passed   schedules a reply')
       expect(run.stdout).toContain('\n\nwatchers\n  passed   matches a registered tail')
-      // A board without team roles caps no one, no run can check a member shut out under a lock, and grants across teams aren't specified yet.
-      expect(run.stdout).toMatch(/\n\n\d+ passed, 4 skipped\n$/)
+      expect(run.stdout).toContain(
+        '\n\nagents\n' +
+          '  skipped  registers, lists, heartbeats, and retires an agent under its verified binding\n' +
+          '           not kept here: agent operations are not advertised\n' +
+          '  skipped  confirms a claimed run only through a taken and reported status probe\n' +
+          '           not kept here: agent operations are not advertised\n',
+      )
+      expect(run.stdout).toContain('\n\noperational-inbox\n  passed   keeps operational messages private')
+      // Four grants checks and two agent checks are skipped.
+      expect(run.stdout).toMatch(/\n\n\d+ passed, 6 skipped\n$/)
       expect(JSON.parse((await vb(['conformance', '--json', '--channel', 'conformance/json'], as)).stdout)).toMatchObject({ ok: true })
     } finally {
       await scheduled.close()
@@ -994,8 +1003,8 @@ describe('cli', () => {
       expect(partial.stdout).toContain(
         '\n\nschedules\n  skipped  schedules a reply, lists it, and cancels it\n           not kept here: this board has no scheduler, so it can\'t send later\n',
       )
-      // Schedules, and the three grants checks a board without team roles skips.
-      expect(partial.stdout).toMatch(/\n\n\d+ passed, 6 skipped\n$/)
+      // The same six skips, plus two schedules checks.
+      expect(partial.stdout).toMatch(/\n\n\d+ passed, 8 skipped\n$/)
     } finally {
       await unscheduled.close()
     }
