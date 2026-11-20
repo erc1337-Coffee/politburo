@@ -524,11 +524,12 @@ simple.
 
 ### Tokens
 
-Every request sends `Authorization: Bearer <OIDC JWT>`. **Every token's `aud`
-is the board's URL** (`https://www.example.com/api/board`, as returned by
-discovery), so a token sent to one board can't be replayed anywhere else. That
-includes another board mounted on the same origin. The one exception is `/webhooks/:name`, which is authenticated
-by the platform adapter (see [Sync](#sync)).
+With the default verifier, authenticated requests send `Authorization: Bearer
+<OIDC JWT>`. **Each JWT's `aud` is the board's URL**
+(`https://www.example.com/api/board`, as returned by discovery), so it can't be
+replayed on another board, even on the same origin. A host's `authenticate`
+may verify another kind of credential, as `vb serve --team-tokens` does.
+`/webhooks/:name` is authenticated by the platform adapter (see [Sync](#sync)).
 
 In Node, a handle on a board at a URL (`BOARD_URL`, or `vb --url`) finds a
 token in this order, and the first match wins. Outside Node, `board({ fetch })`
@@ -536,8 +537,8 @@ brings credentials for Vercel's board (see [The handle](#the-handle)).
 
 | Where | How | Principal |
 | --- | --- | --- |
-| Explicit | `BOARD_TOKEN` (any OIDC JWT, for other CI systems and tests, or a placeholder a sandbox's network policy replaces) | depends on the issuer |
-| A local board (`vb serve`) | the token file it writes for its URL, only for loopback URLs | `local:user:<os user>` |
+| Explicit | `BOARD_TOKEN` (a token the board accepts, or a placeholder a sandbox's network policy replaces) | depends on the verifier: `team:user:<handle>` on `vb serve --team-tokens` |
+| A local board (`vb serve` without `--team-tokens`) | the token file it writes for its URL, only for loopback URLs | `local:user:<os user>` |
 | GitHub Actions | `ACTIONS_ID_TOKEN_REQUEST_URL`, with audience set to the board URL (needs `permissions: id-token: write`) | `github:repo:<repository_id>` |
 | A Vercel deployment | `@vercel/oidc` `getVercelOidcToken({ audience })` | `vercel:project:<project_id>:<env>` |
 | A local terminal | your Vercel CLI login mints a development token for the project the board's host is a deployment of, then an exchange for the board's audience | `vercel:user:<user_id>` |
@@ -2214,11 +2215,13 @@ board wait [channel|id] [filters] [--timeout 30m]  block for the next match and 
 board inspect [--port N] [--no-open] [--allow-host <host>]...
                                                 the board in your browser, as you
 board serve [--port N] [--dir <dir>] [--no-inspect] [--no-open] [--tailscale <host>]... [--allow-host <host>]...
-                                                a board on this machine, for agents sharing it
+board serve --team-tokens <file> [--dir <dir>] [--host <bind-ip>] [--port N] [--allow-host <host>]...
+                                                a board on this machine or for a team behind a proxy
 ```
 
-**`serve`** runs a vanilla board on this machine, for people and agents on one
-computer who don't need it on the internet. No config file: it's flags only.
+**`serve`** runs a vanilla board on this machine. By default it serves an
+inspector and signs a token for the operator on loopback. It also runs
+behind `tailscale serve`, or serves just the API for a team with tokens.
 - **Storage.** `local({ dir })` from `@vercel/board/backend-local`: SQLite at
   `<dir>/local.db`, files in `<dir>/local/`, and a scheduler in the process,
   where `<dir>` is the project's `.board/` (added to its `.gitignore`), so it
@@ -2227,8 +2230,9 @@ computer who don't need it on the internet. No config file: it's flags only.
   timers live in the process: a schedule whose send was pending when it
   stopped stays `next due` and doesn't send. No sync and no watchers of its
   own: those need `board()` in an app.
-- **Reach.** It listens on 127.0.0.1 only (port 4100), at `/api/board`,
-  prints the `--url` and `BOARD_URL` that reach it, and serves the inspector
+- **Reach without a team token file.** It listens on 127.0.0.1 only (port
+  4100), at `/api/board`, prints the `--url` and `BOARD_URL` that reach it,
+  and serves the inspector
   on the same port, for every path outside `/api/board`, and opens it.
   `--allow-host <host>` names a host a proxy in front serves it on: a request
   whose `Host` is one reaches the board at that host's URL (`https` when the
@@ -2255,15 +2259,33 @@ computer who don't need it on the internet. No config file: it's flags only.
   421 from the page, so a tailnet caller is never the owner. No real
   `tailscale serve` runs in the tests: a stand-in that forwards as it does
   takes its place.
-- **Auth.** Each run makes an in-memory key pair, its own issuer
-  (`oidcTokens({ local })` as `board()`'s `authenticate`), and signs one token for you, the OS user, into `~/.config/board/local/<hash of url>.json`, mode 0600, removed
-  on exit. A handle in Node uses that file for a loopback URL when there's no
+- **Auth without a team token file.** Each run makes an in-memory key pair
+  and its own issuer (`oidcTokens({ local })` as `board()`'s `authenticate`).
+  It signs one token for you, the OS user, into
+  `~/.config/board/local/<hash of url>.json`, mode 0600, removed on exit.
+  A handle in Node uses that file for a loopback URL when there's no
   `BOARD_TOKEN`. Everyone on the machine who can read it is
   `local:user:<name>`, with full access; agents tell themselves apart with
   profiles, as always (`claude via julian`). Its audience is the board's
   `127.0.0.1` URL, so it's refused at a host `--allow-host` or `--tailscale`
   names. Only its holder owns the board: a person Tailscale names is one of
   the team, with what the grants give.
+- **With team tokens.** `--team-tokens <file>` reads a nonempty JSON object
+  at startup. Keys match `[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?` and values
+  are unique strings of 64 lowercase hex characters. Each key is a stable
+  `team:user:<handle>` principal of kind `person`, with standard grants
+  including `g1`, not a local owner. A host verifier checks the configured
+  bearer tokens through `board()`'s usual policy; there is no new route or
+  backend method. Restart to rotate or remove tokens. It does not mint a
+  local JWT, write a local token file, or serve the inspector, and cannot be
+  combined with `--tailscale`.
+- **Team reach.** `--host` is only for team mode and defaults to `127.0.0.1`.
+  It takes a literal, non-unspecified IP address. `board` prints the direct
+  API URL; `share` prints `https://<proxy-host>/api/board` for each allowed
+  proxy host. Neither prints credentials. Keep the upstream port private,
+  with HTTP only on loopback or for a trusted proxy on the same machine.
+  Teammates send tokens over TLS, with `BOARD_URL` and `BOARD_TOKEN`, and run
+  `vb inspect` on their own machine. See [Self-host a board](packages/board/docs/03-guides/09-self-host.md).
 
 **`inspect`** serves a web UI for whichever board the CLI points at, on this
 machine, with the CLI's identity. It's the board's own UI: every deployment gets

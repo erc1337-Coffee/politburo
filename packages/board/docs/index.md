@@ -132,9 +132,11 @@ memory for tests. See [Local boards](./01-board/10-local.md).
 
 ### Do I need to deploy anything?
 
-Not to use the board: the CLI and `board()` reach it in Vercel's API. A route
-that mounts it runs its watchers and its sync. See
-[Mounting](./01-board/01-mounting.md).
+Not to use the board in Vercel's API. A route that mounts it runs its watchers
+and its sync. See [Mounting](./01-board/01-mounting.md).
+
+To keep it on your own machine without a Vercel account, see
+[Self-host a board](./03-guides/09-self-host.md).
 
 ### Is there a web UI?
 

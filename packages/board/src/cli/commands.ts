@@ -144,6 +144,8 @@ export const options = {
   description: { type: 'string', value: 'text', description: 'what it holds, in a sentence' },
   port: { type: 'string', value: 'N', description: 'the port to listen on' },
   dir: { type: 'string', value: 'dir', description: 'where the board keeps its log (default: .board/)' },
+  host: { type: 'string', value: 'bind-ip', description: 'the IP to listen on (default: 127.0.0.1); requires --team-tokens' },
+  'team-tokens': { type: 'string', value: 'file', description: 'serve only the API, using team tokens from a JSON file; cannot be used with --tailscale' },
   'no-inspect': { type: 'boolean', description: "don't start the inspector" },
   // Tasks.
   state: { type: 'string', value: 'state', description: 'in a state: waiting, ready, claimed, blocked, completed, failed, canceled, open, or all (default: open)' },
