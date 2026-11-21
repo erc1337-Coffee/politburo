@@ -8,8 +8,7 @@ import { displayEmoji } from '../../contract/emoji.ts'
 import type { Listed } from './store.ts'
 import { EMOJI_TABLE } from '../../contract/emoji-table.ts'
 
-// Base UI primitives, dressed like Just Chat: square, one hairline, and an
-// offset dot shadow instead of a blur.
+// Base UI primitives, dressed like Just Chat: a solid surface and a shadow.
 
 function Frame({ children }: { children: ReactNode }) {
   return (
@@ -339,7 +338,7 @@ export function Header(props: { title: string; meta?: string | undefined; live?:
   return (
     <header className={`header${props.flat ? ' flat' : ''}`}>
       {props.lead}
-      <span className="title">{props.title}</span>
+      <h1 className="title" data-view-title tabIndex={-1} aria-label={props.title}>{props.title}</h1>
       {props.meta && <span className="meta">{props.meta}</span>}
       <span className="spacer" />
       {props.children}

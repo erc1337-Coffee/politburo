@@ -3,11 +3,13 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 import { createPortal } from 'react-dom'
 import type { InboxEntry } from '../../api/routes.ts'
 import * as board from './board.ts'
+import { buttonSoundsEnabled, setButtonSounds } from './button-feedback.ts'
 import { Access } from './grants.tsx'
 import { Ago, here, Link, SECTIONS, type Section, type Where } from './nav.tsx'
 import { Schemas } from './schemas.tsx'
-import { nameOf, type State, type Viewer } from './store.ts'
+import { mayCancelSchedule, nameOf, type State, type Viewer } from './store.ts'
 import { Header, nativeMenu, Unlisted } from './ui.tsx'
+
 import { cadence, firstLine, shownName, until } from './words.ts'
 
 // The board's configuration, apart from what's said on it: who gets in, what blocks can hold,
@@ -24,11 +26,21 @@ export function Actions({ children }: { children: ReactNode }) {
 export function Settings(props: { state: State; viewer: Viewer; now: number; lead: ReactNode; where: Where; section: Section; open: string | null }) {
   const { state, viewer, section } = props
   const [slot, setSlot] = useState<HTMLElement | null>(null)
+  const [sounds, setSounds] = useState(buttonSoundsEnabled)
+  const sections = SECTIONS.filter((name) => name !== 'watchers' || viewer.manages || section === 'watchers')
   return (
     <>
-      <Header title="settings" lead={props.lead} flat />
+      <Header title="settings" lead={props.lead} flat>
+        <label className="button-sounds">
+          <input type="checkbox" checked={sounds} onChange={(event) => {
+            setButtonSounds(event.target.checked)
+            setSounds(event.target.checked)
+          }} />
+          button sounds
+        </label>
+      </Header>
       <nav className="tabs">
-        {SECTIONS.map((name) => (
+        {sections.map((name) => (
           <Link key={name} to={`/settings/${name}`} className="tab" current={name === section}>
             {name}
           </Link>
@@ -41,7 +53,7 @@ export function Settings(props: { state: State; viewer: Viewer; now: number; lea
           {section === 'schemas' && <Schemas state={state} viewer={viewer} selected={props.open} />}
           {section === 'schedules' && <Schedules state={state} viewer={viewer} now={props.now} all={props.where.params.get('show') === 'all'} />}
           {section === 'watchers' && <Watchers state={state} />}
-          {section === 'sync' && <Sync state={state} entry={props.open} />}
+          {section === 'sync' && <Sync key={props.open} state={state} entry={props.open} />}
         </div>
       </ActionsSlot.Provider>
     </>
@@ -54,17 +66,13 @@ function Schedules({ state, viewer, now, all }: { state: State; viewer: Viewer; 
   useEffect(() => {
     void board.loadSchedules(all)
   }, [all])
-  const listed = state.schedules
+  const listed = state.everySchedule === all ? state.schedules : { is: 'loading' as const }
   return (
     <>
-      {listed.is === 'here' && <Actions>
-        <Link to="/settings/schedules" className="tab" current={!all}>
-          pending
-        </Link>
-        <Link to="/settings/schedules?show=all" className="tab" current={all}>
-          all
-        </Link>
-      </Actions>}
+      <Actions>
+        <Link to="/settings/schedules" className="tab" current={!all}>pending</Link>
+        <Link to="/settings/schedules?show=all" className="tab" current={all}>all</Link>
+      </Actions>
       <Unlisted listed={listed} />
       {listed.is === 'here' && listed.items.length === 0 && <p className="empty">nothing scheduled</p>}
       {listed.is === 'here' &&
@@ -76,19 +84,13 @@ function Schedules({ state, viewer, now, all }: { state: State; viewer: Viewer; 
             <span className="faint">{cadence(schedule)}</span>
             <span className="sched-text">{firstLine(schedule.text) || 'files only'}</span>
             {schedule.re === null ? (
-              <Link to={`/c/${schedule.channel}`} className="text-link">
-                #{schedule.channel}
-              </Link>
+              <Link to={`/c/${schedule.channel}`} className="text-link">#{schedule.channel}</Link>
             ) : (
-              <Link to={here({ thread: schedule.re })} className="text-link">
-                reply in #{schedule.channel}
-              </Link>
+              <Link to={here({ thread: schedule.re })} className="text-link">reply in #{schedule.channel}</Link>
             )}
             <span className="faint small">{shownName(schedule.author)}</span>
-            {schedule.state === 'pending' && (schedule.by.principal === viewer.principal || viewer.may('manage', schedule.channel)) ? (
-              <button className="act quiet" onClick={() => void board.cancelSchedule(schedule.id)}>
-                cancel
-              </button>
+            {schedule.state === 'pending' && mayCancelSchedule(viewer, schedule) ? (
+              <button className="act quiet" type="button" onClick={() => void board.cancelSchedule(schedule.id)}>cancel</button>
             ) : (
               <span />
             )}
@@ -156,7 +158,7 @@ function Sync({ state, entry }: { state: State; entry: string | null }) {
   return (
     <>
       <Actions>
-        <button className="tool" title="refresh" onClick={load}>
+        <button className="tool" type="button" title="refresh" onClick={load}>
           <RefreshCw size={14} strokeWidth={1.75} />
         </button>
       </Actions>
@@ -176,16 +178,12 @@ function Sync({ state, entry }: { state: State; entry: string | null }) {
         return (
           <div key={row.id} className="inbox-row">
             <Ago iso={row.createdAt} />
-            <span>
-              <span className="badge">{event.kind}</span>
-            </span>
+            <span><span className="badge">{event.kind}</span></span>
             <div>
               <div>
                 <span className="author">{event.author?.handle ?? '—'}</span> {event.text ?? event.type ?? event.emoji ?? ''}
               </div>
-              <pre>
-                {row.channel} · {row.event.thread}
-              </pre>
+              <pre>{row.channel} · {row.event.thread}</pre>
             </div>
           </div>
         )

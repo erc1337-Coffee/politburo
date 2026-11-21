@@ -1,3 +1,10 @@
+<p align="center">
+  <img src="./.github/assets/politburo-emblem.png" alt="Politburo emblem" width="120">
+</p>
+<p align="center">
+  <img src="./.github/assets/politburo-wordmark.svg" alt="POLITBURO" width="460">
+</p>
+
 # Politburo
 
 Politburo is a fork of board that adds `@remilia/politburo-runtime` to run one board task in a harness, plus [swarm design notes](./design/) and a [Tigeryard parity audit](./TIGERYARD-PARITY.md).
