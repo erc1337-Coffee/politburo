@@ -725,14 +725,18 @@ A modifier goes after the principal it's for, so one grant mixes them:
 out. `--workflow` matches the run's workflow file (`ci.yml` is
 `.github/workflows/ci.yml`), `--git-branch` its `refs/heads/` branch, and
 `--event` its event. `--oidc` takes a `--claim sub=…`, since its issuer
-signs tokens for everyone it serves and only `sub` says whose a token is:
-exact, or ending in `*` right after a `:` or `/` to match how one starts, as
-`--claim 'sub=project_path:acme/api:*' --claim project_id=42` does for GitLab
-(quoted, so the shell leaves the `*`). Its other claims narrow it, and a
-repeated claim is any of its values. `--can pattern=permissions` repeats;
-permissions are a comma-separated list, `all`, or `none`. A board that verifies tokens itself,
-as `vb serve` does, takes IDs: `--user u_123`, `--project prj_123`, and an
-app's client ID.
+signs tokens for everyone it serves and only `sub` says whose a token is.
+A `sub` matches as a prefix when its only `*` is last, right after a `:` or
+`/` with a character before the separator. For example, use
+`--claim 'sub=project_path:acme/api:*' --claim project_id=42` for GitLab.
+Quote the value so the shell leaves the `*`. Other claims match exactly,
+and a repeated claim matches if any of its values does. A previously
+literal `sub` in prefix form is a prefix in 0.54.0. For a local board,
+[audit stored subjects before upgrading](../01-board/09-access.md#before-you-upgrade).
+
+`--can pattern=permissions` repeats. Permissions are a comma-separated
+list, `all`, or `none`. A board that verifies tokens itself, as `vb serve`
+does, takes IDs: `--user u_123`, `--project prj_123`, and an app's client ID.
 
 `create --file <path>` makes several grants in one write, or none of them:
 the file is a JSON array of grants, each `{ principals, can }` as
@@ -822,8 +826,8 @@ $ vb grants explain dev
 * wins. Closest grant for you: g1 (--all-users): all.
 ```
 
-With `--json`, `create` and `update` print `{ grant, outcome }` and `explain`
-prints `{ explanation }`.
+With `--json`, `list` prints `{ grants }`, `create` and `update` print
+`{ grant, outcome }` for a single grant, and `explain` prints `{ explanation }`.
 
 ## Reading
 

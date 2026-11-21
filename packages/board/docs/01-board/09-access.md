@@ -179,17 +179,22 @@ more specific pattern decides first.
   its keys once a grant names it, by OIDC discovery: its
   `/.well-known/openid-configuration` must name it as `issuer`, with a
   `jwks_uri` that's an https URL on the internet, and no redirect is followed.
-  Every claim must match exactly, and a list is any of its values. Vercel's
+  Every claim must match. A list matches if any of its values does. Vercel's
   and GitHub's issuers have kinds of their own.
 - **An `oidc` principal names a `sub`.** An issuer such as GitLab.com signs
-  tokens for everyone it serves, so a claim like `ref=main` lets in anyone's
-  job on main. Its `sub` is the one claim unique to a workload, so a grant
-  names it, and other claims narrow it further. A `sub` that ends in `*` right
-  after a `:` or `/` matches how one starts: `project_path:acme/api:*` is any
-  job in `acme/api`, and not one in `acme/api-evil`. A `*` anywhere else in a
-  `sub` is refused, `*` alone too, and in any other claim it's just a `*`.
-  A grant made before boards asked for a `sub` still lets in what it did,
-  and a principal without one can still be removed from it.
+  tokens for everyone it serves. The `sub` says whose token it is, and other
+  claims narrow the grant by exact match. A `sub` value is a prefix match
+  when its only `*` is last, right after a `:` or `/` with a character before
+  the separator. `project_path:acme/api:*` matches
+  `project_path:acme/api:ref:main`. Any other stored `sub` matches exactly,
+  including a bare `*` or a star elsewhere. The board rejects these other
+  uses of `*` in `sub` when you create or add a principal, not when you remove
+  one. A principal stored without `sub` still matches its other claims.
+
+  0.54.0 applies this rule to existing grants without rewriting them. A
+  stored literal with prefix syntax now matches every subject that starts
+  with the text before `*`, if the issuer and the other claims match.
+  [Audit stored subjects before upgrading](#before-you-upgrade).
 - **The same principals again are another grant.** Change one by its ID:
   `updateGrant(id, { add, remove, can })` adds principals, removes them by who
   they are (a project whatever its environments), and replaces its `can`.
@@ -241,6 +246,62 @@ more specific pattern decides first.
   wrote.
 - **A revoke holds from the next request,** and a schedule a principal made
   stops as any creator's does when it loses access.
+
+### Before you upgrade
+
+Audit stored OIDC subjects **before** upgrading an existing board to 0.54.0.
+This is required where this code stores and decides grants: a `local()` board,
+including one run by `vb serve` or viewed with `vb inspect`. Vercel's API
+stores and decides grants for Vercel's board. Its operators choose whether
+to audit those grants with Vercel's own tooling.
+
+Set `BOARD_URL` to the existing board's API URL. With `manage` at `*`, run
+`vb grants list --json` while the board still runs the old version. For each
+OIDC principal (`--oidc` with `--claim sub=…`), check every `sub` value ending
+in `*`, whether stored as a string or in an array. In Bash with `jq`, this
+prints one row per value to check:
+
+```bash
+(
+  set -o pipefail
+  vb --url "${BOARD_URL:?Set BOARD_URL to the existing board URL}" \
+    grants list --json | jq -c '
+      .grants[] as $grant
+      | $grant.principals[]
+      | select(.kind == "oidc")
+      | .issuer as $issuer
+      | [.claims.sub] | flatten[] | strings | select(endswith("*"))
+      | {id: $grant.id, issuer: $issuer, sub: .}
+    '
+)
+```
+
+A successful command with no rows means no stored `sub` ends in `*`.
+Leave an intended prefix as is if it follows the rule. For a literal, replace
+it with an exact subject from the issuer or tighten the grant before upgrading.
+A literal in prefix form has no escape. If the issuer still sends that subject,
+use additional exact claims only if they restrict access to the intended
+workload. If you cannot restrict it, remove the principal or revoke the grant.
+
+Use `vb grants update` with `--remove-oidc` and `--add-oidc` in one update.
+For removal, pass the stored issuer and all of the principal's `--claim`
+values. Repeat the flag for each array entry. Include the claims and subject
+values you want to keep after `--add-oidc`. For example, replace the old `sub`
+on `g4` with one exact subject. This keeps `project_id` and leaves `can`
+unchanged.
+
+```bash
+vb --url "${BOARD_URL:?Set BOARD_URL to the existing board URL}" \
+  grants update g4 \
+  --remove-oidc https://gitlab.com --claim 'sub=project_path:acme/api:*' \
+  --claim project_id=42 \
+  --add-oidc https://gitlab.com \
+  --claim sub=project_path:acme/api:ref_type:branch:ref:main \
+  --claim project_id=42
+```
+
+To remove a principal without a replacement, omit `--add-oidc` and its claims.
+If that leaves the grant empty, use `vb grants revoke` with its ID instead.
 
 ## A backend of your own
 
