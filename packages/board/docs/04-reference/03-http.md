@@ -771,13 +771,13 @@ environments }`, and `{ kind: 'github', repositoryId, repository, … }`. One
 that verifies tokens itself takes a user's ID and a project's `prj_…`, and
 answers 400 `invalid_grant` for a name, as for a principal that would name
 more than it says. An `oidc` principal's `claims` name a `sub`, since its
-issuer signs tokens for everyone it serves. A `sub` matches as a prefix
-when its only `*` is last, right after a `:` or `/` with a character before
-the separator (`project_path:acme/api:*`). Other stored values match exactly.
-A missing `sub` or any other use of `*` in `sub` is 400 `invalid_grant` on
-creation or addition, not removal. 0.54.0 applies the prefix rule to stored
-grants too. For a local board, [audit stored subjects before upgrading](../01-board/09-access.md#before-you-upgrade).
-See [how grants combine](../01-board/09-access.md#how-grants-combine).
+issuer signs tokens for everyone it serves: exact, or ending in `*` right
+after a `:` or `/` to match how one starts (`project_path:acme/api:*`), and
+others narrow it. Without one, or with a `*` anywhere else in it, it's 400
+`invalid_grant`, except to remove it from a grant. See
+[how grants combine](../01-board/09-access.md#how-grants-combine).
+
+For an existing local board, [audit stored subjects before upgrading to 0.54.0](../01-board/09-access.md#before-you-upgrade).
 
 ### Invites
 

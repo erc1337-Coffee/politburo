@@ -2,25 +2,18 @@
 "@vercel/board": minor
 ---
 
-**Breaking:** In 0.54.0, an OIDC grant's `sub` is a prefix match when its
-only `*` is last, right after a `:` or `/` with a character before the
-separator. `project_path:acme/api:*` matches `project_path:acme/api:ref:main`.
-Other stored `sub` values, including a bare `*` or a star elsewhere, match
-exactly. Grants stay as written. A stored literal in prefix form now matches
-every subject that starts with the text before `*`, if the issuer and the
-other claims match.
+**Breaking:** In 0.54.0, OIDC grants use a trailing `*` in `sub` to match by
+prefix, even for existing grants.
 
-Audit stored subjects **before upgrading** an existing board that stores and
-decides its grants locally. Set `BOARD_URL` to its API URL and run
-`vb grants list --json` with `manage` at `*`. The audit lists every OIDC
-`sub` value ending in `*`, including array entries. Only values in the
-prefix form above change meaning. Keep intended prefixes. Leave non-prefix
-literals such as `job:archive*` unchanged. Use `vb grants update` with
-`--remove-oidc` and `--add-oidc` to replace a literal in prefix form with
-an exact subject or tighten the grant before upgrading.
+Before upgrading to 0.54.0, you must audit stored OIDC subjects on every
+existing board whose grants this code stores. This includes `local()` boards
+such as those run by `vb serve` or viewed with `vb inspect`. Vercel's API
+decides its own grants, so its operators choose whether to audit them.
+See [Before you upgrade](../packages/board/docs/01-board/09-access.md#before-you-upgrade)
+for the command. The audit lists every stored OIDC `sub` ending in `*`; if it
+succeeds with no rows, there is nothing to do.
 
-Before and after each change, check each affected caller's access on the
-channels that matter with `vb grants explain <channel>`. Keep any restriction
-the grant alone enforces, or recreate it before the change. Vercel's API
-decides its own grants. Its operators choose whether to audit them with
-Vercel's own tooling.
+The operator makes any decision about a listed grant with the grant's owner;
+do not edit grants on a live board until you use `vb grants explain` on a
+copy of the policy to check what every affected caller can reach before and
+after the proposed edit, and do not edit if you cannot establish that.

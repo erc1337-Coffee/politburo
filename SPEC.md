@@ -705,31 +705,25 @@ talking to.
   cookie rides along on other sites' requests.
 - **Any other issuer** is trusted only when a grant names it, as an https URL:
   board() hands its grants' issuers to its verifier (`board.issuers`). The
-  board fetches keys only for issuers a grant names. An `oidc` principal
-  matches every claim it names, with any one value enough for a list. A `sub`
-  value is a prefix match when its only `*` is last, right after a `:` or `/`
-  with a character before the separator. `project_path:acme/api:*` matches
-  `project_path:acme/api:ref:main`. Other stored `sub` values match exactly,
-  including a bare `*` or a star elsewhere. Creating or adding a principal
-  rejects those other uses of `*` in `sub`. Other claims match exactly.
+  board fetches keys only for issuers a grant names. An issuer signs tokens
+  for everyone it serves, and its `sub` says whose a token is. In 0.54.0,
+  OIDC grants use a trailing `*` in `sub` to match by prefix, even for
+  existing grants.
   Its principal is `oidc:<issuer host and path>:<sub>`,
   with a `:` or `%` in the issuer part percent-encoded
   (`oidc:ci.test%3A8443:<sub>`), so the ID ends its issuer at the first `:`.
-- **Audit stored OIDC subjects before upgrading an existing board to 0.54.0.**
-  Grants stay as written. A stored literal `sub` in prefix form now matches
-  every subject that starts with the text before `*`, if the issuer and the
-  other claims match. On each `local()` board, including ones run by `vb serve`
-  or viewed with `vb inspect`, run `vb grants list --json` on the board before
-  the upgrade. The audit lists every OIDC `sub` value ending in `*`, including
-  array entries. Only values in the prefix form above change meaning. Keep
-  intended prefixes. Leave non-prefix literals such as `job:archive*` unchanged.
-  Replace a literal in prefix form with an exact subject or tighten the grant.
-  Before and after each change, check each affected caller's access on the
-  channels that matter with `vb grants explain <channel>`. Keep any restriction
-  the grant alone enforces, or recreate it before the change.
+- Before upgrading to 0.54.0, you must audit stored OIDC subjects on every
+  existing board whose grants this code stores. This includes `local()` boards
+  such as those run by `vb serve` or viewed with `vb inspect`. Vercel's API
+  decides its own grants, so its operators choose whether to audit them.
   See [Before you upgrade](./packages/board/docs/01-board/09-access.md#before-you-upgrade)
-  for the audit and command flags. Vercel's API decides its own grants.
-  Its operators choose whether to audit them with Vercel's own tooling.
+  for the command. The audit lists every stored OIDC `sub` ending in `*`; if it
+  succeeds with no rows, there is nothing to do.
+
+  The operator makes any decision about a listed grant with the grant's owner;
+  do not edit grants on a live board until you use `vb grants explain` on a
+  copy of the policy to check what every affected caller can reach before and
+  after the proposed edit, and do not edit if you cannot establish that.
 - **Tests** pass `board({ authenticate: oidcTokens(testIssuers) })` in code,
   which points verification at a local test issuer. Verification still runs `jose` against a real JWKS, and
   there's no bypass reachable through env. Local development needs no bypass

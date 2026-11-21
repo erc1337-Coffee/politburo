@@ -179,21 +179,19 @@ more specific pattern decides first.
   its keys once a grant names it, by OIDC discovery: its
   `/.well-known/openid-configuration` must name it as `issuer`, with a
   `jwks_uri` that's an https URL on the internet, and no redirect is followed.
-  Every claim must match. A list matches if any of its values does. Vercel's
+  Every claim must match exactly, and a list is any of its values. Vercel's
   and GitHub's issuers have kinds of their own.
 - **An `oidc` principal names a `sub`.** An issuer such as GitLab.com signs
-  tokens for everyone it serves. The `sub` says whose token it is, and other
-  claims narrow the grant by exact match. A `sub` value is a prefix match
-  when its only `*` is last, right after a `:` or `/` with a character before
-  the separator. `project_path:acme/api:*` matches
-  `project_path:acme/api:ref:main`. Any other stored `sub` matches exactly,
-  including a bare `*` or a star elsewhere. The board rejects these other
-  uses of `*` in `sub` when you create or add a principal, not when you remove
-  one. A principal stored without `sub` still matches its other claims.
+  tokens for everyone it serves, so a claim like `ref=main` lets in anyone's
+  job on main. Its `sub` is the one claim unique to a workload, so a grant
+  names it, and other claims narrow it further. A `sub` that ends in `*` right
+  after a `:` or `/` matches how one starts: `project_path:acme/api:*` is any
+  job in `acme/api`, and not one in `acme/api-evil`. A `*` anywhere else in a
+  `sub` is refused, `*` alone too, and in any other claim it's just a `*`.
+  A grant made before boards asked for a `sub` still lets in what it did,
+  and a principal without one can still be removed from it.
 
-  0.54.0 applies this rule to existing grants without rewriting them. A
-  stored literal with prefix syntax now matches every subject that starts
-  with the text before `*`, if the issuer and the other claims match.
+  In 0.54.0, this prefix rule applies to existing grants too.
   [Audit stored subjects before upgrading](#before-you-upgrade).
 - **The same principals again are another grant.** Change one by its ID:
   `updateGrant(id, { add, remove, can })` adds principals, removes them by who
@@ -249,16 +247,13 @@ more specific pattern decides first.
 
 ### Before you upgrade
 
-Audit stored OIDC subjects **before** upgrading an existing board to 0.54.0.
-This is required where this code stores and decides grants: a `local()` board,
-including one run by `vb serve` or viewed with `vb inspect`. Vercel's API
-stores and decides grants for Vercel's board. Its operators choose whether
-to audit those grants with Vercel's own tooling.
+Before upgrading to 0.54.0, you must audit stored OIDC subjects on every
+existing board whose grants this code stores. This includes `local()` boards
+such as those run by `vb serve` or viewed with `vb inspect`. Vercel's API
+decides its own grants, so its operators choose whether to audit them.
 
-Set `BOARD_URL` to the existing board's API URL. With `manage` at `*`, run
-`vb grants list --json` while the board still runs the old version. In Bash
-with `jq`, this audit lists every OIDC `sub` value ending in `*`, whether
-stored as a string or in an array:
+Set `BOARD_URL` to the existing board's API URL. The audit needs Bash, `jq`,
+and `manage` at `*`.
 
 ```bash
 (
@@ -275,53 +270,13 @@ stored as a string or in an array:
 )
 ```
 
-A successful command with no rows means no stored `sub` ends in `*`.
-Only values in valid prefix form change meaning. The only `*` is last,
-right after a `:` or `/` with a character before the separator. Keep
-intended prefixes. Leave non-prefix literals such as `job:archive*` unchanged.
+The audit lists every stored OIDC `sub` ending in `*`; if it succeeds with
+no rows, there is nothing to do.
 
-A literal in prefix form has no escape. Replace it with an exact subject
-from the issuer or tighten the grant before upgrading. If the issuer still
-sends the literal, use additional exact claims only if they limit the match
-to the intended workload.
-
-Before and after each grant change, run `vb grants explain <channel>` for
-each affected caller on the channels that matter. With `manage` at `*`,
-pass the caller's issuer and actual claim values, with one `--claim` per
-name:
-
-```bash
-vb --url "${BOARD_URL:?Set BOARD_URL to the existing board URL}" \
-  grants explain private/reports --oidc https://ci.example.test \
-  --claim 'sub=deploy/*' --claim project_id=42
-```
-
-Removing or rewriting a grant can widen access. Keep any restriction that
-only this grant enforces, or recreate it before the change. For example,
-keep a deny such as `--can 'private/=none'` for that caller. Do not remove a
-grant that narrows or denies access just because its subject is a literal.
-If you cannot preserve the intended access, pause the upgrade.
-
-Use `vb grants update` with `--remove-oidc` and `--add-oidc` in one update.
-For removal, pass the stored issuer and all of the principal's `--claim`
-values. Repeat the flag for each array entry. Include the claims and subject
-values you want to keep after `--add-oidc`. For example, replace the old `sub`
-on `g4` with one exact subject. This keeps `project_id` and leaves `can`
-unchanged.
-
-```bash
-vb --url "${BOARD_URL:?Set BOARD_URL to the existing board URL}" \
-  grants update g4 \
-  --remove-oidc https://gitlab.com --claim 'sub=project_path:acme/api:*' \
-  --claim project_id=42 \
-  --add-oidc https://gitlab.com \
-  --claim sub=project_path:acme/api:ref_type:branch:ref:main \
-  --claim project_id=42
-```
-
-Remove a principal without a replacement only if the caller no longer needs
-the grant and its restrictions stay in place. Omit `--add-oidc` and its claims.
-If that leaves the grant empty, use `vb grants revoke` with its ID instead.
+The operator makes any decision about a listed grant with the grant's owner;
+do not edit grants on a live board until you use `vb grants explain` on a
+copy of the policy to check what every affected caller can reach before and
+after the proposed edit, and do not edit if you cannot establish that.
 
 ## A backend of your own
 
