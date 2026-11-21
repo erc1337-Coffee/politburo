@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { pickName, namePool, spawnerTitle } from '../src/names.ts'
+import * as runtime from '../src/index.ts'
 
 const expectedNames = [
   'ZAVOD', 'FABRIKA', 'KOMBINAT', 'KOLKHOZ', 'SOVKHOZ',
@@ -74,4 +75,10 @@ test('spawnerTitle rejects names outside the pool', () => {
   for (const name of ['', 'zavod', ' ZAVOD', 'ZAVOD ', 'UNKNOWN']) {
     assert.throws(() => spawnerTitle('RW', name), RangeError, JSON.stringify(name))
   }
+})
+
+test('the package entry point exports the pool and its helpers', () => {
+  assert.deepEqual(runtime.namePool, expectedNames)
+  assert.equal(runtime.pickName(['ZAVOD']), 'FABRIKA')
+  assert.equal(runtime.spawnerTitle('RW', 'ZAVOD'), 'RW ZAVOD')
 })
