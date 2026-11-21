@@ -1,5 +1,8 @@
-/** Soviet industry nouns in allocation order. */
-export const spawnerNames = Object.freeze([
+/**
+ * The one name pool: Soviet industry nouns in allocation order. Use it for any name the product
+ * needs (spawners, agents, workers, boards, lanes, demo data, codenames).
+ */
+export const namePool = Object.freeze([
   // Workplaces
   'ZAVOD', // factory
   'FABRIKA', // mill
@@ -40,20 +43,21 @@ export const spawnerNames = Object.freeze([
   'KAMAZ', // Kama automobile plant
 ] as const)
 
-/** Pick a name for a new spawner. Pass the names of all live spawners. */
-export function nextSpawnerName(inUse: Iterable<string>): string {
+/** Pick the first pool name not in use. Pass the names of everything alive that holds one. */
+export function pickName(inUse: Iterable<string>): string {
   const used = new Set(inUse)
-  for (const name of spawnerNames) {
+  for (const name of namePool) {
     if (!used.has(name)) return name
   }
-  throw new Error(`spawner name pool is exhausted (${spawnerNames.length} names)`)
+  throw new Error(`name pool is exhausted (${namePool.length} names)`)
 }
 
+/** A spawner's title: `<TAG> <NAME>`, with the name from the pool. */
 export function spawnerTitle(tag: string, name: string): string {
   if (!tag || /[\s\p{White_Space}]/u.test(tag)) {
     throw new RangeError('spawner tag must be nonempty and contain no whitespace')
   }
-  if (!spawnerNames.some((candidate) => candidate === name)) {
+  if (!namePool.some((candidate) => candidate === name)) {
     throw new RangeError('spawner name must be in the pool')
   }
   return `${tag} ${name}`

@@ -181,25 +181,31 @@ or coordinate multiple instances.
 
 `refill` drafts up to 15 proposed tasks when the ready queue runs low. `scanDiff` and `preflight` refuse added lines with tokens, keys, or emails. `createInstance` writes a self-hosted instance directory with no credentials. `writeResumePacket` and `appendAttempt` keep resume packets and an attempt ledger as plain files.
 
-See [Spawner names](#spawner-names) for name allocation and titles.
+See [Names](#names) for the shared name pool.
 
-## Spawner names
+## Names
 
-A spawner's name is a Soviet industry noun in Russian transliteration. It has
-8 letters or fewer. Its title is `<TAG> <NAME>`, for example `RW ZAVOD`.
+Every name Politburo needs comes from one pool, `namePool`, defined in one
+module: spawners, agents, workers, boards, lanes, demo data, and codenames.
+A name is a Soviet industry noun in Russian transliteration, 8 letters or
+fewer.
 
-A new spawner takes the first unused name from `spawnerNames` and keeps it
-for its lifetime. Pass all live spawner names to `nextSpawnerName` so it never
-reuses a live name. A freed name is reused before any later unused name in the
-pool. If all 33 names are in use, `nextSpawnerName` throws. `spawnerTitle`
-throws a `RangeError` for an empty tag, a tag with whitespace, or a name
-outside the pool.
+`pickName(inUse)` returns the first pool name that is not in `inUse`. Pass the
+names of everything alive that holds one. A freed name is taken again before
+any later unused name. It ignores strings that aren't pool names and throws
+when all 33 names are in use. Don't write pool names as literals elsewhere;
+import them.
+
+A spawner is one use. Its title is `<TAG> <NAME>`, for example `RW ZAVOD`. It
+takes the first unused name and keeps it, so no two live spawners share one.
+`spawnerTitle` throws a `RangeError` for an empty tag, a tag with whitespace,
+or a name outside the pool.
 
 ```ts
-import { nextSpawnerName, spawnerTitle } from '@remilia/politburo-runtime'
+import { pickName, spawnerTitle } from '@remilia/politburo-runtime'
 
 const liveNames = ['FABRIKA']
-const name = nextSpawnerName(liveNames)
+const name = pickName(liveNames) // 'ZAVOD'
 const title = spawnerTitle('RW', name) // 'RW ZAVOD'
 ```
 
