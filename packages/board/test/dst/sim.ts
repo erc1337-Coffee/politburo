@@ -40,7 +40,10 @@ export class Sim {
   }
 
   gate(label: string): Promise<void> | void {
-    if (this.#aborted) return new Promise<void>(() => {})
+    if (this.#aborted) {
+      this.block()
+      return new Promise<void>(() => {})
+    }
     const op = this.op
     if (op === undefined) return // Out-of-simulation setup, observation, or cleanup.
     const { promise, resolve } = Promise.withResolvers<void>()
@@ -66,11 +69,6 @@ export class Sim {
     return new Promise<never>(() => {})
   }
 
-  #abort(error: Error): never {
-    this.#aborted = true
-    throw error
-  }
-
   async run(ops: readonly Op[], beforeRelease?: Policy) {
     const errors: unknown[] = []
     ops.forEach(({ name, run }, op) => {
@@ -87,27 +85,39 @@ export class Sim {
     })
 
     const stalled = () => new Error(`DST seed ${this.#seed} stalled (${this.#states.map((state) => state.kind).join(', ')}):\n${this.trace.join('\n')}`)
-    for (let steps = 0; ; steps++) {
-      // Real timers and crypto can delay a runnable actor. Wait for its state, not its arrival order.
-      const deadline = performance.now() + 2_000
-      while (this.#states.some(({ kind }) => kind === 'running')) {
-        if (performance.now() >= deadline) this.#abort(stalled())
-        await new Promise<void>((resolve) => setImmediate(resolve))
-      }
-      if (errors.length) this.#abort(new Error(`DST seed ${this.#seed} operation failed:\n${this.trace.join('\n')}`, { cause: errors[0] }))
-      if (this.#states.every(({ kind }) => kind === 'done')) return
+    const running = () => this.#states.some(({ kind }) => kind === 'running')
+    const turn = () => new Promise<void>((resolve) => setImmediate(resolve))
+    try {
+      for (let steps = 0; ; steps++) {
+        // Real timers and crypto can delay a runnable actor. Wait for its state, not its arrival order.
+        const deadline = performance.now() + 2_000
+        for (;;) {
+          if (errors.length) throw new Error(`DST seed ${this.#seed} operation failed:\n${this.trace.join('\n')}`, { cause: errors[0] })
+          if (!running()) break
+          if (performance.now() >= deadline) throw stalled()
+          await turn()
+        }
+        if (this.#states.every(({ kind }) => kind === 'done')) return
 
-      // Array order is operation index, even if crypto or real retry timers parked them out of order.
-      const parked = this.#states.flatMap((state, op) => state.kind === 'parked' ? [{ op, ...state }] : [])
-      if (!parked.length || steps >= 500) this.#abort(stalled())
-      const { op, label, resume } = parked[Math.floor(this.#pick() * parked.length)]!
-      const point = { op, name: ops[op]!.name, label }
-      const fault = beforeRelease?.(point, this.#fault)
-      this.trace.push(`${op} ${point.name} @ ${label}${fault ? ` (${fault})` : ''}`)
-      this.#states[op] = { kind: 'running' }
-      resume()
-      // Let promise continuations from a released gate (including lock handoffs) settle first.
-      await new Promise<void>((resolve) => setImmediate(resolve))
+        // Array order is operation index, even if crypto or real retry timers parked them out of order.
+        const parked = this.#states.flatMap((state, op) => state.kind === 'parked' ? [{ op, ...state }] : [])
+        if (!parked.length || steps >= 500) throw stalled()
+        const { op, label, resume } = parked[Math.floor(this.#pick() * parked.length)]!
+        const point = { op, name: ops[op]!.name, label }
+        const fault = beforeRelease?.(point, this.#fault)
+        this.trace.push(`${op} ${point.name} @ ${label}${fault ? ` (${fault})` : ''}`)
+        this.#states[op] = { kind: 'running' }
+        resume()
+        // Let promise continuations from a released gate (including lock handoffs) settle first.
+        await turn()
+      }
+    } catch (error) {
+      this.#aborted = true
+      // Released actors may still be in real I/O. Wait until they finish or hit
+      // another suspension point, but don't wait for parked or killed actors.
+      const deadline = performance.now() + 2_000
+      while (running() && performance.now() < deadline) await turn()
+      throw error
     }
   }
 }

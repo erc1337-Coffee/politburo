@@ -1,8 +1,9 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { readFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { it, vi } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { fileClaims } from '../../src/cli/claims.ts'
 import { START, withClock } from './clock.ts'
 import { checkSavedClaim } from './oracles.ts'
@@ -19,6 +20,7 @@ const drop = (claims: ReturnType<typeof open>) => (claims.drop as (id: string, p
 let killNext = false
 let lockOwner: number | undefined
 let lockReleased = Promise.withResolvers<void>()
+const claimsFixture = new AsyncLocalStorage<{ closed: boolean; inFlight: Set<Promise<unknown>> }>()
 
 async function fsStep<T>(label: string, run: () => Promise<T>): Promise<T> {
   // The actor retains its scheduler even after the fixture starts tearing down.
@@ -27,7 +29,12 @@ async function fsStep<T>(label: string, run: () => Promise<T>): Promise<T> {
     await sim.gate(`fs:${label}`)
     if (killNext) return sim.kill()
   }
-  return run()
+  const fixture = claimsFixture.getStore()
+  if (!fixture) return run()
+  if (fixture.closed) throw new Error('DST claims fixture is closed')
+  const pending = run()
+  fixture.inFlight.add(pending)
+  try { return await pending } finally { fixture.inFlight.delete(pending) }
 }
 
 vi.mock('node:fs/promises', async (original) => {
@@ -81,22 +88,81 @@ vi.mock('node:timers/promises', async (original) => {
   }
 })
 
-async function withClaims<T>(run: () => Promise<T>) {
+async function withClaims<T>(run: (dir: string) => Promise<T>) {
   const dir = await mkdtemp(join(tmpdir(), 'board-dst-claims-'))
+  const fixture = { closed: false, inFlight: new Set<Promise<unknown>>() }
   vi.stubEnv('XDG_CONFIG_HOME', dir)
   lockReleased = Promise.withResolvers<void>()
   try {
-    return await withClock(async () => {
+    return await claimsFixture.run(fixture, () => withClock(async () => {
       await open().put(task, proofA)
-      return run()
-    })
+      return run(dir)
+    }))
   } finally {
+    fixture.closed = true
+    await Promise.allSettled(fixture.inFlight)
     killNext = false
     lockOwner = undefined
     vi.unstubAllEnvs()
     await rm(dir, { recursive: true, force: true })
   }
 }
+
+it('drains a released write on abort and prevents writes after claims teardown', async () => {
+  const fs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
+  const writeStarted = Promise.withResolvers<void>()
+  const releaseWrite = Promise.withResolvers<void>()
+  const afterTeardown = Promise.withResolvers<void>()
+  const operationError = new Error('fixture operation failed')
+  let dir: string | undefined
+  let lateWrite: Promise<unknown> | undefined
+  let writeFinished = false
+  let writeFinishedOnAbort = false
+  try {
+    await expect(withClaims(async (path) => {
+      dir = path
+      const write = async (name: string) => {
+        await fs.mkdir(path, { recursive: true })
+        await fs.writeFile(join(path, name), 'probe')
+      }
+      // An out-of-actor continuation has no Sim gate to protect it.
+      lateWrite = afterTeardown.promise.then(() => fsStep('late write', () => write('late'))).catch((error: unknown) => error)
+      const sim = new Sim(0)
+      try {
+        await sim.run([
+          { name: 'fail', run: async () => {
+            // Seed 0 starts this actor first. Let the writer reach real I/O.
+            sim.block()
+            await writeStarted.promise
+            sim.unblock()
+            // The driver sees the operation failure before this write can finish.
+            setImmediate(() => releaseWrite.resolve())
+            throw operationError
+          } },
+          { name: 'write', run: async () => {
+            await fsStep('slow write', async () => {
+              writeStarted.resolve()
+              await releaseWrite.promise
+              await write('released')
+              writeFinished = true
+            })
+            return 'written'
+          } },
+        ])
+      } finally {
+        writeFinishedOnAbort = writeFinished
+      }
+    })).rejects.toMatchObject({ message: expect.stringContaining('DST seed 0 operation failed'), cause: operationError })
+    afterTeardown.resolve()
+    await lateWrite
+    await expect(fs.stat(dir!)).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(writeFinishedOnAbort).toBe(true)
+  } finally {
+    afterTeardown.resolve()
+    await lateWrite
+    if (dir) await fs.rm(dir, { recursive: true, force: true })
+  }
+})
 
 // Detect the lock in source so a regression to the unlocked path cannot skip the test.
 const claimsSource = readFileSync(new URL('../../src/cli/claims.ts', import.meta.url), 'utf8')
