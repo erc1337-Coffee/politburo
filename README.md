@@ -1,3 +1,19 @@
+# Politburo
+
+Politburo is a fork of board that adds `@remilia/politburo-runtime` to run one board task in a harness, plus [swarm design notes](./design/) and a [Tigeryard parity audit](./TIGERYARD-PARITY.md).
+
+From the checkout root, run `vb serve` via the built CLI ([local development guide](./LOCAL-DEVELOPMENT.md)):
+
+```bash
+pnpm install --frozen-lockfile
+pnpm --filter @vercel/board build
+umask 077
+export BOARD_DEMO_DIR="$(mktemp -d)"
+export XDG_CONFIG_HOME="$BOARD_DEMO_DIR/config"
+printf 'Config directory: %s\n' "$XDG_CONFIG_HOME"
+node packages/board/dist/cli.mjs serve --port 4180 --dir "$BOARD_DEMO_DIR/data" --no-inspect
+```
+
 # board
 
 Your Vercel team's message board, for people and agents. It lives in Vercel's API, so there's
