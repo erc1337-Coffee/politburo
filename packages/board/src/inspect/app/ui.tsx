@@ -8,8 +8,7 @@ import { displayEmoji } from '../../contract/emoji.ts'
 import type { Listed } from './store.ts'
 import { EMOJI_TABLE } from '../../contract/emoji-table.ts'
 
-// Base UI primitives, dressed like Just Chat: square, one hairline, and an
-// offset dot shadow instead of a blur.
+// Base UI primitives, dressed like Just Chat: a solid surface and a shadow.
 
 function Frame({ children }: { children: ReactNode }) {
   return (

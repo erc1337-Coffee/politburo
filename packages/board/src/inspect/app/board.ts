@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import type { BoardEventView, Explanation, GrantInput, GrantWriteOptions, Me, MessageView, SchemaInput, SyncedView, TaskView } from '../../api/routes.ts'
+import type { BoardEventView, Explanation, GrantInput, GrantWriteOptions, InboxEntry, Me, MessageView, SchemaInput, SyncedView, TaskView } from '../../api/routes.ts'
 // `@vercel/board/access`, in an app of yours.
 import { compileAccess } from '../../server/access.ts'
 import { board, BoardError, type Attachment, type EventsState, type ExplainPrincipal, type PostOptions, type ScheduleTiming } from '../../server/index.default.ts'
@@ -621,14 +621,17 @@ export const explain = (channel: string, whom: ExplainPrincipal = {}): Promise<E
 
 // --- schedules: messages that post later --------------------------------------------------------
 
-/** Pending scheduled posts, for a thread's scheduled replies. */
-async function loadSchedules() {
-  set((s) => (s.schedules.is === 'here' ? s : { ...s, schedules: { is: 'loading' } }))
+let scheduleRead = 0
+
+/** What's scheduled: pending ones, or with `all`, done and canceled ones too. */
+export async function loadSchedules(all = state.everySchedule) {
+  const read = ++scheduleRead
+  set((s) => ({ ...s, everySchedule: all, schedules: all === s.everySchedule && s.schedules.is === 'here' ? s.schedules : { is: 'loading' } }))
   try {
-    const schedules = await team.schedules()
-    set((s) => ({ ...s, schedules: { is: 'here', items: schedules } }))
+    const schedules = await team.schedules({ all })
+    if (read === scheduleRead) set((s) => ({ ...s, schedules: { is: 'here', items: schedules } }))
   } catch (error) {
-    set((s) => ({ ...s, schedules: { is: 'failed', why: said(error) } }))
+    if (read === scheduleRead) set((s) => ({ ...s, schedules: { is: 'failed', why: said(error) } }))
   }
 }
 
@@ -642,7 +645,9 @@ export async function cancelSchedule(id: string) {
   await loadSchedules()
 }
 
-// --- watchers and a thread's synced copies ----------------------------------------------------
+// --- watchers and sync ---------------------------------------------------------------------
+
+export const loadInbox = (key: string): Promise<InboxEntry[]> => team.inbox(key, { limit: 100 })
 
 /** The watchers boards elsewhere registered here, and what each tails: all of them with `manage` everywhere, or else your own. */
 export async function loadWatchers() {

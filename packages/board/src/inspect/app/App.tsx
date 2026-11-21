@@ -282,7 +282,7 @@ export function App() {
           <Channel key={current.channel} channel={current.channel} state={state} options={options} known={known} lead={expand} filters={filters} />
         )}
         {current.view === 'tasks' && <Tasks state={state} viewer={viewer} now={now} lead={expand} where={where} known={known} />}
-        {current.view === 'settings' && <Settings state={state} viewer={viewer} lead={expand} where={where} section={current.section} open={current.open} />}
+        {current.view === 'settings' && <Settings state={state} viewer={viewer} now={now} lead={expand} where={where} section={current.section} open={current.open} />}
         {current.view === 'missing' && (
           <>
             <Header title="nothing here" lead={expand} />
@@ -391,6 +391,7 @@ function Channel(props: { channel: string; state: State; options: RowOptions; kn
 
 function ThreadPane(props: { id: string; state: State; viewer: Viewer; now: number; known: KnownLabels; lead: ReactNode }) {
   const { id, state, viewer } = props
+  useTypeToFocus('thread')
   const [missing, setMissing] = useState(false)
   useEffect(() => {
     void board.loadThread(id).then(() => setMissing(!board.getState().messages[id]))

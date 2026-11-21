@@ -1,3 +1,4 @@
+import { Window } from 'happy-dom'
 import { describe, expect, it } from 'vitest'
 import { CSS } from '../src/inspect/style.ts'
 
@@ -100,6 +101,31 @@ it('gives the light theme a warm cream background', () => {
   expect(g).toBeGreaterThanOrEqual(b)
   expect(g).toBeGreaterThan(0xe0)
   expect(b).toBeGreaterThanOrEqual(0xd0)
+})
+
+it('draws hairlines below headers, not around the shell, pane, or task prerequisites', async () => {
+  const window = new Window({ width: 1280, height: 900 })
+  try {
+    window.document.head.innerHTML = `<style>${CSS}</style>`
+    window.document.body.innerHTML = `
+      <div class="shell">
+        <nav class="sidebar"><div class="brand">Politburo</div></nav>
+        <main class="main">
+          <header class="header">Handoffs</header>
+          <section class="home-queue"><h2>Runnable</h2><div class="handoff-needs">Requires review</div></section>
+        </main>
+        <aside class="pane"><header class="header">Thread</header></aside>
+      </div>
+    `
+    const style = (selector: string) => window.getComputedStyle(window.document.querySelector(selector)!)
+    for (const selector of ['.brand', '.header', '.home-queue h2']) expect(style(selector).borderBottomStyle, selector).toBe('solid')
+    expect(style('.shell').borderTopStyle).not.toBe('solid')
+    expect(style('.sidebar').borderRightStyle).not.toBe('solid')
+    expect(style('.pane').borderLeftStyle).not.toBe('solid')
+    expect(style('.handoff-needs').getPropertyValue('border-inline-start')).not.toContain('solid')
+  } finally {
+    await window.happyDOM.close()
+  }
 })
 
 it('keeps the home emblem image transparent', () => {

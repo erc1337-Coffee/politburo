@@ -1,3 +1,4 @@
+import { Window } from 'happy-dom'
 import { describe, expect, it } from 'vitest'
 import { CSS } from '../src/inspect/style.ts'
 
@@ -111,6 +112,25 @@ const px = (size: string) => (size.endsWith('rem') ? parseFloat(size) * 16 : par
 
 const phone = (media: string) => !media.includes('prefers-color-scheme')
 const desktop = (media: string) => !media.includes('pointer: coarse') && !media.includes('max-width')
+
+it('shows the default cursor on controls and the text cursor in fields and prose', async () => {
+  const window = new Window()
+  try {
+    window.document.head.innerHTML = `<style>${CSS}</style>`
+    window.document.body.innerHTML = `
+      <label class="button-sounds"><input type="checkbox"> button sounds</label>
+      <button class="send">send</button>
+      <nav class="sidebar"><a href="/">Handoffs</a></nav>
+      <input placeholder="name"><textarea placeholder="reply"></textarea>
+      <div contenteditable>draft</div><div class="text">selectable message</div>
+    `
+    const cursor = (selector: string) => window.getComputedStyle(window.document.querySelector(selector)!).cursor
+    for (const selector of ['.button-sounds input', 'button', '.sidebar a']) expect(cursor(selector), selector).toBe('default')
+    for (const selector of ['[placeholder="name"]', 'textarea', '[contenteditable]', '.text']) expect(cursor(selector), selector).toBe('text')
+  } finally {
+    await window.happyDOM.close()
+  }
+})
 
 describe('the inspector on a touch device', () => {
   it('finds the fields the stylesheet sizes', () => {

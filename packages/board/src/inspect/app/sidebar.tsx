@@ -188,7 +188,7 @@ function ProfileMenu({ me }: { me: Me }) {
         title="post as"
         trigger={
           <>
-            <Avatar name={shownName(me)} url={me.avatar} size={24} />
+            <Avatar name={shownName(me)} size={24} />
             <span className="as grow">as {shownName(me)}</span>
             <ChevronsUpDown size={13} />
           </>

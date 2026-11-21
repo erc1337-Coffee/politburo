@@ -48,7 +48,7 @@ describe('inspector navigation', () => {
     expect(route('/presidium')).toEqual({ view: 'presidium' })
   })
 
-  it.each(['/activity', '/global-chat', '/settings/schedules', '/settings/sync', '/settings/sync/slack', '/inbox/slack'])('shows no such page at %s', (path) => {
+  it.each(['/activity', '/global-chat', '/inbox/slack'])('shows no such page at %s', (path) => {
     expect(route(path)).toEqual({ view: 'missing' })
   })
 })

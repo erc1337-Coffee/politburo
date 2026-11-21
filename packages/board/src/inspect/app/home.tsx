@@ -90,6 +90,18 @@ export function Home({ state, now, lead }: { state: State; now: number; lead: Re
     return () => { active = false }
   }, [])
   const rows = tasks(state, filter, now)
+  // Keep each task in the lane where it first appeared on this visit. Its badge and
+  // details still read the latest state; leaving Handoffs (or reloading) resets placement.
+  const [placement, setPlacement] = useState(() => new Map<string, string>())
+  const newcomers = rows.filter(({ id }) => !placement.has(id))
+  if (newcomers.length > 0) {
+    const next = new Map(placement)
+    for (const { id, task } of newcomers) {
+      const current = stateNow(task, now)
+      next.set(id, lanes.find(({ states }) => states.includes(current))!.title)
+    }
+    setPlacement(next)
+  }
   const status = !listed ? 'Loading tasks…'
     : 'refused' in listed ? `Task list unavailable: ${listed.refused} Showing only tasks already known here.`
     : listed.more ? 'Partial list · More tasks are available.'
@@ -100,8 +112,8 @@ export function Home({ state, now, lead }: { state: State; now: number; lead: Re
       <Header title="HANDOFFS" lead={lead} live={state.live} />
       <div className="page home-view handoffs-view">
         {status && <div className="home-intro"><p role="status">{status}</p></div>}
-        {lanes.map(({ title, states }, index) => {
-          const items = rows.filter(({ task }) => states.includes(stateNow(task, now)))
+        {lanes.map(({ title }, index) => {
+          const items = rows.filter(({ id }) => placement.get(id) === title)
           if (items.length === 0) return null
           return (
             <section key={title} className="home-queue" aria-labelledby={`handoff-lane-${index}`}>

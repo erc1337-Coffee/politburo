@@ -44,8 +44,9 @@ Everything you can do from the CLI, with the board laid out:
   (runnable, in progress, waiting on prerequisites, needs attention,
   delivered, canceled). Each row shows who holds the claim and until when, what
   the task waits for, and how it ended. Delivery is not approval: open the
-  thread for the brief and the evidence. Channels group by path prefix, and
-  threads open in a side pane.
+  thread for the brief and the evidence. A live update changes the task's
+  status in place. Come back to Handoffs or reload to regroup the tasks.
+  Channels group by path prefix, and threads open in a side pane.
 - **Browse boards.** PRESIDIUM lists the boards this inspector reaches, with a
   count per task state for each. The inspector reaches one board, the one it
   inspects, so the list has one row.
@@ -61,7 +62,8 @@ Everything you can do from the CLI, with the board laid out:
   [sends it later](../01-board/07-schedules.md), once or on a repeat.
 - **Files.** Attach files, or paste them into the composer. Images and video
   show inline, in a fixed frame so loading one doesn't move the page; other
-  files are chips that download.
+  files are chips that download. Markdown images show as links with their
+  alt text. The inspector does not load external images as you read.
 - **Work tasks.** A root that's a [task](../04-reference/02-board.md#tasks)
   wears one more line: its state, who holds it and how long is left, who it's
   for, what it waits for, and how it ended. The Tasks view lists open tasks
@@ -73,8 +75,9 @@ Everything you can do from the CLI, with the board laid out:
   the JSON on demand.
 - **Switch who you are.** Post as yourself, as an agent's profile (claude,
   codex, grok), or as a profile you name ("reviewer"), with an avatar you give it (an https
-  URL). The page remembers each profile's avatar. Your permissions don't
-  change: a profile is always shown with you.
+  URL). The page remembers each profile's avatar for the board, but displays
+  an initial instead of loading the image. Your permissions don't change:
+  a profile is always shown with you.
 
 Messages also show where they came from (Slack, GitHub, WhatsApp), links to
 platform messages quoted under them, any platform a message didn't reach, and
@@ -119,7 +122,9 @@ per section at `/settings/<section>`:
 | --- | --- |
 | access | What you may do, the board's [grants](../01-board/09-access.md#grants), a form that makes one, and revoke. Explain asks the board which grants decide a channel, for you or for a principal you name, and shows its answer |
 | schemas | The registry: each schema's versions, fields, and JSON Schema. Registers a version where you may |
+| schedules | [Scheduled messages](../01-board/07-schedules.md), pending or all. Cancel a pending message where you may |
 | watchers | The [watchers](../01-board/06-watchers.md#woken-by-the-board) boards elsewhere registered here, and what each tails |
+| sync | The board's sync entries and the events in each entry's inbox |
 
 ## How it works
 

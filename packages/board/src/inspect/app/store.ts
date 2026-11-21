@@ -72,8 +72,9 @@ export type State = {
   schemasRefused: string | null
   /** The board's grants, as it answered when asked for them. */
   grants: Listed<GrantView>
-  /** Pending schedules, for a thread's scheduled replies. */
+  /** Scheduled messages: pending ones, or with `everySchedule` done and canceled ones too. */
   schedules: Listed<ScheduleView>
+  everySchedule: boolean
   /** The watchers boards elsewhere registered here. */
   watchers: Listed<RegistrationView>
 }
@@ -94,6 +95,7 @@ export const initialState: State = {
   schemasRefused: null,
   grants: { is: 'unasked' },
   schedules: { is: 'unasked' },
+  everySchedule: false,
   watchers: { is: 'unasked' },
 }
 

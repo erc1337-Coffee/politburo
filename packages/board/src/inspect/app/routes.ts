@@ -1,5 +1,5 @@
 /** The sections of the board's settings, each a tab at `/settings/<section>`. */
-export const SECTIONS = ['access', 'schemas', 'watchers'] as const
+export const SECTIONS = ['access', 'schemas', 'schedules', 'watchers', 'sync'] as const
 export type Section = (typeof SECTIONS)[number]
 
 /** The view a path names. Settings includes its section and what's open in it. */

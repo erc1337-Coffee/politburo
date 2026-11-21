@@ -42,12 +42,30 @@ export type RowOptions = {
 const MENTIONS = /((?<![\w@.-])@\[[^\]\s]+\])/g
 const MENTION = /^@\[([^\]\s]+)\]$/
 
-type MdNode = { type: string; value?: string; children?: MdNode[]; data?: unknown }
+type MdNode = { type: string; value?: string; alt?: string; children?: MdNode[]; data?: unknown }
+
+/** Images are opt-in links, never requests made just by reading. An image inside a link is its label. */
+const remarkImageLinks = () => (tree: MdNode) => {
+  const walk = (node: MdNode, linked = false) => {
+    if (!node.children) return
+    const inLink = linked || node.type === 'link' || node.type === 'linkReference'
+    node.children = node.children.map((child) => {
+      if (child.type !== 'image' && child.type !== 'imageReference') {
+        walk(child, inLink)
+        return child
+      }
+      const label: MdNode = { type: 'text', value: child.alt || 'image' }
+      if (inLink) return label
+      return { ...child, type: child.type === 'image' ? 'link' : 'linkReference', children: [label] }
+    })
+  }
+  walk(tree)
+}
 
 /** Picks out the mentions in text, but not inside code or links: each reads as who it mentions, by `names`, or as it's written. */
 const remarkMentions = (names: Record<string, string>) => () => {
   const walk = (node: MdNode) => {
-    if (!node.children || node.type === 'link' || node.type === 'inlineCode' || node.type === 'code') return
+    if (!node.children || node.type === 'link' || node.type === 'linkReference' || node.type === 'inlineCode' || node.type === 'code') return
     node.children = node.children.flatMap((child): MdNode[] => {
       if (child.type !== 'text') {
         walk(child)
@@ -81,7 +99,7 @@ const COMPONENTS = {
  * code, links. Raw HTML is dropped. Right-clicking it gives the browser's menu.
  */
 export const Text = memo(function Text({ text, edited = false, names = NO_NAMES }: { text: string; edited?: boolean; names?: Record<string, string> }) {
-  const plugins = useMemo(() => [remarkGfm, remarkBreaks, remarkMentions(names)], [names])
+  const plugins = useMemo(() => [remarkGfm, remarkBreaks, remarkImageLinks, remarkMentions(names)], [names])
   return (
     <div className="text" {...nativeMenu}>
       <Markdown remarkPlugins={plugins} components={COMPONENTS} skipHtml>
@@ -221,11 +239,11 @@ export function SourceLogo({ platform }: { platform: string }) {
   )
 }
 
-export function Avatar({ name, url, size = 28 }: { name: string; url: string | null | undefined; size?: number }) {
-  const [broken, setBroken] = useState(false)
+// Author avatars are metadata, not images fetched through the inspector's token-bearing proxy.
+export function Avatar({ name, size = 28 }: { name: string; size?: number }) {
   return (
     <span className="avatar" style={{ width: size, height: size, fontSize: size * 0.43 }}>
-      {url && !broken ? <img src={url} alt="" referrerPolicy="no-referrer" onError={() => setBroken(true)} /> : name.slice(0, 1).toUpperCase()}
+      {name.slice(0, 1).toUpperCase()}
     </span>
   )
 }
@@ -362,7 +380,7 @@ export function MessageRow({ m, options, continued = false }: { m: MessageView; 
             </span>
           ) : (
             <span className="avatar-wrap">
-              <Avatar name={name} url={m.author?.avatar} />
+              <Avatar name={name} />
               {m.from && <SourceLogo platform={sourcePlatform(m, options.platforms) ?? m.from} />}
             </span>
           )}
@@ -419,7 +437,7 @@ export function MessageRow({ m, options, continued = false }: { m: MessageView; 
             <button className="replies" onClick={() => options.openThread!(m.id)}>
               <span className="faces">
                 {replies.faces.map((r) => (
-                  <Avatar key={r.by.actor} name={authorName(r)} url={r.author?.avatar} size={16} />
+                  <Avatar key={r.by.actor} name={authorName(r)} size={16} />
                 ))}
               </span>
               {replies.count} {replies.count === 1 ? 'reply' : 'replies'}
@@ -464,7 +482,7 @@ export function MessageRow({ m, options, continued = false }: { m: MessageView; 
   )
 }
 
-type Me = { actor: string; name: string; handle: string; profile: string | null; avatar: string | null }
+type Me = { actor: string; name: string; handle: string; profile: string | null }
 
 /**
  * Posts on their way, after `after` (the last message shown). Each is grouped
@@ -495,7 +513,7 @@ export function PendingRow({ post, me, continued = false }: { post: Pending; me:
             …
           </span>
         ) : (
-          <Avatar name={shownName(me)} url={me.avatar} />
+          <Avatar name={shownName(me)} />
         )}
       </div>
       <div className="body">
