@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import timers from 'node:timers/promises'
 import type { ControllerRecipient } from './controller/index.ts'
 
@@ -93,24 +94,55 @@ export type StallWatcherOptions = {
 
 export type MissedBeat = { id: string; role: string; heartbeatAt: string | null; ageMs: number; limitMs: number }
 
+type StallSendError = { topic: string; error: string }
+
 export type StallResult =
   | { kind: 'ok' }
   | { kind: 'paused' }
-  | { kind: 'quiet'; sinceMs: number; quietMinutes: number; missed?: MissedBeat[] }
-  | { kind: 'missed'; agents: MissedBeat[] }
+  | { kind: 'quiet'; sinceMs: number; quietMinutes: number; missed?: MissedBeat[]; errors?: StallSendError[] }
+  | { kind: 'missed'; agents: MissedBeat[]; errors?: StallSendError[] }
+
+// Escape backslashes as \\ and controls, lone surrogates, and reserved : and ~ as \u{hex}.
+function escapeAlertField(value: string): string {
+  const maxLength = 64
+  const hashLength = 32
+  let escaped = ''
+  let prefixEnd = 0
+  for (const char of value) {
+    if (char === '\\') escaped += '\\\\'
+    else if (/[:~\x00-\x1f\x7f-\x9f\u2028\u2029\ud800-\udfff]/u.test(char)) escaped += `\\u{${char.charCodeAt(0).toString(16)}}`
+    else escaped += char
+    if (escaped.length > maxLength) {
+      const hash = createHash('sha256').update(value, 'utf16le').digest('hex').slice(0, hashLength)
+      return `${escaped.slice(0, prefixEnd)}~${hash}`
+    }
+    // Leave room for the suffix without cutting an escape or a Unicode code point.
+    if (escaped.length <= maxLength - 1 - hashLength) prefixEnd = escaped.length
+  }
+  return escaped
+}
+
+function sendErrorMessage(error: unknown): string {
+  try {
+    return String(error instanceof Error ? error.message : error)
+  } catch {
+    return 'operational inbox send failed'
+  }
+}
 
 /**
  * Await each check before calling again. The feed cursor and topic dedupe live
- * only in memory for this watcher instance. A rejected send rejects `check()`.
- * If a send succeeds but its response is lost, the next check can retry it.
- * The board's latest-send-replaces rule then supersedes the first message and
- * its receipt is lost.
+ * only in memory for this watcher instance. A failed send is reported without
+ * blocking later alerts. The next check retries it if the issue persists.
+ * If a send succeeds but its response is lost, a retry replaces the first
+ * message and its receipt is lost.
  */
 export function stallWatcher(
   handle: StallBoard,
   { channel, to, quietMinutes = 30, periodMinutes = 30, now }: StallWatcherOptions,
 ) {
   const startedAt = now()
+  const alertChannel = escapeAlertField(channel)
   let activityAt = startedAt
   let after: string | undefined
   const observed = new Map<string, { generation: number | undefined; since: number }>()
@@ -160,21 +192,29 @@ export function stallWatcher(
       const idleMs = time - activityAt
       const quiet = idleMs >= quietMinutes * MINUTE_MS
       const alerts = new Map<string, string>()
-      if (quiet) alerts.set('stall:quiet', `No board feed events or heartbeats from enabled agents in ${channel} for ${idleMs} ms.`)
+      if (quiet) alerts.set(`stall:quiet:${alertChannel}`, `No board feed events or heartbeats from enabled agents in ${alertChannel} for ${idleMs} ms.`)
       for (const { id, role, heartbeatAt, ageMs, limitMs } of missed) {
+        const alertId = escapeAlertField(id)
         const last = heartbeatAt === null ? `has no heartbeat after ${ageMs} ms of watching` : `last sent a heartbeat ${ageMs} ms ago`
-        alerts.set(`stall:missed:${id}`, `Agent ${id} (${role}) ${last}. The limit is ${limitMs} ms.`)
+        alerts.set(`stall:missed:${alertChannel}:${alertId}`, `Agent ${alertId} (${escapeAlertField(role)}) ${last}. The limit is ${limitMs} ms.`)
       }
       for (const topic of sent) if (!alerts.has(topic)) sent.delete(topic)
+      const errors: StallSendError[] = []
       for (const [topic, text] of alerts) {
         if (sent.has(topic)) continue
         if (await isPaused()) return { kind: 'paused' }
-        await handle.operationalInbox.send({ to, topic, text })
+        try {
+          await handle.operationalInbox.send({ to, topic, text })
+        } catch (error) {
+          errors.push({ topic, error: sendErrorMessage(error) })
+          continue
+        }
         sent.add(topic)
       }
 
-      if (quiet) return { kind: 'quiet', sinceMs: activityAt, quietMinutes, ...(missed.length > 0 ? { missed } : {}) }
-      if (missed.length > 0) return { kind: 'missed', agents: missed }
+      const failures = errors.length > 0 ? { errors } : {}
+      if (quiet) return { kind: 'quiet', sinceMs: activityAt, quietMinutes, ...(missed.length > 0 ? { missed } : {}), ...failures }
+      if (missed.length > 0) return { kind: 'missed', agents: missed, ...failures }
       return { kind: 'ok' }
     },
   }

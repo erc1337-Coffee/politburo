@@ -226,17 +226,23 @@ function for per-agent periods. Return `undefined` to skip that agent's
 missed check. An active feed does not suppress missed alerts. A `quiet`
 result includes `missed` if there are also late agents.
 
-The watcher sends one inbox message per topic (`stall:quiet` or
-`stall:missed:<agentId>`) until a check sees that issue recover. A check can
-send several topics. It reads pause status at the start and just before
-each send. If paused, it returns `paused` and sends no further messages.
-The extra read narrows the race but is not atomic with the send.
+The watcher sends one inbox message per topic (`stall:quiet:<channel>` or
+`stall:missed:<channel>:<agentId>`) until a check sees that issue recover.
+It escapes control characters in channel names, agent IDs, and roles, and
+shortens long values with a stable hash suffix.
+
+A check can send several topics. It reads pause status at the start and just
+before each send. If paused, it returns `paused` and sends no further messages.
+The extra read narrows the race but is not atomic with the send. A `quiet` or
+`missed` result reports failed sends in `errors` as `{ topic, error }` entries,
+with the error message as a string. Other sends in the same check still go
+out, and the next check retries failed topics that are still active.
 
 The feed cursor and topic dedupe live only in memory for this watcher
-instance. A rejected send rejects `check()`. If a send succeeds but its
-response is lost, the next check can retry it. The board's latest-send-replaces
-rule then supersedes the first message and its receipt is lost. The watcher
-does not wake or stop agents or change task state.
+instance. If a send succeeds but its response is lost, the next check can
+retry it. The board's latest-send-replaces rule then supersedes the first
+message and its receipt is lost. The watcher does not wake or stop agents
+or change task state.
 
 ## ops
 

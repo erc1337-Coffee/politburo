@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import { test, type TestContext } from 'node:test'
 import timers from 'node:timers/promises'
+import { board } from '@vercel/board'
+import { local } from '@vercel/board/backend-local'
 import { heartbeat, nextBeat, stallWatcher, type HeartbeatBoard, type StallAgent, type StallBoard, type StallWatcherOptions } from '../src/index.ts'
 
 const minute = 60_000
@@ -143,6 +145,9 @@ for (const status of [409, 503]) {
 
 const channel = 'runtime/work'
 const recipient = { role: 'operator' }
+const quietTopic = `stall:quiet:${channel}`
+const workerTopic = `stall:missed:${channel}:worker`
+const reviewerTopic = `stall:missed:${channel}:reviewer`
 
 function registration(id: string, beatAt: number | null, fields: Partial<StallAgent> = {}): StallAgent {
   return { id, role: 'implementation-worker', status: 'enabled', heartbeatAt: beatAt === null ? null : new Date(beatAt).toISOString(), ...fields }
@@ -188,6 +193,83 @@ function fixture(t: TestContext, options: Partial<StallWatcherOptions> = {}) {
   return { check, state, clock, handle, events, post, polls, sent, topics: () => sent.map(({ topic }) => topic).sort() }
 }
 
+function localInbox(t: TestContext) {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const backend = local({ memory: true, agentOps: true })
+  t.after(() => backend.close())
+  return board({ backend })
+}
+
+test('quiet alerts from two channels coexist in one recipient inbox', async (t) => {
+  const team = localInbox(t)
+  const clock = fakeClock()
+  const to = { agent: (await team.me()).principal }
+  const alpha = stallWatcher(team, { channel: 'alpha', to, now: clock.now })
+  const beta = stallWatcher(team, { channel: 'beta', to, now: clock.now })
+
+  clock.advance(30 * minute)
+  assert.equal((await alpha.check()).kind, 'quiet')
+  assert.equal((await beta.check()).kind, 'quiet')
+  const { messages } = await team.operationalInbox.read()
+  assert.deepEqual(messages.map(({ topic }) => topic).sort(), ['stall:quiet:alpha', 'stall:quiet:beta'])
+})
+
+test('quiet alerts from channels with colliding short hashes coexist in a real inbox', async (t) => {
+  const team = localInbox(t)
+  const clock = fakeClock()
+  const to = { agent: (await team.me()).principal }
+  const prefix = 'y'.repeat(64)
+  const first = stallWatcher(team, { channel: `${prefix}012c3db3`, to, now: clock.now })
+  const second = stallWatcher(team, { channel: `${prefix}0159aada`, to, now: clock.now })
+
+  clock.advance(30 * minute)
+  assert.equal((await first.check()).kind, 'quiet')
+  assert.equal((await second.check()).kind, 'quiet')
+  const { messages } = await team.operationalInbox.read()
+  assert.equal(messages.length, 2, 'both channel alerts should be present in the inbox')
+  assert.equal(new Set(messages.map(({ topic }) => topic)).size, 2)
+  assert.ok(messages.every(({ topic }) => topic.length <= 'stall:quiet:'.length + 64))
+})
+
+test('stall alerts escape controls and keep long IDs distinct in a real inbox', async (t) => {
+  const team = localInbox(t)
+  const clock = fakeClock()
+  const to = { agent: (await team.me()).principal }
+  const scope = 'runtime/work:\t\u2029'
+  const prefix = 'x'.repeat(4_999)
+  const agents = [
+    registration('worker\nnext', start, { role: 'review\u2028er\x7f' }),
+    registration('worker\u0085next', start),
+    registration(String.raw`worker\u{a}next`, start),
+    registration('worker\0next', start),
+    registration('worker\ud800', start),
+    registration(`${prefix}a`, start),
+    registration(`${prefix}b`, start),
+  ]
+  // The local registry generates IDs and validates channel and role, so stub only the registry read.
+  const handle: StallBoard = { ...team, agents: { async list() { return { agents } } } }
+  const watcher = stallWatcher(handle, { channel: scope, to, now: clock.now })
+
+  clock.advance(61 * minute)
+  const result = await watcher.check()
+  assert.equal(result.kind, 'quiet')
+  assert.ok(!('errors' in result), 'all alerts should be accepted by the inbox')
+  const { messages } = await team.operationalInbox.read()
+  assert.equal(messages.length, agents.length + 1)
+  assert.equal(new Set(messages.map(({ topic }) => topic)).size, messages.length)
+  for (const { topic, text } of messages) {
+    assert.ok(topic.length <= 256)
+    assert.ok(text.length < 512)
+    assert.doesNotMatch(topic, /[\x00-\x1f\x7f-\x9f\u2028\u2029]/u)
+    assert.doesNotMatch(text, /[\x00-\x1f\x7f-\x9f\u2028\u2029]/u)
+  }
+  const escapedScope = String.raw`runtime/work\u{3a}\u{9}\u{2029}`
+  const quiet = messages.find(({ topic }) => topic === `stall:quiet:${escapedScope}`)
+  assert.ok(quiet?.text.includes(`in ${escapedScope} for`))
+  const missed = messages.find(({ topic }) => topic === String.raw`stall:missed:${escapedScope}:worker\u{a}next`)
+  assert.ok(missed?.text.includes(String.raw`Agent worker\u{a}next (review\u{2028}er\u{7f})`))
+})
+
 test('the default quiet window starts at watcher creation and includes its exact boundary', async (t) => {
   const f = fixture(t)
   f.clock.advance(30 * minute - 1)
@@ -195,7 +277,7 @@ test('the default quiet window starts at watcher creation and includes its exact
   assert.deepEqual(f.sent, [])
   f.clock.advance(1)
   assert.deepEqual(await f.check(), { kind: 'quiet', sinceMs: start, quietMinutes: 30 })
-  assert.deepEqual(f.sent.map(({ to, topic }) => ({ to, topic })), [{ to: recipient, topic: 'stall:quiet' }])
+  assert.deepEqual(f.sent.map(({ to, topic }) => ({ to, topic })), [{ to: recipient, topic: quietTopic }])
 })
 
 test('a recent enabled heartbeat keeps the watcher active until that timestamp ages out', async (t) => {
@@ -207,7 +289,7 @@ test('a recent enabled heartbeat keeps the watcher active until that timestamp a
   assert.deepEqual(f.sent, [])
   f.clock.advance(1)
   assert.deepEqual(await f.check(), { kind: 'quiet', sinceMs: beatAt, quietMinutes: 5 })
-  assert.deepEqual(f.topics(), ['stall:quiet'])
+  assert.deepEqual(f.topics(), [quietTopic])
 })
 
 test('retiring and re-registering an agent does not erase its observed heartbeat', async (t) => {
@@ -227,7 +309,7 @@ test('retiring and re-registering an agent does not erase its observed heartbeat
 
   f.clock.advance(3 * minute)
   assert.deepEqual(await f.check(), { kind: 'quiet', sinceMs: beatAt, quietMinutes: 5 })
-  assert.deepEqual(f.topics(), ['stall:quiet'])
+  assert.deepEqual(f.topics(), [quietTopic])
 })
 
 test('the first check sees a post made after watcher creation and uses its timestamp', async (t) => {
@@ -243,7 +325,7 @@ test('the first check sees a post made after watcher creation and uses its times
   f.clock.advance(2 * minute)
   assert.deepEqual(await f.check(), { kind: 'quiet', sinceMs: postedAt, quietMinutes: 5 })
   assert.deepEqual(f.polls, [{ last: 25 }, { after: 'feed:1', wait: 0 }])
-  assert.deepEqual(f.topics(), ['stall:quiet'])
+  assert.deepEqual(f.topics(), [quietTopic])
 })
 
 test('old feed events on the first check do not postpone quiet', async (t) => {
@@ -252,7 +334,7 @@ test('old feed events on the first check do not postpone quiet', async (t) => {
   f.post(start - 1)
   f.clock.advance(5 * minute)
   assert.deepEqual(await f.check(), { kind: 'quiet', sinceMs: start, quietMinutes: 5 })
-  assert.deepEqual(f.topics(), ['stall:quiet'])
+  assert.deepEqual(f.topics(), [quietTopic])
 })
 
 test('new feed events keep the watcher active, but past events do not count again', async (t) => {
@@ -266,7 +348,7 @@ test('new feed events keep the watcher active, but past events do not count agai
   assert.deepEqual(f.sent, [])
   f.clock.advance(2 * minute)
   assert.deepEqual(await f.check(), { kind: 'quiet', sinceMs: start + 6 * minute, quietMinutes: 2 })
-  assert.deepEqual(f.topics(), ['stall:quiet'])
+  assert.deepEqual(f.topics(), [quietTopic])
 })
 
 test('feed activity uses the newest parseable timestamp, capped at the check time', async (t) => {
@@ -282,7 +364,7 @@ test('feed activity uses the newest parseable timestamp, capped at the check tim
 
   f.clock.advance(2 * minute)
   assert.deepEqual(await f.check(), { kind: 'quiet', sinceMs: checkedAt, quietMinutes: 2 })
-  assert.deepEqual(f.topics(), ['stall:quiet'])
+  assert.deepEqual(f.topics(), [quietTopic])
 })
 
 test('only agents older than twice their configured period are missed', async (t) => {
@@ -299,7 +381,7 @@ test('only agents older than twice their configured period are missed', async (t
   assert.deepEqual(await f.check(), {
     kind: 'missed', agents: [{ id, role, heartbeatAt, ageMs: 10 * minute + 1, limitMs: 10 * minute }],
   })
-  assert.deepEqual(f.sent.map(({ to, topic }) => ({ to, topic })), [{ to: { agent: 'owner' }, topic: 'stall:missed:worker' }])
+  assert.deepEqual(f.sent.map(({ to, topic }) => ({ to, topic })), [{ to: { agent: 'owner' }, topic: workerTopic }])
   assert.ok(f.sent[0]!.text.includes(id) && f.sent[0]!.text.includes(`${10 * minute + 1} ms`))
 })
 
@@ -314,7 +396,7 @@ test('an agent with no heartbeat gets two default periods of grace from watcher 
   assert.deepEqual(await f.check(), {
     kind: 'missed', agents: [{ id: agent.id, role: agent.role, heartbeatAt: null, ageMs: 60 * minute + 1, limitMs: 60 * minute }],
   })
-  assert.deepEqual(f.topics(), ['stall:missed:worker'])
+  assert.deepEqual(f.topics(), [workerTopic])
 })
 
 test('a later registration with no heartbeat gets grace from its first observation', async (t) => {
@@ -333,7 +415,7 @@ test('a later registration with no heartbeat gets grace from its first observati
   assert.deepEqual(await f.check(), {
     kind: 'missed', agents: [{ id, role, heartbeatAt, ageMs: 10 * minute + 1, limitMs: 10 * minute }],
   })
-  assert.deepEqual(f.topics(), ['stall:missed:worker'])
+  assert.deepEqual(f.topics(), [workerTopic])
 })
 
 test('a generation change restarts grace for an agent with no heartbeat', async (t) => {
@@ -352,11 +434,11 @@ test('a generation change restarts grace for an agent with no heartbeat', async 
   assert.deepEqual(await f.check(), { kind: 'ok' })
   f.clock.advance(10 * minute)
   assert.deepEqual(await f.check(), { kind: 'ok' })
-  assert.deepEqual(f.topics(), ['stall:missed:worker'])
+  assert.deepEqual(f.topics(), [workerTopic])
 
   f.clock.advance(1)
   assert.deepEqual(await f.check(), missed)
-  assert.deepEqual(f.topics(), ['stall:missed:worker', 'stall:missed:worker'])
+  assert.deepEqual(f.topics(), [workerTopic, workerTopic])
 })
 
 test('disabled agents are neither missed nor activity', async (t) => {
@@ -367,7 +449,7 @@ test('disabled agents are neither missed nor activity', async (t) => {
     registration('recent', f.clock.now(), { status: 'disabled' }),
   )
   assert.deepEqual(await f.check(), { kind: 'quiet', sinceMs: start, quietMinutes: 30 })
-  assert.deepEqual(f.topics(), ['stall:quiet'])
+  assert.deepEqual(f.topics(), [quietTopic])
 })
 
 test('quiet includes missed agents and each notification topic re-arms only after its own recovery', async (t) => {
@@ -379,7 +461,7 @@ test('quiet includes missed agents and each notification topic re-arms only afte
   const first = await f.check()
   assert.equal(first.kind, 'quiet')
   assert.deepEqual(first.missed?.map(({ id }) => id).sort(), ['reviewer', 'worker'])
-  const topics = ['stall:missed:reviewer', 'stall:missed:worker', 'stall:quiet']
+  const topics = [reviewerTopic, workerTopic, quietTopic]
   assert.deepEqual(f.topics(), topics)
   f.clock.advance(1)
   assert.equal((await f.check()).kind, 'quiet')
@@ -397,11 +479,11 @@ test('quiet includes missed agents and each notification topic re-arms only afte
 
   f.clock.advance(4 * minute + 1)
   assert.equal((await f.check()).kind, 'missed')
-  topics.push('stall:missed:worker')
+  topics.push(workerTopic)
   assert.deepEqual(f.topics(), topics.sort())
   f.clock.advance(minute - 1)
   assert.equal((await f.check()).kind, 'quiet')
-  assert.deepEqual(f.topics(), [...topics, 'stall:quiet'])
+  assert.deepEqual(f.topics(), [...topics, quietTopic])
 })
 
 test('a fresh feed event does not suppress a missed alert', async (t) => {
@@ -415,7 +497,7 @@ test('a fresh feed event does not suppress a missed alert', async (t) => {
   assert.deepEqual(await f.check(), {
     kind: 'missed', agents: [{ id, role, heartbeatAt, ageMs: 5 * minute, limitMs: 4 * minute }],
   })
-  assert.deepEqual(f.topics(), ['stall:missed:worker'])
+  assert.deepEqual(f.topics(), [workerTopic])
 })
 
 test('a paused board sends nothing even when quiet and missing beats', async (t) => {
@@ -427,7 +509,7 @@ test('a paused board sends nothing even when quiet and missing beats', async (t)
   assert.deepEqual(f.sent, [])
   f.state.paused = false
   assert.equal((await f.check()).kind, 'quiet')
-  assert.deepEqual(f.topics(), ['stall:missed:worker', 'stall:quiet'])
+  assert.deepEqual(f.topics(), [workerTopic, quietTopic])
 })
 
 test('a pause after the initial status read prevents any sends', async (t) => {
@@ -458,7 +540,7 @@ test('a pause between sends leaves the remaining topics unsent until resume', as
 
   f.state.paused = false
   assert.equal((await f.check()).kind, 'quiet')
-  assert.deepEqual(f.topics(), ['stall:missed:worker', 'stall:quiet'])
+  assert.deepEqual(f.topics(), [workerTopic, quietTopic])
 })
 
 test('no_network_pause still allows a quiet notification', async (t) => {
@@ -466,7 +548,7 @@ test('no_network_pause still allows a quiet notification', async (t) => {
   f.state.statusError = Object.assign(new Error('unsupported'), { status: 501, code: 'no_network_pause' })
   f.clock.advance(30 * minute)
   assert.deepEqual(await f.check(), { kind: 'quiet', sinceMs: start, quietMinutes: 30 })
-  assert.deepEqual(f.topics(), ['stall:quiet'])
+  assert.deepEqual(f.topics(), [quietTopic])
 })
 
 test('other status errors reject the check without sending', async (t) => {
@@ -478,16 +560,47 @@ test('other status errors reject the check without sending', async (t) => {
   assert.deepEqual(f.sent, [])
 })
 
-test('a failed send rejects the check and the next check can send the same topic', async (t) => {
+test('a failed quiet send is reported and retried until it succeeds', async (t) => {
   const f = fixture(t)
   const error = new Error('inbox unavailable')
   f.state.sendError = error
   f.clock.advance(30 * minute)
-  await assert.rejects(f.check(), (rejection) => rejection === error)
+  assert.deepEqual(await f.check(), {
+    kind: 'quiet', sinceMs: start, quietMinutes: 30, errors: [{ topic: quietTopic, error: error.message }],
+  })
   assert.deepEqual(f.sent, [])
   f.state.sendError = undefined
   assert.deepEqual(await f.check(), { kind: 'quiet', sinceMs: start, quietMinutes: 30 })
-  assert.deepEqual(f.topics(), ['stall:quiet'])
+  assert.deepEqual(f.topics(), [quietTopic])
   assert.equal((await f.check()).kind, 'quiet')
-  assert.deepEqual(f.topics(), ['stall:quiet'])
+  assert.deepEqual(f.topics(), [quietTopic])
+})
+
+test('a failed send does not block other alerts and only the failed topic is retried', async (t) => {
+  const f = fixture(t, { quietMinutes: 90 })
+  f.state.agents.push(registration('worker', start), registration('reviewer', start, { role: 'reviewer' }))
+  const inbox = f.handle.operationalInbox
+  const send = inbox.send
+  const error = new Error('inbox unavailable')
+  let failedTopic: string | undefined
+  t.mock.method(inbox, 'send', async (message: (typeof f.sent)[number]) => {
+    if (failedTopic === undefined) {
+      failedTopic = message.topic
+      throw error
+    }
+    await send(message)
+  })
+
+  f.clock.advance(61 * minute)
+  const result = await f.check()
+  assert.equal(result.kind, 'missed')
+  assert.ok(failedTopic)
+  assert.deepEqual(result.errors, [{ topic: failedTopic, error: error.message }])
+  const topics = [reviewerTopic, workerTopic]
+  assert.deepEqual(f.topics(), topics.filter((topic) => topic !== failedTopic))
+
+  const retried = await f.check()
+  assert.equal(retried.kind, 'missed')
+  assert.ok(!('errors' in retried))
+  assert.deepEqual(f.topics(), topics)
 })
