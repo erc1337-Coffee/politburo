@@ -21,6 +21,7 @@ export {
   type ControllerRecipient,
   type ControllerRegistry,
 } from './controller/index.ts'
+export * from './stall.ts'
 export * from './ops/refill.ts'
 export * from './ops/privacy.ts'
 export * from './ops/scaffold.ts'

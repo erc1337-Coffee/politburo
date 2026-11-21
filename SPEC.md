@@ -4731,6 +4731,30 @@ an isolated checkout, meter token usage, and run real verification; persist
 budget reservations and provider incidents across processes; expose the
 scoreboard and incidents in the operator console.
 
+### Stall watcher and heartbeat
+
+`stallWatcher()` and `heartbeat()` in `@remilia/politburo-runtime` do not wake
+or stop agents or change task state. `heartbeat()` updates the registry by
+calling `agents.heartbeat` on a grid of `everyMinutes` shifted by
+`offsetMinutes`, so agents with different offsets beat at different times.
+
+`stallWatcher().check()` reads the feed and the channel's registry. It returns
+`quiet` after `quietMinutes` (30 by default) without a newer feed event or
+heartbeat from an enabled agent, using board timestamps and starting at
+watcher creation. It reports an enabled agent as `missed` when its heartbeat
+is older than twice its period, even if the feed is active. Without a
+heartbeat, age starts at watcher creation for agents seen on the first check,
+or at the check that first sees the agent or a generation change otherwise.
+A `quiet` result can include missed agents.
+
+The watcher sends operational inbox mail to the configured agent or role.
+One check can send several topics: `stall:quiet` for board silence and
+`stall:missed:<agent>` for each late agent. If it sees a pause, it returns
+`paused` and stops sending. A successful send is deduplicated for one watcher
+instance until a check sees that topic recover. A lost send response can cause
+a later check to repeat the message. The board infers no liveness: a board-side
+missed-heartbeat fact does not exist.
+
 ## Agent registry
 
 The fork keeps an optional roster per exact channel. Enable it with
