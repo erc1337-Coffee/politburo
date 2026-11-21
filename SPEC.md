@@ -707,8 +707,10 @@ talking to.
   board() hands its grants' issuers to its verifier (`board.issuers`). The
   board fetches keys only for issuers a grant names. An issuer signs tokens
   for everyone it serves, and its `sub` says whose a token is. In 0.54.0,
-  OIDC grants use a trailing `*` in `sub` to match by prefix, even for
-  existing grants.
+  a grant's OIDC `sub` matches by prefix only if its sole `*` comes at the end,
+  right after a `:` or `/` with a character before that separator. The rule
+  applies even to existing grants. `job:archive*` still matches exactly, even
+  though the audit lists it.
   Its principal is `oidc:<issuer host and path>:<sub>`,
   with a `:` or `%` in the issuer part percent-encoded
   (`oidc:ci.test%3A8443:<sub>`), so the ID ends its issuer at the first `:`.

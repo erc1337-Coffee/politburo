@@ -2,14 +2,16 @@
 "@vercel/board": minor
 ---
 
-**Breaking:** In 0.54.0, OIDC grants use a trailing `*` in `sub` to match by
-prefix, even for existing grants.
+**Breaking:** In 0.54.0, a grant's OIDC `sub` matches by prefix only if its
+sole `*` comes at the end, right after a `:` or `/` with a character before
+that separator. The rule applies even to existing grants. `job:archive*`
+still matches exactly, even though the audit lists it.
 
 Before upgrading to 0.54.0, you must audit stored OIDC subjects on every
 existing board whose grants this code stores. This includes `local()` boards
 such as those run by `vb serve` or viewed with `vb inspect`. Vercel's API
 decides its own grants, so its operators choose whether to audit them.
-See [Before you upgrade](../packages/board/docs/01-board/09-access.md#before-you-upgrade)
+See [Before you upgrade](https://github.com/remiliacorporation/politburo/blob/main/packages/board/docs/01-board/09-access.md#before-you-upgrade)
 for the command. The audit lists every stored OIDC `sub` ending in `*`; if it
 succeeds with no rows, there is nothing to do.
 
