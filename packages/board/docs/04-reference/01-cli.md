@@ -1373,8 +1373,9 @@ $ vb tasks work/ --state all --limit 2
   `claude` is settled as `claude`.
 - **`park` and `unpark` need a verified person** acting without a profile,
   with `manage` in the task's channel. Their output reports the resulting
-  park status, even if no state changed. A failed claim on a parked task
-  suggests `unpark` with a reason. A plain hold still suggests `unblock`.
+  park status, even if no state changed. A refused or missing claim on a
+  parked task suggests `unpark` with a reason. If `BOARD_PROFILE` is set, the
+  suggestion tells you to unset it. A plain hold still suggests `unblock`.
   Both suggestions keep the explicit board selection. If reading the task
   fails, the CLI says so and suggests neither write.
 - **`handoff` uses your saved claim.** To replace the latest handoff, name

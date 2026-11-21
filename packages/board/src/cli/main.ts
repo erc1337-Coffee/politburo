@@ -2738,6 +2738,15 @@ function printClaim(task: MessageView, claim: { epoch: number; until: string }, 
   else out(claimLine(task, claim.until))
 }
 
+/** An operator unparks as themselves: dropping --as leaves any environment profile in effect. */
+function unparkRecovery(id: string): Recovery {
+  const withoutProfile = !io.board && environmentProfile() ? ' with BOARD_PROFILE unset' : ''
+  return {
+    instruction: `Or, as an operator, lift the park${withoutProfile}`,
+    argv: [...cli(), 'tasks', 'unpark', id, 'resume work', ...onSameBoard()],
+  }
+}
+
 /**
  * This run's claim on task `id`, as the board's handle acts on it, or the failure that says it
  * holds none as whoever it writes as: a claim taken as one profile isn't another's, or yours.
@@ -2753,10 +2762,7 @@ async function heldBy(board: Board, claims: Claims, id: string) {
   const task = await board.thread(id, { limit: 1 }).then(({ message }) => message.task, () => undefined)
   const see: Recovery = { instruction: 'See where it stands', argv: [...cli(), 'read', id, ...here] }
   if (task?.state === 'blocked') {
-    if (task.parked)
-      throw notHeld("It's parked: claim it once the park lifts.", [see, {
-        instruction: 'Or, as an operator, lift the park', argv: [...cli(), 'tasks', 'unpark', id, 'resume work', ...onSameBoard()],
-      }])
+    if (task.parked) throw notHeld("It's parked: claim it once the park lifts.", [see, unparkRecovery(id)])
     const held = "It's held for a person: claim it once the hold lifts."
     if (task.attentionId !== undefined) {
       // An answered request stays visible even if a later plain hold blocks the task again.
@@ -3298,8 +3304,7 @@ function taskFailure(code: string, status: number, hold: TaskHold): { class: Fai
       }
       const see = read("See what it's held for", ...board, ...asTyped())
       if (hold === 'unknown') return { class: 'conflict', message: `Can't ${doing()}. It's held, but the CLI couldn't read the task to see why.`, next: see }
-      // An operator acts without a profile, even if the failed command named one.
-      if (hold === 'parked') return { class: 'conflict', message: `Can't ${doing()}. It's parked.`, next: [...see, ...also('Or, as an operator, lift the park', 'unpark', 'resume work', ...board)] }
+      if (hold === 'parked') return { class: 'conflict', message: `Can't ${doing()}. It's parked.`, next: named === undefined ? see : [...see, unparkRecovery(named)] }
       const lift = args[0] === 'unblock' ? [] : also('Or, as its owner, lift the hold', 'unblock', ...board, ...asTyped())
       return { class: 'conflict', message: `Can't ${doing()}. It's held for a person.`, next: [...see, ...lift] }
     }

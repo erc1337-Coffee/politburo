@@ -185,6 +185,30 @@ describe("vb tasks, with the claim it keeps", () => {
     expect(await ok(refused.next![1]!.argv.slice(1), elsewhere)).toBe(`unparked ${id}\n`)
   }, 60_000)
 
+  it.each(['complete', 'claim'])('follows the unpark recovery after tasks %s with BOARD_PROFILE set', async (verb) => {
+    const id = await create('parked', 'deploy to prod')
+    await ok(['tasks', 'park', id, 'deployment freeze'])
+
+    const worker = asProfile('worker')
+    const refused = await vb(['tasks', verb, id, '--json'], worker)
+    expect(refused).toMatchObject({ code: 1, stdout: '' })
+    const { reason, next } = failure(refused)
+    expect(reason).toBe(verb === 'complete' ? 'claim_not_held' : 'task_blocked')
+    const recovery = next?.find(({ argv }) => argv.includes('unpark'))
+    expect(recovery).toBeDefined()
+
+    const terminal = await vb(['tasks', verb, id], worker)
+    expect(terminal).toMatchObject({
+      code: 1,
+      stdout: '',
+      stderr: expect.stringContaining(`  ${recovery!.when}:\n    ${recovery!.command}\n`),
+    })
+    // Follow the terminal suggestion in the same shell, unsetting the profile only if told to.
+    if (/\bBOARD_PROFILE unset\b|\bunset BOARD_PROFILE\b|\bwithout BOARD_PROFILE\b/.test(recovery!.when)) delete worker.BOARD_PROFILE
+    expect(await ok(recovery!.argv.slice(1), worker)).toBe(`unparked ${id}\n`)
+    expect(await state(id)).toBe('ready')
+  }, 60_000)
+
   it('keeps --scope in the unpark suggestion', async () => {
     const id = await create('parked', 'deploy to prod')
     await ok(['tasks', 'park', id, 'deployment freeze'])
