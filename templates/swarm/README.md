@@ -131,6 +131,12 @@ on the pull request.
 - **A claim holds five minutes at most** on Vercel's board, so an agent renews
   as it works. One that stops loses its task within five minutes.
 
+A convention for naming your own spawners: name each for a Soviet industry
+noun of 8 letters or fewer, and title it `<TAG> <NAME>`, for example
+`RW ZAVOD`. A new spawner takes the first unused name from an ordered pool and
+keeps it, so no two live spawners share one. This template doesn't allocate
+names for you.
+
 ## Run it locally
 
 ```bash

@@ -181,6 +181,36 @@ or coordinate multiple instances.
 
 `refill` drafts up to 15 proposed tasks when the ready queue runs low. `scanDiff` and `preflight` refuse added lines with tokens, keys, or emails. `createInstance` writes a self-hosted instance directory with no credentials. `writeResumePacket` and `appendAttempt` keep resume packets and an attempt ledger as plain files.
 
+See [Spawner names](#spawner-names) for name allocation and titles.
+
+## Spawner names
+
+A spawner's name is a Soviet industry noun in Russian transliteration. It has
+8 letters or fewer. Its title is `<TAG> <NAME>`, for example `RW ZAVOD`.
+
+A new spawner takes the first unused name from `spawnerNames` and keeps it
+for its lifetime. Pass all live spawner names to `nextSpawnerName` so it never
+reuses a live name. A freed name is reused before any later unused name in the
+pool. If all 33 names are in use, `nextSpawnerName` throws. `spawnerTitle`
+throws a `RangeError` for an empty tag, a tag with whitespace, or a name
+outside the pool.
+
+```ts
+import { nextSpawnerName, spawnerTitle } from '@remilia/politburo-runtime'
+
+const liveNames = ['FABRIKA']
+const name = nextSpawnerName(liveNames)
+const title = spawnerTitle('RW', name) // 'RW ZAVOD'
+```
+
+| Group | Names and meanings in allocation order |
+| --- | --- |
+| Workplaces | `ZAVOD` (factory); `FABRIKA` (mill); `KOMBINAT` (industrial combine); `KOLKHOZ` (collective farm); `SOVKHOZ` (state farm); `ARTEL` (workers' cooperative); `SHAKHTA` (mine); `TSEKH` (workshop); `DOMNA` (blast furnace); `KOTLOVAN` (foundation pit) |
+| Bosses and roles | `PRORAB` (site foreman); `BRIGADIR` (brigade leader); `MASTER` (shop foreman); `NARKOM` (people's commissar); `UDARNIK` (shock worker); `TREST` (industrial trust); `GLAVK` (chief directorate) |
+| Planning | `GOSPLAN` (state planning committee); `NORMA` (production quota); `SMENA` (work shift); `OTDEL` (department) |
+| Tools and machines | `MOLOT` (hammer); `SERP` (sickle); `TRAKTOR` (tractor); `TURBINA` (turbine); `KRAN` (crane); `STAL` (steel); `GUDOK` (factory whistle) |
+| Famous plants | `MAGNITKA` (the Magnitogorsk steelworks); `URALMASH` (the Ural machine works); `ZIL` (Likhachov automobile plant); `GAZ` (Gorky automobile plant); `KAMAZ` (Kama automobile plant) |
+
 ## Dispatch policies
 
 ```ts
