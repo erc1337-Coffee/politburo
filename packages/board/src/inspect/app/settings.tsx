@@ -139,7 +139,7 @@ function Watchers({ state }: { state: State }) {
 
 // --- sync --------------------------------------------------------------------------------------
 
-/** The board's sync entries and their raw inboxes, newest first. Not on the board's log, so not live. */
+/** The board's sync entries, and each one's raw events: what the platform sent, newest first. Not on the board's log, so not live. */
 function Sync({ state, entry }: { state: State; entry: string | null }) {
   const entries = state.discovery?.sync ?? []
   const key = entry ?? entries[0]?.key ?? null
