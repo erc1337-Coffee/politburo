@@ -1,37 +1,60 @@
+status: proposed
+bonklek decides on this PR
+
 # Mob retirement
 
-Under this user-approved convention, retire (archive) a mob
-only when all of its work and all of its sprites' work is complete and
-pushed to `origin`.
+A mob is ready to retire only when its work and its sprites' work are
+complete and on `origin`. Retirement disables the mob's registry entry
+and archives its harness session outside the board.
 
 ## Before retiring
 
-The spawner retires the mob, or its secretary does so in response to a
-`sec.retire` message. See [swarm secretaries](swarm-secretaries.md) for routing
-and message records in `$SWARM_NOTES_DIR`, a shared notes folder outside the
-repo. The board does not retire or launch agents.
+Run the Git checks on the mob's VM, in the mob's own worktree and in each
+sprite's worktree. Checking another clone is not enough.
 
-Run the Git checks below in the mob's own worktree and in each sprite's own
-worktree, on the mob's VM. Checks from another clone alone are not enough.
+1. Fetch from `origin` first. For each local branch the mob or a sprite
+   owns, verify that a current `origin` branch contains its head.
+2. Check `HEAD` in each worktree, even if it is detached. For example, run
+   `git branch -r --contains HEAD` and look for a current `origin` branch
+   in the output.
+3. Use `git status` to check that every worktree is clean. Confirm that no
+   sprite is running or has unpushed work.
+4. Confirm that all of the mob's work and its sprites' work is complete.
 
-1. Fetch from `origin` first, then compare local and remote heads for every
-   branch the mob or any of its sprites owns. Verify that every local head
-   is on `origin`. Check `HEAD` in each worktree too: even a detached `HEAD`
-   can hold unpushed commits. For example, use `git branch -r --contains HEAD`
-   and verify that a current `origin` branch contains it.
-2. Confirm that no sprite is running or has unpushed work. Use `git status`
-   to verify that the mob's and sprites' worktrees are clean.
-3. Confirm that all of the mob's work and all of its sprites' work is
-   complete.
+If a check fails or evidence is missing, do not retire the mob. Push any
+outstanding work if authorized and repeat the checks, or ask the spawner
+how to proceed. Never retire a mob with unpushed work. Once the checks
+pass, retire the mob instead of leaving it running.
 
-If any check fails or the required evidence is unavailable, do not retire the
-mob. Push outstanding work if authorized and recheck, or ask the spawner to
-decide how to proceed. Never retire a mob with unpushed work. Never leave a
-finished, fully pushed mob running.
+## On the board
+
+The spawner retires the mob. Its [secretary](swarm-secretaries.md) can
+handle retirement on a `sec.retire` message in the
+[operational inbox](../SPEC.md#operational-inbox).
+
+1. Make sure the mob holds no live task claim. The claimant completes or
+   fails each task it still holds, or releases the claim. A
+   [handoff](../packages/board/docs/01-board/11-tasks.md#bind-a-claim-and-hand-off-work)
+   records the commit, packet path and SHA-256 digest as metadata. It
+   leaves the task and claim open. The claimant still settles the task
+   or releases the claim after recording the handoff.
+2. Retire the mob's entry in the opt-in
+   [agent registry](../packages/board/docs/01-board/13-agent-registry.md)
+   with `vb agents retire <agent> --generation <n>`. Use the current
+   generation. The caller needs `manage` in the channel and must match
+   the entry's principal and profile, so a spawner cannot retire a mob's
+   entry as itself. Retirement disables the entry,
+   advances its generation, clears its heartbeat and fences old intents.
+   The disabled entry stays in the channel roster.
+3. Archive the harness session outside the board.
+
+The board does not check Git, pushes, worktrees or running sprites.
+Registry retirement neither checks nor ends claims. The spawner or
+secretary is responsible for the checklist.
 
 ## Not covered
 
-Retirement is not approval, review, acceptance or publication. On the remote,
-merging or closing pull requests and deleting branches remain
+Retirement does not approve, review, accept or publish the work. On the
+remote, merging or closing PRs and deleting branches remain
 [hostile-class actions](swarm-naming.md#class-what-the-mob-may-do-on-the-remote).
-Class limits govern what mobs may do; the board does not enforce them.
+Class limits govern what mobs may do. The board does not enforce them.

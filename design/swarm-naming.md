@@ -1,53 +1,71 @@
+status: proposed
+bonklek decides on this PR
+
 # Mob and sprite naming
 
-This is the user-approved convention for naming mobs and sprites. It applies
-to every spawner, mob and sprite. Names are labels and appear only in session
-titles, briefs, reports, sprite names and message metadata (such as `from`).
-They leave each workflow's existing branch and status-ref formats unchanged,
-including `<owner>/<topic>` where used.
+Use this convention for display names in the [swarm tiers](swarm-architecture.md#1-tiers-and-authority).
 
-Related: [agent hierarchy](swarm-architecture.md#1-tiers-and-authority),
-[spawner secretaries](swarm-secretaries.md) and
-[mob retirement](mob-retirement.md).
+## Names and the board
+
+A name is a display label. Use it in titles, briefs, reports and the `from`
+field of a [swarm message](swarm-secretaries.md). The board uses the
+[verified principal and optional profile](../SPEC.md#principals-profiles-actors)
+for identity, not the display label. `--as` selects the profile.
+
+An [agent registry](../packages/board/docs/01-board/13-agent-registry.md)
+entry has a role, an optional parent, a harness and an identity binding. It
+has no name or class field. Mob and sprite names do not map to registry roles.
+A [claim binding](../packages/board/docs/01-board/11-tasks.md#bind-a-claim-and-hand-off-work)
+records `controller`, `owner`, `provider`, `model`, `session`, `branch`,
+`worktree` and `baseCommit`.
+
+A mob can use only the [board permissions](../packages/board/docs/01-board/09-access.md#permissions)
+its credentials allow: `read`, `post`, `label` and `manage`. A class changes
+none of these grants and does not grant approval. The board does not enforce
+class ceilings.
+
+## Titles
+
+| Where | Format |
+| --- | --- |
+| Spawner sidebar title | `<TAG> <NAME>` |
+| Secretary title | `<TAG> <Name>` |
+| Mob session title | `<tag> <serial>-<SPECIES><n>`; add `<n>` only when every species in the job's list has a live mob (e.g. mob ID `120-COW2`). |
+| Sprite name | `<mob-id>.<ITEM><n>`; add `<n>` only when the same mob runs more than one sprite with that item (e.g. item `PICKAXE2`). |
+
+The tag identifies the repo. A sprite name uses the mob ID, including any
+species number, without the tag. Spawners and secretaries keep their names
+for life. Do not reuse a name while a session with that name is alive.
+
+### Spawner names
+
+The design team keeps a separate pool for spawners. It uses industry nouns
+transliterated from Russian, at most eight letters each. The five groups are
+workplaces, bosses and roles, planning, tools and machines, and famous plants.
+
+How a new spawner selects a name: To be confirmed.
+
+### Secretary names
+
+Use the [secretary name list](swarm-secretaries.md#secretary-names).
 
 ## Mobs
 
-A mob is a cloud task session at the mob tier of the core, spawner, mob and
-sprite hierarchy. The eight functional roles are unchanged.
+A mob ID takes the form `<serial>-<SPECIES><n>`. The session title starts with
+the repo tag, as in `ex 120-COW2`.
 
-Format: `<serial>-<SPECIES><n>`. Prefix the cloud session title with the
-repo tag, as in `ex 120-COW2`.
-
-- **Serial:** Use one counter for the whole swarm and never reuse a serial.
-  Take the next serial with the command below.
-- **Species:** Pick the job, then the first species in its list with no live
-  mob.
-- **`<n>`:** Use a number only when every species in the list has a live mob.
-  Then reuse the first species with the next free number, as in `120-COW2`.
-- Species names are 8 characters or fewer.
-
-Use `$SWARM_NOTES_DIR`, a shared notes folder outside the repo, for the
-counter.
-
-```bash
-N="$SWARM_NOTES_DIR"; until mkdir "$N/mob-serial.lock" 2>/dev/null; do sleep 1; done; s=$(( $(cat "$N/mob-serial.txt" 2>/dev/null || echo 0) + 1 )); echo "$s" > "$N/mob-serial.txt"; rmdir "$N/mob-serial.lock"; echo "$s"
-```
-
-Before running the command, set `$SWARM_NOTES_DIR` to an existing, writable
-notes folder. Do not treat a failed run as issuing a serial, even if it prints
-one.
-
-To retire a mob, follow the [mob retirement procedure](mob-retirement.md).
+- The spawner allocates serials from one counter for the whole swarm. The
+  board has no serial counter. A failed allocation issues no serial. Never
+  reuse a serial, even after [mob retirement](mob-retirement.md).
+- Choose the job first. Take the first species in its list with no live mob.
+  Species names have at most 8 characters.
+- Add `<n>` only if every species in the job's list has a live mob. Use the
+  first species in the list with its next free number.
 
 ### Class: what the mob may do on the remote
 
-This table is policy for what a mob may do, not board enforcement.
-A class name does not grant approval.
-
-Classes are ceilings on what a mob may do on the remote; they do not override
-a project's existing roles, assignments or harness restrictions. A Passive mob
-reports without pushing (for example, in its final message or via the spawner's
-chosen reporting path), so a job that needs to push status is Neutral.
+A class sets a ceiling on Git and PR actions. It grants no permission and
+does not override repo rules, assignments or runner restrictions.
 
 | Class | May | Never |
 |---|---|---|
@@ -56,8 +74,9 @@ chosen reporting path), so a job that needs to push status is Neutral.
 | Hostile | Merge, close PRs, delete branches | Act without a clean gate |
 | Boss | Swarm-wide operations | Start without the user's explicit OK |
 
-A mob whose job needs more than its class allows is the wrong species.
-Rename it; don't stretch the class.
+Mobs do not merge PRs. An authorized spawner follows the
+[merge guardrail](swarm-architecture.md#merge-guardrail). If a job needs more
+than the mob's class allows, rename the mob.
 
 ### Passive
 
@@ -95,20 +114,19 @@ Rename it; don't stretch the class.
 
 ### Boss
 
-DRAGON, WITHER, WARDEN, ELDERG. Swarm-wide operations only, each with the
-user's explicit OK.
+DRAGON, WITHER, WARDEN, ELDERG. Use these only for swarm-wide operations.
+Each operation needs the user's explicit OK.
 
 ## Sprites
 
-Format: `<mob-id>.<ITEM><n>`, for example `21-BEE.PICKAXE` or
-`120-COW2.BOOK`. The name is a label only. Pass it to whichever launcher
-the environment provides, using the form that launcher expects, such as the
-brief filename passed to [`pi-task`](swarm-architecture.md#sprite-runs).
-With `sprite-start`, for example: `sprite-start 21-BEE.PICKAXE task.md`.
+A sprite name takes the form `<mob-id>.<ITEM><n>`, as in `21-BEE.PICKAXE`
+or `120-COW2.BOOK`. The mob picks the first free item for the sprite's job.
+Add `<n>` only when the same mob runs more than one sprite with that item,
+as in `21-BEE.PICKAXE2`.
 
-- The mob picks the first free item for the sprite's job.
-- Use `<n>` only when the same mob runs two sprites with the same item, as in
-  `21-BEE.PICKAXE2`.
+Pass the name to the sprite's launcher in the form it accepts. The runtime's
+[`pi()` adapter](../packages/runtime/README.md) passes the task file to
+`pi-task`. See [sprite runs](swarm-architecture.md#sprite-runs).
 
 | Sprite job | Items |
 |---|---|
