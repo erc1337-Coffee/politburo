@@ -21,9 +21,11 @@ export {
   type ControllerRecipient,
   type ControllerRegistry,
 } from './controller/index.ts'
+export * from './stall.ts'
 export * from './ops/refill.ts'
 export * from './ops/privacy.ts'
 export * from './ops/scaffold.ts'
 export * from './ops/packets.ts'
+export * from './names.ts'
 export { localUsage, usageGuard, type LocalUsageOptions, type UsageDecision, type UsageGuard, type UsageSource, type UsageWindow } from './usage.ts'
 export { capacity, type CapacityKind, type CapacityOptions, type CapacityPolicy, type CapacityRequest, type Reservation } from './capacity.ts'
