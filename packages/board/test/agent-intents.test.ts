@@ -726,3 +726,34 @@ it('fails run-health conformance, rather than pass, when its probe agent cannot 
   expect(report.ok).toBe(false)
   expect((await client.agents.list(channel)).agents.map(({ status }) => status).sort()).toEqual(['disabled', 'enabled'])
 })
+
+it.for([500, 404])('reports a cleanup delete that returns HTTP %i on the run-health check', { timeout: 30_000 }, async (status, { onTestFinished }) => {
+  const team = localBoard({ agentOps: true })
+  onTestFinished(() => team.close())
+  const text = 'conformance: run health'
+  const echoed = 'untrusted delete error'
+  let probe: string | undefined
+  const client = via(async (request) => {
+    const path = new URL(request.url).pathname
+    if (probe !== undefined && request.method === 'POST') {
+      if (path.endsWith(`/messages/${probe}/delete`))
+        return Response.json({ error: { code: 'delete_failed', message: echoed } }, { status })
+      // A probe that would be skipped also fails when it can't be cleaned up.
+      if (status === 404 && path.endsWith(`/tasks/${probe}/claim`))
+        return Response.json({ error: { code: 'no_tasks', message: 'this board keeps no tasks' } }, { status: 501 })
+    }
+    const response = await team.fetch(request.clone())
+    if (request.method === 'POST' && path.endsWith('/tasks') && response.ok && (await request.json()).text === text)
+      probe = (await response.clone().json() as { task: { id: string } }).task.id
+    return response
+  }, await personToken())
+
+  const report = await conformance(client)
+  expect(probe).toBeDefined()
+  expect((await client.thread(probe!)).message).toMatchObject({ text, deleted: false })
+  expect(report.checks.find(({ name }) => name === runHealthCheck)).toMatchObject({
+    status: 'failed', detail: expect.stringContaining(`deleting a message this run created: got HTTP ${status}`),
+  })
+  expect(report.ok).toBe(false)
+  expect(JSON.stringify(report)).not.toContain(echoed)
+})
