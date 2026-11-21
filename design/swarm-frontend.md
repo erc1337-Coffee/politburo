@@ -16,9 +16,14 @@ dependencies. [#1](https://github.com/remiliacorporation/politburo/pull/1) and
 [#33](https://github.com/remiliacorporation/politburo/pull/33) are open and
 touch nearby files; the plan says how it avoids them.
 
-The stack's rules (tiers, naming, message classes, urgency, lifecycles, the
-merge guardrail, and the open questions) are the architecture guide's. This
-document restates only what a view needs. The board records relationships and
+The stack's rules are in the ported swarm docs: the
+[architecture](../docs/swarm-architecture.md) (tiers and authority, messaging,
+heartbeats and the stall watcher, the merge guardrail, PR modes, the model
+router), [naming](../docs/swarm-naming.md),
+[secretaries](../docs/swarm-secretaries.md) and
+[mob retirement](../docs/mob-retirement.md). This document restates only what
+a view needs, and it carries the gaps: each place the architecture needs a
+mechanism Politburo does not have yet. The board records relationships and
 messages. It does not launch workers, integrate code, push, merge or grant
 approvals, and neither does the frontend.
 
@@ -119,6 +124,9 @@ carries it).
 | Merge gate | PR labels from sync (`pr`, `head`, `state`, `review`, `ci.*`) and a `swarm-pr@1` snapshot the secretary posts from the code host | extend | Snapshot: `{ pr, head, checks, review: { head, level, by }, gateHeld }`. The page shows whether the guardrail holds. It never decides a merge. The spawner re-checks on the host. |
 | Heartbeat | `AgentView.heartbeatAt` and `team.agents.heartbeat` | as-is | Spawners beat. Mobs and sprites have none, so the page shows no health for them it cannot prove. |
 | Stall watch | Nothing | new | See [G4](#gaps-that-need-new-infrastructure). |
+| Dispatch record | A task root in `swarm/<tag>/work` (`team.tasks.create`, `createMany` for a batch, `needs`, `priority`) | as-is | It replaces a dispatch branch of instructions. The board records the brief and who claims it, and launches nothing. |
+| Status and control exchange | The runtime's `localGit` exchange, `remote/<agent>/{brief,control,inbox,status}` branches, and `watchRemote` | extend | It exists in `packages/runtime` and is the Politburo form of a status branch. Its records are git refs, not board facts. See [G8](#gaps-that-need-new-infrastructure) and [G9](#gaps-that-need-new-infrastructure). |
+| Swarm-wide counter and lock | A label compare-and-set for a serial, a task claim for a lock | extend | Both replace a shared folder with a lock directory. See [G12](#gaps-that-need-new-infrastructure). |
 | Per-repo gates | A pinned `swarm-repo@1` message in `swarm/<tag>` | new (a schema, no board change) | Merge authority and human-gate rows for the repo. See [Q6](#questions-for-bonklek) on whether it may live on the board. |
 | Urgency | Header label `swarm.urgency` (`p0` to `p3`) for messages, board `Priority` for tasks | as-is | Two scales, not one. The page does not map a message's urgency onto a task's priority. |
 | Handled state | Label `swarm.state` (`open`, `handled`, `forwarded`) set with `if` | as-is | A compare-and-set label write lets one actor take a message. |
@@ -260,7 +268,7 @@ A `from` that does not match the poster's `by` handle shows both. The secretary
 may post for a mob it did not run as, so a mismatch is information, not an
 error.
 
-The routing table from the architecture guide is a constant in `app/swarm.ts`,
+The routing table from the [architecture](../docs/swarm-architecture.md) is a constant in `app/swarm.ts`,
 and `slaOf(header, now)` is pure. p0 is due now. A `spawner.*` or `core.*` p1 is
 due 10 minutes after it arrives, p2 at the next 30-minute digest, p3 never. A
 header past its due time with `swarm.state=open` shows `overdue`. `sec.log` is
@@ -311,7 +319,7 @@ Store: `swarm.prs`, keyed by the `pr` label value, with the sync labels and the
 newest snapshot side by side.
 
 `mergeGate(pr, repo)` is pure and returns `{ holds: boolean, reasons[] }`. The
-guardrail from the architecture guide, as the page evaluates it:
+guardrail from the [architecture](../docs/swarm-architecture.md), as the page evaluates it:
 
 | Condition | Source |
 | --- | --- |
@@ -369,7 +377,7 @@ It is read-only. Registering schemas is done by the swarm's setup with
 
 ## Blocks
 
-Five schemas and one optional, all registered with `team.createSchema`, all in
+Five core schemas and five more for the gaps below, all registered with `team.createSchema`, all in
 `noSync` channels. JSON blocks, not YAML ([Q7](#questions-for-bonklek)).
 
 | Schema | Fields |
@@ -379,7 +387,10 @@ Five schemas and one optional, all registered with `team.createSchema`, all in
 | `swarm-pr@1` | `pr`, `head`, `checks` (`green`, `failed`, `pending`, or `missing`), `review` (`head`, `level`, `by`), `task`, `from` |
 | `swarm-report@1` | `links` (at least one for review), `changed`, `sprites` (`name`, `item`, `outcome`, `attempt`), `commands`, `notDone` |
 | `swarm-repo@1` | `tag`, `repo`, `mergeAuthority`, `gates` (rows of `name`, `rule`), `quick` |
-| `swarm-sprite@1` (optional) | `name`, `item`, `state` (`running`, `done`, `failed`, `stalled`, `timeout`), `attempt` |
+| `swarm-sprite@1` (optional) | `name`, `item`, `state` (`running`, `done`, `failed`, `stalled`, `timeout`), `attempt`, and with G15 `tier`, `cooldownUntil` |
+| `swarm-status@1` (G8) | `state` (`working`, `finished`), `branch`, `head`, `summary` |
+| `swarm-beat@1` (G10, G11) | `checked`, `dispatched`, `guard`, `retired`, `next`, `mobs` (`name`, `state`, `source`, `at`) |
+| `swarm-retire@1` (G14) | `branches`, `worktrees`, `clean`, `checkedAt` |
 
 The header's `id` and `at` are the board message's own ID and time, so the
 block does not repeat them. Labels carry what a query filters on
@@ -387,17 +398,28 @@ block does not repeat them. Labels carry what a query filters on
 
 ## Gaps that need new infrastructure
 
-Kept to what the board cannot carry. Each is the smallest addition.
+Kept to what the board cannot carry. Each is the smallest addition. G8 to G15 are the places the ported architecture
+needs a mechanism Politburo lacks: what replaces status branches and the
+remote watcher, how a mob or sprite is observed, the stall watcher, heartbeats
+as board facts, and secretary digests as board messages.
 
 | Gap | Smallest addition | Why existing pieces cannot carry it | Owner | Must not change |
 | --- | --- | --- | --- | --- |
 | G1 A review's commit | When sync maps a submitted review, also set a label `review.head=<commit_id>` from the review payload | The `review` label has no commit, and the guardrail needs the head a review covered. The secretary's snapshot works without this, so G1 is a hardening, not a blocker | Sync (`sync/github.ts`) | The meaning of `review`, `head`, `state` and the `ci.*` keys. A consumer reading them today must not change behavior |
 | G2 A positive CI result | Nothing on the board in this plan: the `swarm-pr@1` snapshot's `checks` says `green`. If a board-side fact is wanted later, sync sets one label per head, `ci.green=<sha>`, when every required workflow passed | CI labels are failure only, so absence is ambiguous. Changing a pass to set a label would break every consumer of `ci.*` | Secretary now; sync if wanted | `ci.*` stays failure only |
 | G3 A review severity | The runtime's `Verdict` gains an optional `level` (`none`, `minor`, `major`, `blocker`), and `swarm-pr@1` carries it | `outcome: 'clean' \| 'findings'` cannot say "above minor". The signature covers the tuple, so a field outside it is unauthenticated | Runtime (`remote/gate.ts`) | The signed tuple, the existing refusal reasons and `markReadyIfAllowed`'s behavior on a verdict without `level` |
-| G4 A stall flag | A token-free watcher that, after 30 minutes with no change it counts, posts a `swarm-message@1` (class and urgency to be set, see Q4) to the owning tier's inbox channel | The board sees only its own events, not the code host's remote, and the architecture leaves "which changes count" open. The page can show board silence (age of the newest event per repo) but cannot say a remote is quiet | Core's tooling, outside the board | Core has no tick, and the board gains no timer |
+| G4 A stall flag | Two parts. The page shows board silence, the age of the newest event per repo channel, with no addition. For a quiet remote, a token-free watcher in `packages/runtime` posts a `swarm-message@1` to the owning tier's inbox channel after 30 minutes with no change it counts, deduplicated by a `swarm.stall=<owner>@<window>` label set with `if` absent (class and urgency per Q4) | The board sees only its own events, not the code host's remote, and the architecture leaves "which changes count" open | Runtime (`ops`); core's tooling consumes it | Core has no tick, and the board gains no timer. A stall flag is a message, not a state |
 | G5 Cross-channel tree | Nothing: core's channel is the root by convention. If a real cross-channel parent is wanted, `AgentView.parent` would need a channel | `parent` is validated against one exact channel, with cycle checks | Registry owner | Same-channel parent validation and cycle checks |
 | G6 Agent labels | Nothing now. If parsing the name is rejected (Q2), an optional short `label` and `tier` on registration | `AgentView` has `role` and `harness` only, and `harness` is the harness name | Registry owner | Generation, binding and the eight roles |
 | G7 Mob board access | Nothing in the board. A deployment decision (Q1) | A cloud mob cannot reach a local board by default, and sprites have no principal. The secretary's script writes for them | Deployment | Auth. No bypass, no shared credential in a mob |
+| G8 Status checkpoints (what replaces status branches) | A runtime `mirror` module that reads each agent's `remote/<agent>/status` and `control` records with `localGit` and posts one `swarm-status@1` reply in the task thread per change (`state`, `branch`, `head`, `summary`), keyed by a `swarm.ref=<branch>@<head>` label so a repeat posts nothing. Where a mob holds the claim, it also records each checkpoint with `team.tasks.handoff(id, { commit, packetPath, sha256 })`, which exists | The exchange files are git refs the board never reads, and `status.json` knows only `working` and `finished` | Runtime (`remote`) | The 64 KiB file limit, the `RefConflict` rule, and `watchRemote`'s one owner per work branch. Handoff moves no state |
+| G9 What runs the watcher | A long-running, token-free loop in `packages/runtime` that calls `watchRemote.poll` for each registered work branch and `reviewGate.markReadyIfAllowed` where the repo allows it, and writes a `swarm-pr@1` snapshot after each poll. The runtime is a library today and is wired into no CLI | The exchange, the PR opener and the gate exist, but nothing calls them on a schedule, and their results reach the board only through sync | Runtime | The gate marks a PR ready only, and no code path merges. The watcher never closes or reopens a PR |
+| G10 How a mob is observed | A per-beat `swarm-beat@1` message from the spawner (see G11) lists each mob it checked: `state` (`running`, `idle`, `finished`, `unknown`), where it learned it, and when. The page shows it as the spawner's claim | A cloud session has no registry heartbeat and no harness adapter here (`claude-cloud` is a `HarnessKind` with no adapter). Run health needs an agent that takes a probe intent, and intents are pull-only, so a cloud mob cannot answer one | Spawner | No synthetic `working`. Health stays `not confirmed` unless the harness itself reports it |
+| G11 Heartbeats as board facts | The spawner calls `team.agents.heartbeat` each beat (exists) and posts `swarm-beat@1` (`checked`, `dispatched`, `guard`, `retired`, `next`), at p3 and `noSync`. Core has none, so its row shows last activity only | A heartbeat is a timestamp only, so what a beat did and when the next is due are not recorded | Spawner | `heartbeatAt` still means "checked in", and a missed beat still expires nothing |
+| G12 Swarm serial and check lock | A serial is a label `swarm.serial` on one pinned message in `swarm/core`, incremented with `team.label(id, { set, if })`, retried on 409 `label_conflict`. The check lock is a task `lock/check` in `swarm/core`, claimed with a lease and released after the check | A shared notes folder is local to one machine, and cloud mobs and spawners are on several. A directory lock has no expiry, and a lease does | Spawner and secretary tooling | Never reuse a serial. A claim is not proof the holder runs, so a lease that lapses frees the lock |
+| G13 Digests as board messages | A runtime `digest` module, pure over headers read by `team.threads`, that counts by urgency, lists `act_on` highest first and posts `swarm-digest@1` once per window, deduplicated by `swarm.batch=<id>` set with `if` absent | A digest is computed from many headers, and nothing computes or posts one | Runtime (`ops`), run by the secretary | A digest holds no bodies, and the routing table is not changed |
+| G14 Retirement evidence | The check on the mob's machine (every owned branch head and worktree `HEAD` on `origin`, each worktree clean, no sprite running) posts a `swarm-retire@1` reply (`branches`, `worktrees`, `clean`, `checkedAt`) before `team.agents.retire` is called as the mob's profile | The retirement rules are checked on a machine the board cannot see, and a retire leaves no record of what was checked | Secretary | A retire merges nothing and approves nothing. Missing evidence blocks it, as the retirement doc says |
+| G15 Router state | Attempts show from `runtime-attempt@1`. The active tier and cooldown stay on the sprite's machine, unless the mob reports them as a `swarm-sprite@1` field (`tier`, `cooldownUntil`) | Cooldowns and access incidents are in memory in one router instance, and the board keeps only attempt outcomes | Runtime | Env var names only appear in docs. No credential or login is read, written or printed |
 
 The registry's lack of live events (it never reaches `/events`) is a cost, not
 a gap: one `agents.list` per repo channel a minute while a Swarm view is open.
@@ -405,8 +427,10 @@ The page must not change `/events` visibility for `ops.*`.
 
 ## Questions for bonklek
 
-Each blocks or shapes a decision. The architecture guide lists several as "To
-be confirmed"; those are marked.
+Each blocks or shapes a decision. The ported [architecture](../docs/swarm-architecture.md)
+lists several as "To be confirmed"; those are marked. The questions were
+written against the original text, and the ported docs are rewritten, so check
+each against them.
 
 1. **Where does the board run, and who can reach it?** Cloud mobs "cannot
    message local sessions". Can a mob reach the board URL at all, and if so
@@ -422,24 +446,25 @@ be confirmed"; those are marked.
 3. **When does a dispatch task complete?** The runner never completes or fails
    a task. Is it complete when the report is published, when the PR merges, or
    when the mob retires? The `phaseOf` selector works either way, but the
-   board's `completed` must mean one of them. (Not in the architecture guide.)
-4. **Stall watcher** (to be confirmed in the guide): which changes count, and
+   board's `completed` must mean one of them. (Not in the architecture doc.)
+4. **Stall watcher** (to be confirmed in the architecture doc): which changes count, and
    how the flag reaches the owning tier. Which class and urgency does a stall
    message take?
 5. **Heartbeat thresholds.** Is `late` at 35 minutes and `down` at 65 right
    for a 30-minute beat with a stagger, and should they be per spawner?
-6. **May the per-repo gate table be on the board?** The guide keeps the
-   authoritative table in the project instance, outside the repository, and
-   ignored by Git. A `swarm-repo@1` message puts it on a board others read. If
-   not, the page shows repo gates as `unknown` and holds.
-7. **Header wire format.** The guide's header is YAML in a fence. The board
+6. **May the per-repo gate table be on the board?** If the ported architecture
+   keeps the authoritative table in the project instance, outside the
+   repository and ignored by Git, a `swarm-repo@1` message would put it on a
+   board others read. If it may not, the page shows repo gates as `unknown` and
+   holds.
+7. **Header wire format.** The architecture's header is YAML in a fence. The board
    reads JSON blocks. May the on-board header be JSON with the same fields?
    May it carry an optional `due` time so the page does not hold the routing
    table?
-8. **Router state** (to be confirmed in the guide): is the active provider tier
+8. **Router state** (to be confirmed in the architecture doc): is the active provider tier
    or cooldown wanted on the page? It needs a post from the sprite's machine.
    The page shows attempts from the scoreboard only until then.
-9. **Core and secretary authority** (to be confirmed in the guide): the page
+9. **Core and secretary authority** (to be confirmed in the architecture doc): the page
    assumes it grants none, and shows a class's ceiling as a label, never as a
    permission, since the board enforces no class.
 10. **Usage guard.** The 95% five-hour guard is a runtime policy with no board
@@ -447,6 +472,15 @@ be confirmed"; those are marked.
     spawner to post it.
 11. **Review level.** Is `findings` in the current gate "above minor"? G3
     needs the answer.
+12. **PR modes** (to be confirmed in the architecture doc): what do `PR-max`
+    and `merge-shepherding` mean, and should a repo's mode show on the PR view
+    from its `swarm-repo@1` record?
+13. **Who runs the watcher and the digest?** G9 and G13 are token-free loops in
+    the runtime. Where do they run (the secretary's machine, the board's host),
+    and may they hold the code host token there?
+14. **Mob observation.** G10 has the spawner report what it learned about each
+    mob, as its own claim. Is that enough, or does a cloud mob need a way to
+    report for itself (G7)?
 
 ## Phases
 
@@ -461,10 +495,17 @@ sidebar.
 | --- | --- | --- | --- | --- | --- |
 | 1 Tasks lens | `/swarm/queue` and `/swarm/mobs` from tasks alone: priority order, binding (session, branch), handoff, attention shown as a decision and answerable, parked and held reasons | A seeded board with ready, claimed, blocked-for-person and parked tasks shows them in claim-next order, and an attention request is answered from the page | `app/swarm.ts`, `store.ts`, `board.ts`, `nav.tsx`, `App.tsx`, `sidebar.tsx`, `tasks.tsx` | Selector tests in `store.test.ts` style: break the sort, the phase map and the answer-enabled rule and see each fail; an in-process board test through the handle seeds the fixture; a browser check with `vb serve --agent-ops --no-open` | Overlap with #1's task pages. Priority and attention reads add one call per page |
 | 2 Registry tree | `/swarm`: core, spawners, secretaries, mobs, retired, heartbeat age | A registered fixture draws the tree by `parent`, a retired entry reads `disabled`, a late spawner reads `late`, and a board without the registry says so | `board.ts` loader, `swarm.ts` (`tierOf`, name parse), tree view, `/settings/swarm` | `tierOf` and the name parse against the naming table's examples and its misses; `late` and `down` boundaries at 35 and 65 minutes; the 501 `no_agent_ops` view | The binding-as-profile trust: the page labels it "claimed by", never "verified". One list call per repo a minute |
-| 3 Messages | The `swarm-*@1` schemas registered, `/swarm/inbox/<tag>`, digests, `overdue`, take a header with a label compare-and-set | Headers post and list by urgency, a digest renders beside live counts, and two takers get one 409 | Schema setup in `packages/runtime` ops (a new helper), `swarm.ts` (`slaOf`), inbox view | `slaOf` per row of the routing table; the compare-and-set race; a digest that disagrees with live counts; header-only listing opens no body | The secretary must post it, outside this repo. The routing constant can drift from the guide, so the guide's table is quoted in a test |
+| 3 Messages | The `swarm-*@1` schemas registered, `/swarm/inbox/<tag>`, digests, `overdue`, take a header with a label compare-and-set | Headers post and list by urgency, a digest renders beside live counts, and two takers get one 409 | Schema setup in `packages/runtime` ops (a new helper), `swarm.ts` (`slaOf`), inbox view | `slaOf` per row of the routing table; the compare-and-set race; a digest that disagrees with live counts; header-only listing opens no body | The secretary must post it, outside this repo. The routing constant can drift from the guide, so the architecture's table is quoted in a test |
 | 4 PRs and the gate | `/swarm/prs`, `mergeGate`, `swarm-pr@1` snapshots, sync labels side by side | A PR with a stale head shows `stale_check`, a review of an older head shows `stale_verdict`, and an unrecorded repo gate holds | `swarm.ts` (`mergeGate`), prs view | Each guardrail condition broken alone makes `holds` false; `unknown` holds; a snapshot head against sync's `head` | The snapshot is the secretary's claim. G1 and G3 harden it. The page never merges |
 | 5 Escalations | `/swarm/escalations`, the chain drawn from header history, human decisions through attention | A `core.escalate` header and a task decision show in one list, and the viewer who is not a responder sees the buttons disabled and the board's 403 on a forced write | Escalations view, `board.ts` | The disabled rule against the board's refusal; a structured hold offers no `unblock` | Responders are a local-board setting; on Vercel the view is read-only |
 | 6 Optional | Router attempts from the scoreboard, running sprite status, stall flags | Q4 and Q8 are answered | Decided with the answers | Decided with the answers | Depends on the answers and G4 |
+
+Where the gaps land: G11 and G10 with phase 2 (the spawner's beat), G13 and G14
+with phase 3 (the digest module and the retirement record), G8, G9 and G3 with
+phase 4 (status mirror, the watcher loop and the snapshot), G4 and G15 with
+phase 6, and G12 whenever a second spawner needs a shared serial. Each is its
+own PR in `packages/runtime` or the owner's tooling, never in `packages/board`,
+except G1, which is sync's.
 
 Phase 1 is the first PR after this one. Phase 2 needs a spawner that registers
 and beats (outside the board). Phases 3 and 4 need a secretary that posts. If
