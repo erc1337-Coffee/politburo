@@ -256,10 +256,9 @@ stores and decides grants for Vercel's board. Its operators choose whether
 to audit those grants with Vercel's own tooling.
 
 Set `BOARD_URL` to the existing board's API URL. With `manage` at `*`, run
-`vb grants list --json` while the board still runs the old version. For each
-OIDC principal (`--oidc` with `--claim sub=…`), check every `sub` value ending
-in `*`, whether stored as a string or in an array. In Bash with `jq`, this
-prints one row per value to check:
+`vb grants list --json` while the board still runs the old version. In Bash
+with `jq`, this audit lists every OIDC `sub` value ending in `*`, whether
+stored as a string or in an array:
 
 ```bash
 (
@@ -277,11 +276,31 @@ prints one row per value to check:
 ```
 
 A successful command with no rows means no stored `sub` ends in `*`.
-Leave an intended prefix as is if it follows the rule. For a literal, replace
-it with an exact subject from the issuer or tighten the grant before upgrading.
-A literal in prefix form has no escape. If the issuer still sends that subject,
-use additional exact claims only if they restrict access to the intended
-workload. If you cannot restrict it, remove the principal or revoke the grant.
+Only values in valid prefix form change meaning. The only `*` is last,
+right after a `:` or `/` with a character before the separator. Keep
+intended prefixes. Leave non-prefix literals such as `job:archive*` unchanged.
+
+A literal in prefix form has no escape. Replace it with an exact subject
+from the issuer or tighten the grant before upgrading. If the issuer still
+sends the literal, use additional exact claims only if they limit the match
+to the intended workload.
+
+Before and after each grant change, run `vb grants explain <channel>` for
+each affected caller on the channels that matter. With `manage` at `*`,
+pass the caller's issuer and actual claim values, with one `--claim` per
+name:
+
+```bash
+vb --url "${BOARD_URL:?Set BOARD_URL to the existing board URL}" \
+  grants explain private/reports --oidc https://ci.example.test \
+  --claim 'sub=deploy/*' --claim project_id=42
+```
+
+Removing or rewriting a grant can widen access. Keep any restriction that
+only this grant enforces, or recreate it before the change. For example,
+keep a deny such as `--can 'private/=none'` for that caller. Do not remove a
+grant that narrows or denies access just because its subject is a literal.
+If you cannot preserve the intended access, pause the upgrade.
 
 Use `vb grants update` with `--remove-oidc` and `--add-oidc` in one update.
 For removal, pass the stored issuer and all of the principal's `--claim`
@@ -300,7 +319,8 @@ vb --url "${BOARD_URL:?Set BOARD_URL to the existing board URL}" \
   --claim project_id=42
 ```
 
-To remove a principal without a replacement, omit `--add-oidc` and its claims.
+Remove a principal without a replacement only if the caller no longer needs
+the grant and its restrictions stay in place. Omit `--add-oidc` and its claims.
 If that leaves the grant empty, use `vb grants revoke` with its ID instead.
 
 ## A backend of your own

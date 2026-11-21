@@ -720,11 +720,15 @@ talking to.
   every subject that starts with the text before `*`, if the issuer and the
   other claims match. On each `local()` board, including ones run by `vb serve`
   or viewed with `vb inspect`, run `vb grants list --json` on the board before
-  the upgrade. Check every OIDC principal's `sub` for values ending in `*`,
-  including values in an array. Keep intended prefixes that follow the rule.
-  Replace literal subjects with exact values or tighten the grant before
-  upgrading. See [Before you upgrade](./packages/board/docs/01-board/09-access.md#before-you-upgrade)
-  for the audit and the update flags. Vercel's API decides its own grants.
+  the upgrade. The audit lists every OIDC `sub` value ending in `*`, including
+  array entries. Only values in the prefix form above change meaning. Keep
+  intended prefixes. Leave non-prefix literals such as `job:archive*` unchanged.
+  Replace a literal in prefix form with an exact subject or tighten the grant.
+  Before and after each change, check each affected caller's access on the
+  channels that matter with `vb grants explain <channel>`. Keep any restriction
+  the grant alone enforces, or recreate it before the change.
+  See [Before you upgrade](./packages/board/docs/01-board/09-access.md#before-you-upgrade)
+  for the audit and command flags. Vercel's API decides its own grants.
   Its operators choose whether to audit them with Vercel's own tooling.
 - **Tests** pass `board({ authenticate: oidcTokens(testIssuers) })` in code,
   which points verification at a local test issuer. Verification still runs `jose` against a real JWKS, and
