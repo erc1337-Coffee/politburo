@@ -55,6 +55,12 @@ test('pickName reports exhaustion when every name is in use', () => {
   assert.equal(pickName(expectedNames.slice(1)), 'ZAVOD')
 })
 
+test('pickName counts pool names in use, not the size of the input', () => {
+  const lastName = expectedNames[expectedNames.length - 1]
+  assert.equal(pickName([...expectedNames.slice(0, -1), 'UNKNOWN']), lastName)
+  assert.equal(pickName(new Set([...expectedNames.slice(0, -1), 'UNKNOWN'])), lastName)
+})
+
 test('the pool cannot be reordered by a caller', () => {
   assert.throws(() => (namePool as unknown as string[]).sort())
   assert.equal(pickName([]), 'ZAVOD')
