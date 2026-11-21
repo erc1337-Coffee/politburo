@@ -4,8 +4,8 @@ bonklek decides on this PR
 # Mob retirement
 
 A mob is ready to retire only when its work and its sprites' work are
-complete and on `origin`. Retirement disables the mob's registry entry
-and archives its harness session outside the board.
+complete and on `origin`. Retirement disables the mob's registry entry, if it
+has one, and archives its harness session outside the board.
 
 ## Before retiring
 
@@ -38,7 +38,7 @@ handle retirement on a `sec.retire` message in the
    records the commit, packet path and SHA-256 digest as metadata. It
    leaves the task and claim open. The claimant still settles the task
    or releases the claim after recording the handoff.
-2. Retire the mob's entry in the opt-in
+2. If the mob has an entry, retire it in the opt-in
    [agent registry](../packages/board/docs/01-board/13-agent-registry.md)
    with `vb agents retire <agent> --generation <n>`. Use the current
    generation. The caller needs `manage` in the channel and must match

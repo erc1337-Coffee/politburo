@@ -86,8 +86,9 @@ body and move on. Never merge to end a review loop. A PR may stay in review
 indefinitely.
 
 The [runtime's `reviewGate`](../packages/runtime/README.md) marks a PR ready
-only with a passing named check on the exact head and a clean verdict signed
-with a shared secret for that same head. GitHub cannot atomically compare
+only with passing checks on the exact head (the GitHub adapter reads the
+check names the caller configures) and a clean verdict signed with a shared
+secret for that same head. GitHub cannot atomically compare
 the head and mark a PR ready. `withHeadLock` must fence all head updates
 through the transition. Readiness does not authorize a merge. The runtime
 never merges. An authorized spawner merges outside the board.
@@ -144,7 +145,7 @@ then core to the user for a human decision. The runtime's
 [`runController`](../packages/runtime/README.md#controller-loop) records `seen`
 before waking the handler and `acted` after the handler reports the work done.
 At the controller's deadline, if the mail is still visible and unacted, it
-uses `parentOf` to find the immediate registry parent. It sends that parent
+uses the caller-supplied `parentOf` to find the immediate registry parent. It sends that parent
 one reference without the message text.
 
 ## 4. Lifecycles
@@ -193,7 +194,7 @@ or `paused`, respectively.
 
 ### Sprite runs
 
-Give each sprite one self-contained task. Run independent tasks in parallel.
+Give each sprite one self-contained task. Independent tasks can run in parallel.
 Sprites write code and do first-pass review in the mob's working tree. They
 never commit or push. The mob checks their work and runs the required checks.
 It commits and pushes only where authorized.
@@ -203,8 +204,8 @@ quoted shell argument. Use a distinct sprite name for each attempt.
 
 The runtime's `pi()` adapter runs `pi-task <task-file> [max-seconds]` with the
 selected model in `PI_MODEL`. On an eligible failure, it tries the next
-configured model within the same wall deadline. `PI_IDLE_SECONDS` sets the
-launcher's idle limit, which defaults to 180 seconds. See
+configured model within the same wall deadline. The adapter takes an
+`idleMs` option for its own idle limit. See
 [The model router](#5-the-model-router).
 
 **Two-failure rule.** Stop a stalled sprite. After a failure or stall, collect
@@ -297,7 +298,7 @@ at the named commit. When completing the task, record the report as its result.
 
 ## 5. The model router
 
-**Pi extension.** The sprite routing policy uses these tiers in order:
+**Pi extension.** The `pi-task` launcher's `fallback/codex-cursor` extension, not the runtime package, routes sprite requests through these tiers in order:
 
 | Tier | Errors that trigger cooldown |
 | --- | --- |

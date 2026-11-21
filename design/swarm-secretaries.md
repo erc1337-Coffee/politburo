@@ -153,7 +153,7 @@ the human owner.
 The [runtime's `runController`](../packages/runtime/README.md#controller-loop)
 wakes a handler on inbox mail. It records `seen` before calling the handler and
 `acted` when the handler reports the work is done. If the message is still
-visible and unacted at the deadline, `parentOf` looks up the immediate registry
+visible and unacted at the deadline, the caller-supplied `parentOf` looks up the immediate registry
 parent. If there is a parent, the loop sends one reference, not the message text.
 
 If the owner opts to register a secretary, the entry uses an existing role
