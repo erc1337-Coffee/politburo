@@ -1,8 +1,8 @@
 import { it } from 'vitest'
-import { leaseRace } from './lease.ts'
+import { hasAppendGuard, leaseRace } from './lease.ts'
 import { checkSeeds } from './seeds.ts'
 
-const enabled = process.env.DST_EXPECT === 'e1'
+const enabled = hasAppendGuard || process.env.DST_EXPECT === 'e1'
 const title = 'E1: lease writes land only before the deadline and under the current epoch'
 
 if (!enabled) {

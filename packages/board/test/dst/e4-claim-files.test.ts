@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -15,14 +16,14 @@ const proofB = { ...proofA, epoch: 2, token: 'fixture-b' }
 // Main ignores the second argument; the held PRs compare its proof.
 const drop = (claims: ReturnType<typeof open>) => (claims.drop as (id: string, proof: typeof proofA) => Promise<void>)(task, proofA)
 
-let sim: Sim | undefined
 let killNext = false
 let lockOwner: number | undefined
 let lockReleased = Promise.withResolvers<void>()
-let mode: 'legacy' | 'tombstone' | 'lock'
 
 async function fsStep<T>(label: string, run: () => Promise<T>): Promise<T> {
-  if (sim?.op !== undefined) {
+  // The actor retains its scheduler even after the fixture starts tearing down.
+  const sim = Sim.current
+  if (sim) {
     await sim.gate(`fs:${label}`)
     if (killNext) return sim.kill()
   }
@@ -37,8 +38,12 @@ vi.mock('node:fs/promises', async (original) => {
     ...fs,
     mkdir: wrap('mkdir', fs.mkdir),
     readFile: wrap('readFile', fs.readFile),
-    readdir: wrap('readdir', fs.readdir),
-    stat: wrap('stat', fs.stat),
+    readdir: (dir: string) => fsStep('readdir', async () => (await fs.readdir(dir)).sort()),
+    stat: (path: string) => fsStep('stat', async () => {
+      const info = await fs.stat(path)
+      const now = Date.now()
+      return Object.assign(info, { mtimeMs: now, ctimeMs: now })
+    }),
     writeFile: wrap('writeFile', fs.writeFile),
     unlink: wrap('unlink', fs.unlink),
     link: wrap('link', fs.link),
@@ -46,10 +51,7 @@ vi.mock('node:fs/promises', async (original) => {
       const kind = to.endsWith('.lock') ? 'lock' : to.endsWith('.drop') ? 'tombstone' : 'claim'
       return fsStep(`rename:${kind}`, async () => {
         await fs.rename(from, to)
-        if (kind === 'lock') {
-          mode = 'lock'
-          lockOwner = sim?.op
-        } else if (kind === 'tombstone') mode = 'tombstone'
+        if (kind === 'lock') lockOwner = Sim.current?.op
       })
     },
     rmdir: (dir: string) => fsStep('rmdir', async () => {
@@ -68,7 +70,8 @@ vi.mock('node:timers/promises', async (original) => {
   return {
     ...timers,
     async setTimeout(ms: number) {
-      if (sim?.op === undefined) return timers.setTimeout(ms)
+      const sim = Sim.current
+      if (!sim) return timers.setTimeout(ms)
       // The lock's retry timer cannot make progress until the other actor removes
       // the lock. Wait for that change instead of racing a real polling interval.
       if (lockOwner === undefined) return
@@ -81,7 +84,6 @@ vi.mock('node:timers/promises', async (original) => {
 async function withClaims<T>(run: () => Promise<T>) {
   const dir = await mkdtemp(join(tmpdir(), 'board-dst-claims-'))
   vi.stubEnv('XDG_CONFIG_HOME', dir)
-  mode = 'legacy'
   lockReleased = Promise.withResolvers<void>()
   try {
     return await withClock(async () => {
@@ -89,7 +91,6 @@ async function withClaims<T>(run: () => Promise<T>) {
       return run()
     })
   } finally {
-    sim = undefined
     killNext = false
     lockOwner = undefined
     vi.unstubAllEnvs()
@@ -97,15 +98,13 @@ async function withClaims<T>(run: () => Promise<T>) {
   }
 }
 
-// Observe what this version actually does, not the branch it was checked out from.
-const adapter = await withClaims(async () => {
-  await drop(open())
-  return mode
-})
+// Detect the lock in source so a regression to the unlocked path cannot skip the test.
+const claimsSource = readFileSync(new URL('../../src/cli/claims.ts', import.meta.url), 'utf8')
+const hasClaimLock = /\.lock`/.test(claimsSource)
 
 function claimRace(seed: number) {
   return withClaims(async () => {
-    const scheduler = sim = new Sim(seed)
+    const scheduler = new Sim(seed)
     let putCompleted = false
     await scheduler.run([
       { name: 'put B', run: async () => {
@@ -130,14 +129,14 @@ function claimRace(seed: number) {
 }
 
 const title = 'E4: a stale drop does not lose a successful replacement put (I5)'
-if (adapter !== 'lock' && process.env.DST_EXPECT !== 'e4') {
-  it.skip(`${title} (PR 21 fd0685f has the tombstone window; needs the file-claim lock from 770eb47)`, () => {})
+if (!hasClaimLock && process.env.DST_EXPECT !== 'e4') {
+  it.skip(`${title} (PR 21 fd0685f has the tombstone window; needs the product fix in 770eb47)`, () => {})
 } else {
   it(title, async () => { await checkSeeds(claimRace) }, 55_000)
 }
 
-it.skip('E4: PID lock reaping needs a multiprocess fixture for PID reuse and cross-namespace liveness', () => {})
-it.skip('E4: an older CLI ignores the new lock; needs a mixed-version fixture', () => {})
-it.skip('E4: a kill while holding the PID lock can strand later writers; logical actors share one PID here', () => {})
-it.skip('E4: claims.drop can throw after complete committed; needs a command-level cleanup failure fixture', () => {})
-it.skip('E4 seed 243: on fd0685f put(B) completes, stale drop(A) renames B to .drop and dies before link; fresh get returns null (I5)', () => {})
+it.skip('E4: PID lock reaping (770eb47) needs only a multiprocess fixture for PID reuse and cross-namespace liveness', () => {})
+it.skip('E4: an older CLI ignores the lock from 770eb47; testing compatibility needs only a mixed-version fixture', () => {})
+it.skip('E4: death while holding the PID lock (770eb47) needs only a multiprocess fixture; these actors share one PID', () => {})
+it.skip('E4: claims.drop can throw after complete committed (PR 21 fd0685f); needs a product fix and a command-level cleanup failure fixture', () => {})
+it.skip('E4 seed 243: on PR 21 fd0685f a stale drop dies after moving the saved claim to .drop (I5); needs the product fix in 770eb47', () => {})

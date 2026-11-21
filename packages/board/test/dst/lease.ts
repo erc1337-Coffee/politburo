@@ -9,6 +9,7 @@ import { recordAppends } from './history.ts'
 import { checkLeases, leasesIn } from './oracles.ts'
 import { Sim } from './sim.ts'
 
+export const hasAppendGuard = existsSync(new URL('../../src/store/append-guard.ts', import.meta.url))
 const hasEvidence = existsSync(new URL('../../src/contract/evidence.ts', import.meta.url))
 const workEvidence = hasEvidence ? { gates: false, releaseDependencies: true } : undefined
 const refusals = ['claim_lost', 'task_claimed', 'task_finished']

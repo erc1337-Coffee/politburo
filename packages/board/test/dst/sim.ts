@@ -15,11 +15,12 @@ type Point = { op: number; name: string; label: string }
 type Op = { name: string; run: () => Promise<string> }
 type State = { kind: 'running' | 'blocked' | 'done' } | { kind: 'parked'; label: string; resume: () => void }
 type Policy = (point: Point, random: () => number) => string | void
+const actor = new AsyncLocalStorage<{ sim: Sim; op: number }>()
 
 /** One driver, one run. A killed actor stays suspended, including its finally blocks. */
 export class Sim {
   readonly trace: string[] = []
-  readonly #actor = new AsyncLocalStorage<number>()
+  #aborted = false
   readonly #states: State[] = []
   readonly #seed: number
   readonly #pick: () => number
@@ -31,9 +32,15 @@ export class Sim {
     this.#fault = rng(seed ^ 0x9e3779b9)
   }
 
-  get op() { return this.#actor.getStore() }
+  static get current() { return actor.getStore()?.sim }
+
+  get op() {
+    const context = actor.getStore()
+    if (context?.sim === this) return context.op
+  }
 
   gate(label: string): Promise<void> | void {
+    if (this.#aborted) return new Promise<void>(() => {})
     const op = this.op
     if (op === undefined) return // Out-of-simulation setup, observation, or cleanup.
     const { promise, resolve } = Promise.withResolvers<void>()
@@ -59,10 +66,15 @@ export class Sim {
     return new Promise<never>(() => {})
   }
 
+  #abort(error: Error): never {
+    this.#aborted = true
+    throw error
+  }
+
   async run(ops: readonly Op[], beforeRelease?: Policy) {
     const errors: unknown[] = []
     ops.forEach(({ name, run }, op) => {
-      void this.#actor.run(op, async () => {
+      void actor.run({ sim: this, op }, async () => {
         try {
           await this.gate('start')
           this.trace.push(`${op} ${name}: ${await run()}`)
@@ -79,15 +91,15 @@ export class Sim {
       // Real timers and crypto can delay a runnable actor. Wait for its state, not its arrival order.
       const deadline = performance.now() + 2_000
       while (this.#states.some(({ kind }) => kind === 'running')) {
-        if (performance.now() >= deadline) throw stalled()
+        if (performance.now() >= deadline) this.#abort(stalled())
         await new Promise<void>((resolve) => setImmediate(resolve))
       }
-      if (errors.length) throw new Error(`DST seed ${this.#seed} operation failed:\n${this.trace.join('\n')}`, { cause: errors[0] })
+      if (errors.length) this.#abort(new Error(`DST seed ${this.#seed} operation failed:\n${this.trace.join('\n')}`, { cause: errors[0] }))
       if (this.#states.every(({ kind }) => kind === 'done')) return
 
       // Array order is operation index, even if crypto or real retry timers parked them out of order.
       const parked = this.#states.flatMap((state, op) => state.kind === 'parked' ? [{ op, ...state }] : [])
-      if (!parked.length || steps >= 500) throw stalled()
+      if (!parked.length || steps >= 500) this.#abort(stalled())
       const { op, label, resume } = parked[Math.floor(this.#pick() * parked.length)]!
       const point = { op, name: ops[op]!.name, label }
       const fault = beforeRelease?.(point, this.#fault)
