@@ -133,7 +133,8 @@ on the pull request.
 
 A convention for naming your own spawners, agents, and workers: use a Soviet
 industry noun of 8 letters or fewer, taking the first unused name from an
-ordered pool and keeping it, so no two live ones share a name. Title a
+ordered pool and keeping it. Pick and reserve together, or two callers that
+read the same live names take the same one. Title a
 spawner `<TAG> <NAME>`, for example `RW ZAVOD`. This template doesn't allocate
 names for you.
 

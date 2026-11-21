@@ -197,7 +197,9 @@ when all 33 names are in use. Don't write pool names as literals elsewhere;
 import them.
 
 A spawner is one use. Its title is `<TAG> <NAME>`, for example `RW ZAVOD`. It
-takes the first unused name and keeps it, so no two live spawners share one.
+takes the first unused name and keeps it. `pickName` only reads the names you
+pass: two callers that read the same snapshot of live names get the same name,
+so pick and reserve together, under one lock or in one atomic write.
 `spawnerTitle` throws a `RangeError` for an empty tag, a tag with whitespace,
 or a name outside the pool.
 
