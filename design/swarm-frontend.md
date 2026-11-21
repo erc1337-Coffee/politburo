@@ -1,5 +1,5 @@
 status: proposed
-bonklek decides on this PR.
+the owner decides on this PR.
 
 # Swarm frontend
 
@@ -17,11 +17,11 @@ dependencies. [#1](https://github.com/remiliacorporation/politburo/pull/1) and
 touch nearby files; the plan says how it avoids them.
 
 The stack's rules are in the ported swarm docs: the
-[architecture](../docs/swarm-architecture.md) (tiers and authority, messaging,
+[architecture](swarm-architecture.md) (tiers and authority, messaging,
 heartbeats and the stall watcher, the merge guardrail, PR modes, the model
-router), [naming](../docs/swarm-naming.md),
-[secretaries](../docs/swarm-secretaries.md) and
-[mob retirement](../docs/mob-retirement.md). This document restates only what
+router), [naming](swarm-naming.md),
+[secretaries](swarm-secretaries.md) and
+[mob retirement](mob-retirement.md). This document restates only what
 a view needs, and it carries the gaps: each place the architecture needs a
 mechanism Politburo does not have yet. The board records relationships and
 messages. It does not launch workers, integrate code, push, merge or grant
@@ -112,7 +112,7 @@ carries it).
 | Per-repo log | A channel per repo under `swarm/<tag>/` (`ChannelPath`, prefix listing `team.channels({ prefix })`, grants on a subtree) | as-is | `inbox`, `work`, `prs` are child channels. Every header the secretary appends to its log is a message here, not a file. Sync maps a repo to a channel (`'acme/web': 'swarm/web/prs'`). |
 | Core | `AgentView` with `role: 'coordinator'`, `parent: null`, in channel `swarm/core` | as-is | One entry. It sits above the repo channels by convention, since `parent` cannot cross channels. |
 | Spawner | `AgentView` with `role: 'controller'`, `parent: null`, in `swarm/<tag>` | as-is | One per repo. Its 30-minute beat is `team.agents.heartbeat`. |
-| Secretary | `AgentView` with `role: 'controller'`, `parent` set to its spawner, in `swarm/<tag>` | as-is | No role names a secretary. It is told from the spawner by having a parent and from a mob by its role. See [Q2](#questions-for-bonklek). |
+| Secretary | `AgentView` with `role: 'controller'`, `parent` set to its spawner, in `swarm/<tag>` | as-is | No role names a secretary. It is told from the spawner by having a parent and from a mob by its role. See [Q2](#questions-for-the-owner). |
 | Mob | `AgentView` (`implementation-worker`, `reviewer`, `qa-runner` or `qa-owner` by job; `parent` the spawner) plus its dispatch task and claim `binding` | extend | Registry gives the roster and retirement. The task gives the work: `binding.session` is the mob ID, `binding.branch` its work branch, `binding.baseCommit` its base. Roles do not cover audit, research, plan or status jobs, so job and class come from the name. |
 | Sprite | A `swarm-report@1` block in the mob's report reply, and optional `swarm-sprite@1` status replies in the task thread | new (a schema, no board change) | Sprites are not principals and write nothing to the board. The registry is unfit: it lists without paging and a sprite name is new for every attempt, so it would grow without bound. |
 | Message and header | A thread root in `swarm/<tag>/inbox` labeled `swarm.class`, `swarm.urgency`, `swarm.state`, with a `swarm-message@1` block | extend | The operational inbox is unfit: a newer send with the same recipient and topic replaces the older, it shows 15 messages, it has no feed and no history, and it is 501 on Vercel. Labels give filters, live updates and compare-and-set. |
@@ -120,14 +120,14 @@ carries it).
 | Escalation | The header's `core.escalate` class, and for a human decision a task hold with a structured attention request (`team.tasks.ask`, `answer`) | as-is | Attention carries a question, 2 to 8 labeled options with consequences, and a bound commit. Responders are configured per exact channel. |
 | Task and lifecycle | A board task in `swarm/<tag>/work` and `TaskState` | extend | A dispatch brief is the task root. After `claimed`, the stack's stages (reported, in review, held, mergeable, merged, retired) are not board states. The page derives them in a pure selector from the task, the report block, the PR facts and the registry. If #21 lands, the selector reads its stage instead. |
 | Naming pool | `binding.profile` and the task `binding.session` carry the display name (`120-COW2`, `120-COW2.SWORD`) | as-is | The page parses the name for display with one documented pattern. An unparseable name shows as written. Allocation stays outside the board. [#33](https://github.com/remiliacorporation/politburo/pull/33) is not needed. |
-| Model router | `runtime-attempt@1` blocks via `boardScoreboard` for attempts, nothing for tier cooldown | extend | Attempts show. The active tier and cooldown are on the sprite's machine and stay there until [Q8](#questions-for-bonklek) is answered. |
+| Model router | `runtime-attempt@1` blocks via `boardScoreboard` for attempts, nothing for tier cooldown | extend | Attempts show. The active tier and cooldown are on the sprite's machine and stay there until [Q8](#questions-for-the-owner) is answered. |
 | Merge gate | PR labels from sync (`pr`, `head`, `state`, `review`, `ci.*`) and a `swarm-pr@1` snapshot the secretary posts from the code host | extend | Snapshot: `{ pr, head, checks, review: { head, level, by }, gateHeld }`. The page shows whether the guardrail holds. It never decides a merge. The spawner re-checks on the host. |
 | Heartbeat | `AgentView.heartbeatAt` and `team.agents.heartbeat` | as-is | Spawners beat. Mobs and sprites have none, so the page shows no health for them it cannot prove. |
 | Stall watch | Nothing | new | See [G4](#gaps-that-need-new-infrastructure). |
 | Dispatch record | A task root in `swarm/<tag>/work` (`team.tasks.create`, `createMany` for a batch, `needs`, `priority`) | as-is | It replaces a dispatch branch of instructions. The board records the brief and who claims it, and launches nothing. |
 | Status and control exchange | The runtime's `localGit` exchange, `remote/<agent>/{brief,control,inbox,status}` branches, and `watchRemote` | extend | It exists in `packages/runtime` and is the Politburo form of a status branch. Its records are git refs, not board facts. See [G8](#gaps-that-need-new-infrastructure) and [G9](#gaps-that-need-new-infrastructure). |
 | Swarm-wide counter and lock | A label compare-and-set for a serial, a task claim for a lock | extend | Both replace a shared folder with a lock directory. See [G12](#gaps-that-need-new-infrastructure). |
-| Per-repo gates | A pinned `swarm-repo@1` message in `swarm/<tag>` | new (a schema, no board change) | Merge authority and human-gate rows for the repo. See [Q6](#questions-for-bonklek) on whether it may live on the board. |
+| Per-repo gates | A pinned `swarm-repo@1` message in `swarm/<tag>` | new (a schema, no board change) | Merge authority and human-gate rows for the repo. See [Q6](#questions-for-the-owner) on whether it may live on the board. |
 | Urgency | Header label `swarm.urgency` (`p0` to `p3`) for messages, board `Priority` for tasks | as-is | Two scales, not one. The page does not map a message's urgency onto a task's priority. |
 | Handled state | Label `swarm.state` (`open`, `handled`, `forwarded`) set with `if` | as-is | A compare-and-set label write lets one actor take a message. |
 
@@ -202,7 +202,7 @@ is the drawn root over every spawner, because `parent` cannot cross channels.
 Store: `swarm.agents`, `swarm.repos`. A row shows tier, name (`binding.profile`),
 role, `status` (`enabled` or `disabled`), and for a spawner `heartbeatAt` as an
 age with `late` after 35 minutes and `down` after 65 (a constant in
-`app/swarm.ts`, [Q5](#questions-for-bonklek)). A mob row shows no heartbeat.
+`app/swarm.ts`, [Q5](#questions-for-the-owner)). A mob row shows no heartbeat.
 
 Writes: none. The registry changes only through the agent itself.
 
@@ -268,7 +268,7 @@ A `from` that does not match the poster's `by` handle shows both. The secretary
 may post for a mob it did not run as, so a mismatch is information, not an
 error.
 
-The routing table from the [architecture](../docs/swarm-architecture.md) is a constant in `app/swarm.ts`,
+The routing table from the [architecture](swarm-architecture.md) is a constant in `app/swarm.ts`,
 and `slaOf(header, now)` is pure. p0 is due now. A `spawner.*` or `core.*` p1 is
 due 10 minutes after it arrives, p2 at the next 30-minute digest, p3 never. A
 header past its due time with `swarm.state=open` shows `overdue`. `sec.log` is
@@ -319,7 +319,7 @@ Store: `swarm.prs`, keyed by the `pr` label value, with the sync labels and the
 newest snapshot side by side.
 
 `mergeGate(pr, repo)` is pure and returns `{ holds: boolean, reasons[] }`. The
-guardrail from the [architecture](../docs/swarm-architecture.md), as the page evaluates it:
+guardrail from the [architecture](swarm-architecture.md), as the page evaluates it:
 
 | Condition | Source |
 | --- | --- |
@@ -378,7 +378,7 @@ It is read-only. Registering schemas is done by the swarm's setup with
 ## Blocks
 
 Five core schemas and five more for the gaps below, all registered with `team.createSchema`, all in
-`noSync` channels. JSON blocks, not YAML ([Q7](#questions-for-bonklek)).
+`noSync` channels. JSON blocks, not YAML ([Q7](#questions-for-the-owner)).
 
 | Schema | Fields |
 | --- | --- |
@@ -425,9 +425,9 @@ The registry's lack of live events (it never reaches `/events`) is a cost, not
 a gap: one `agents.list` per repo channel a minute while a Swarm view is open.
 The page must not change `/events` visibility for `ops.*`.
 
-## Questions for bonklek
+## Questions for the owner
 
-Each blocks or shapes a decision. The ported [architecture](../docs/swarm-architecture.md)
+Each blocks or shapes a decision. The ported [architecture](swarm-architecture.md)
 lists several as "To be confirmed"; those are marked. The questions were
 written against the original text, and the ported docs are rewritten, so check
 each against them.
