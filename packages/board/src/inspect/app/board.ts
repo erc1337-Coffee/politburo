@@ -96,7 +96,8 @@ export async function setProfile(next: Profile | null | undefined): Promise<bool
     const me = await handle.me()
     team = handle
     profile = next
-    set((s) => ({ ...s, me }))
+    set((s) => ({ ...s, me, schedules: { is: 'loading' } }))
+    void loadSchedules()
   } catch (error) {
     toast(`couldn't switch: ${said(error)}`)
     return false
@@ -626,12 +627,14 @@ let scheduleRead = 0
 /** What's scheduled: pending ones, or with `all`, done and canceled ones too. */
 export async function loadSchedules(all = state.everySchedule) {
   const read = ++scheduleRead
+  const handle = team
+  const current = () => read === scheduleRead && handle === team
   set((s) => ({ ...s, everySchedule: all, schedules: all === s.everySchedule && s.schedules.is === 'here' ? s.schedules : { is: 'loading' } }))
   try {
-    const schedules = await team.schedules({ all })
-    if (read === scheduleRead) set((s) => ({ ...s, schedules: { is: 'here', items: schedules } }))
+    const schedules = await handle.schedules({ all })
+    if (current()) set((s) => ({ ...s, schedules: { is: 'here', items: schedules } }))
   } catch (error) {
-    if (read === scheduleRead) set((s) => ({ ...s, schedules: { is: 'failed', why: said(error) } }))
+    if (current()) set((s) => ({ ...s, schedules: { is: 'failed', why: said(error) } }))
   }
 }
 

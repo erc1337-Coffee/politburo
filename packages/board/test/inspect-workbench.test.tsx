@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { act } from 'react'
 import { flushSync } from 'react-dom'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterAll, afterEach, expect, it, vi } from 'vitest'
@@ -33,8 +34,14 @@ afterEach(async () => {
 async function workbench(options: Parameters<typeof localBoard>[0] = {}) {
   const api = local = localBoard(options)
   const token = await personToken('u_reader', BOARD_URL)
-  const fetchBoard: typeof fetch = (input, init) => api.fetch(new Request(input, init))
-  const as = (profile: ProfileOption = null) => createBoardClient({ url: BOARD_URL, token, fetch: fetchBoard, profile })
+  const as = (profile: ProfileOption = null, can?: string) => createBoardClient({
+    url: BOARD_URL, token, profile,
+    fetch: (input, init) => {
+      const request = new Request(input, init)
+      if (can) request.headers.set('x-board-can', can)
+      return api.fetch(request)
+    },
+  })
   const page = new AbortController()
   const streamClosed = Promise.withResolvers<void>()
   let streaming = false
@@ -44,11 +51,12 @@ async function workbench(options: Parameters<typeof localBoard>[0] = {}) {
   }
   return {
     api, as, client: as(),
-    async open(path = '/') {
+    async open(path = '/', options: { profile?: string; can?: string; holdSchedules?: (profile: string | null) => Promise<void> | undefined } = {}) {
       browser.settings.enableImageFileLoading = false
       browser.setViewport({ width: 1280, height: 900 })
       browser.setURL(`http://inspector-${++visit}.test${path}`)
-      const html = new DOMParser().parseFromString(shell({ token: 'inspector-test', base: '', profile: null }), 'text/html')
+      const profile = options.profile ? { name: options.profile } : null
+      const html = new DOMParser().parseFromString(shell({ token: 'inspector-test', base: '', profile }), 'text/html')
       document.head.replaceChildren(...html.head.querySelectorAll('meta, style'))
       document.body.innerHTML = '<div id="root"></div>'
       const proxy = `${location.origin}/board`
@@ -64,10 +72,17 @@ async function workbench(options: Parameters<typeof localBoard>[0] = {}) {
         if (isStream) streaming = true
         const headers = new Headers(request.headers)
         headers.set('authorization', `Bearer ${token}`)
-        return api.fetch(new Request(`${BOARD_URL}${request.url.slice(proxy.length)}`, {
+        if (options.can) headers.set('x-board-can', options.can)
+        const response = api.fetch(new Request(`${BOARD_URL}${request.url.slice(proxy.length)}`, {
           method: request.method, headers, signal: page.signal,
           ...(request.method === 'GET' || request.method === 'HEAD' ? {} : { body: await request.arrayBuffer() }),
         }))
+        if (options.holdSchedules && request.method === 'GET' && new URL(request.url).pathname === '/board/schedules') {
+          const result = await response
+          await options.holdSchedules(headers.get('x-board-profile'))
+          return result
+        }
+        return response
       })
       vi.resetModules()
       const { App } = await import('../src/inspect/app/App.tsx')
@@ -199,6 +214,95 @@ it('opens Schedules from Settings and cancels a scheduled post', async () => {
     expect(mainText()).toContain('Tomorrow’s recap')
     expect(mainText()).toContain('canceled')
     expect([...document.querySelectorAll('main button')].some((el) => el.textContent === 'cancel')).toBe(false)
+  })
+})
+
+async function switchProfile(name: string) {
+  const trigger = () => document.querySelector<HTMLButtonElement>('button[title="post as"]')!
+  trigger().click()
+  const item = await vi.waitFor(() => {
+    const match = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((el) => el.textContent?.trim() === name)
+    expect(match).toBeDefined()
+    return match!
+  })
+  item.click()
+  await vi.waitFor(() => expect(trigger().textContent).toContain(`as ${name}`))
+}
+
+it('clears blind schedules on profile switch and ignores a late list', async () => {
+  const { as, open } = await workbench()
+  const codexReady = Promise.withResolvers<void>()
+  const codex = Promise.withResolvers<void>()
+  const grok = Promise.withResolvers<void>()
+  // In work each profile can post but not read, so it lists only its own blind schedules.
+  const can = '*=read;work=post'
+  await as('claude', can).schedule('work', { text: 'Private Claude reminder', in: '1d' })
+  await as('codex', can).schedule('work', { text: 'Private Codex reminder', in: '1d' })
+  await as('grok', can).schedule('work', { text: 'Private Grok reminder', in: '1d' })
+  await open('/settings/schedules', {
+    profile: 'claude', can,
+    holdSchedules: (profile) => {
+      if (profile === 'codex') {
+        codexReady.resolve()
+        return codex.promise
+      }
+      if (profile === 'grok') return grok.promise
+    },
+  })
+  try {
+    await vi.waitFor(() => expect(mainText()).toContain('Private Claude reminder'))
+    await switchProfile('codex')
+    expect(mainText()).not.toContain('Private Claude reminder')
+    expect(mainText()).toContain('loading…')
+
+    await codexReady.promise
+    await switchProfile('grok')
+    await act(async () => codex.resolve())
+    expect(mainText()).not.toContain('Private Codex reminder')
+    expect(mainText()).toContain('loading…')
+
+    grok.resolve()
+    await vi.waitFor(() => {
+      expect(mainText()).toContain('Private Grok reminder')
+      expect(mainText()).not.toContain('Private Claude reminder')
+      expect(mainText()).not.toContain('Private Codex reminder')
+    })
+  } finally {
+    codex.resolve()
+    grok.resolve()
+  }
+})
+
+it('offers Cancel only to the schedule creator or a channel manager', async () => {
+  const { as, open } = await workbench()
+  const creator = as('claude')
+  const thread = await creator.post('work', 'Release review')
+  await creator.schedule({ re: thread.id }, { text: 'Review tomorrow', in: '1d' })
+  await creator.schedule('managed', { text: 'Send status', in: '1d' })
+  await creator.schedule('readonly', { text: 'Post results', in: '1d' })
+  await open('/settings/schedules', { profile: 'codex', can: '*=read,post;managed=read,post,manage;readonly=read' })
+  const cancel = (text: string) => {
+    const row = [...document.querySelectorAll('main .sched-row')].find((el) => el.textContent?.includes(text))
+    expect(row, text).toBeDefined()
+    return row!.querySelector('button')?.textContent
+  }
+  await vi.waitFor(() => {
+    expect(cancel('Review tomorrow')).toBeUndefined()
+    expect(cancel('Send status')).toBe('cancel')
+    expect(cancel('Post results')).toBeUndefined()
+  })
+  link('reply in #work').click()
+  const threadCancel = () => {
+    const scheduled = [...document.querySelectorAll('aside[aria-label="Thread"] dd')].find((el) => el.textContent?.includes('Review tomorrow'))
+    expect(scheduled).toBeDefined()
+    return scheduled!.querySelector('button')?.textContent?.trim()
+  }
+  await vi.waitFor(() => expect(threadCancel()).toBeUndefined())
+  await switchProfile('claude')
+  await vi.waitFor(() => {
+    expect(cancel('Review tomorrow')).toBe('cancel')
+    expect(cancel('Post results')).toBeUndefined()
+    expect(threadCancel()).toBe('cancel')
   })
 })
 

@@ -122,7 +122,7 @@ per section at `/settings/<section>`:
 | --- | --- |
 | access | What you may do, the board's [grants](../01-board/09-access.md#grants), a form that makes one, and revoke. Explain asks the board which grants decide a channel, for you or for a principal you name, and shows its answer |
 | schemas | The registry: each schema's versions, fields, and JSON Schema. Registers a version where you may |
-| schedules | [Scheduled messages](../01-board/07-schedules.md), pending or all. Cancel a pending message where you may |
+| schedules | [Scheduled messages](../01-board/07-schedules.md) visible to the selected profile, pending or all. Switch profiles to reload the list. Cancel as the creator or with `manage` in the channel |
 | watchers | The [watchers](../01-board/06-watchers.md#woken-by-the-board) boards elsewhere registered here, and what each tails |
 | sync | The board's sync entries and the events in each entry's inbox |
 

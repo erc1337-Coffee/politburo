@@ -15,7 +15,7 @@ import { Sidebar } from './sidebar.tsx'
 import { actorFor, TaskCard, taskIds } from './task.tsx'
 import { Tasks } from './tasks.tsx'
 import { FilterButton, FilterChips } from './filters.tsx'
-import { byWritten, channelRows, channelThreads, filtering, isTask, knownLabels, listingOf, matches, profilesOf, thread as threadOf, threadSchedules, type Filter, type State, type Viewer } from './store.ts'
+import { byWritten, channelRows, channelThreads, filtering, isTask, knownLabels, listingOf, matches, mayCancelSchedule, profilesOf, thread as threadOf, threadSchedules, type Filter, type State, type Viewer } from './store.ts'
 import { Ask, Header, nativeMenu, ResizeHandle, type KnownLabels } from './ui.tsx'
 import { boardWords, cadence, firstLine, until } from './words.ts'
 
@@ -454,7 +454,7 @@ function ThreadPane(props: { id: string; state: State; viewer: Viewer; now: numb
               <dt>later</dt>
               <dd>
                 {schedule.next ? until(schedule.next, props.now) : ''} · {cadence(schedule)} · {firstLine(schedule.text)}{' '}
-                {(schedule.by.principal === viewer.principal || viewer.may('manage', schedule.channel)) && (
+                {mayCancelSchedule(viewer, schedule) && (
                   <button className="clear" onClick={() => void board.cancelSchedule(schedule.id)}>
                     cancel
                   </button>

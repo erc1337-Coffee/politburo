@@ -489,6 +489,13 @@ export type Viewer = {
   manages: boolean
 }
 
+/** Whether the viewer can cancel a schedule listed for them. Without read, the board only lists their own blind schedules. */
+export function mayCancelSchedule(viewer: Viewer, schedule: ScheduleView): boolean {
+  const { actor, principal } = viewer
+  const own = schedule.by.principal === principal && (actor === principal || schedule.by.actor === actor)
+  return (own && viewer.may('post', schedule.channel)) || viewer.may('manage', schedule.channel)
+}
+
 /**
  * An actor or a principal by name: as the board last said who they are, or else what their ID
  * says, a profile and the last part of its principal's (`local:user:julian+codex` is `codex via julian`).

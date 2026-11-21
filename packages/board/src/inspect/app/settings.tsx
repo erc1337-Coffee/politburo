@@ -7,7 +7,7 @@ import { buttonSoundsEnabled, setButtonSounds } from './button-feedback.ts'
 import { Access } from './grants.tsx'
 import { Ago, here, Link, SECTIONS, type Section, type Where } from './nav.tsx'
 import { Schemas } from './schemas.tsx'
-import { nameOf, type State, type Viewer } from './store.ts'
+import { mayCancelSchedule, nameOf, type State, type Viewer } from './store.ts'
 import { Header, nativeMenu, Unlisted } from './ui.tsx'
 
 import { cadence, firstLine, shownName, until } from './words.ts'
@@ -89,7 +89,7 @@ function Schedules({ state, viewer, now, all }: { state: State; viewer: Viewer; 
               <Link to={here({ thread: schedule.re })} className="text-link">reply in #{schedule.channel}</Link>
             )}
             <span className="faint small">{shownName(schedule.author)}</span>
-            {schedule.state === 'pending' && (schedule.by.principal === viewer.principal || viewer.may('manage', schedule.channel)) ? (
+            {schedule.state === 'pending' && mayCancelSchedule(viewer, schedule) ? (
               <button className="act quiet" type="button" onClick={() => void board.cancelSchedule(schedule.id)}>cancel</button>
             ) : (
               <span />

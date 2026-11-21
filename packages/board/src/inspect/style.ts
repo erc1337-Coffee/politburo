@@ -276,7 +276,7 @@ textarea, [contenteditable]:not([contenteditable='false']) { cursor: text; }
 .where a:hover { text-decoration: underline; }
 .time, .id { color: var(--faint); font-size: 11px; }
 /* Message text is markdown. Blocks stay compact; a short message reads as one line. */
-.text { max-inline-size: 65ch; overflow-wrap: anywhere; color: var(--dim); font-size: .875rem; line-height: 1.25rem; cursor: text; }
+.text { max-inline-size: 65ch; overflow-wrap: anywhere; color: var(--dim); font-size: .875rem; line-height: 1.25rem; }
 .text > :first-child { margin-top: 0; }
 .text > :last-child { margin-bottom: 0; }
 .text > p:last-child, .text > p:has(+ .edited) { display: inline; }
@@ -634,12 +634,12 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 .block-schema { color: var(--bright); font-weight: 600; cursor: default; }
 .block-schema:hover { text-decoration: underline; }
 .block-schema .faint { font-weight: 400; }
-.block-fields { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 14px; margin: 0; padding: 7px 10px; cursor: text; }
+.block-fields { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 14px; margin: 0; padding: 7px 10px; }
 .block-field { display: contents; }
 .block-field dt { color: var(--faint); }
 .block-field dd { margin: 0; color: var(--dim); overflow-wrap: anywhere; }
 .block-field a { color: var(--accent); text-decoration: underline; text-decoration-color: var(--faint); text-underline-offset: 3px; }
-.block-raw { margin: 0; padding: 7px 10px; color: var(--dim); font-family: inherit; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; cursor: text; }
+.block-raw { margin: 0; padding: 7px 10px; color: var(--dim); font-family: inherit; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* --- schemas --- */
 .schema-row { display: grid; grid-template-columns: minmax(120px, 200px) auto minmax(0, 1fr) auto; align-items: center; gap: 14px; padding: 6px 20px; }
@@ -652,11 +652,11 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 .schema-detail { display: grid; gap: 10px; padding: 4px 20px 16px; max-width: 860px; }
 .schema-detail .hint { margin: 0; font-size: 12px; }
 .schema-detail code { color: var(--dim); }
-.schema-fields { display: grid; grid-template-columns: max-content max-content minmax(0, 1fr); gap: 3px 16px; font-size: 12px; cursor: text; }
+.schema-fields { display: grid; grid-template-columns: max-content max-content minmax(0, 1fr); gap: 3px 16px; font-size: 12px; }
 .schema-field { display: contents; }
 .field-name { color: var(--bright); }
 .schema-json { position: relative; }
-.schema-json pre { margin: 0; padding: 10px 12px; max-height: 360px; overflow: auto; background: var(--shade); color: var(--dim); font-family: inherit; font-size: 12px; line-height: 1.5; cursor: text; }
+.schema-json pre { margin: 0; padding: 10px 12px; max-height: 360px; overflow: auto; background: var(--shade); color: var(--dim); font-family: inherit; font-size: 12px; line-height: 1.5; }
 .schema-json .act { position: absolute; top: 6px; right: 6px; }
 .ask textarea.code { min-height: 180px; font-size: 12px; white-space: pre; }
 .suggest.version { width: 64px; flex-shrink: 0; }
@@ -685,7 +685,7 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 .who-fields .suggest { width: 190px; }
 .ask .who-fields .suggest { flex: 1; width: auto; min-width: 150px; }
 .ask textarea.code.can { min-height: 64px; }
-.explained { display: grid; gap: 6px; max-width: 900px; padding: 10px 12px; background: var(--shade); cursor: text; }
+.explained { display: grid; gap: 6px; max-width: 900px; padding: 10px 12px; background: var(--shade); }
 .explained p { margin: 0; color: var(--dim); font-size: 14px; }
 .explained b { color: var(--bright); font-weight: 600; }
 .explained .facts { grid-template-columns: 56px minmax(0, 1fr); font-size: 12px; }
