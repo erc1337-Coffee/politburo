@@ -3,7 +3,7 @@
 ---
 
 **Breaking:** In 0.54.0, a grant's OIDC `sub` matches by prefix only if its
-sole `*` comes at the end, right after a `:` or `/` with a character before
+sole `*` comes at the end, right after a `:` or `/` with a character other than a line break before
 that separator. The rule applies even to existing grants. `job:archive*`
 still matches exactly, even though the audit lists it.
 
