@@ -426,9 +426,10 @@ it('shows only open decisions, oldest first, from readable task roots', () => {
     expect(groups.ready).toEqual([])
   })
 
-  it('puts expired claims in stalled only, with the longest overdue first', () => {
-    const atDeadline = task(1, claimedBy(ME, at(0)), { createdAt: at(-12) })
-    const overdue = task(2, claimedBy(ME, at(-4)), { createdAt: at(-10) })
+  it('puts only unclaimable expired claims in stalled, with the longest overdue first', () => {
+    const owner = 'vercel:user:u_ada'
+    const atDeadline = task(1, { ...claimedBy(owner, at(0)), owner }, { createdAt: at(-12) })
+    const overdue = task(2, { ...claimedBy(owner, at(-4)), owner }, { createdAt: at(-10) })
     const live = task(3, claimedBy(ME, at(1)))
     const ready = task(4)
     const groups = needsAction(seeded([atDeadline, overdue, live, ready]), viewer(['read', 'label']), NOW)

@@ -12,13 +12,13 @@ export { route, SECTIONS, type Route, type Section } from './routes.ts'
 export const base = document.querySelector<HTMLMetaElement>('meta[name="inspect-base"]')?.content ?? ''
 
 /** The page's own path for where the address bar is: `/` at `base` itself. */
-const current = () => (location.pathname === base || location.pathname.startsWith(`${base}/`) ? location.pathname.slice(base.length) : location.pathname) || '/'
+export const currentPath = () => (location.pathname === base || location.pathname.startsWith(`${base}/`) ? location.pathname.slice(base.length) : location.pathname) || '/'
 
 /** Where one of the page's paths is in the address bar. */
 const address = (to: string) => `${base}${to}`
 
 export function navigate(to: string, replace = false) {
-  if (to === current() + location.search) return
+  if (to === currentPath() + location.search) return
   history[replace ? 'replaceState' : 'pushState'](null, '', address(to))
   dispatchEvent(new PopStateEvent('popstate'))
 }
@@ -31,7 +31,7 @@ export function useLocation(): Where {
     const params = new URLSearchParams(location.search)
     const thread = params.get('thread')
     return {
-      path: current(),
+      path: currentPath(),
       params,
       thread: thread || null,
       filter: {
@@ -68,7 +68,7 @@ export function here(changes: { thread?: string | null; filter?: Filter; params?
     if (changes.filter.text) params.set('text', changes.filter.text)
   }
   const query = params.toString()
-  return `${current()}${query ? `?${query}` : ''}`
+  return `${currentPath()}${query ? `?${query}` : ''}`
 }
 
 export function Link(props: { to: string; className?: string; current?: boolean; title?: string; onNavigate?: () => void; children: ReactNode }) {

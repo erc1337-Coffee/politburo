@@ -327,7 +327,7 @@ export function App() {
         </nav>
         <main className="main" inert={narrow && (nav || where.thread !== null)}>
           <HeaderActions.Provider value={paneIsFront ? null : headerActions}>
-            {current.view === 'needs' && <NeedsAction key={identity} state={state} viewer={viewer} now={now} lead={expand} />}
+            {current.view === 'needs' && <NeedsAction key={identity} state={state} now={now} lead={expand} />}
             {current.view === 'handoffs' && <Home key={identity} state={state} now={now} lead={expand} />}
             {current.view === 'presidium' && <Presidium key={identity} state={state} now={now} lead={expand} />}
             {current.view === 'channel' && (

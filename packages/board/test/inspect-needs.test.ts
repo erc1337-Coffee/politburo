@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest'
 import { createBoardClient } from '../src/client/client.ts'
-import { claimOrder, needsAction } from '../src/inspect/app/needs.ts'
+import { needsAction } from '../src/inspect/app/needs.ts'
 import { initialState, merge, type Viewer } from '../src/inspect/app/store.ts'
 import { compileAccess } from '../src/server/access.ts'
 import { BOARD_URL, personToken, testBoard } from './harness.ts'
@@ -15,7 +15,7 @@ it('shows all claim-next candidates in shared claim order across ready and overd
   const { actor, principal, profile, can } = await worker.me()
   const channel = 'work'
   try {
-    const { task: lapsed } = await owner.tasks.create(channel, { text: 'Lapsed', priority: 'high' })
+    const { task: lapsed } = await owner.tasks.create(channel, { text: 'Lapsed', priority: 'urgent' })
     const lease = await owner.tasks.claim(lapsed.id, { lease: 30 })
     const { task: active } = await owner.tasks.create(channel, { text: 'Held, lease still running', priority: 'urgent', claim: true })
     const { task: oldest } = await owner.tasks.create(channel, { text: 'First root', priority: 'high' })
@@ -35,14 +35,11 @@ it('shows all claim-next candidates in shared claim order across ready and overd
     const state = merge({ ...initialState, discovery: await worker.discovery(), status: await worker.status(), openTaskRoots: Object.fromEntries(roots.map((root) => [root.id, root])) }, roots)
     expect((await worker.thread(active.id)).message.task?.claim?.until).toBe(active.task?.claim?.until)
     const { stalled, ready } = needsAction(state, viewer, Date.now())
-    expect(stalled.map(({ id }) => id)).toEqual([lapsed.id])
-    expect(ready.map(({ id }) => id)).toEqual([assigned.id, oldest.id, newer.id, lowest.id])
-    const claimable = claimOrder([...stalled, ...ready], state, viewer, Date.now())
-    for (const { id } of [assigned, lapsed, oldest, newer, lowest]) {
-      expect(claimable.shift()?.id).toBe(id)
-      expect((await worker.tasks.claim({ channel }))?.task.id).toBe(id)
-    }
-    expect(claimable).toEqual([])
+    expect(stalled).toEqual([])
+    const taken: (string | undefined)[] = []
+    for (const _ of [lapsed, assigned, oldest, newer, lowest]) taken.push((await worker.tasks.claim({ channel }))?.task.id)
+    expect(taken).toEqual([lapsed.id, assigned.id, oldest.id, newer.id, lowest.id])
+    expect(ready.map(({ id }) => id)).toEqual(taken)
     expect(await worker.tasks.claim({ channel })).toBeNull()
   } finally {
     vi.useRealTimers()

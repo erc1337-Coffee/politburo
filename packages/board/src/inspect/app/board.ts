@@ -15,7 +15,7 @@ import type { TaskPriority } from '../../contract/schemas.ts'
 import * as attentionStore from './attention-store.ts'
 import { toast } from './chrome.ts'
 import { listing } from './listing.ts'
-import { base } from './nav.tsx'
+import { base, currentPath, route } from './nav.tsx'
 import * as store from './store.ts'
 import { refusal, said } from './words.ts'
 
@@ -108,8 +108,6 @@ export async function setProfile(next: Profile | null | undefined): Promise<bool
     if (choice !== profileChoice) return false
     feedFollow?.abort()
     feedFollow = undefined
-    openTaskPages = undefined
-    openTaskChanges = undefined
     // Publish the new handle and its acting-as label in the same turn.
     flushSync(() => {
       team = handle
@@ -118,7 +116,7 @@ export async function setProfile(next: Profile | null | undefined): Promise<bool
       loaded.clear()
       listed = listingForCurrentHandle()
       set((s) => ({ ...s, me, schedules: { is: 'loading' }, live: bootStarted ? 'reconnecting' : s.live,
-        tasksCounted: false, openTaskRoots: {}, threadRefusals: {}, tasksRefused: null, attention: {}, attentionUnsupported: false }))
+        tasksCounted: false, openTaskRoots: {}, openTaskMe: null, threadRefusals: {}, tasksRefused: null, attention: {}, attentionUnsupported: false }))
     })
     if (bootStarted) void boot().catch((error) => toast(said(error)))
     else void loadSchedules()
@@ -213,12 +211,15 @@ export async function boot(): Promise<void> {
   const controller = feedFollow = new AbortController()
   // A burst of events is one render: they're folded in a frame at a time.
   let queue: BoardEventView[] = []
+  let taskUpdates: { root: MessageView; epoch: number }[] = []
   const flush = () => {
     const events = queue
+    const updates = taskUpdates
     queue = []
+    taskUpdates = []
     if (!current()) return
     listed.apply(events)
-    observeOpenTasks(events.flatMap(({ message }) => store.isTask(message) ? [message] : []))
+    mergeOpenTaskEvents(updates)
     if (attentionVisit) refreshAttentionEvents(events)
     // A schedule's own state isn't in the feed, but its sends are: one that landed means the list moved.
     if (events.some((event) => event.message?.schedule !== undefined)) void loadSchedules()
@@ -233,9 +234,18 @@ export async function boot(): Promise<void> {
         // Apply the transition immediately so the store can reject older status snapshots.
         set((s) => store.applyEvent(s, event))
         void loadStatus()
-      } else if (queue.push(event) === 1) requestAnimationFrame(flush)
+      } else {
+        if (event.message && observeOpenTaskEvent(event.message))
+          taskUpdates.push({ root: event.message, epoch: openTaskEpoch })
+        if (queue.push(event) === 1) requestAnimationFrame(flush)
+      }
     },
-    (feed) => { if (current()) set((s) => ({ ...s, live: feed === 'live' ? 'live' : 'reconnecting' })) },
+    (feed) => {
+      if (!current()) return
+      const reconnected = feed === 'live' && state.live === 'reconnecting'
+      set((s) => ({ ...s, live: feed === 'live' ? 'live' : 'reconnecting' }))
+      if (reconnected && needsVisit) refreshOpenTasks(true)
+    },
   ).catch((error) => { if (current()) toast(`live updates stopped: ${said(error)}`) })
   // Read after the feed's cursor is fixed: a pause is either in this snapshot or in the feed.
   void loadStatus()
@@ -245,8 +255,7 @@ export async function boot(): Promise<void> {
   }, () => {})
   void loadSchemas()
   void loadSchedules()
-  refreshOpenTasks()
-  if (attentionVisit) refreshAttentionAfterPages(attentionVisit)
+  if (route(currentPath()).view !== 'needs' && openTaskRead?.identity !== identity) refreshOpenTasks()
 }
 
 // #region guide inspector/live.ts
@@ -311,7 +320,6 @@ export const loadThread = (id: string) =>
         const { [id]: _, ...threadRefusals } = s.threadRefusals
         return { ...merged, threadRefusals }
       })
-      if (store.isTask(root)) observeOpenTasks([root])
     } catch (error) {
       if (as === identity && inaccessible(error)) forgetThread(id, said(error))
       throw error
@@ -584,81 +592,111 @@ export async function loadTasks(filter: store.TaskFilter, after?: string): Promi
 
 const inaccessible = (error: unknown) => error instanceof BoardError && (error.status === 403 || error.status === 404)
 
-let openTaskPages: Promise<void> | undefined
-let openTaskChanges: Map<string, boolean> | undefined
+let openTaskEpoch = 0
+let openTaskRead: {
+  identity: number; again: boolean; superseded: boolean; refused: Set<string>; observed: Map<string, MessageView>
+} | undefined
 let attentionVisit: symbol | undefined
+let needsVisit: symbol | undefined
 
-/** Thread reads and authorized feed messages can arrive while the open-task pages are in flight. */
-function observeOpenTasks(roots: MessageView[]) {
-  if (roots.length === 0) return
-  for (const { id } of roots) openTaskChanges?.set(id, true)
-  set((s) => ({ ...s, openTaskRoots: store.newest(s.openTaskRoots, roots) }))
+/** The feed updates members, but only a complete list may admit a new member. */
+function observeOpenTaskEvent(root: MessageView): boolean {
+  if (!Object.hasOwn(state.openTaskRoots, root.id)) {
+    if (store.isTask(root) && !root.deleted && store.OPEN_STATES.includes(root.task.state)) refreshOpenTasks()
+    return false
+  }
+  const read = openTaskRead
+  // Keep member updates received during pagination even if their frame hasn't painted yet.
+  if (read?.identity === identity && (read.observed.get(root.id)?.version ?? -1) <= root.version)
+    read.observed.set(root.id, root)
+  return true
+}
+
+function mergeOpenTaskEvents(updates: { root: MessageView; epoch: number }[]) {
+  const members = updates.flatMap(({ root, epoch }) =>
+    epoch === openTaskEpoch && Object.hasOwn(state.openTaskRoots, root.id) ? [root] : [])
+  if (members.length) set((s) => ({ ...s, openTaskRoots: store.newest(s.openTaskRoots, members) }))
 }
 
 function forgetThread(id: string, reason: string) {
-  openTaskChanges?.set(id, false)
+  if (openTaskRead?.identity === identity) openTaskRead.refused.add(id)
   set((s) => {
     const { [id]: _, ...openTaskRoots } = s.openTaskRoots
     return { ...s, openTaskRoots, threadRefusals: { ...s.threadRefusals, [id]: reason } }
   })
 }
 
-/** A complete open-task read replaces membership, not the shared message cache. */
-function refreshOpenTasks(refreshViewer = false) {
-  if (openTaskPages) return
-  const changes = openTaskChanges = new Map<string, boolean>()
-  const as = identity
-  // A return visit also refreshes label access for the claimable queue.
-  if (refreshViewer) void team.me().then((me) => {
-    if (as === identity) set((s) => ({ ...s, me }))
-  }, () => {})
-  openTaskPages = (async () => {
-    const found = new Set<string>()
+/** Publish the full membership and its permissions together. Never publish a partial page. */
+function refreshOpenTasks(revalidate = false) {
+  if (openTaskRead?.identity === identity) {
+    openTaskRead.again = true
+    openTaskRead.superseded ||= revalidate
+    return
+  }
+  const read = openTaskRead = { identity, again: false, superseded: false, refused: new Set<string>(), observed: new Map<string, MessageView>() }
+  const handle = team
+  const current = () => read.identity === identity && !read.superseded
+  const roots = async () => {
+    const found: MessageView[] = []
     let after: string | undefined
-    for (;;) {
-      const page = await loadTasks({ state: 'open', label: [] }, after)
-      if (!page || as !== identity) return
-      if ('refused' in page) {
-        set((s) => ({ ...s, tasksRefused: page.refused, tasksCounted: false,
-          ...(page.inaccessible ? { openTaskRoots: {} } : {}) }))
-        return
-      }
-      for (const { id } of page.roots) found.add(id)
-      // Successful pages can supply partial results; a concurrent thread refusal wins.
-      const observed = page.roots.filter(({ id }) => changes.get(id) !== false)
-      set((s) => ({ ...s, openTaskRoots: store.newest(s.openTaskRoots, observed) }))
-      if (!page.more || page.cursor === after) break
+    while (current()) {
+      const page = await handle.tasks.list({ state: 'open', limit: PAGE, ...(after ? { after } : {}) })
+      found.push(...page.tasks.map(({ message }) => message))
+      if (page.tasks.length < PAGE || page.cursor === after) break
       after = page.cursor
     }
-    for (const [id, visible] of changes) visible ? found.add(id) : found.delete(id)
-    set((s) => ({ ...s, openTaskRoots: Object.fromEntries([...found].flatMap((id) => (s.openTaskRoots[id] ? [[id, s.openTaskRoots[id]]] : []))),
-      tasksCounted: true, tasksRefused: null }))
-  })().finally(() => {
-    if (as !== identity) return
-    openTaskPages = undefined
-    openTaskChanges = undefined
+    return found
+  }
+  const requests = [roots(), handle.me()] as const
+  void Promise.all(requests).then(([tasks, me]) => {
+    if (!current()) return
+    openTaskEpoch++
+    const accepted = tasks.filter(({ id }) => !read.refused.has(id)).map((root) => {
+      let latest = root
+      for (const view of [state.openTaskRoots[root.id], read.observed.get(root.id)])
+        if (view && view.version > latest.version) latest = view
+      return latest
+    })
+    set((s) => ({ ...store.merge(s, accepted), openTaskRoots: Object.fromEntries(accepted.map((root) => [root.id, root])),
+      openTaskMe: me, tasksCounted: true, tasksRefused: null }))
+    refreshAttentionRoots()
+  }, (error: unknown) => {
+    if (!current()) return
+    openTaskEpoch++
+    set((s) => ({ ...s, openTaskRoots: {}, openTaskMe: null, tasksCounted: false, tasksRefused: refusal(error) }))
+  }).finally(async () => {
+    // Even on refusal, don't start another read until both requests have settled.
+    await Promise.allSettled(requests)
+    if (openTaskRead !== read) return
+    openTaskRead = undefined
+    if (read.identity === identity && read.again) refreshOpenTasks()
   })
 }
 
 export function openNeeds() {
+  const visit = needsVisit = Symbol()
+  const close = openAttention()
+  const revalidate = () => { if (document.visibilityState === 'visible') refreshOpenTasks(true) }
+  window.addEventListener('focus', revalidate)
+  document.addEventListener('visibilitychange', revalidate)
   refreshOpenTasks(true)
-  return openAttention()
+  return () => {
+    if (needsVisit === visit) needsVisit = undefined
+    window.removeEventListener('focus', revalidate)
+    document.removeEventListener('visibilitychange', revalidate)
+    close()
+  }
 }
 
-function refreshAttentionAfterPages(visit: symbol) {
-  const as = identity
-  // A direct visit can start before boot has even requested the first page.
-  void openTaskPages?.then(() => {
-    if (attentionVisit !== visit || as !== identity) return
-    for (const root of attentionStore.attentionTasks(state))
-      if (state.attention[root.id]?.latest?.id !== root.task.attentionId) void readAttention(root)
-  })
+function refreshAttentionRoots() {
+  if (!attentionVisit) return
+  const roots = needsVisit ? Object.values(state.openTaskRoots).filter(attentionStore.holdsAttention) : attentionStore.attentionTasks(state)
+  for (const root of roots) void readAttention(root)
 }
 
 export function openAttention() {
   const visit = attentionVisit = Symbol()
-  for (const root of attentionStore.attentionTasks(state)) void readAttention(root)
-  refreshAttentionAfterPages(visit)
+  refreshAttentionRoots()
   return () => {
     if (attentionVisit !== visit) return
     attentionVisit = undefined
@@ -675,7 +713,7 @@ function refreshAttentionEvents(events: BoardEventView[]) {
     if ((event.type === 'message.edited' || event.type === 'message.deleted') && message?.re) touched.add(message.re)
   }
   for (const id of touched) {
-    const root = state.messages[id]
+    const root = needsVisit ? state.openTaskRoots[id] : state.messages[id]
     if (attentionStore.holdsAttention(root)) void readAttention(root)
   }
 }
