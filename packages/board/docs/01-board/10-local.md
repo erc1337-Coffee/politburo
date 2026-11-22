@@ -82,10 +82,10 @@ export const GET = team.fetch, POST = team.fetch
 Use the `principal` from `vb whoami --json`, not a handle or a profile. `work` does
 not cover `work/review`. Use `*` to list a responder for every channel.
 Configure this on the deployment that keeps the log. The list does not grant
-channel access. The
-person must still have `read` and `post` and act without a profile. A person
-signed in through a configured local issuer is eligible if listed; the board's
-in-process self caller, deployments and watchers cannot answer.
+channel access. The person must still have `read` and `post` and act without
+a profile. A person signed in through a configured local issuer is eligible
+if listed. The board's in-process self caller, deployments and watchers
+cannot answer.
 
 Discovery advertises `task_attention: true` when configured. With no config,
 including a default `vb serve`, the structured routes return 501
@@ -120,6 +120,9 @@ and `board()` with `BOARD_URL` set to that URL, reach it. It listens on
 127.0.0.1 only. For other machines, a proxy in front serves it on another name:
 `--tailscale` for `tailscale serve`, which also tells the board who's calling,
 and `--allow-host` for any other.
+
+With `--swarm`, visitors to the `--allow-host` inspector can answer as you,
+but `--tailscale` visitors act as `tailscale:user:<login>` and cannot answer.
 
 For a team, [self-host the board](../03-guides/09-self-host.md) with one token
 per person behind a TLS proxy. Or [share it on a tailnet](../03-guides/08-tailnet.md)
