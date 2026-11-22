@@ -253,6 +253,8 @@ export function createHttp(url: string | undefined, options: HttpOptions, enviro
           body: data as Uint8Array<ArrayBuffer>,
           headers: { ...(type ? { 'content-type': type } : {}), ...(name !== null ? { 'x-board-filename': encodeURIComponent(name) } : {}) },
           signal,
+          // The inspector flags the writes it forwards, and the handle in between drops the flag: a file goes nowhere but here.
+          claim: true,
         })
         .catch(rethrow)
     } else if (route.method === 'GET') response = await client.request(`${path}${queryString(fields)}`, { signal }).catch(rethrow)
