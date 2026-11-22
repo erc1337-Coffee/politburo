@@ -35,6 +35,24 @@ test('GitHub scan drops pages, includes PRs, or misreads state or priority', asy
   assert.deepEqual(summarize(last.items), [['9', 'unknown', 'none'], ['7', 'withdrawn', 'low'], ['8', 'done', 'normal']])
 })
 
+test('GitHub scan misses next in a Link rel token list or follows an unknown relation', async (t) => {
+  const { adapter } = await setup(t)
+  for (const repo of ['next-first', 'next-last', 'no-next']) {
+    const { nextCursor, complete } = await adapter(`github:o/${repo}`).scan()
+    assert.deepEqual([nextCursor, complete], repo === 'no-next' ? [undefined, true] : ['3', false], repo)
+  }
+})
+
+test('GitHub scan accepts missing or non-array labels or assignees', async (t) => {
+  const { adapter } = await setup(t)
+  for (const field of ['labels', 'assignees']) {
+    for (const invalid of ['missing', 'scalar']) {
+      const repo = `${field}-${invalid}`
+      await assert.rejects(adapter(`github:o/${repo}`).scan(), { name: 'TrackerError', reason: 'bad_response' }, repo)
+    }
+  }
+})
+
 test('GitHub makes an HTTP request without a credential', async (t) => {
   const { adapter, requests } = await setup(t)
   await assert.rejects(adapter(source, () => undefined).scan(), { name: 'TrackerError', reason: 'no_credential' })
@@ -92,6 +110,23 @@ test('GitHub get mistakes inaccessible issues for gone, returns PRs, or hides ou
   await assert.rejects(gh.get(ref(500)), { name: 'TrackerError', reason: 'unavailable' })
 })
 
+test('GitHub get returns a different issue at a reused number or the wrong source', async (t) => {
+  const { adapter } = await setup(t)
+  const gh = adapter()
+  const item = await gh.get(ref(7))
+  assert.ok(typeof item !== 'string')
+  assert.equal(item.ref.source, gh.source)
+  assert.equal(await gh.get({ ...ref(7), itemId: 'I_old' }), 'gone')
+})
+
+test('scan accepts duplicate source IDs or makes a request before rejecting them', async (t) => {
+  const { adapter, requests } = await setup(t)
+  const other = 'github:o/2'
+  await assert.rejects(scanTrackers({ sources: [adapter(other), adapter(), adapter()].map((adapter) => ({ adapter })),
+    precedence: [other, source] }), { name: 'TrackerError', reason: 'bad_source' })
+  assert.deepEqual(requests, [])
+})
+
 test('a second-page error loses earlier issues, looks complete, or stops another source', async (t) => {
   const { adapter } = await setup(t)
   const broken = 'github:o/2'
@@ -120,4 +155,12 @@ test('scan emits repeated observations or keeps an older revision from another p
     [['8', 'withdrawn', '2026-01-02T00:00:00Z']],
     [['9', 'unknown', '2026-01-02T00:00:00Z']],
   ])
+})
+
+test('scan dedupe lets input order break ties at equal updatedAt', async (t) => {
+  const { adapter } = await setup(t)
+  for (const id of ['github:o/tie-forward', 'github:o/tie-reverse']) {
+    const { items } = await scanTrackers({ sources: [{ adapter: adapter(id) }], precedence: [id] })
+    assert.deepEqual(items.map(({ observations }) => observations.map(({ title }) => title)), [['Z revision']], id)
+  }
 })

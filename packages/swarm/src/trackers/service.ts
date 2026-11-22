@@ -6,6 +6,7 @@ export type SourceScan = { status: SourceStatus; pages: number; reason?: Tracker
 export async function scanTrackers({ sources, precedence, links, maxPages = 20 }: {
   sources: { adapter: TrackerAdapter }[]; precedence: string[]; links?: ExplicitLink[]; maxPages?: number
 }) {
+  if (new Set(sources.map(({ adapter }) => adapter.source)).size !== sources.length) throw new TrackerError('bad_source')
   const order = sourceOrder(precedence)
   const statuses: Record<string, SourceScan> = Object.create(null)
   const observations = new Map<string, Observation>()
@@ -21,7 +22,10 @@ export async function scanTrackers({ sources, precedence, links, maxPages = 20 }
         for (const item of page.items) {
           const key = JSON.stringify([item.ref.source, item.ref.itemId])
           const previous = observations.get(key)
-          if (!previous || Date.parse(item.updatedAt) > Date.parse(previous.updatedAt)) observations.set(key, item)
+          const elapsed = previous ? Date.parse(item.updatedAt) - Date.parse(previous.updatedAt) : 0
+          if (!previous || elapsed > 0 || (elapsed === 0 && JSON.stringify(item) < JSON.stringify(previous))) {
+            observations.set(key, item)
+          }
         }
         if (page.complete) result.status = 'complete'
         cursor = page.nextCursor

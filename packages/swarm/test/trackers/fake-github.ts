@@ -40,7 +40,15 @@ export async function fakeGitHub(t: TestContext) {
     if (number) return reply(404)
     const page = url.searchParams.get('page')
     if (page === '1') {
-      const link = `<${url.origin}${url.pathname}?page=1>; rel="first", <${url.origin}${url.pathname}?page=3>; rel="next"`
+      const malformed = /^(labels|assignees)-(missing|scalar)$/.exec(repo ?? '')
+      if (malformed) return reply(200, [{ ...completed, [malformed[1]!]: malformed[2] === 'missing' ? undefined : 'invalid' }])
+      if (repo === 'tie-forward' || repo === 'tie-reverse') {
+        const revisions = [{ ...completed, title: 'Z revision' }, { ...completed, title: 'a revision' }]
+        return reply(200, repo === 'tie-forward' ? revisions : revisions.reverse())
+      }
+      const rel = repo === 'next-first' ? 'next alternate' : repo === 'next-last' ? 'alternate next'
+        : repo === 'no-next' ? 'alternate nextish' : 'next'
+      const link = `<${url.origin}${url.pathname}?page=1>; rel="first", <${url.origin}${url.pathname}?page=3>; rel="${rel}"`
       return reply(200, repo === '2' ? [issue(12, null, [])] : [completed, pr, withdrawn], { link })
     }
     if (page === '3') return repo === '2' ? reply(500) : reply(200, [unknown,

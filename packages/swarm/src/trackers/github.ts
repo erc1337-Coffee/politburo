@@ -13,7 +13,6 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 function names(values: unknown, field: 'name' | 'login'): string[] {
-  if (values === undefined) return []
   if (!Array.isArray(values)) throw new TrackerError('bad_response')
   return values.map((value: unknown) => {
     const name = isObject(value) ? value[field] : field === 'name' ? value : undefined
@@ -38,7 +37,8 @@ function priorityOf(labels: string[]): Priority {
 
 function nextPage(link: string, url: string): string | undefined {
   for (const [, target, params] of link.matchAll(/<([^>]+)>([^,]*)/g)) {
-    if (!/;\s*rel\s*=\s*(?:"next"|next)(?:\s*;|\s*$)/i.test(params!)) continue
+    const rel = /;\s*rel\s*=\s*(?:"([^"]*)"|([^\s;"]+))(?:\s*;|\s*$)/i.exec(params!)
+    if (!(rel?.[1] ?? rel?.[2])?.toLowerCase().split(' ').includes('next')) continue
     const page = URL.parse(target!, url)?.searchParams.get('page')
     if (!page || !/^[1-9][0-9]*$/.test(page)) throw new TrackerError('bad_response')
     return page
@@ -121,7 +121,9 @@ export function githubAdapter({ source, token, baseUrl = 'https://api.github.com
       if ([401, 403, 404].includes(response.status)) return 'inaccessible'
       const item = await json(response)
       if (!isObject(item)) throw new TrackerError('bad_response')
-      return Object.hasOwn(item, 'pull_request') ? 'gone' : observation(item)
+      if (Object.hasOwn(item, 'pull_request')) return 'gone'
+      const result = observation(item)
+      return result.ref.itemId === ref.itemId ? result : 'gone'
     },
   }
 }
