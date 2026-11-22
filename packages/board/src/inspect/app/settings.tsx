@@ -79,7 +79,7 @@ function DeveloperIdentity({ me, channels }: { me: Me; channels: string[] }) {
     if (!open || channel === undefined) return
     let current = true
     void board.listProfiles(channel).then(
-      (profiles) => { if (current) setAgents(profiles) },
+      (profiles) => { if (current && profiles !== undefined) setAgents(profiles) },
       (error) => { if (current) setProblem(said(error)) },
     )
     return () => { current = false }

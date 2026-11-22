@@ -171,19 +171,26 @@ function once(key: string, load: () => Promise<void>): Promise<void> {
 // --- reading -----------------------------------------------------------------------
 
 /** The page shows once it knows who you are and the channels the sidebar lists. */
-export async function boot() {
-  void loadStatus()
+export async function boot(): Promise<void> {
+  const handle = team
+  const as = identity
+  const current = () => handle === team && as === identity
   // Keep the first page's cursor so live updates cover posts while later pages are loading.
   let after: string | undefined
-  const [me, discovery, channels] = await Promise.all([
-    team.me(),
-    team.discovery().catch(() => null),
+  const snapshot = await Promise.all([
+    handle.me(),
+    handle.discovery().catch(() => null),
     everyChannel({ channels: async (query) => {
-      const page = await team.channels(query)
+      const page = await handle.channels(query)
       after ??= page.cursor
       return page
     } }),
-  ])
+  ]).catch((error) => {
+    if (current()) throw error
+    return null
+  })
+  if (!snapshot || !current()) return boot()
+  const [me, discovery, channels] = snapshot
   set((s) => ({ ...s, me, discovery, channels: Object.fromEntries(channels.map((c) => [c.path, c])) }))
   // A burst of events is one render: they're folded in a frame at a time.
   let queue: BoardEventView[] = []
@@ -198,13 +205,15 @@ export async function boot() {
     after,
     (event) => {
       if (event.type === 'work.control') {
-        // Fence outstanding status reads as soon as a transition arrives, not a frame later.
+        // Apply the transition immediately so the store can reject older status snapshots.
         set((s) => store.applyEvent(s, event))
         void loadStatus()
       } else if (queue.push(event) === 1) requestAnimationFrame(flush)
     },
     (feed) => set((s) => ({ ...s, live: feed === 'live' ? 'live' : 'reconnecting' })),
   ).catch((error) => toast(`live updates stopped: ${said(error)}`))
+  // Read after the feed's cursor is fixed: a pause is either in this snapshot or in the feed.
+  void loadStatus()
   // Who's who, for the names of a task's owner and holder; and the open tasks, for their count.
   void team.actors().then((actors) => set((s) => ({ ...s, actors: { ...Object.fromEntries(actors.map((actor) => [actor.id, actor])), ...s.actors } })), () => {})
   void loadSchemas()
@@ -298,16 +307,22 @@ export const loadFiltered = (channel: string, filter: store.Filter) => {
 // --- work control and registry ------------------------------------------------------
 
 let statusRead = 0
+let statusApplied = 0
 
 export async function loadStatus() {
   const read = ++statusRead
   const as = identity
   try {
     const status = await team.status()
-    if (read === statusRead && as === identity) set((s) => store.applyStatus(s, status))
+    if (read <= statusApplied || as !== identity) return
+    set((s) => {
+      const next = store.applyStatus(s, status)
+      if (next !== s) statusApplied = read
+      return next
+    })
   } catch (error) {
-    // Some boards do not support work control. Keep the last state the board did answer.
-    if (read === statusRead && as === identity) set((s) => ({ ...s, statusRefused: said(error) }))
+    // Some boards do not support work control. A refusal does not supersede a status answer.
+    if (read > statusApplied && as === identity) set((s) => ({ ...s, statusRefused: said(error) }))
   }
 }
 
@@ -321,11 +336,15 @@ export async function changePause(paused: boolean, reason: string) {
   }
 }
 
-export async function listProfiles(channel: string): Promise<string[]> {
+export async function listProfiles(channel: string): Promise<string[] | undefined> {
+  const handle = team
+  const as = identity
   try {
-    const { agents } = await team.agents.list(channel)
+    const { agents } = await handle.agents.list(channel)
+    if (handle !== team || as !== identity) return
     return [...new Set(agents.flatMap(({ binding }) => binding.profile === null ? [] : [binding.profile]))].sort()
   } catch (error) {
+    if (handle !== team || as !== identity) return
     if (!(error instanceof BoardError && error.code === 'no_agent_ops')) throw error
     return []
   }

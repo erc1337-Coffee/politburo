@@ -144,7 +144,7 @@ describe("the inspector's page, starting a task", () => {
 })
 
 describe("the inspector's page, reading work control", () => {
-  it('ignores a status response already superseded by a later request', async () => {
+  it('keeps the last successful status even if a pending newer read fails', async () => {
     const old = Promise.withResolvers<Response>()
     const newer = Promise.withResolvers<Response>()
     next.set('GET /control', [() => old.promise, () => newer.promise])
@@ -152,10 +152,11 @@ describe("the inspector's page, reading work control", () => {
     const second = page.loadStatus()
     old.resolve(Response.json({ paused: true, pauseEpoch: 1 }))
     await first
-    expect(page.getState().status?.paused).not.toBe(true)
-    newer.resolve(Response.json({ paused: false, pauseEpoch: 1 }))
+    expect(page.getState().status).toEqual({ paused: true, pauseEpoch: 1 })
+    newer.resolve(refuse(503, 'unavailable', 'status is temporarily unavailable')())
     await second
-    expect(page.getState().status).toEqual({ paused: false, pauseEpoch: 1 })
+    expect(page.getState().statusRefused).toBe('status is temporarily unavailable')
+    expect(page.getState().status).toEqual({ paused: true, pauseEpoch: 1 })
   })
 
   it('does not apply a pause answer from the identity used before switching away and back', async () => {
@@ -164,10 +165,11 @@ describe("the inspector's page, reading work control", () => {
     const writing = page.changePause(true, 'update the worker fleet')
     expect(await page.setProfile({ name: 'reviewer' })).toBe(true)
     expect(await page.setProfile(null)).toBe(true)
+    const before = page.getState().status
     old.resolve(Response.json({ paused: true, pauseEpoch: 2 }))
     await writing
     expect(posts('/control/pause')).toContainEqual({ reason: 'update the worker fleet' })
-    expect(page.getState().status?.paused).not.toBe(true)
+    expect(page.getState().status).toEqual(before)
   })
 })
 

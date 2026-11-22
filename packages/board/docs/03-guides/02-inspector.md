@@ -77,8 +77,9 @@ Read and operate the board in your browser:
   To test a profile, open **Settings → developer options**. Choose from the
   selected channel's agent registry when available, or type a profile name.
 - **Pause work.** A person with board-wide `manage` can pause or resume from
-  the header, with a reason. Every view shows when the board is paused. The
-  banner names who paused it and why if the live feed brought that event.
+  the header, with a reason. Every view shows a pause banner without moving
+  what you're reading. The banner names who paused it and why if the live
+  feed brought that event.
 
 Messages also show where they came from (Slack, GitHub, WhatsApp), links to
 platform messages quoted under them, any platform a message didn't reach, and

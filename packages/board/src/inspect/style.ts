@@ -107,8 +107,9 @@ textarea, [contenteditable]:not([contenteditable='false']) { cursor: text; }
 .hint { color: var(--faint); font-size: 11px; }
 
 .shell { display: flex; flex-direction: column; height: 100dvh; overflow: hidden; }
-.workspace { position: relative; display: flex; flex: 1; min-height: 0; }
-.pause-banner { flex: none; padding: 6px var(--inset); background: var(--selected); color: var(--bright); overflow-wrap: anywhere; }
+.workspace { --header-height: 46px; position: relative; display: flex; flex: 1; min-height: 0; }
+/* Overlay below the header so a live pause neither moves the scrollers nor covers Resume. */
+.pause-banner { position: absolute; top: var(--header-height); inset-inline: 0; z-index: calc(var(--overlay-layer) + 1); max-height: 50%; overflow-y: auto; padding: 6px var(--inset); background: var(--selected); color: var(--bright); overflow-wrap: anywhere; }
 @media (min-width: 64rem) {
   .shell { margin: 12px; height: calc(100dvh - 24px); border-radius: 7px; box-shadow: 0 2px 3px var(--shadow); }
 }
@@ -120,7 +121,7 @@ textarea, [contenteditable]:not([contenteditable='false']) { cursor: text; }
 .sidebar-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 8px 12px; }
 .sidebar-foot { flex-shrink: 0; padding: 4px 8px 12px; }
 .brand {
-  height: 46px;
+  height: var(--header-height);
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -191,7 +192,7 @@ textarea, [contenteditable]:not([contenteditable='false']) { cursor: text; }
 }
 
 .header {
-  height: 46px;
+  height: var(--header-height);
   flex-shrink: 0;
   display: flex;
   align-items: center;

@@ -12,6 +12,7 @@ import { fakePlatform } from './sync-fixtures.ts'
 let visit = 0
 const browser = (window as unknown as import('happy-dom').Window).happyDOM
 const closed = () => Response.json({ error: { code: 'closed', message: 'page closed' } }, { status: 403 })
+const routePath = (request: Request) => new URL(request.url.slice(BOARD_URL.length), 'http://board.test').pathname
 afterAll(() => vi.unstubAllGlobals())
 let root: Root | undefined
 let disconnect: (() => Promise<void>) | undefined
@@ -51,7 +52,11 @@ async function workbench(options: Parameters<typeof localBoard>[0] = {}) {
   }
   return {
     api, as, client: as(),
-    async open(path = '/', options: { profile?: string; named?: boolean; can?: string; holdSchedules?: (profile: string | null) => Promise<void> | undefined } = {}) {
+    async open(path = '/', options: {
+      profile?: string; named?: boolean; can?: string
+      holdSchedules?: (profile: string | null) => Promise<void> | undefined
+      proxy?: (request: Request, forward: (request: Request) => Promise<Response>) => Promise<Response>
+    } = {}) {
       browser.settings.enableImageFileLoading = false
       browser.setViewport({ width: 1280, height: 900 })
       browser.setURL(`http://inspector-${++visit}.test${path}`)
@@ -73,10 +78,11 @@ async function workbench(options: Parameters<typeof localBoard>[0] = {}) {
         const headers = new Headers(request.headers)
         headers.set('authorization', `Bearer ${token}`)
         if (options.can) headers.set('x-board-can', options.can)
-        const response = api.fetch(new Request(`${BOARD_URL}${request.url.slice(proxy.length)}`, {
+        const outbound = new Request(`${BOARD_URL}${request.url.slice(proxy.length)}`, {
           method: request.method, headers, signal: page.signal,
           ...(request.method === 'GET' || request.method === 'HEAD' ? {} : { body: await request.arrayBuffer() }),
-        }))
+        })
+        const response = options.proxy ? options.proxy(outbound, api.fetch) : api.fetch(outbound)
         if (options.holdSchedules && request.method === 'GET' && new URL(request.url).pathname === '/board/schedules') {
           const result = await response
           await options.holdSchedules(headers.get('x-board-profile'))
@@ -229,8 +235,8 @@ function menuItem(text: string) {
   return match!
 }
 
-function typeInto(field: HTMLInputElement, text: string) {
-  const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+function typeInto(field: HTMLInputElement | HTMLTextAreaElement, text: string) {
+  const set = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(field), 'value')!.set!
   set.call(field, text)
   field.dispatchEvent(new Event('input', { bubbles: true }))
 }
@@ -279,6 +285,126 @@ it('waits for a name in app-served mode and then shows that profile', async () =
   await vi.waitFor(() => expect(document.querySelector('.sidebar-foot')!.textContent).toContain('acting as reviewer'))
 })
 
+it('keeps the identity shown and the author of writes in sync when switching during named boot', async () => {
+  const { client, open } = await workbench()
+  await client.post('work', 'Ready for review')
+  const reading = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  await open('/settings/access', {
+    named: true,
+    proxy: async (request, forward) => {
+      const response = await forward(request)
+      if (routePath(request) === '/channels' && request.headers.get('x-board-profile') === 'reviewer') {
+        reading.resolve()
+        await release.promise
+      }
+      return response
+    },
+  })
+  const field = document.querySelector<HTMLInputElement>('input[name="profile"]')!
+  typeInto(field, 'reviewer')
+  field.form!.querySelector('button')!.click()
+  try {
+    await reading.promise
+    await switchProfile('editor')
+    release.resolve()
+    const channel = await vi.waitFor(() => {
+      const item = document.querySelector<HTMLAnchorElement>('a[href="/c/work"]')
+      expect(item).not.toBeNull()
+      return item!
+    })
+    channel.click()
+    await vi.waitFor(() => expect(document.querySelector('.live')?.textContent).toBe('live'))
+    const composer = document.querySelector<HTMLTextAreaElement>('textarea[placeholder="message #work…"]')!
+    await act(async () => typeInto(composer, 'Edits ready'))
+    document.querySelector<HTMLButtonElement>('main button.send')!.click()
+    await vi.waitFor(async () => {
+      const { messages } = await client.channel('work').messages()
+      expect(messages.find((message) => message.text === 'Edits ready')?.by.profile).toBe('editor')
+    })
+    expect(document.querySelector('.sidebar-foot')?.textContent).toContain('acting as editor')
+  } finally {
+    release.resolve()
+  }
+})
+
+it('drops a registry answer from the previous profile at the data boundary', async () => {
+  const { as, client, open } = await workbench({ agentOps: true })
+  await client.post('work', 'Ready for review')
+  await as('reviewer').agents.register({ channel: 'work', role: 'implementation-worker', harness: 'shell' })
+  const reading = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  await open('/settings/access', {
+    profile: 'editor',
+    proxy: async (request, forward) => {
+      const response = await forward(request)
+      if (routePath(request) === '/ops/agents' && request.headers.get('x-board-profile') === 'editor') {
+        reading.resolve()
+        await release.promise
+      }
+      return response
+    },
+  })
+  // Test at the data boundary so effect cleanup cannot hide a stale result.
+  const page = await import('../src/inspect/app/board.ts')
+  const stale = page.listProfiles('work')
+  try {
+    await reading.promise
+    await switchProfile('writer')
+    release.resolve()
+    expect(await stale).toBeUndefined()
+    expect(await page.listProfiles('work')).toEqual(['reviewer'])
+  } finally {
+    release.resolve()
+    await stale
+  }
+})
+
+it('shows a pause that lands before the first channels cursor is captured', async () => {
+  const { client, open } = await workbench()
+  let earlyStatus: Promise<Response> | undefined
+  let channelsStarted = false
+  await open('/', {
+    proxy: async (request, forward) => {
+      const path = routePath(request)
+      if (path === '/control' && !channelsStarted) return (earlyStatus = forward(request))
+      if (path === '/channels' && !channelsStarted) {
+        channelsStarted = true
+        // If boot already read status, let the real board finish that snapshot first.
+        await earlyStatus
+        await client.pause('paused during boot')
+      }
+      return forward(request)
+    },
+  })
+  await vi.waitFor(() => {
+    expect(document.querySelector('.live')?.textContent).toBe('live')
+    expect(document.querySelector('.pause-banner:not([hidden])')?.textContent).toBe('paused')
+  })
+  expect(await client.status()).toEqual({ paused: true, pauseEpoch: 1 })
+})
+
+it('asks for a reason to Pause, shows the board’s refusal, and lets the manager try again', async () => {
+  const { client, open } = await workbench()
+  let allow = false
+  await open('/', {
+    proxy: async (request, forward) => {
+      // Simulate the write arriving with reduced authority after the page read /me.
+      if (!allow && routePath(request) === '/control/pause') request.headers.set('x-board-can', '*=read')
+      return forward(request)
+    },
+  })
+  await vi.waitFor(() => button('Pause')).then((pause) => pause.click())
+  await submitReason('reason', 'rotate workers')
+  await vi.waitFor(() => expect(document.querySelector('.toasts')?.textContent).toContain('only a person with board-wide manage can change work control'))
+  expect(await client.status()).toEqual({ paused: false, pauseEpoch: 0 })
+  allow = true
+  button('Pause').click()
+  await submitReason('reason', 'rotate workers')
+  await vi.waitFor(() => expect(document.querySelector('.pause-banner:not([hidden])')?.textContent).toContain('rotate workers'))
+  expect(await client.status()).toEqual({ paused: true, pauseEpoch: 1 })
+})
+
 it('shows live pause detail on every view and lets the manager resume with a reason', async () => {
   const { client, open } = await workbench()
   await open()
@@ -288,6 +414,8 @@ it('shows live pause detail on every view and lets the manager resume with a rea
   await client.pause('maintenance window')
   const me = await client.me()
   await vi.waitFor(() => expect(banner().textContent).toMatch(new RegExp(`^paused by ${me.name}, .+ ago: maintenance window$`)))
+  expect(banner().parentElement?.classList.contains('workspace')).toBe(true)
+  expect(getComputedStyle(banner()).position).toBe('absolute')
   link('Presidium').click()
   await vi.waitFor(() => expect(document.querySelector('main h1')?.textContent).toBe('PRESIDIUM'))
   expect(banner().textContent).toContain('maintenance window')
@@ -323,14 +451,14 @@ it('shows just paused to a reader who joined after the transition', async () => 
   expect(document.querySelector('button[title="Resume"]')).toBeNull()
 })
 
-it('lets a person park and unpark an agent’s task from the thread', async () => {
-  const { as, api, open } = await workbench()
+it('lets a person park and unpark an unheld ready task without offering to claim it', async () => {
+  const { api, open } = await workbench()
   const { task } = await api.tasks.create('work', { text: 'Check the release' })
-  await as('worker').tasks.claim(task.id)
   await open(`/?thread=${task.id}`)
+  await vi.waitFor(() => expect(document.querySelector('.task-card .task-state')?.textContent).toBe('ready'))
   await vi.waitFor(() => button('more')).then((more) => more.click())
   const park = await vi.waitFor(() => menuItem('park…'))
-  expect([...document.querySelectorAll('.task-card button, [role="menuitem"]')].map((item) => item.textContent?.trim()).join(' ')).not.toMatch(/\b(renew|release|complete|claim)\b/)
+  expect([...document.querySelectorAll('.task-card button, [role="menuitem"]')].map((item) => item.textContent?.trim()).join(' ')).not.toMatch(/\b(renew|release|complete|claim)\b/i)
   park.click()
   await submitReason('why it should wait', 'waiting for the release window')
   const unpark = await vi.waitFor(() => {

@@ -306,8 +306,8 @@ export function App() {
         if (where.thread === null && !nav && event.target instanceof HTMLElement && event.target.closest('.main')) threadOpener.current = event.target
       }}
     >
-      <div className="pause-banner" role="status" hidden={banner === null}>{banner}</div>
       <div className="workspace">
+        <div className="pause-banner" role="status" hidden={banner === null}>{banner}</div>
         {nav && <div className="scrim" onClick={() => setNav(false)} />}
         <nav id="board-sidebar" className="sidebar" aria-label="Board navigation" tabIndex={-1} hidden={!nav && sidebar.collapsed} style={{ width: sidebar.width, opacity: sidebar.fade }}>
           <Sidebar
