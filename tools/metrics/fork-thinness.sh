@@ -5,8 +5,8 @@ set -euo pipefail
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then exec 3>&2 2>/dev/null; fi
 fail() { printf 'error: %s\n' "$1" >&3; exit 1; }
 trap 'fail "fork thinness measurement failed"' ERR
-# Bound the entire run as well as each Git operation. Keep Git's timeouts
-# in the outer process group so the outer deadline can kill their children.
+# Bound the entire run as well as each Git operation. Most Git timeouts
+# stay in the outer process group. Fetch has its own group, cleaned up below.
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
   status=0
   timeout --kill-after=5 360 bash -c 'script=$1; shift; source "$script" "$@"' \
@@ -48,7 +48,13 @@ esac
 
 umask 077
 tmp=$(mktemp -d) || fail "could not create temporary directory"
-trap 'rm -rf -- "$tmp"' EXIT
+fetch_pid=
+cleanup() {
+  # On interruption, stop the timeout itself even if it hasn't made its group yet.
+  if [[ -n $fetch_pid ]]; then kill -KILL -- "$fetch_pid" "-$fetch_pid" 2>/dev/null || :; fi
+  rm -rf -- "$tmp"
+}
+trap cleanup EXIT
 unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_NAMESPACE \
   GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_QUARANTINE_PATH \
   GIT_CONFIG GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_TEMPLATE_DIR \
@@ -75,8 +81,18 @@ git_with_deadline 120 clone --no-hardlinks --no-checkout --quiet -- "$repo" "$tm
 g check-ref-format "refs/heads/$upstream_branch" || fail "invalid upstream branch"
 g remote add -- upstream "$upstream_url" || fail "could not add upstream remote"
 upstream_ref=refs/remotes/upstream/metric
-git_with_deadline 120 -C "$tmp/repo" fetch --quiet --no-tags --no-recurse-submodules upstream \
-  "refs/heads/$upstream_branch:$upstream_ref" >/dev/null || fail "could not fetch upstream branch"
+# Without --foreground, GNU timeout runs Git and its HTTP helper in its own
+# process group. Wait in the background so the outer TERM trap can run cleanup.
+timeout --kill-after=5 120 git -c core.fsmonitor=false -C "$tmp/repo" fetch \
+  --quiet --no-tags --no-recurse-submodules upstream \
+  "refs/heads/$upstream_branch:$upstream_ref" >/dev/null 3>&- &
+fetch_pid=$!
+fetch_status=0
+wait "$fetch_pid" || fetch_status=$?
+# timeout can exit once Git does, even if a helper ignored TERM.
+kill -KILL -- "-$fetch_pid" 2>/dev/null || :
+fetch_pid=
+((fetch_status == 0)) || fail "could not fetch upstream branch"
 upstream=$(g rev-parse --verify "$upstream_ref^{commit}") || fail "could not resolve upstream tip"
 [[ $upstream =~ $sha ]] || fail "invalid upstream SHA"
 base=$(g merge-base "$head" "$upstream") || fail "no merge base with upstream"

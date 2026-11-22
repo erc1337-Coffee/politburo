@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { createConnection } from 'node:net'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { createConnection, createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
@@ -263,6 +263,97 @@ function live(pid) {
   }
 }
 
+test('fork metric fails quietly on a stalled HTTP fetch and kills the remote helper', { timeout: 8_000 }, async (t) => {
+  const { root, fork, env } = fixture(t)
+  const timeout = systemCommand('timeout')
+  shim(root, env, 'timeout', `args=()
+for arg; do
+  case "$arg" in
+    120) args+=(1) ;;
+    360) args+=(5) ;;
+    --kill-after=5) args+=(--kill-after=.1) ;;
+    *) args+=("$arg") ;;
+  esac
+done
+exec ${timeout} "\${args[@]}"`)
+  Object.assign(env, { GIT_ALLOW_PROTOCOL: 'file:http', no_proxy: '127.0.0.1', NO_PROXY: '127.0.0.1' })
+  const sockets = new Set()
+  let remote, helpers = []
+  const server = createServer((socket) => {
+    sockets.add(socket)
+    socket.once('close', () => sockets.delete(socket))
+    socket.once('data', () => {
+      // Record only the real helper for this fixture's URL, then never reply.
+      helpers = httpHelpers()
+    })
+  })
+  function httpHelpers() {
+    return readdirSync('/proc').filter((pid) => {
+      if (!/^\d+$/.test(pid)) return false
+      try {
+        return readFileSync(`/proc/${pid}/comm`, 'utf8').trim() === 'git-remote-http' &&
+          readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').includes(remote)
+      } catch (err) {
+        if (!['ENOENT', 'ESRCH', 'EACCES'].includes(err.code)) throw err
+        return false
+      }
+    }).map(Number)
+  }
+  t.after(async () => {
+    for (const pid of new Set([...helpers, ...httpHelpers()])) {
+      if (live(pid)) process.kill(pid, 'SIGKILL')
+    }
+    for (const socket of sockets) socket.destroy()
+    await new Promise((resolve) => server.close(resolve))
+  })
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  remote = `http://127.0.0.1:${server.address().port}/stalled.git`
+  const judge = spawn('bash', [forkScript, '--repo', fork, '--upstream-url', remote], { env })
+  t.after(() => { if (judge.exitCode === null && judge.signalCode === null) judge.kill('SIGTERM') })
+  let stdout = '', stderr = ''
+  judge.stdout.setEncoding('utf8').on('data', (chunk) => { stdout += chunk })
+  judge.stderr.setEncoding('utf8').on('data', (chunk) => { stderr += chunk })
+  const closed = once(judge, 'close')
+  const [status, signal] = await once(judge, 'exit')
+  assert.ok(helpers.length, 'the HTTP remote helper never requested data')
+  const until = performance.now() + 250
+  while (helpers.some(live) && performance.now() < until) await sleep(10)
+  assert.ok(!helpers.some(live), 'git-remote-http survived the fetch timeout')
+  await closed
+  failure({ status, signal, stdout, stderr }, /could not fetch upstream branch/)
+})
+
+for (const [prefix, name] of [
+  ['', 'kills a background child that clears its environment'],
+  ['setsid ', 'kills a separate-session child that clears its environment'],
+]) {
+  // A new session escapes the process group; env -i also removes the /proc marker.
+  const skip = prefix ? 'a new session with no marker cannot be tracked by this judge' : false
+  test(`claim metric ${name}`, { skip }, async (t) => {
+    const { root, fork } = fixture(t)
+    const pidFile = join(root, 'cleared-env-pid')
+    const env = claimEnv()
+    shim(root, env, 'pnpm', `env -i ${prefix}/bin/bash -c 'echo "$$" > "$1"; exec sleep 120' child ${JSON.stringify(pidFile)} &
+while [[ ! -s ${JSON.stringify(pidFile)} ]]; do sleep .01; done
+exit 9`)
+    let result, pid
+    try {
+      result = run(process.execPath, [claimScript, '--repo', fork, '--timeout', '3'], env)
+    } finally {
+      pid = existsSync(pidFile) && Number(readFileSync(pidFile, 'utf8'))
+      if (Number.isSafeInteger(pid) && pid > 1) {
+        t.after(() => { if (live(pid)) process.kill(pid, 'SIGKILL') })
+      }
+    }
+    assert.ok(Number.isSafeInteger(pid) && pid > 1, 'the env -i child did not start')
+    failure(result, /install failed \(exit 9\)/)
+    const until = performance.now() + 250
+    while (live(pid) && performance.now() < until) await sleep(10)
+    assert.ok(!live(pid), 'the env -i child survived its command')
+  })
+}
+
 test('claim metric kills a detached pnpm descendant on timeout', (t) => {
   const { root, fork } = fixture(t)
   const pidFile = join(root, 'detached-pid')
@@ -304,6 +395,31 @@ test('claim metric completes a real-board handoff and reads persisted history', 
   assert.ok(doc.commands >= 12)
   assert.deepEqual(Object.keys(doc.phases), ['clone', 'install', 'build', 'serve_ready', 'create', 'claim', 'complete'])
   assert.ok(Object.values(doc.phases).every((seconds) => seconds > 0 && seconds < doc.value))
+})
+
+test('claim metric rejects a persisted completion with the wrong author', realBoard, (t) => {
+  const { root, fork } = fixture(t)
+  const env = claimEnv()
+  const wrapper = join(root, 'cli.mjs')
+  const cli = JSON.stringify(join(builtDist, 'cli.mjs'))
+  // Keep the real board and CLI; change only the completion author reported by wait.
+  writeFileSync(wrapper, `import { spawnSync } from 'node:child_process'
+if (process.argv[2] !== 'wait') {
+  await import(${cli})
+} else {
+  const result = spawnSync(process.execPath, [${cli}, ...process.argv.slice(2)], { encoding: 'utf8' })
+  if (result.status !== 0) process.exit(result.status ?? 1)
+  const doc = JSON.parse(result.stdout)
+  if (doc.event?.type === 'task.completed') doc.event.payload.by.profile = 'other-worker'
+  process.stdout.write(JSON.stringify(doc))
+}
+`)
+  shim(root, env, 'pnpm', `if [[ $1 == install ]]; then exit 0; fi
+[[ $* == '--filter @vercel/board build' ]]
+mkdir -p packages/board/dist
+ln -s ${JSON.stringify(wrapper)} packages/board/dist/cli.mjs`)
+  failure(run(process.execPath, [claimScript, '--repo', fork], env),
+    /persisted completion by the second identity was not confirmed/)
 })
 
 function servingChild(judge) {
