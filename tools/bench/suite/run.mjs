@@ -1,12 +1,13 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { appendFileSync, chmodSync, constants, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync,
-  readFileSync, realpathSync, renameSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync,
+  readFileSync, realpathSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { fields, requireThat, thinkingLevel, validModel, validRating } from '../record.mjs';
+import { exportPatch, refusedSymlink } from './export.mjs';
 
 const PREFIX = 'bench', SUITE = 'tools/bench/suite';
 const slug = value => value == null ? 'default' : value.toLowerCase().replace(/[^a-z0-9._-]+/g, '-');
@@ -80,14 +81,14 @@ async function reserveName(o, sprites) {
   }
 }
 
-function goldenPath(cwd, file, create) {
+function goldenPath(cwd, file) {
   requireThat(realpathSync(cwd) === cwd);
   let dir = cwd;
   for (const part of file.split('/').slice(0, -1)) {
     dir = join(dir, part);
     const stat = lstatSync(dir, { throwIfNoEntry: false });
     if (stat) requireThat(stat.isDirectory());
-    else if (create) mkdirSync(dir);
+    else mkdirSync(dir);
   }
   return join(cwd, file);
 }
@@ -96,16 +97,23 @@ function unlinkIfPresent(file) {
   try { unlinkSync(file); } catch (e) { if (e.code !== 'ENOENT') throw e; }
 }
 
-function snapshotPack(work, sprite, git) {
-  const copy = privateDir(work, 'bench-snapshot-');
-  try {
-    cpSync(sprite, copy, { recursive: true, dereference: false, verbatimSymlinks: true, mode: constants.COPYFILE_FICLONE });
-    git(copy, ['add', '--all']);
-    const tree = git(copy, ['write-tree']).toString().trim();
-    // Unlike an archive, a pack honors neither export-ignore nor export-subst.
-    const pack = git(copy, ['pack-objects', '--stdout', '--revs'], { ...buffered, ...pipeInput, input: `${tree}\n` });
-    return { tree, pack };
-  } finally { rmSync(copy, { recursive: true, force: true }); }
+function cloneWithPatch(work, prefix, trusted, patch, git) {
+  const cwd = privateDir(work, prefix);
+  git(cwd, ['clone', '--no-hardlinks', '--no-local', '--template=', trusted, '.']);
+  if (patch.length) git(cwd, ['apply', '--binary', '--index', '--whitespace=nowarn'], { ...pipeInput, input: patch });
+  return cwd;
+}
+
+function collect({ name, sprites, task, env, out }, check, churn, note) {
+  const { score, size, reason, ratedBy, ratedAt } = task.rating;
+  const collector = fileURLToPath(new URL('../sprite-usage.mjs', import.meta.url));
+  const rows = execFileSync(process.execPath, [collector, name, '--dir', sprites, ...churn,
+    '--task', task.id, '--check', check, '--check-command', goldenName(task.goldenCommand),
+    '--complexity-score', String(score), '--complexity-size', size, '--complexity-reason', reason,
+    '--rated-by', ratedBy, '--rated-at', ratedAt], { env, ...capture });
+  appendFileSync(out, rows);
+  console.log(`run  ${name}  ${check}${note ? `  ${note}` : ''}`);
+  return 0;
 }
 
 async function run(o, repo, task, grace, work, git, env) {
@@ -128,9 +136,9 @@ async function run(o, repo, task, grace, work, git, env) {
       '-c', 'core.hooksPath=/dev/null', 'commit', '--allow-empty', '--no-gpg-sign', '-m', 'Benchmark base']);
     return git(cwd, ['rev-parse', 'HEAD']).toString().trim();
   };
-  const base = initBase(sprite), savedGit = join(dir, 'base.git');
-  // Save the base before launch, without copying its ignored setup output.
-  cpSync(join(sprite, '.git'), savedGit, { recursive: true, verbatimSymlinks: true });
+  const base = initBase(sprite);
+  const trustedDir = privateDir(work, 'bench-trusted-'), trusted = join(trustedDir, 'trusted.git');
+  git(trustedDir, ['clone', '--bare', '--no-hardlinks', '--no-local', '--template=', sprite, trusted]);
   const brief = join(dir, 'brief.md');
   copyFileSync(join(repo, task.briefFile), brief);
   const launcher = process.env.BENCH_SPRITE_START ? resolve(process.env.BENCH_SPRITE_START) : 'sprite-start';
@@ -138,44 +146,34 @@ async function run(o, repo, task, grace, work, git, env) {
   try {
     const cap = Number(o['max-seconds'] ?? task.timeCapSeconds), wait = (cap + grace) * 1000;
     const deadline = performance.now() + wait;
-    execFileSync(launcher, [name, brief, String(cap)], { cwd: sprite, env, timeout: wait, ...quiet });
+    execFileSync(launcher, [name, brief, String(cap)], { cwd: sprite, env: childEnv(work, o), timeout: wait, ...quiet });
     while (!existsSync(`${prefix}.rc`)) {
       if (performance.now() >= deadline) return 1;
       await sleep(Math.min(100, deadline - performance.now()));
     }
-    const { tree, pack } = snapshotPack(work, sprite, git);
-    const cwd = privateDir(work, 'bench-grade-');
-    renameSync(savedGit, join(cwd, '.git'));
-    git(cwd, ['reset', '--hard', base]);
-    git(cwd, ['index-pack', '--stdin'], { ...pipeInput, input: pack });
-    const checkoutSnapshot = () => git(cwd, ['read-tree', '--reset', '-u', tree]);
-    // Give setup the sprite's inputs (e.g. lockfiles), then keep only its ignored output.
-    checkoutSnapshot();
-    setup(cwd);
-    checkoutSnapshot();
-    git(cwd, ['clean', '-ffd']);
+    const measurement = { name, sprites, task, env, out };
+    let stats, cwd, skipped;
+    try {
+      const exported = exportPatch(privateDir(work, 'bench-export-'), sprite, trusted, base, git, env);
+      skipped = exported.skipped;
+      stats = cloneWithPatch(work, 'bench-stats-', trusted, exported.patch, git);
+      cwd = cloneWithPatch(work, 'bench-grade-', trusted, exported.patch, git);
+    } catch (error) {
+      const reason = error.message === refusedSymlink ? refusedSymlink : 'refused_export';
+      return collect(measurement, 'not_run', ['--outcome', 'blocked', '--reason', reason], reason);
+    }
     for (const file of task.goldenFiles) {
-      const target = goldenPath(cwd, file, true);
+      const target = goldenPath(cwd, file);
       requireThat(!lstatSync(target, { throwIfNoEntry: false })?.isSymbolicLink());
       unlinkIfPresent(target);
       writeFileSync(target, git(repo, ['show', `${task.goldenRef}:${file}`]), { flag: 'wx' });
     }
+    setup(cwd);
     const [cmd, ...args] = task.goldenCommand;
     const verdict = spawnSync(cmd, args, { cwd, env, ...quiet });
     if (verdict.error) throw verdict.error;
     const check = verdict.status === 0 ? 'pass' : 'fail';
-    // Roll back golden files and tracked setup/check effects before measuring churn.
-    for (const file of task.goldenFiles) unlinkIfPresent(goldenPath(cwd, file, false));
-    checkoutSnapshot();
-    const { score, size, reason, ratedBy, ratedAt } = task.rating;
-    const collector = fileURLToPath(new URL('../sprite-usage.mjs', import.meta.url));
-    const rows = execFileSync(process.execPath, [collector, name, '--dir', sprites, '--worktree', cwd, '--base', base,
-      '--task', task.id, '--check', check, '--check-command', goldenName(task.goldenCommand),
-      '--complexity-score', String(score), '--complexity-size', size, '--complexity-reason', reason,
-      '--rated-by', ratedBy, '--rated-at', ratedAt], { env, ...capture });
-    appendFileSync(out, rows);
-    console.log(`run  ${name}  ${check}`);
-    return 0;
+    return collect(measurement, check, ['--worktree', stats, '--base', base], skipped ? `skipped_special=${skipped}` : '');
   } finally { rmdirSync(lock); }
 }
 
@@ -194,7 +192,9 @@ async function main() {
     const requestedWork = resolve(o.work ?? tmpdir());
     mkdirSync(requestedWork, { recursive: true });
     const work = realpathSync(requestedWork), env = childEnv(work, o);
-    const git = (cwd, args, options) => execFileSync('git', args, { cwd, env, ...capture, ...options });
+    const gitEnv = { ...env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
+    const git = (cwd, args, options) => execFileSync('git', ['-c', 'core.hooksPath=/dev/null', ...args],
+      { cwd, env: gitEnv, ...capture, ...options });
     let task;
     try { task = loadTask(repo, o.task, git, env); }
     catch { console.error('error: invalid suite arguments or manifest'); return 2; }

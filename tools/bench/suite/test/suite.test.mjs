@@ -8,6 +8,7 @@ import { basename, dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { runName } from '../run.mjs';
+import { verifyModes } from '../export.mjs';
 import { validRating } from '../../record.mjs';
 
 const here = path => fileURLToPath(new URL(path, import.meta.url));
@@ -80,7 +81,7 @@ function treeDigest(root, { lstatSync, readFileSync, readdirSync, readlinkSync }
   const hash = createHash('sha256');
   function walk(rel) {
     const file = join(root, rel), stat = lstatSync(file);
-    const type = stat.isDirectory() ? 'dir' : stat.isSymbolicLink() ? 'link' : 'file';
+    const type = stat.isDirectory() ? 'dir' : stat.isSymbolicLink() ? 'link' : stat.isFile() ? 'file' : 'special';
     const content = type === 'link' ? readlinkSync(file)
       : type === 'file' ? createHash('sha256').update(readFileSync(file)).digest('hex') : null;
     hash.update(JSON.stringify([rel, type, stat.mode, content]));
@@ -90,7 +91,9 @@ function treeDigest(root, { lstatSync, readFileSync, readdirSync, readlinkSync }
   return hash.digest('hex');
 }
 
-function fixture(t, mode) {
+const digest = path => treeDigest(path, { lstatSync, readFileSync, readdirSync, readlinkSync }, join, createHash);
+
+function fixture(t, mode, timeout = 10_000) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'bench-suite-test-')));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const cwd = join(dir, 'repo');
@@ -105,15 +108,17 @@ function fixture(t, mode) {
   writeFileSync(join(cwd, 'answer'), 'base');
   writeFileSync(join(cwd, 'obsolete'), 'obsolete\n');
   writeFileSync(join(cwd, 'setup-location'), 'not set up\n');
-  writeFileSync(join(cwd, '.gitignore'), 'ignored\nignored-link\n');
+  writeFileSync(join(cwd, '.gitignore'), 'ignored\nignored-link\nignored-dir/\n');
+  mkdirSync(join(cwd, 'swap'));
+  writeFileSync(join(cwd, 'swap/file'), 'tracked\n');
   writeFileSync(join(cwd, '.gitattributes'), 'added export-ignore\n');
   const base = commit();
   writeFileSync(join(cwd, 'answer'), 'fixed');
   mkdirSync(join(cwd, 'checks'));
   writeFileSync(join(cwd, 'checks/golden.cjs'), `${observe}
 note('golden', { cwd: process.cwd(), secret: present('BENCH_FIXTURE_SECRET_TOKEN'), ...home(),
-  baseLocationRestored: fs.readFileSync('setup-location', 'utf8') === JSON.parse(fs.readFileSync(obs('launcher'))).cwd,
-  extraSetupFile: fs.existsSync('setup-extra') });
+  setupHere: fs.readFileSync('setup-location', 'utf8') === process.cwd(),
+  goldenInstalledBeforeSetup: fs.existsSync('setup-saw-golden') });
 console.log('check stdout');
 console.error('check stderr');
 if (e.MODE === 'straggler') {
@@ -123,14 +128,16 @@ if (e.MODE === 'straggler') {
   if (!fs.existsSync(obs('straggler-done')) || fs.existsSync('obsolete')) process.exit(1);
 }
 process.exitCode = fs.readFileSync('answer', 'utf8') === 'fixed' &&
-  fs.readFileSync('ignored', 'utf8') === 'fixed' && fs.existsSync('added') ? 0 : 1;
+  fs.readFileSync('ignored', 'utf8') === 'fixed' && fs.existsSync('added') &&
+  !fs.existsSync('pipe') && !fs.existsSync('ignored-dir') && !fs.existsSync('ignored-link') ? 0 : 1;
 `);
   const goldenRef = commit();
   const setup = `${observe}
 fs.appendFileSync(obs('setup'), present('BENCH_FIXTURE_SECRET_TOKEN') + '\\n');
 const answer = fs.readFileSync('answer');
 fs.writeFileSync('setup-location', process.cwd());
-if (fs.existsSync('ready')) fs.writeFileSync('setup-extra', 'rerun only');
+if (fs.existsSync('checks/golden.cjs') && fs.readFileSync('checks/golden.cjs', 'utf8').includes('process.exitCode'))
+  fs.writeFileSync('setup-saw-golden', 'yes');
 fs.writeFileSync('ready', answer);
 fs.writeFileSync('ignored', answer);
 `;
@@ -145,10 +152,16 @@ fs.writeFileSync('ignored', answer);
   mkdirSync(join(dir, 'runner-home'));
   mkdirSync(join(dir, 'outside'));
   writeFileSync(join(dir, 'outside/golden.cjs'), 'untouched');
+  const outsideBefore = digest(join(dir, 'outside'));
+  writeFileSync(join(dir, 'monitor'), '#!/bin/sh\ntouch "$OBS/outside/monitor-ran"\n', { mode: 0o700 });
   // Observe the real collector at process startup, without replacing it.
   const preload = join(dir, 'collector-probe.cjs');
   writeFileSync(preload, `${observe}
-if (process.argv[1]?.endsWith('/sprite-usage.mjs')) note('collector', present('BENCH_FIXTURE_SECRET_TOKEN'));
+if (process.argv[1]?.endsWith('/sprite-usage.mjs')) {
+  const index = process.argv.indexOf('--worktree');
+  note('collector', { secret: present('BENCH_FIXTURE_SECRET_TOKEN'),
+    worktree: index < 0 ? null : process.argv[index + 1], afterGolden: fs.existsSync(obs('golden')) });
+}
 `);
   writeFileSync(join(dir, 'launcher-probe.cjs'), `${observe}
 note('launcher', { cwd: process.cwd(), secret: present('BENCH_FIXTURE_SECRET_TOKEN'), ...home(),
@@ -173,17 +186,37 @@ printf 'sprite stdout\n'
 printf 'sprite stderr\n' >&2
 [ "$MODE" != fail-start ] || exit 9
 cp "$FIXTURE_LOG" "$SPRITES/$1.jsonl"
-if [ "$MODE" = pass ] || [ "$MODE" = straggler ]; then
+if [ "$MODE" = pass ] || [ "$MODE" = straggler ] || [ "$MODE" = objects ] ||
+   [ "$MODE" = ignored-fifo ] || [ "$MODE" = fifo ] || [ "$MODE" = nested ]; then
   printf fixed > answer; printf 'one\ntwo\n' > added; mkdir checks; printf 'mine\n' > checks/golden.cjs
   ln checks/golden.cjs "$OBS/sprite-original"
 fi
 if [ "$MODE" = unstaged ] || [ "$MODE" = one-line ]; then printf fixed > answer; fi
 if [ "$MODE" = unstaged ]; then
   printf 'new\n' > added; printf 'not work\n' > ignored; ln -s "$OBS/missing-target" ignored-link
-  node "$OBS/tree-probe.cjs"
+  rm obsolete
+fi
+if [ "$MODE" = objects ]; then
+  mv .git/objects moved-objects; ln -s "$PWD/moved-objects" .git/objects
+  printf '/moved-objects/\\n' >> .gitignore
+fi
+if [ "$MODE" = ignored-fifo ]; then mkdir ignored-dir; mkfifo ignored-dir/pipe; fi
+if [ "$MODE" = fifo ]; then mkfifo pipe; fi
+if [ "$MODE" = bad-ignore ]; then mkfifo .gitignore.tmp; mv -f .gitignore.tmp .gitignore; fi
+if [ "$MODE" = binary ]; then printf '\\000\\377\\002' > binary; chmod +x binary; fi
+if [ "$MODE" = nested ]; then
+  git init -q --template= nested-dir
+  git init -q --template= --separate-git-dir="$OBS/outside/admin" nested-file
+  git -C nested-dir config core.fsmonitor "$OBS/monitor"
+  git -C nested-file config core.hooksPath "$OBS/outside"
+  printf 'kept\\n' > nested-dir/content; printf 'kept\\n' > nested-file/content
 fi
 if [ "$MODE" = straggler ]; then rm obsolete; fi
-if [ "$MODE" = symlink ]; then ln -s "$OBS/outside" checks; fi
+if [ "$MODE" = symlink ]; then
+  rm -r swap; ln -s "$OBS/outside" swap
+  printf '/swap\\n' >> .gitignore
+fi
+if [ "$MODE" = unstaged ] || [ "$MODE" = objects ]; then node "$OBS/tree-probe.cjs"; fi
 if [ "$MODE" != no-rc ]; then (
   printf '${pinned ? '3' : '0'}\n' > "$SPRITES/$1.pending"; mv "$SPRITES/$1.pending" "$SPRITES/$1.rc"
   if [ "$MODE" = straggler ]; then
@@ -197,7 +230,7 @@ if [ "$MODE" != no-rc ]; then (
     + 'HOME,XDG_CONFIG_HOME,XDG_CACHE_HOME,XDG_DATA_HOME,PI_MODEL,PI_THINKING,GIT_FIXTURE_SENTINEL,BENCH_REPO,BENCH_SPRITE_START,BENCH_RC_GRACE_SECONDS,FIXTURE-BAD,UNSET_FIXTURE';
   const result = spawnSync(process.execPath, [here('../run.mjs'), '--task', task.id, '--work', work, '--out', out, '--sprites', sprites,
     ...(pinned ? ['--model', 'Requested/Model', '--thinking', 'high', '--rep', '2', '--max-seconds', '3'] : [])],
-  { cwd: dir, encoding: 'utf8', timeout: 10_000, env: { PATH: [join(dir, 'bin'), process.env.PATH].join(':'), BENCH_REPO: cwd, BENCH_SPRITE_START: launcher,
+  { cwd: dir, encoding: 'utf8', timeout, env: { PATH: [join(dir, 'bin'), process.env.PATH].join(':'), BENCH_REPO: cwd, BENCH_SPRITE_START: launcher,
     BENCH_PASS_ENV: passEnv + (pinned ? ',FIXTURE_ACCESS' : ''), HOME: join(dir, 'runner-home'),
     XDG_CONFIG_HOME: join(dir, 'runner-home'), XDG_CACHE_HOME: join(dir, 'runner-home'), XDG_DATA_HOME: join(dir, 'runner-home'),
     OBS: dir, NODE_OPTIONS: `--require=${preload}`,
@@ -207,7 +240,7 @@ if [ "$MODE" != no-rc ]; then (
     PI_MODEL: 'ignored', PI_THINKING: 'ignored', EXPECTED_MODEL: pinned ? 'Requested/Model' : 'unset',
     EXPECTED_THINKING: pinned ? 'high' : 'unset', EXPECTED_CAP: pinned ? '3' : '1' } });
   if (result.error) throw result.error;
-  return { result, out, work, sprites, base, goldenRef, dir, launcher: existsSync(join(dir, 'launcher')) ? json(join(dir, 'launcher')) : null };
+  return { result, out, work, sprites, base, goldenRef, dir, outsideBefore, launcher: existsSync(join(dir, 'launcher')) ? json(join(dir, 'launcher')) : null };
 }
 
 for (const verdict of ['pass', 'fail']) test(`runner records golden ${verdict} and keeps subprocess output private`, t => {
@@ -215,7 +248,7 @@ for (const verdict of ['pass', 'fail']) test(`runner records golden ${verdict} a
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stderr, '');
   const golden = json(join(dir, 'golden'));
-  assert.deepEqual({ launcher: launcher.secret, golden: golden.secret, collector: json(join(dir, 'collector')),
+  assert.deepEqual({ launcher: launcher.secret, golden: golden.secret, collector: json(join(dir, 'collector')).secret,
     setup: readFileSync(join(dir, 'setup'), 'utf8').trim().split('\n') },
   { launcher: 'absent', golden: 'absent', collector: 'absent', setup: ['absent', 'absent'] });
   for (const child of [launcher, golden]) assert.ok(child.isolated && child.xdg, 'private HOME and XDG directories');
@@ -245,9 +278,8 @@ for (const verdict of ['pass', 'fail']) test(`runner records golden ${verdict} a
 test('grading counts unstaged and untracked work without changing any sprite bytes', t => {
   const { result, out, dir, launcher } = fixture(t, 'unstaged');
   assert.equal(result.status, 0, result.stderr);
-  const after = treeDigest(launcher.cwd, { lstatSync, readFileSync, readdirSync, readlinkSync }, join, createHash);
-  assert.equal(after, json(join(dir, 'sprite-digest')), 'sprite tree and .git must be unchanged');
-  assert.deepEqual(json(out).changes, { files: 2, linesAdded: 2, linesRemoved: 1 });
+  assert.equal(digest(launcher.cwd), json(join(dir, 'sprite-digest')), 'sprite tree and .git must be unchanged');
+  assert.deepEqual(json(out).changes, { files: 3, linesAdded: 2, linesRemoved: 2 });
 });
 
 for (const mode of ['noop', 'one-line']) test(`directory-dependent setup does not count as work (${mode})`, t => {
@@ -256,8 +288,11 @@ for (const mode of ['noop', 'one-line']) test(`directory-dependent setup does no
   assert.deepEqual(json(out).changes, mode === 'noop'
     ? { files: 0, linesAdded: 0, linesRemoved: 0 } : { files: 1, linesAdded: 1, linesRemoved: 1 });
   const golden = json(join(dir, 'golden'));
-  assert.equal(golden.baseLocationRestored, true, 'grading setup did not replace the tracked base content');
-  assert.equal(golden.extraSetupFile, false, 'grading setup left no nonignored output');
+  assert.equal(golden.setupHere, true);
+  assert.equal(golden.goldenInstalledBeforeSetup, true);
+  const stats = json(join(dir, 'collector')).worktree;
+  assert.equal(readFileSync(join(stats, 'setup-location'), 'utf8'), launcher.cwd);
+  assert.ok(!existsSync(join(stats, 'setup-saw-golden')));
   assert.equal(git(golden.cwd, 'rev-parse', 'HEAD'), git(launcher.cwd, 'rev-parse', 'HEAD'));
 });
 
@@ -281,12 +316,116 @@ test('grading a snapshot ignores a late edit and symlink swap in the sprite tree
   assert.deepEqual(row.changes, { files: 4, linesAdded: 4, linesRemoved: 2 });
 });
 
-test('a symlink staged at a golden parent path is rejected', t => {
-  const { result, out, dir } = fixture(t, 'symlink');
-  assert.equal(readFileSync(join(dir, 'outside/golden.cjs'), 'utf8'), 'untouched');
-  assert.equal(result.status, 1);
+test('absolute .git/objects symlink leaves the sprite and outside trees unchanged', t => {
+  const { result, out, dir, launcher, outsideBefore } = fixture(t, 'objects');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(json(out).check.result, 'pass');
+  assert.equal(readlinkSync(join(launcher.cwd, '.git/objects')), join(launcher.cwd, 'moved-objects'));
+  assert.equal(digest(launcher.cwd), json(join(dir, 'sprite-digest')));
+  assert.equal(digest(join(dir, 'outside')), outsideBefore);
+});
+
+for (const mode of ['ignored-fifo', 'fifo']) test(`grades with a ${mode} present`, { timeout: 4000 }, t => {
+  const { result, out, launcher, dir } = fixture(t, mode, 3000);
+  assert.equal(result.status, 0, result.stderr);
+  const note = mode === 'fifo' ? '  skipped_special=1' : '';
+  assert.match(result.stdout, new RegExp(`^run  [\\w.-]+  pass${note}\\n$`));
+  assert.equal(json(out).check.result, 'pass');
+  const pipe = mode === 'fifo' ? 'pipe' : 'ignored-dir/pipe';
+  assert.ok(lstatSync(join(launcher.cwd, pipe)).isFIFO());
+  assert.ok(!existsSync(join(json(join(dir, 'collector')).worktree, pipe)));
+});
+
+function inodes(dir) {
+  const result = new Set();
+  for (const name of readdirSync(dir)) {
+    const path = join(dir, name), stat = lstatSync(path);
+    if (stat.isDirectory()) for (const inode of inodes(path)) result.add(inode);
+    if (stat.isFile()) result.add(`${stat.dev}:${stat.ino}`);
+  }
+  return result;
+}
+
+test('grades and collects in separate, independent clones', t => {
+  const { result, dir, work, launcher } = fixture(t, 'pass');
+  assert.equal(result.status, 0, result.stderr);
+  const grade = json(join(dir, 'golden')).cwd;
+  const { worktree: stats, afterGolden } = json(join(dir, 'collector'));
+  assert.equal(afterGolden, true);
+  assert.equal(new Set([stats, grade, launcher.cwd]).size, 3);
+  const spriteInodes = inodes(launcher.cwd);
+  for (const clone of [stats, grade]) {
+    assert.equal(dirname(clone), work);
+    assert.equal(lstatSync(clone).mode & 0o777, 0o700);
+    assert.ok(lstatSync(join(clone, '.git/objects')).isDirectory());
+    assert.equal(lstatSync(join(clone, '.git/objects/info/alternates'), { throwIfNoEntry: false }), undefined);
+    assert.ok([...inodes(clone)].every(inode => !spriteInodes.has(inode)), 'no sprite hardlinks');
+  }
+  assert.equal(readFileSync(join(stats, 'checks/golden.cjs'), 'utf8'), 'mine\n');
+  assert.equal(readFileSync(join(launcher.cwd, 'checks/golden.cjs'), 'utf8'), 'mine\n');
+  assert.match(readFileSync(join(grade, 'checks/golden.cjs'), 'utf8'), /process\.exitCode/);
+});
+
+test('skips nested .git directories and gitfiles without executing their config', t => {
+  const { result, out, dir } = fixture(t, 'nested');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(json(out).check.result, 'pass');
+  assert.ok(!existsSync(join(dir, 'outside/monitor-ran')));
+  for (const tree of [json(join(dir, 'collector')).worktree, json(join(dir, 'golden')).cwd]) {
+    for (const nested of ['nested-dir', 'nested-file']) {
+      assert.equal(readFileSync(join(tree, nested, 'content'), 'utf8'), 'kept\n');
+      assert.ok(!existsSync(join(tree, nested, '.git')));
+    }
+  }
+});
+
+test('binary patch preserves executable file contents in both clones', t => {
+  const { result, out, dir } = fixture(t, 'binary');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(json(out).changes, { files: 1, linesAdded: 0, linesRemoved: 0 });
+  for (const cwd of [json(join(dir, 'collector')).worktree, json(join(dir, 'golden')).cwd]) {
+    const file = join(cwd, 'binary');
+    assert.deepEqual(readFileSync(file), Buffer.from([0, 255, 2]));
+    assert.equal(lstatSync(file).mode & 0o100, 0o100);
+  }
+});
+
+test('a special file in place of ignore metadata refuses export without running grading setup', { timeout: 4000 }, t => {
+  const { result, out, dir } = fixture(t, 'bad-ignore', 3000);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^run  [\w.-]+  not_run  refused_export\n$/);
+  assert.deepEqual(json(out).outcome, { state: 'blocked', reason: 'refused_export' });
+  assert.equal(json(out).changes, null);
+  assert.equal(readFileSync(join(dir, 'setup'), 'utf8'), 'absent\n');
+});
+
+test('post-write export validation rejects a symlink mode', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'bench-mode-test-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  git(dir, 'init', '--template=');
+  const oid = git(dir, 'hash-object', '-w', '--', '.git/HEAD');
+  git(dir, 'update-index', '--add', '--cacheinfo', `120000,${oid},link`);
+  const tree = git(dir, 'write-tree');
+  assert.doesNotThrow(() => verifyModes(Buffer.alloc(0)));
+  const empty = execFileSync('git', ['mktree'], { cwd: dir, env, input: '' }).toString().trim();
+  assert.throws(() => verifyModes(Buffer.from(git(dir, 'diff-tree', '--raw', '-r', '-z', empty, tree))), /refused_symlink/);
+  assert.doesNotThrow(() => verifyModes(Buffer.from(git(dir, 'diff-tree', '--raw', '-r', '-z', tree, empty))));
+});
+
+test('a tracked directory swapped for a symlink is blocked before grading setup', t => {
+  const { result, out, dir, outsideBefore } = fixture(t, 'symlink');
+  assert.equal(digest(join(dir, 'outside')), outsideBefore);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^run  [\w.-]+  not_run  refused_symlink\n$/);
+  assert.equal(readFileSync(join(dir, 'setup'), 'utf8'), 'absent\n', 'only pre-launch setup ran');
   assert.ok(!existsSync(join(dir, 'golden')));
-  assert.ok(!existsSync(out));
+  const row = json(out);
+  assert.deepEqual(row.outcome, { state: 'blocked', reason: 'refused_symlink' });
+  assert.deepEqual(row.check, { result: 'not_run', command: 'node' });
+  assert.deepEqual(row.complexity.rating, rating);
+  assert.equal(row.taskId, 'fixture');
+  assert.equal(row.changes, null);
+  assert.equal(json(join(dir, 'collector')).worktree, null);
 });
 
 test('a sprite without an exit file times out before any golden file is restored', t => {
