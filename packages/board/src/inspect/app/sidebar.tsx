@@ -1,13 +1,12 @@
-import { Check, ChevronsUpDown, ClipboardList, House, LayoutGrid, PanelLeftClose, Settings } from 'lucide-react'
+import { ClipboardList, House, LayoutGrid, PanelLeftClose, Settings } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import type { ChannelView, Me } from '../../api/routes.ts'
-import * as board from './board.ts'
+import type { ChannelView } from '../../api/routes.ts'
 import { toast } from './chrome.ts'
 import { HomeEmblem } from './home-emblem.tsx'
 import { Avatar } from './message.tsx'
 import { Link, type Route } from './nav.tsx'
 import { openTasks, type State } from './store.ts'
-import { ContextMenuArea, Menu, MenuItem, MenuSeparator } from './ui.tsx'
+import { ContextMenuArea, MenuItem } from './ui.tsx'
 import { boardWords, shownName } from './words.ts'
 
 // --- sidebar -------------------------------------------------------------------------
@@ -113,99 +112,11 @@ export function Sidebar({ state, current, onHome, onCollapse }: { state: State; 
           <Settings size={14} strokeWidth={1.75} />
           <span>settings</span>
         </Link>
-        <ProfileMenu me={state.me!} />
+        <div className="whoami" title={state.me!.actor}>
+          <Avatar name={shownName(state.me!)} size={24} />
+          <span className="as">acting as {shownName(state.me!)}</span>
+        </div>
       </div>
-    </div>
-  )
-}
-
-const AGENTS = ['claude', 'codex', 'grok']
-
-/** The profile `name`, with the avatar you last gave it. */
-function remembered(name: string): board.Profile {
-  const avatar = board.avatarOf(name)
-  return avatar ? { name, avatar } : { name }
-}
-
-/** Who you post as: yourself, one of your agents' profiles, or any profile you name, with the avatar you give it. */
-function ProfileMenu({ me }: { me: Me }) {
-  // The profile you're naming or changing, as it starts out; null while the menu shows.
-  const [editing, setEditing] = useState<board.Profile | null>(null)
-  const person = me.via?.name ?? me.handle
-  const choose = (name: string | null) => void board.setProfile(name === null ? null : remembered(name))
-  if (editing)
-    return (
-      <form
-        className="whoami naming"
-        onSubmit={(event) => {
-          event.preventDefault()
-          const form = new FormData(event.currentTarget)
-          const name = form.get('profile')?.toString().trim()
-          const avatar = form.get('avatar')?.toString().trim()
-          if (name) void board.setProfile({ name, ...(avatar ? { avatar } : {}) })
-          setEditing(null)
-        }}
-        onKeyDown={(event) => event.key === 'Escape' && setEditing(null)}
-        // Leaving the form puts it away; moving between its fields doesn't.
-        onBlur={(event) => !event.currentTarget.contains(event.relatedTarget) && setEditing(null)}
-      >
-        <input
-          name="profile"
-          autoFocus
-          defaultValue={editing.name}
-          placeholder="profile name, e.g. reviewer"
-          pattern="[A-Za-z][A-Za-z0-9\-]{0,31}"
-          title="a letter, then up to 31 letters, numbers, and hyphens"
-          required
-        />
-        <input
-          name="avatar"
-          type="url"
-          defaultValue={editing.avatar ?? ''}
-          placeholder="avatar URL, https://… (optional)"
-          // What the board takes: https, or http on this machine.
-          pattern="https://.+|http://(localhost|127\.0\.0\.1)([:\/].*)?"
-          title="an https URL (http only on localhost)"
-        />
-        {/* Safari and Firefox don't focus a button you click: without this, the field's blur closes the form before the click. */}
-        <button type="submit" className="send small" onMouseDown={(event) => event.preventDefault()}>
-          post as this
-        </button>
-      </form>
-    )
-  const item = (label: string, profile: string | null) => (
-    <MenuItem onClick={() => choose(profile)}>
-      <span className="choice">
-        {label}
-        {me.profile === profile && <Check size={13} />}
-      </span>
-    </MenuItem>
-  )
-  return (
-    <div className="whoami-wrap" title={me.actor}>
-      <Menu
-        className="whoami"
-        title="post as"
-        trigger={
-          <>
-            <Avatar name={shownName(me)} size={24} />
-            <span className="as grow">as {shownName(me)}</span>
-            <ChevronsUpDown size={13} />
-          </>
-        }
-      >
-        {!board.named && item(`${person} (you)`, null)}
-        {AGENTS.map((agent) => item(agent, agent))}
-        {me.profile !== null && !AGENTS.includes(me.profile) && item(me.profile, me.profile)}
-        <MenuSeparator />
-        {me.profile !== null && (
-          <MenuItem onClick={() => setEditing(remembered(me.profile!))}>
-            {me.profile}'s name and avatar…
-          </MenuItem>
-        )}
-        <MenuItem onClick={() => setEditing({ name: '' })}>another profile…</MenuItem>
-        {!board.named && board.getProfile() !== undefined && <MenuItem onClick={() => void board.setProfile(undefined)}>as inspect started</MenuItem>}
-      </Menu>
     </div>
   )
 }

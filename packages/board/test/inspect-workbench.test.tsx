@@ -51,12 +51,12 @@ async function workbench(options: Parameters<typeof localBoard>[0] = {}) {
   }
   return {
     api, as, client: as(),
-    async open(path = '/', options: { profile?: string; can?: string; holdSchedules?: (profile: string | null) => Promise<void> | undefined } = {}) {
+    async open(path = '/', options: { profile?: string; named?: boolean; can?: string; holdSchedules?: (profile: string | null) => Promise<void> | undefined } = {}) {
       browser.settings.enableImageFileLoading = false
       browser.setViewport({ width: 1280, height: 900 })
       browser.setURL(`http://inspector-${++visit}.test${path}`)
       const profile = options.profile ? { name: options.profile } : null
-      const html = new DOMParser().parseFromString(shell({ token: 'inspector-test', base: '', profile }), 'text/html')
+      const html = new DOMParser().parseFromString(shell({ token: 'inspector-test', base: '', profile, named: options.named ?? false }), 'text/html')
       document.head.replaceChildren(...html.head.querySelectorAll('meta, style'))
       document.body.innerHTML = '<div id="root"></div>'
       const proxy = `${location.origin}/board`
@@ -217,17 +217,131 @@ it('opens Schedules from Settings and cancels a scheduled post', async () => {
   })
 })
 
-async function switchProfile(name: string) {
-  const trigger = () => document.querySelector<HTMLButtonElement>('button[title="post as"]')!
-  trigger().click()
-  const item = await vi.waitFor(() => {
-    const match = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((el) => el.textContent?.trim() === name)
-    expect(match).toBeDefined()
-    return match!
-  })
-  item.click()
-  await vi.waitFor(() => expect(trigger().textContent).toContain(`as ${name}`))
+function button(title: string) {
+  const match = document.querySelector<HTMLButtonElement>(`button[title="${title}"]`)
+  expect(match, `button: ${title}`).not.toBeNull()
+  return match!
 }
+
+function menuItem(text: string) {
+  const match = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((el) => el.textContent?.trim() === text)
+  expect(match, `menu item: ${text}`).toBeDefined()
+  return match!
+}
+
+function typeInto(field: HTMLInputElement, text: string) {
+  const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+  set.call(field, text)
+  field.dispatchEvent(new Event('input', { bubbles: true }))
+}
+
+async function switchProfile(name: string, fromRegistry = false) {
+  const developer = document.querySelector<HTMLDetailsElement>('main details.developer-identity')!
+  if (!developer.open) developer.querySelector('summary')!.click()
+  button('post as').click()
+  if (fromRegistry) (await vi.waitFor(() => menuItem(name))).click()
+  else {
+    const custom = await vi.waitFor(() => menuItem('another profile…'))
+    custom.click()
+    const field = await vi.waitFor(() => {
+      const input = document.querySelector<HTMLInputElement>('input[placeholder="profile name"]')
+      expect(input).not.toBeNull()
+      return input!
+    })
+    await act(async () => typeInto(field, name))
+    field.form!.querySelector('button')!.click()
+  }
+  await vi.waitFor(() => expect(document.querySelector('.sidebar-foot')!.textContent).toContain(`acting as ${name}`))
+}
+
+it('labels the signed-in person and lists only registered profiles in Settings', async () => {
+  const { as, client, open } = await workbench({ agentOps: true })
+  await client.post('work', 'Ready for review')
+  await as('reviewer').agents.register({ channel: 'work', role: 'implementation-worker', harness: 'shell' })
+  await open('/settings/access')
+  const me = await client.me()
+  await vi.waitFor(() => expect(document.querySelector('.sidebar-foot')!.textContent).toContain(`acting as ${me.name}`))
+  expect(document.querySelector('.sidebar-foot button[title="post as"]')).toBeNull()
+  await switchProfile('reviewer', true)
+  button('post as').click()
+  await vi.waitFor(() => expect(menuItem('another profile…')).toBeDefined())
+  expect([...document.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent?.trim())).not.toContain('claude')
+})
+
+it('waits for a name in app-served mode and then shows that profile', async () => {
+  const { open } = await workbench()
+  await open('/', { named: true, profile: 'deployment' })
+  const field = document.querySelector<HTMLInputElement>('input[name="profile"]')!
+  expect(field).not.toBeNull()
+  expect(document.querySelector('main')).toBeNull()
+  typeInto(field, 'reviewer')
+  field.form!.querySelector('button')!.click()
+  await vi.waitFor(() => expect(document.querySelector('.sidebar-foot')!.textContent).toContain('acting as reviewer'))
+})
+
+it('shows live pause detail on every view and lets the manager resume with a reason', async () => {
+  const { client, open } = await workbench()
+  await open()
+  const banner = () => document.querySelector<HTMLElement>('.pause-banner')!
+  await vi.waitFor(() => button('Pause'))
+  await vi.waitFor(() => expect(document.querySelector('.live')?.textContent).toBe('live'))
+  await client.pause('maintenance window')
+  const me = await client.me()
+  await vi.waitFor(() => expect(banner().textContent).toMatch(new RegExp(`^paused by ${me.name}, .+ ago: maintenance window$`)))
+  link('Presidium').click()
+  await vi.waitFor(() => expect(document.querySelector('main h1')?.textContent).toBe('PRESIDIUM'))
+  expect(banner().textContent).toContain('maintenance window')
+  button('Resume').click()
+  await submitReason('reason', 'maintenance ended')
+  await vi.waitFor(() => {
+    expect(banner().hidden).toBe(true)
+    button('Pause')
+  })
+  const received = client.events({ all: true, last: 1 })
+  try {
+    expect((await received.next()).value).toMatchObject({ type: 'work.control', payload: { reason: 'maintenance ended', paused: false } })
+  } finally {
+    await received.return(undefined)
+  }
+})
+
+async function submitReason(placeholder: string, text: string) {
+  const reason = await vi.waitFor(() => {
+    const input = document.querySelector<HTMLInputElement>(`input[placeholder="${placeholder}"]`)
+    expect(input).not.toBeNull()
+    return input!
+  })
+  await act(async () => typeInto(reason, text))
+  reason.form!.querySelector('button')!.click()
+}
+
+it('shows just paused to a reader who joined after the transition', async () => {
+  const { client, open } = await workbench()
+  await client.pause('an earlier pause')
+  await open('/settings/access', { can: '*=read' })
+  await vi.waitFor(() => expect(document.querySelector('.pause-banner')?.textContent).toBe('paused'))
+  expect(document.querySelector('button[title="Resume"]')).toBeNull()
+})
+
+it('lets a person park and unpark an agent’s task from the thread', async () => {
+  const { as, api, open } = await workbench()
+  const { task } = await api.tasks.create('work', { text: 'Check the release' })
+  await as('worker').tasks.claim(task.id)
+  await open(`/?thread=${task.id}`)
+  await vi.waitFor(() => button('more')).then((more) => more.click())
+  const park = await vi.waitFor(() => menuItem('park…'))
+  expect([...document.querySelectorAll('.task-card button, [role="menuitem"]')].map((item) => item.textContent?.trim()).join(' ')).not.toMatch(/\b(renew|release|complete|claim)\b/)
+  park.click()
+  await submitReason('why it should wait', 'waiting for the release window')
+  const unpark = await vi.waitFor(() => {
+    expect(document.querySelector('.task-card')?.textContent).toContain('waiting for the release window')
+    return [...document.querySelectorAll<HTMLButtonElement>('.task-card button')].find((item) => item.textContent === 'unpark…')!
+  })
+  expect(unpark).toBeDefined()
+  unpark.click()
+  await submitReason('why it can go ahead', 'the window opened')
+  await vi.waitFor(() => expect(document.querySelector('.task-card .task-state')?.textContent).toBe('ready'))
+})
 
 it('clears blind schedules on profile switch and ignores a late list', async () => {
   const { as, open } = await workbench()

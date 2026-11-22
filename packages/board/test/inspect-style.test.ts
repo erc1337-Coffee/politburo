@@ -143,7 +143,7 @@ it('uses the text cursor only in text fields, not on controls or read-only prose
 describe('the inspector on a touch device', () => {
   it('finds the fields the stylesheet sizes', () => {
     expect(fields).toEqual(
-      expect.arrayContaining(['.composer-box textarea', '.editor textarea', '.ask textarea', '.ask textarea.code', '.new-channel input', '.whoami.naming input', '.suggest input']),
+      expect.arrayContaining(['.composer-box textarea', '.editor textarea', '.ask textarea', '.ask textarea.code', '.new-channel input', '.suggest input']),
     )
   })
 

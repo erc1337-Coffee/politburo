@@ -15,9 +15,9 @@ import { Sidebar } from './sidebar.tsx'
 import { actorFor, TaskCard, taskIds } from './task.tsx'
 import { Tasks } from './tasks.tsx'
 import { FilterButton, FilterChips } from './filters.tsx'
-import { byWritten, channelRows, channelThreads, filtering, isTask, knownLabels, listingOf, matches, mayCancelSchedule, profilesOf, thread as threadOf, threadSchedules, type Filter, type State, type Viewer } from './store.ts'
-import { Ask, Header, nativeMenu, ResizeHandle, type KnownLabels } from './ui.tsx'
-import { boardWords, cadence, firstLine, until } from './words.ts'
+import { byWritten, channelRows, channelThreads, filtering, isTask, knownLabels, listingOf, matches, mayCancelSchedule, pauseBanner, profilesOf, thread as threadOf, threadSchedules, type Filter, type State, type Viewer } from './store.ts'
+import { Ask, AskForm, Header, HeaderActions, nativeMenu, Panel, ResizeHandle, type KnownLabels } from './ui.tsx'
+import { boardWords, cadence, firstLine, shownName, until } from './words.ts'
 
 const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`
 
@@ -133,6 +133,34 @@ function NameGate({ done }: { done: () => void }) {
   )
 }
 
+function PauseControl({ paused }: { paused: boolean }) {
+  const [action, setAction] = useState<boolean | null>(null)
+  const [busy, setBusy] = useState(false)
+  const label = (pause: boolean) => pause ? 'Pause' : 'Resume'
+  return (
+    <Panel
+      title={label(action ?? !paused)}
+      trigger={label(!paused)}
+      triggerTitle={label(!paused)}
+      triggerClass="act"
+      open={action !== null}
+      onOpenChange={(open) => setAction(open ? !paused : null)}
+    >
+      <AskForm
+        fields={[{ name: 'reason', placeholder: 'reason', required: true }]}
+        submit={label(action ?? !paused)}
+        disabled={busy}
+        onDone={() => setAction(null)}
+        onSubmit={({ reason }) => {
+          if (action === null) return
+          setBusy(true)
+          void board.changePause(action, reason!).finally(() => setBusy(false))
+        }}
+      />
+    </Panel>
+  )
+}
+
 // --- the app -----------------------------------------------------------------------
 
 export function App() {
@@ -182,6 +210,13 @@ export function App() {
   const [naming, setNaming] = useState(board.needsName)
   useEffect(() => {
     if (!naming) board.boot().catch((error: Error) => setFailed(error.message))
+  }, [naming])
+
+  useEffect(() => {
+    if (naming) return
+    const read = () => void board.loadStatus()
+    addEventListener('popstate', read)
+    return () => removeEventListener('popstate', read)
   }, [naming])
 
   // Old thread links open the thread pane.
@@ -252,7 +287,16 @@ export function App() {
       </button>
     </>
   ) : null
-  const expand = narrow && where.thread !== null ? null : headerLead
+  const paneIsFront = narrow && where.thread !== null
+  const expand = paneIsFront ? null : headerLead
+  const banner = pauseBanner(state, now)
+  const control = viewer.manages && viewer.person && viewer.profile === null && state.status
+    ? <PauseControl key={viewer.actor} paused={state.status.paused} /> : null
+  const headerActions = <>
+    {viewer.profile !== null && (narrow || sidebar.collapsed) && <span className="meta" title={state.me.actor}>acting as {shownName(state.me)}</span>}
+    {state.statusRefused && <span className="meta" title={state.statusRefused}>{state.statusRefused}</span>}
+    {control}
+  </>
   return (
     <div
       ref={shell}
@@ -262,40 +306,47 @@ export function App() {
         if (where.thread === null && !nav && event.target instanceof HTMLElement && event.target.closest('.main')) threadOpener.current = event.target
       }}
     >
-      {nav && <div className="scrim" onClick={() => setNav(false)} />}
-      <nav id="board-sidebar" className="sidebar" aria-label="Board navigation" tabIndex={-1} hidden={!nav && sidebar.collapsed} style={{ width: sidebar.width, opacity: sidebar.fade }}>
-        <Sidebar
-          state={state}
-          current={current}
-          onHome={() => setNav(false)}
-          onCollapse={() => {
-            if (nav) setNav(false)
-            else sidebar.collapse(true)
-          }}
-        />
-        <ResizeHandle side="right" label="resize the sidebar" onDrag={sidebar.drag} onDone={sidebar.done} onStep={sidebar.step} />
-      </nav>
-      <main className="main" inert={narrow && (nav || where.thread !== null)}>
-        {current.view === 'home' && <Home state={state} now={now} lead={expand} />}
-        {current.view === 'presidium' && <Presidium state={state} now={now} lead={expand} />}
-        {current.view === 'channel' && (
-          <Channel key={current.channel} channel={current.channel} state={state} options={options} known={known} lead={expand} filters={filters} />
+      <div className="pause-banner" role="status" hidden={banner === null}>{banner}</div>
+      <div className="workspace">
+        {nav && <div className="scrim" onClick={() => setNav(false)} />}
+        <nav id="board-sidebar" className="sidebar" aria-label="Board navigation" tabIndex={-1} hidden={!nav && sidebar.collapsed} style={{ width: sidebar.width, opacity: sidebar.fade }}>
+          <Sidebar
+            state={state}
+            current={current}
+            onHome={() => setNav(false)}
+            onCollapse={() => {
+              if (nav) setNav(false)
+              else sidebar.collapse(true)
+            }}
+          />
+          <ResizeHandle side="right" label="resize the sidebar" onDrag={sidebar.drag} onDone={sidebar.done} onStep={sidebar.step} />
+        </nav>
+        <main className="main" inert={narrow && (nav || where.thread !== null)}>
+          <HeaderActions.Provider value={paneIsFront ? null : headerActions}>
+            {current.view === 'home' && <Home state={state} now={now} lead={expand} />}
+            {current.view === 'presidium' && <Presidium state={state} now={now} lead={expand} />}
+            {current.view === 'channel' && (
+              <Channel key={current.channel} channel={current.channel} state={state} options={options} known={known} lead={expand} filters={filters} />
+            )}
+            {current.view === 'tasks' && <Tasks state={state} viewer={viewer} now={now} lead={expand} where={where} known={known} />}
+            {current.view === 'settings' && <Settings state={state} viewer={viewer} now={now} lead={expand} where={where} section={current.section} open={current.open} />}
+            {current.view === 'missing' && (
+              <>
+                <Header title="nothing here" lead={expand} />
+                <p className="empty">no such page</p>
+              </>
+            )}
+          </HeaderActions.Provider>
+        </main>
+        {where.thread !== null && (
+          <aside className="pane" aria-label="Thread" inert={nav}>
+            <ResizeHandle side="left" label="resize the thread" onDrag={pane.drag} onDone={pane.done} onStep={pane.step} />
+            <HeaderActions.Provider value={paneIsFront ? headerActions : null}>
+              <ThreadPane key={where.thread} id={where.thread} state={state} viewer={viewer} now={now} known={known} lead={narrow ? headerLead : null} />
+            </HeaderActions.Provider>
+          </aside>
         )}
-        {current.view === 'tasks' && <Tasks state={state} viewer={viewer} now={now} lead={expand} where={where} known={known} />}
-        {current.view === 'settings' && <Settings state={state} viewer={viewer} now={now} lead={expand} where={where} section={current.section} open={current.open} />}
-        {current.view === 'missing' && (
-          <>
-            <Header title="nothing here" lead={expand} />
-            <p className="empty">no such page</p>
-          </>
-        )}
-      </main>
-      {where.thread !== null && (
-        <aside className="pane" aria-label="Thread" inert={nav}>
-          <ResizeHandle side="left" label="resize the thread" onDrag={pane.drag} onDone={pane.done} onStep={pane.step} />
-          <ThreadPane key={where.thread} id={where.thread} state={state} viewer={viewer} now={now} known={known} lead={narrow ? headerLead : null} />
-        </aside>
-      )}
+      </div>
       <Toasts />
     </div>
   )

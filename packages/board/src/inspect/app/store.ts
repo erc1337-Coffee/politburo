@@ -1,9 +1,9 @@
-import type { ActorView, BlockView, BoardEventView, ChannelView, Discovery, GrantView, Me, MessageView, RegistrationView, ScheduleView, SchemaView, TaskView, ThreadsPage } from '../../api/routes.ts'
+import type { ActorView, BoardStatus, BlockView, BoardEventView, ChannelView, Discovery, GrantView, Me, MessageView, RegistrationView, ScheduleView, SchemaView, TaskView, ThreadsPage } from '../../api/routes.ts'
 // `@vercel/board/schemas`, in an app of yours.
 import { findBlocks } from '../../contract/blocks.ts'
 import { canonicalEmoji } from '../../contract/emoji.ts'
 import type { ScheduleTiming } from '../../server/index.default.ts'
-import { shownName } from './words.ts'
+import { ago, shownName } from './words.ts'
 
 // The board, as this page knows it. Pure functions over plain state: the page
 // loads snapshots, folds the live stream in, and overlays your own writes until
@@ -60,8 +60,9 @@ export type State = {
   pending: Pending[]
   actors: Record<string, ActorView>
   live: 'connecting' | 'live' | 'reconnecting'
-  /** The claims this tab made, by task: which ones the board still shows as live. */
-  claims: Record<string, Claim>
+  status: BoardStatus | null
+  statusRefused: string | null
+  control: Extract<BoardEventView, { type: 'work.control' }> | null
   /** Whether every open task is loaded, so the page can count them. */
   tasksCounted: boolean
   /** Each opened channel's listing, or null on a board whose thread pages have no `older`: it loads by messages. */
@@ -88,7 +89,9 @@ export const initialState: State = {
   pending: [],
   actors: {},
   live: 'connecting',
-  claims: {},
+  status: null,
+  statusRefused: null,
+  control: null,
   tasksCounted: false,
   listings: {},
   schemas: null,
@@ -158,21 +161,14 @@ export function newest(known: Record<string, MessageView>, views: MessageView[])
 }
 // #endregion
 
-/** Takes in message views, the newer of each, with what a newer view settles: your changes it confirms, and a claim it ends. */
+/** Takes in message views, the newer of each, and settles the changes they confirm. */
 export function merge(state: State, views: MessageView[]): State {
   const messages = newest(state.messages, views)
   if (messages === state.messages) return state
   let ops = state.ops
-  let claims = state.claims
   for (const view of views) {
     // An older view changed nothing.
     if (messages[view.id] !== view) continue
-    // A claim is over once the board shows the task released, settled, held, or claimed again.
-    const claim = claims[view.id]
-    if (claim && !(view.task?.state === 'claimed' && view.task.epoch === claim.epoch)) {
-      claims = { ...claims }
-      delete claims[view.id]
-    }
     const waiting = ops[view.id]
     if (waiting && state.me) {
       const left = waiting.filter(({ op }) => !confirms(view, op, state.me!.actor))
@@ -183,7 +179,7 @@ export function merge(state: State, views: MessageView[]): State {
       }
     }
   }
-  return { ...state, messages, ops, claims }
+  return { ...state, messages, ops }
 }
 
 // #region guide inspector/pending.ts
@@ -270,8 +266,40 @@ export function unlistedReply(state: State, event: BoardEventView): string | nul
   return listing?.loaded && !rowOf(listing, message.re) ? message.channel : null
 }
 
-/** Folds one live event in: the message it concerns, channel counts, listed threads, and actor details. */
+// Pausing advances the epoch; resuming finishes that epoch without advancing it.
+const byControl = (a: BoardStatus, b: BoardStatus) => a.pauseEpoch - b.pauseEpoch || Number(b.paused) - Number(a.paused)
+
+/** Takes a board answer unless it predates a status or transition already seen. */
+export function applyStatus(state: State, status: BoardStatus): State {
+  if (state.status && byControl(status, state.status) < 0) return state
+  return { ...state, status, statusRefused: null }
+}
+
+function applyControl(state: State, event: NonNullable<State['control']>): State {
+  const known = state.control
+  if (known) {
+    const transition = byControl(event.payload, known.payload)
+    const order = /^\d+$/.test(event.cursor) && /^\d+$/.test(known.cursor)
+      ? event.cursor.localeCompare(known.cursor, undefined, { numeric: true })
+      : event.createdAt.localeCompare(known.createdAt) || transition
+    if (order <= 0 || transition < 0) return state
+  }
+  const { paused, pauseEpoch } = event.payload
+  return applyStatus({ ...state, control: event }, { paused, pauseEpoch })
+}
+
+/** What the pause banner can say from the board's status and the matching feed event, if seen. */
+export function pauseBanner(state: State, now: number): string | null {
+  if (!state.status?.paused) return null
+  const event = state.control
+  if (!event?.payload.paused || event.payload.pauseEpoch !== state.status.pauseEpoch) return 'paused'
+  const { by, reason } = event.payload
+  return `paused by ${nameOf(state, by.actor)}, ${ago(event.createdAt, now)} ago: ${reason}`
+}
+
+/** Folds one live event in: work control, messages, channel counts, listed threads, and actor details. */
 export function applyEvent(state: State, event: BoardEventView): State {
+  if (event.type === 'work.control') return applyControl(state, event)
   let next = event.message ? merge(state, [event.message]) : state
   if (event.type === 'message.posted' && event.message) {
     next = listed(next, event.message)
@@ -487,6 +515,7 @@ export type Viewer = {
   may(permission: 'post' | 'label' | 'react' | 'manage', channel: string): boolean
   /** `manage` at `*`: what registering a schema and listing grants need. */
   manages: boolean
+  person: boolean
 }
 
 /** Whether the viewer can cancel a schedule listed for them. Without read, the board only lists their own blind schedules. */
@@ -527,39 +556,12 @@ export function stateNow(task: TaskView, now: number): TaskState {
 export type TaskRoot = MessageView & { task: TaskView }
 export const isTask = (message: MessageView | null | undefined): message is TaskRoot => !!message?.task
 
-/** A claim this tab made, by the epoch it was made at. Its token, a secret, stays out of the page's state: the data module keeps it. */
-export type Claim = { epoch: number }
-
 /** The states a task can still leave by being worked: what a list shows unless it's asked for more. */
 export const OPEN_STATES: readonly TaskState[] = ['waiting', 'ready', 'claimed', 'blocked']
 
-/** The profiles the board has seen a principal write as, then the usual agents: who a task of its can be for. */
+/** The profiles the board has seen a principal write as: who a task of its can be for. */
 export function profilesOf(state: State, principal: string): string[] {
-  const seen = Object.keys(state.actors).flatMap((id) => (id.startsWith(`${principal}+`) ? [id.slice(principal.length + 1)] : []))
-  return [...new Set([...seen, 'claude', 'codex'])]
-}
-
-/** Takes in a claim this tab made: the task as the claim left it, and what its writes carry. */
-export function claimed(state: State, view: MessageView, claim: Claim): State {
-  const next = merge({ ...state, claims: { ...state.claims, [view.id]: claim } }, [view])
-  // The feed can be ahead of the claim's answer: a task that has moved on since isn't held.
-  const now = next.messages[view.id]?.task
-  return now?.state === 'claimed' && now.epoch === claim.epoch ? next : unclaimed(next, view.id)
-}
-
-/** Forgets a claim: the board said it's over. */
-export function unclaimed(state: State, task: string): State {
-  if (!state.claims[task]) return state
-  const claims = { ...state.claims }
-  delete claims[task]
-  return { ...state, claims }
-}
-
-/** The claim this tab holds on a task, while it's live: the board still shows it, and its lease hasn't run out. */
-export function holding(state: State, root: TaskRoot, now: number): Claim | undefined {
-  const claim = state.claims[root.id]
-  const { task } = root
-  return claim && task.state === 'claimed' && task.epoch === claim.epoch && task.claim !== null && Date.parse(task.claim.until) > now ? claim : undefined
+  return Object.keys(state.actors).flatMap((id) => (id.startsWith(`${principal}+`) ? [id.slice(principal.length + 1)] : []))
 }
 
 /**
@@ -567,11 +569,10 @@ export function holding(state: State, root: TaskRoot, now: number): Claim | unde
  * board decides each write all the same: a view can be a moment old.
  */
 export type Moves = {
-  claim: boolean
-  /** This tab holds its claim: it can renew, release, complete, fail, and block it. */
-  held: boolean
-  /** The viewer holds it, but not from this tab: the claim was made elsewhere, or a reload lost it. */
-  elsewhere: boolean
+  park: boolean
+  unpark: boolean
+  priority: boolean
+  answer: boolean
   /** As its owner, or with `manage` in its channel. `hold` blocks one no one has claimed. */
   hold: boolean
   unblock: boolean
@@ -580,7 +581,7 @@ export type Moves = {
   cancel: boolean
 }
 
-export function moves(state: State, root: TaskRoot, viewer: Viewer, now: number): Moves {
+export function moves(root: TaskRoot, viewer: Viewer, now: number): Moves {
   const { task, channel } = root
   const current = stateNow(task, now)
   const finished = current === 'completed' || current === 'failed' || current === 'canceled'
@@ -588,11 +589,14 @@ export function moves(state: State, root: TaskRoot, viewer: Viewer, now: number)
   // it a task (`by`). The owner comes first: another principal's own ID can read the same as `by`.
   const mine = task.owner === viewer.principal && (viewer.profile === null || task.by === viewer.actor)
   const owns = viewer.may('manage', channel) || (mine && (viewer.may('post', channel) || viewer.may('label', channel)))
-  const held = holding(state, root, now) !== undefined
+  const self = viewer.person && viewer.profile === null
+  const operator = self && viewer.may('manage', channel)
   return {
-    claim: current === 'ready' && !root.deleted && viewer.may('label', channel) && (task.for === null || (task.for === viewer.actor && task.owner === viewer.principal)),
-    held,
-    elsewhere: !held && current === 'claimed' && task.claim?.actor === viewer.actor,
+    park: operator && (current === 'waiting' || current === 'ready' || current === 'claimed'),
+    unpark: operator && current === 'blocked' && !!task.parked,
+    priority: owns && !finished && !(current === 'claimed' && task.claim?.actor === viewer.actor),
+    // Responder configuration is not in the page's viewer. The board decides the write.
+    answer: self && viewer.may('post', channel) && current === 'blocked' && !!task.attentionId,
     hold: owns && (current === 'waiting' || current === 'ready'),
     unblock: owns && current === 'blocked' && !task.parked,
     reopen: owns && current === 'failed',
