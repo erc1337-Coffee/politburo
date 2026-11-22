@@ -1,13 +1,14 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, closeSync, constants, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync,
+import { accessSync, chmodSync, closeSync, constants, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync,
   mkdtempSync, openSync, readFileSync, realpathSync, rmdirSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve, sep } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { fields, requireThat, thinkingLevel, validModel, validRating } from '../record.mjs';
-import { exportPatch, refusedSymlink } from './export.mjs';
+import { baseSetsEncoding, exportPatch, refusedEncoding, refusedSymlink } from './export.mjs';
+import { childEnv } from './child-env.mjs';
 
 const PREFIX = 'bench', SUITE = 'tools/bench/suite';
 const slug = value => value == null ? 'default' : value.toLowerCase().replace(/[^a-z0-9._-]+/g, '-');
@@ -33,20 +34,14 @@ function privateDir(work, prefix) {
   return dir;
 }
 
-function childEnv(work, o) {
+function runChildEnv(work, o) {
   const home = privateDir(work, 'bench-home-');
-  const env = Object.assign(Object.create(null), { HOME: home, XDG_CONFIG_HOME: join(home, 'config'),
-    XDG_CACHE_HOME: join(home, 'cache'), XDG_DATA_HOME: join(home, 'data') });
-  for (const key of ['PATH', 'LANG', 'LC_ALL', 'TZ', 'TERM', 'TMPDIR', ...(process.env.BENCH_PASS_ENV ?? '').split(',')]) {
-    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && !/^(GIT_|BENCH_)/.test(key) && !(key in env)
-      && key !== 'PI_MODEL' && key !== 'PI_THINKING' && process.env[key] !== undefined) env[key] = process.env[key];
-  }
-  if (o.model != null) env.PI_MODEL = o.model;
-  if (o.thinking != null) env.PI_THINKING = o.thinking;
-  return env;
+  return childEnv({ HOME: home, XDG_CONFIG_HOME: join(home, 'config'), XDG_CACHE_HOME: join(home, 'cache'),
+    XDG_DATA_HOME: join(home, 'data'), PI_MODEL: o.model, PI_THINKING: o.thinking },
+  (process.env.BENCH_PASS_ENV ?? '').split(','));
 }
 
-function loadTask(repo, id, git, env) {
+function loadTask(repo, id, git) {
   const matches = JSON.parse(readFileSync(join(repo, SUITE, 'tasks.json'), 'utf8')).filter(x => x.id === id);
   const [task] = matches;
   requireThat(matches.length === 1 && /^[a-z0-9][a-z0-9-]*$/.test(id) && text(task.title)
@@ -63,7 +58,10 @@ function loadTask(repo, id, git, env) {
   requireThat(git(repo, ['rev-parse', `${task.goldenRef}^1`]).toString().trim() === task.base);
   for (const file of task.goldenFiles) {
     requireThat(git(repo, ['cat-file', '-t', `${task.goldenRef}:${file}`]).toString().trim() === 'blob');
-    requireThat(spawnSync('git', ['cat-file', '-e', `${task.base}:${file}`], { cwd: repo, env, ...quiet }).status === 128);
+    let status = 0;
+    try { git(repo, ['cat-file', '-e', `${task.base}:${file}`]); }
+    catch (error) { status = error.status; }
+    requireThat(status === 128);
   }
   requireThat(readFileSync(join(repo, task.briefFile), 'utf8').trim());
   return task;
@@ -104,18 +102,47 @@ function cloneWithPatch(work, prefix, trusted, patch, git) {
   return cwd;
 }
 
-function openOutput(path) {
-  const parent = dirname(path);
-  requireThat(realpathSync(parent) === parent);
+const inside = (root, path) => path.startsWith(root.endsWith(sep) ? root : root + sep);
+// Per-run directories are all fresh bench-* siblings under work. Never put
+// results in that namespace, including when reopening an earlier work root.
+const inRunTree = (work, path) => inside(work, path) && path.slice(work.length).split(sep).filter(Boolean)[0]?.startsWith('bench-');
+
+function outputPath({ path, results, work }) {
+  const parent = realpathSync(dirname(path));
+  const target = join(parent, basename(path));
+  requireThat(inside(results, target) && !inRunTree(work, parent));
+  const entry = lstatSync(target, { throwIfNoEntry: false });
+  requireThat(!entry || (entry.isFile() && entry.nlink === 1));
+  accessSync(entry ? target : parent, constants.W_OK);
+  return target;
+}
+
+function appendOutput(out, rows) {
+  const path = outputPath(out);
   const fd = openSync(path, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT
     | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
   try {
     const entry = fstatSync(fd);
-    requireThat(entry.isFile() && entry.nlink === 1 && realpathSync(path) === path);
+    requireThat(entry.isFile() && entry.nlink === 1 && inside(out.results, realpathSync(path)));
     const current = lstatSync(path);
     requireThat(current.dev === entry.dev && current.ino === entry.ino);
-    return fd;
-  } catch (error) { closeSync(fd); throw error; }
+    for (let offset = 0; offset < rows.length;) offset += writeSync(fd, rows, offset, rows.length - offset);
+  } finally { closeSync(fd); }
+}
+
+function prepareOutput(o, work) {
+  let results = work;
+  if (o['results-dir']) {
+    const path = resolve(o['results-dir']);
+    results = join(realpathSync(dirname(path)), basename(path));
+    requireThat(!inRunTree(work, results));
+    mkdirSync(results, { mode: 0o700 });
+    chmodSync(results, 0o700);
+  }
+  requireThat(o.out == null || (!o.out.split(sep).includes('..') && !o.out.endsWith(sep) && basename(o.out) !== '.'));
+  const out = { path: resolve(o.out ?? join(results, 'results.jsonl')), results, work };
+  outputPath(out);
+  return out;
 }
 
 function collect({ name, sprites, task, env, out }, check, churn, note) {
@@ -125,12 +152,15 @@ function collect({ name, sprites, task, env, out }, check, churn, note) {
     '--task', task.id, '--check', check, '--check-command', goldenName(task.goldenCommand),
     '--complexity-score', String(score), '--complexity-size', size, '--complexity-reason', reason,
     '--rated-by', ratedBy, '--rated-at', ratedAt], { env, ...capture });
-  for (let offset = 0; offset < rows.length;) offset += writeSync(out, rows, offset, rows.length - offset);
+  appendOutput(out, rows);
   console.log(`run  ${name}  ${check}${note ? `  ${note}` : ''}`);
   return 0;
 }
 
-async function run(o, repo, task, grace, work, git, env, out) {
+async function run(o, repo, task, grace, work, git, env, out, beforeLaunch) {
+  // A known encoding base still needs a sprite log for the blocked record,
+  // but must not run task setup. Export also checks S, which includes setup.
+  const encodingBase = baseSetsEncoding(task.base, args => git(repo, args, buffered));
   const sprites = resolve(o.sprites ?? join(sep, 'tmp', 'sprites'));
   mkdirSync(sprites, { recursive: true });
   const dir = privateDir(work, 'bench-'), sprite = join(dir, 'tree');
@@ -143,9 +173,11 @@ async function run(o, repo, task, grace, work, git, env, out) {
     execFileSync('tar', ['-xf', '-'], { cwd, env, input: archive, stdio: ['pipe', 'ignore', 'ignore'] });
     git(cwd, ['init', '--template=']);
     git(cwd, ['add', '-f', '--all']);
-    setup(cwd);
-    // Tracked setup output belongs to the base, not to the sprite's changes.
-    git(cwd, ['add', '--all']);
+    if (!encodingBase) {
+      setup(cwd);
+      // Tracked setup output belongs to the base, not to the sprite's changes.
+      git(cwd, ['add', '--all']);
+    }
     git(cwd, ['-c', 'user.name=Benchmark', '-c', 'user.email=bench@example.invalid',
       '-c', 'core.hooksPath=/dev/null', 'commit', '--allow-empty', '--no-gpg-sign', '-m', 'Benchmark base']);
     return git(cwd, ['rev-parse', 'HEAD']).toString().trim();
@@ -159,8 +191,10 @@ async function run(o, repo, task, grace, work, git, env, out) {
   const { name, prefix, lock } = await reserveName(o, sprites);
   try {
     const cap = Number(o['max-seconds'] ?? task.timeCapSeconds), wait = (cap + grace) * 1000;
+    const launcherEnv = runChildEnv(work, o);
+    beforeLaunch?.();
     const deadline = performance.now() + wait;
-    execFileSync(launcher, [name, brief, String(cap)], { cwd: sprite, env: childEnv(work, o), timeout: wait, ...quiet });
+    execFileSync(launcher, [name, brief, String(cap)], { cwd: sprite, env: launcherEnv, timeout: wait, ...quiet });
     while (!existsSync(`${prefix}.rc`)) {
       if (performance.now() >= deadline) return 1;
       await sleep(Math.min(100, deadline - performance.now()));
@@ -168,7 +202,8 @@ async function run(o, repo, task, grace, work, git, env, out) {
     const measurement = { name, sprites, task, env, out };
     let stats, cwd, skipped;
     try {
-      const exported = exportPatch(privateDir(work, 'bench-export-'), sprite, trusted, base, git, env);
+      const exported = exportPatch(privateDir(work, 'bench-export-'), sprite, trusted, base, git,
+        { sourceEncoding: encodingBase });
       skipped = exported.skipped;
       stats = cloneWithPatch(work, 'bench-stats-', trusted, exported.patch, git);
       cwd = cloneWithPatch(work, 'bench-grade-', trusted, exported.patch, git);
@@ -180,7 +215,7 @@ async function run(o, repo, task, grace, work, git, env, out) {
         writeFileSync(target, git(repo, ['show', `${task.goldenRef}:${file}`]), { flag: 'wx' });
       }
     } catch (error) {
-      const reason = error.message === refusedSymlink ? refusedSymlink : 'refused_export';
+      const reason = [refusedSymlink, refusedEncoding].includes(error.message) ? error.message : 'refused_export';
       return collect(measurement, 'not_run', ['--outcome', 'blocked', '--reason', reason], reason);
     }
     setup(cwd);
@@ -192,33 +227,41 @@ async function run(o, repo, task, grace, work, git, env, out) {
   } finally { rmdirSync(lock); }
 }
 
-async function main() {
+export async function runSuite({ args = process.argv.slice(2), beforeLaunch } = {}) {
   let o, repo, grace;
   try {
-    ({ values: o } = parseArgs({ options: fields('task model thinking rep out work sprites max-seconds'.split(' '), () => ({ type: 'string' })) }));
+    ({ values: o } = parseArgs({ args, options: fields('task model thinking rep out work results-dir sprites max-seconds'.split(' '), () => ({ type: 'string' })) }));
     const slash = o.model?.indexOf('/') ?? -1;
     grace = Number(process.env.BENCH_RC_GRACE_SECONDS ?? 60);
     requireThat(o.task && (o.model == null || (slash > 0 && validModel({ provider: o.model.slice(0, slash), name: o.model.slice(slash + 1) })))
       && (o.thinking == null || thinkingLevel(o.thinking)) && integer(o.rep ?? 1) && integer(o['max-seconds'] ?? 1)
-      && [o.out, o.work, o.sprites].every(x => x == null || text(x)) && integer(grace, 0) && grace <= 60);
+      && [o.out, o.work, o['results-dir'], o.sprites].every(x => x == null || text(x)) && integer(grace, 0) && grace <= 60);
     repo = resolve(process.env.BENCH_REPO ?? fileURLToPath(new URL('../../../', import.meta.url)));
   } catch { console.error('error: invalid suite arguments or manifest'); return 2; }
   try {
-    const requestedWork = resolve(o.work ?? tmpdir());
-    mkdirSync(requestedWork, { recursive: true });
-    const work = realpathSync(requestedWork), env = childEnv(work, o);
-    const gitEnv = { ...env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
-    const git = (cwd, args, options) => execFileSync('git', ['-c', 'core.hooksPath=/dev/null', ...args],
-      { cwd, env: gitEnv, ...capture, ...options });
+    let work, out;
+    try {
+      const requestedWork = resolve(o.work ?? join(tmpdir(), 'bench-suite'));
+      mkdirSync(requestedWork, { recursive: true, mode: 0o700 });
+      if (o.work == null) {
+        const entry = lstatSync(requestedWork);
+        requireThat(entry.isDirectory() && entry.uid === process.getuid() && (entry.mode & 0o777) === 0o700);
+      }
+      work = realpathSync(requestedWork);
+      out = prepareOutput(o, work);
+    } catch { console.error('error: invalid suite output destination'); return 2; }
+    const env = runChildEnv(work, o);
+    const gitEnv = (dir, workTree) => ({ ...env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+      GIT_CONFIG_NOSYSTEM: '1', GIT_ATTR_NOSYSTEM: '1',
+      ...(dir && { GIT_DIR: dir, GIT_INDEX_FILE: join(dirname(dir), 'index'), GIT_OBJECT_DIRECTORY: join(dir, 'objects') }),
+      ...(workTree && { GIT_WORK_TREE: workTree }) });
+    const git = (cwd, args, options, dir, workTree) => execFileSync('git', ['-c', 'core.hooksPath=/dev/null', ...args],
+      { ...capture, ...options, cwd, env: gitEnv(dir, workTree) });
     let task;
-    try { task = loadTask(repo, o.task, git, env); }
+    try { task = loadTask(repo, o.task, git); }
     catch { console.error('error: invalid suite arguments or manifest'); return 2; }
-    let out;
-    try { out = openOutput(resolve(o.out ?? 'results.jsonl')); }
-    catch { console.error('error: invalid suite output destination'); return 2; }
-    try { return await run(o, repo, task, grace, work, git, env, out); }
-    finally { closeSync(out); }
+    return await run(o, repo, task, grace, work, git, env, out, beforeLaunch);
   } catch { console.error('error: benchmark run did not produce a record'); return 1; }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) process.exitCode = await main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) process.exitCode = await runSuite();

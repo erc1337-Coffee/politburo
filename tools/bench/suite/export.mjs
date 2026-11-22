@@ -3,6 +3,24 @@ import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSy
 import { join } from 'node:path';
 
 export const refusedSymlink = 'refused_symlink';
+export const refusedEncoding = 'refused_encoding';
+const attributes = path => path === '.gitattributes' || path.endsWith('/.gitattributes');
+function setsEncoding(bytes) {
+  // Skip the pattern (which Git allows to be C-quoted), then inspect attribute tokens.
+  return bytes.toString().replace(/^\uFEFF/, '').split('\n').some(line => {
+    const fields = line.match(/^[ \t\r\v\f]*(?:"(?:[^"\\]|\\.)*"|[^#" \t\r\v\f][^ \t\r\v\f]*)([ \t\r\v\f]+[^\n]*)$/);
+    return fields?.[1].split(/[ \t\r\v\f]+/).some(field => /^working-tree-encoding(?:=|$)/.test(field));
+  });
+}
+
+export function baseSetsEncoding(base, git) {
+  return git(['ls-tree', '-r', '-z', '--full-tree', base]).toString().split('\0').some(entry => {
+    const tab = entry.indexOf('\t');
+    if (tab < 0 || !attributes(entry.slice(tab + 1))) return false;
+    const [, type, oid] = entry.slice(0, tab).split(' ');
+    return type === 'blob' && setsEncoding(git(['cat-file', 'blob', oid]));
+  });
+}
 const refusedMode = () => { throw new Error(refusedSymlink); };
 const split = bytes => utf8.decode(bytes).split('\0').slice(0, -1);
 const nul = paths => paths.length ? `${paths.join('\0')}\0` : '';
@@ -108,20 +126,21 @@ export function verifyModes(raw) {
   }
 }
 
-export function exportPatch(dir, sprite, trusted, base, git, env, afterWalk) {
+export function exportPatch(dir, sprite, trusted, base, git, { afterWalk, sourceEncoding } = {}) {
+  if (baseSetsEncoding(base, args => git(trusted, args, { maxBuffer: 64 * 1024 * 1024 })) || sourceEncoding) {
+    throw new Error(refusedEncoding);
+  }
   const gitDir = join(dir, 'export.git');
   git(dir, ['init', '--bare', '--template=', gitDir]);
   const objects = join(gitDir, 'objects');
   writeFileSync(join(objects, 'info', 'alternates'), `${join(trusted, 'objects')}\n`, { flag: 'wx' });
-  const isolated = { ...env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
-    GIT_DIR: gitDir, GIT_INDEX_FILE: join(dir, 'index'), GIT_OBJECT_DIRECTORY: objects };
   const mirror = join(dir, 'ignore-tree');
   mkdirSync(mirror);
   const tempGit = (args, input, options = {}) => {
     try {
       return git(dir, ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null',
-        '-c', 'core.symlinks=true', ...args], { env: options.env ?? isolated, input, stdio: ['pipe', 'pipe', 'ignore'],
-        maxBuffer: 64 * 1024 * 1024, timeout: 30_000, killSignal: 'SIGKILL' });
+        '-c', 'core.symlinks=true', ...args], { input, stdio: ['pipe', 'pipe', 'ignore'],
+        maxBuffer: 64 * 1024 * 1024, timeout: 30_000, killSignal: 'SIGKILL' }, gitDir, options.workTree);
     } catch (error) {
       if (options.ok?.includes(error.status)) return error.stdout;
       throw error;
@@ -130,8 +149,7 @@ export function exportPatch(dir, sprite, trusted, base, git, env, afterWalk) {
   tempGit(['read-tree', base]);
   const regular = [], removed = [];
   let skipped = 0;
-  const ignoreEnv = { ...isolated, GIT_WORK_TREE: mirror };
-  const checkIgnore = input => tempGit(['check-ignore', '--no-index', '--stdin', '-z'], input, { env: ignoreEnv, ok: [1] });
+  const checkIgnore = input => tempGit(['check-ignore', '--no-index', '--stdin', '-z'], input, { workTree: mirror, ok: [1] });
   for (const path of candidates(sprite, mirror, tempGit, checkIgnore)) {
     const entry = pathStat(sprite, path);
     if (entry?.isFile()) regular.push(path);
@@ -141,9 +159,10 @@ export function exportPatch(dir, sprite, trusted, base, git, env, afterWalk) {
   afterWalk?.();
   // The stdin form of --force-remove requires a worktree, even though it
   // only changes the index. Point it at the private mirror.
-  if (removed.length) tempGit(['update-index', '--force-remove', '-z', '--stdin'], nul(removed), { env: ignoreEnv });
+  if (removed.length) tempGit(['update-index', '--force-remove', '-z', '--stdin'], nul(removed), { workTree: mirror });
   for (const path of regular) {
     const { bytes, mode } = readRegular(sprite, path);
+    if (attributes(path) && setsEncoding(bytes)) throw new Error(refusedEncoding);
     const oid = tempGit(['hash-object', '-w', '--stdin'], bytes).toString().trim();
     tempGit(['update-index', '--add', '--cacheinfo', `${mode},${oid},${path}`]);
   }

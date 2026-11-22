@@ -4,7 +4,6 @@ bonklek decides on this PR
 # Benchmark suite
 
 This extends “How a benchmark is made” in [benchmarks.md](benchmarks.md).
-The link resolves once that design is on main.
 
 ## The first tasks
 
@@ -45,6 +44,8 @@ rather than overwriting a log.
    sprite tree without the source repository's `.git` or history. Initialize
    Git, run setup and make one synthetic commit, S. Before launch, make a
    private bare clone, `trusted.git`, without hardlinks to the sprite tree.
+   If the historical base sets `working-tree-encoding`, skip initial setup
+   and launch only to collect a sprite log for the blocked record.
 2. Give `sprite-start` the copied brief and cap. Wait for the sprite's exit
    file, up to the cap plus 60 seconds. No exit file means no record.
 3. Export a binary patch against S. The runner reads the work tree but
@@ -57,9 +58,12 @@ rather than overwriting a log.
    and counts special files such as FIFOs, and checks the resulting Git
    modes before making the patch. Unreadable ignore metadata fails export.
    An exported symlink or non-regular Git mode blocks the run as
-   `refused_symlink`; other export, patch application or golden restore
-   failures are `refused_export`. A blocked record has `check: not_run` and
-   no churn. The runner exits zero without grading or running setup again.
+   `refused_symlink`. Export checks every `.gitattributes` blob in S from
+   `trusted.git` before reading candidate bytes. If the base or a sprite
+   addition or edit sets `working-tree-encoding`, record `refused_encoding`.
+   Other export, patch application or golden restore failures are
+   `refused_export`. A blocked record has `check: not_run` and no churn.
+   The runner exits zero without grading or running grading setup.
 4. Apply the same patch to two independent clones of `trusted.git`, each
    checked out at S. The stats tree has only the sprite's change. In the
    grading tree, restore the golden files from `goldenRef` without following
@@ -80,12 +84,22 @@ node tools/bench/suite/run.mjs --task serve-responder-flag --rep 1
 ```
 
 Use `--model`, `--thinking` and `--rep` to choose a cell and repetition.
-`--max-seconds` overrides the manifest cap. `--out` defaults to `results.jsonl`.
-The runner opens the destination before launch. It requires a regular file
-with one link and no symlinks in the path, and appends through the open file.
-`--work` chooses where the runner keeps the sprite tree, `trusted.git`,
-export directory, stats and grading trees, and private homes. It leaves
-these artifacts in place for inspection. `--sprites` selects
+`--max-seconds` overrides the manifest cap. `--work` chooses the work root
+(default: `bench-suite` under the system temporary directory). It holds
+separate `bench-*` directories for the sprite, trusted clone, export, stats,
+grading and private homes. The runner leaves them in place for inspection.
+
+Results default to `results.jsonl` in the work root, outside all per-run
+`bench-*` directories. Use `--results-dir` to create a separate mode-0700
+results directory next to, not inside, the per-run trees. An explicit
+`--out` is relative to the invoking directory unless absolute. It must have
+no `..` components, its parent must resolve inside the results directory
+(or to that directory itself), and its final name must be new or a regular
+file with one link, not a symlink. The runner validates before setup or
+launch and opens only after grading, immediately before appending the rows.
+Exit `0` means a record was written, including refusals and failing checks;
+`1` means the run did not produce a record, and `2` means misuse.
+ `--sprites` selects
 where the runner reads logs. This must match where the launcher writes.
 Tests inject `BENCH_SPRITE_START` and `BENCH_REPO` and shorten the exit-file
 grace period with `BENCH_RC_GRACE_SECONDS`.
@@ -135,9 +149,12 @@ can access. `sprite-start` writes `.out` and `.jsonl.err` files that
 can hold raw diagnostics; the suite does not read them. The suite does not
 rule out prior exposure or measure resistance to checker tampering.
 
-The golden command and setup run code the sprite wrote with the runner's
-own filesystem permissions. The runner-owned trees, environment allowlist
-and private HOME do not stop that code from writing anywhere the runner's
-user can write. Run the suite as a dedicated unprivileged user or inside a
-disposable container or VM with only the work directory writable. An OS
-sandbox in the runner is a follow-up.
+## Threat model and known limits
+
+The runner grades our own sprites. Use one disposable VM per model run. The
+runner is not a sandbox: hostile-sprite escapes such as swapped directories,
+moved descriptors and races against runner files are out of scope. Setup and
+the golden command run sprite-written code with the runner's filesystem
+permissions. A base that sets `working-tree-encoding` needs Git to convert
+file encodings. Export stages raw bytes, so it refuses such bases rather than
+report incorrect churn.

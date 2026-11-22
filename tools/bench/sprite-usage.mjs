@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, sep } from 'node:path';
+import { childEnv } from './suite/child-env.mjs';
 import { args, changeKeys, cli, count, fields, jsonl, modelKey, print, proxies, record, requireThat, seconds, sum, thinkingLevel, tokenKeys, validModel } from './record.mjs';
 
 const usageKeys = { in: 'input', out: 'output', reasoning: 'reasoning', cached: 'cacheRead' };
@@ -120,10 +121,10 @@ function main() {
   }
   catch (e) { if (e.code !== 'ENOENT') throw e; }
   if (o.base) {
-    const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
     const gitOptions = {
       cwd: o.worktree, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...gitEnv, LC_ALL: 'C', GIT_ATTR_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' },
+      env: { ...childEnv({ LC_ALL: 'C' }), GIT_ATTR_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
+        GIT_CONFIG_SYSTEM: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
     };
     const base = execFileSync('git', ['rev-parse', '--verify', '--end-of-options', `${o.base}^{commit}`], gitOptions).trim();
     const stat = execFileSync('git', ['-c', 'core.attributesFile=/dev/null', `--attr-source=${base}`,
