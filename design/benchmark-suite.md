@@ -51,13 +51,15 @@ rather than overwriting a log.
    does not copy it or use its Git repository. A temporary Git directory
    and index use objects from `trusted.git`. The runner inspects tracked
    paths and unignored entries, skipping nested `.git` entries and pruning
-   ignored directories. It includes regular files and deletions, skips and
-   counts special files such as FIFOs, and checks modes in the written Git
-   tree before making the patch. Unreadable ignore metadata fails export.
-   An exported symlink or non-regular Git mode
-   blocks the run as `refused_symlink`; any other export or patch application
-   failure is `refused_export`. A blocked record has `check: not_run` and no
-   churn. The runner exits zero without grading or running setup again.
+   ignored directories using a private copy of the ignore metadata. Git
+   never sees the live tree during export. The runner reads regular files
+   through no-follow descriptors up to 20 MiB, includes deletions, skips
+   and counts special files such as FIFOs, and checks the resulting Git
+   modes before making the patch. Unreadable ignore metadata fails export.
+   An exported symlink or non-regular Git mode blocks the run as
+   `refused_symlink`; other export, patch application or golden restore
+   failures are `refused_export`. A blocked record has `check: not_run` and
+   no churn. The runner exits zero without grading or running setup again.
 4. Apply the same patch to two independent clones of `trusted.git`, each
    checked out at S. The stats tree has only the sprite's change. In the
    grading tree, restore the golden files from `goldenRef` without following
@@ -71,7 +73,7 @@ rather than overwriting a log.
    The runner prints one line with the run name and verdict, plus a refusal
    code or a `skipped_special` count when applicable.
 
-Use Node 22. For example, from the repo root:
+Use Node 22 and Git 2.43 or later. For example, from the repo root:
 
 ```sh
 node tools/bench/suite/run.mjs --task serve-responder-flag --rep 1
@@ -79,6 +81,8 @@ node tools/bench/suite/run.mjs --task serve-responder-flag --rep 1
 
 Use `--model`, `--thinking` and `--rep` to choose a cell and repetition.
 `--max-seconds` overrides the manifest cap. `--out` defaults to `results.jsonl`.
+The runner opens the destination before launch. It requires a regular file
+with one link and no symlinks in the path, and appends through the open file.
 `--work` chooses where the runner keeps the sprite tree, `trusted.git`,
 export directory, stats and grading trees, and private homes. It leaves
 these artifacts in place for inspection. `--sprites` selects
@@ -116,7 +120,9 @@ representative complexity curve. These tasks are related and historical.
 A pass establishes only what the golden command covers. It does not score
 maintainability, review effort, human waits or coordination across sprites.
 Churn counts the exported changes, including new files and deletions,
-relative to S. Neither grading setup nor golden files count. Report the
+relative to S. Churn uses S's attributes, ignores host Git configuration,
+and counts renames as deletions plus additions. Neither grading setup nor
+restored golden files count. Report the
 pass rate and Wilson interval, median and p90 time and tokens, and tokens
 per changed line with their source run IDs, not as a leaderboard.
 
@@ -124,8 +130,14 @@ The archive and delayed golden restore keep the answer out of the supplied
 working tree. Export is a read of a live tree, not an atomic filesystem
 snapshot. Once the patch is captured, the runner never reads the sprite tree
 again, so later writes cannot change the patch or receive golden files.
-Private directories are not an OS sandbox against processes running as the
-same user. Keep the source checkout and prior run artifacts outside what the
-sprite can access. `sprite-start` writes `.out` and `.jsonl.err` files that
+Keep the source checkout and prior run artifacts outside what the sprite
+can access. `sprite-start` writes `.out` and `.jsonl.err` files that
 can hold raw diagnostics; the suite does not read them. The suite does not
 rule out prior exposure or measure resistance to checker tampering.
+
+The golden command and setup run code the sprite wrote with the runner's
+own filesystem permissions. The runner-owned trees, environment allowlist
+and private HOME do not stop that code from writing anywhere the runner's
+user can write. Run the suite as a dedicated unprivileged user or inside a
+disposable container or VM with only the work directory writable. An OS
+sandbox in the runner is a follow-up.

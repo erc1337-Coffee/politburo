@@ -120,11 +120,14 @@ function main() {
   }
   catch (e) { if (e.code !== 'ENOENT') throw e; }
   if (o.base) {
+    const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
     const gitOptions = {
-      cwd: o.worktree, encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' }, stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: o.worktree, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...gitEnv, LC_ALL: 'C', GIT_ATTR_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' },
     };
     const base = execFileSync('git', ['rev-parse', '--verify', '--end-of-options', `${o.base}^{commit}`], gitOptions).trim();
-    const stat = execFileSync('git', ['diff', '--no-ext-diff', '--no-textconv', '--shortstat', base, '--'], gitOptions);
+    const stat = execFileSync('git', ['-c', 'core.attributesFile=/dev/null', `--attr-source=${base}`,
+      'diff', '--no-renames', '--no-ext-diff', '--no-textconv', '--text', '--shortstat', base, '--'], gitOptions);
     const counts = [/\d+(?= files? changed)/, /\d+(?= insertions?\()/, /\d+(?= deletions?\()/];
     changes = fields(changeKeys, k => Number(stat.match(counts[changeKeys.indexOf(k)])?.[0] ?? 0));
   }

@@ -1,8 +1,8 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { appendFileSync, chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync,
-  readFileSync, realpathSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, constants, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync,
+  mkdtempSync, openSync, readFileSync, realpathSync, rmdirSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve, sep } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -104,6 +104,20 @@ function cloneWithPatch(work, prefix, trusted, patch, git) {
   return cwd;
 }
 
+function openOutput(path) {
+  const parent = dirname(path);
+  requireThat(realpathSync(parent) === parent);
+  const fd = openSync(path, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT
+    | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
+  try {
+    const entry = fstatSync(fd);
+    requireThat(entry.isFile() && entry.nlink === 1 && realpathSync(path) === path);
+    const current = lstatSync(path);
+    requireThat(current.dev === entry.dev && current.ino === entry.ino);
+    return fd;
+  } catch (error) { closeSync(fd); throw error; }
+}
+
 function collect({ name, sprites, task, env, out }, check, churn, note) {
   const { score, size, reason, ratedBy, ratedAt } = task.rating;
   const collector = fileURLToPath(new URL('../sprite-usage.mjs', import.meta.url));
@@ -111,13 +125,13 @@ function collect({ name, sprites, task, env, out }, check, churn, note) {
     '--task', task.id, '--check', check, '--check-command', goldenName(task.goldenCommand),
     '--complexity-score', String(score), '--complexity-size', size, '--complexity-reason', reason,
     '--rated-by', ratedBy, '--rated-at', ratedAt], { env, ...capture });
-  appendFileSync(out, rows);
+  for (let offset = 0; offset < rows.length;) offset += writeSync(out, rows, offset, rows.length - offset);
   console.log(`run  ${name}  ${check}${note ? `  ${note}` : ''}`);
   return 0;
 }
 
-async function run(o, repo, task, grace, work, git, env) {
-  const sprites = resolve(o.sprites ?? join(sep, 'tmp', 'sprites')), out = resolve(o.out ?? 'results.jsonl');
+async function run(o, repo, task, grace, work, git, env, out) {
+  const sprites = resolve(o.sprites ?? join(sep, 'tmp', 'sprites'));
   mkdirSync(sprites, { recursive: true });
   const dir = privateDir(work, 'bench-'), sprite = join(dir, 'tree');
   mkdirSync(sprite);
@@ -158,15 +172,16 @@ async function run(o, repo, task, grace, work, git, env) {
       skipped = exported.skipped;
       stats = cloneWithPatch(work, 'bench-stats-', trusted, exported.patch, git);
       cwd = cloneWithPatch(work, 'bench-grade-', trusted, exported.patch, git);
+      for (const file of task.goldenFiles) {
+        const target = goldenPath(cwd, file);
+        const entry = lstatSync(target, { throwIfNoEntry: false });
+        requireThat(!entry || entry.isFile());
+        unlinkIfPresent(target);
+        writeFileSync(target, git(repo, ['show', `${task.goldenRef}:${file}`]), { flag: 'wx' });
+      }
     } catch (error) {
       const reason = error.message === refusedSymlink ? refusedSymlink : 'refused_export';
       return collect(measurement, 'not_run', ['--outcome', 'blocked', '--reason', reason], reason);
-    }
-    for (const file of task.goldenFiles) {
-      const target = goldenPath(cwd, file);
-      requireThat(!lstatSync(target, { throwIfNoEntry: false })?.isSymbolicLink());
-      unlinkIfPresent(target);
-      writeFileSync(target, git(repo, ['show', `${task.goldenRef}:${file}`]), { flag: 'wx' });
     }
     setup(cwd);
     const [cmd, ...args] = task.goldenCommand;
@@ -198,7 +213,11 @@ async function main() {
     let task;
     try { task = loadTask(repo, o.task, git, env); }
     catch { console.error('error: invalid suite arguments or manifest'); return 2; }
-    return await run(o, repo, task, grace, work, git, env);
+    let out;
+    try { out = openOutput(resolve(o.out ?? 'results.jsonl')); }
+    catch { console.error('error: invalid suite output destination'); return 2; }
+    try { return await run(o, repo, task, grace, work, git, env, out); }
+    finally { closeSync(out); }
   } catch { console.error('error: benchmark run did not produce a record'); return 1; }
 }
 

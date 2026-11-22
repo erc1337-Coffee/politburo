@@ -1,20 +1,20 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync,
-  rmSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync,
+  realpathSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { runName } from '../run.mjs';
-import { verifyModes } from '../export.mjs';
+import { exportPatch, verifyModes } from '../export.mjs';
 import { validRating } from '../../record.mjs';
 
 const here = path => fileURLToPath(new URL(path, import.meta.url));
 const repo = here('../../../../');
 const suite = 'tools/bench/suite';
-const env = { PATH: process.env.PATH };
+const env = { PATH: process.env.PATH, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 const json = path => JSON.parse(readFileSync(path, 'utf8'));
 
@@ -73,6 +73,7 @@ const fs = require('node:fs'), path = require('node:path'), e = process.env;
 const obs = (...parts) => path.join(e.OBS, ...parts);
 const note = (file, value) => fs.writeFileSync(obs(file), JSON.stringify(value));
 const present = key => Object.hasOwn(e, key) ? 'present' : 'absent';
+const exportGit = () => present('GIT_INDEX_FILE');
 const home = () => ({ isolated: e.HOME !== obs('runner-home') && path.dirname(e.HOME) === obs('work')
   && (fs.statSync(e.HOME).mode & 0o777) === 0o700,
   xdg: ['CONFIG', 'CACHE', 'DATA'].every(key => path.dirname(e['XDG_' + key + '_HOME']) === e.HOME) });
@@ -116,7 +117,7 @@ function fixture(t, mode, timeout = 10_000) {
   writeFileSync(join(cwd, 'answer'), 'fixed');
   mkdirSync(join(cwd, 'checks'));
   writeFileSync(join(cwd, 'checks/golden.cjs'), `${observe}
-note('golden', { cwd: process.cwd(), secret: present('BENCH_FIXTURE_SECRET_TOKEN'), ...home(),
+note('golden', { cwd: process.cwd(), secret: present('BENCH_FIXTURE_SECRET_TOKEN'), exportGit: exportGit(), ...home(),
   setupHere: fs.readFileSync('setup-location', 'utf8') === process.cwd(),
   goldenInstalledBeforeSetup: fs.existsSync('setup-saw-golden') });
 console.log('check stdout');
@@ -134,6 +135,7 @@ process.exitCode = fs.readFileSync('answer', 'utf8') === 'fixed' &&
   const goldenRef = commit();
   const setup = `${observe}
 fs.appendFileSync(obs('setup'), present('BENCH_FIXTURE_SECRET_TOKEN') + '\\n');
+fs.appendFileSync(obs('setup-git'), exportGit() + '\\n');
 const answer = fs.readFileSync('answer');
 fs.writeFileSync('setup-location', process.cwd());
 if (fs.existsSync('checks/golden.cjs') && fs.readFileSync('checks/golden.cjs', 'utf8').includes('process.exitCode'))
@@ -152,6 +154,15 @@ fs.writeFileSync('ignored', answer);
   mkdirSync(join(dir, 'runner-home'));
   mkdirSync(join(dir, 'outside'));
   writeFileSync(join(dir, 'outside/golden.cjs'), 'untouched');
+  const other = join(dir, 'outside/other');
+  if (['out-symlink', 'out-hardlink', 'out-swap', 'out-swap-blocked'].includes(mode)) {
+    writeFileSync(other, 'untouched');
+    if (mode === 'out-symlink') symlinkSync(other, out);
+    if (mode === 'out-hardlink') linkSync(other, out);
+  }
+  if (mode === 'out-directory') mkdirSync(out);
+  if (mode === 'out-fifo') execFileSync('mkfifo', [out], { env });
+  if (mode === 'out-parent') symlinkSync('outside', join(dir, 'linked-parent'));
   const outsideBefore = digest(join(dir, 'outside'));
   writeFileSync(join(dir, 'monitor'), '#!/bin/sh\ntouch "$OBS/outside/monitor-ran"\n', { mode: 0o700 });
   // Observe the real collector at process startup, without replacing it.
@@ -159,12 +170,12 @@ fs.writeFileSync('ignored', answer);
   writeFileSync(preload, `${observe}
 if (process.argv[1]?.endsWith('/sprite-usage.mjs')) {
   const index = process.argv.indexOf('--worktree');
-  note('collector', { secret: present('BENCH_FIXTURE_SECRET_TOKEN'),
+  note('collector', { secret: present('BENCH_FIXTURE_SECRET_TOKEN'), exportGit: exportGit(),
     worktree: index < 0 ? null : process.argv[index + 1], afterGolden: fs.existsSync(obs('golden')) });
 }
 `);
   writeFileSync(join(dir, 'launcher-probe.cjs'), `${observe}
-note('launcher', { cwd: process.cwd(), secret: present('BENCH_FIXTURE_SECRET_TOKEN'), ...home(),
+note('launcher', { cwd: process.cwd(), secret: present('BENCH_FIXTURE_SECRET_TOKEN'), exportGit: exportGit(), ...home(),
   allowed: present('FIXTURE_ACCESS'), git: present('GIT_FIXTURE_SENTINEL'), bench: present('BENCH_REPO'),
   launcherConfig: present('BENCH_SPRITE_START'), grace: present('BENCH_RC_GRACE_SECONDS'),
   invalid: present('FIXTURE-BAD'), unset: present('UNSET_FIXTURE'),
@@ -203,6 +214,11 @@ fi
 if [ "$MODE" = ignored-fifo ]; then mkdir ignored-dir; mkfifo ignored-dir/pipe; fi
 if [ "$MODE" = fifo ]; then mkfifo pipe; fi
 if [ "$MODE" = bad-ignore ]; then mkfifo .gitignore.tmp; mv -f .gitignore.tmp .gitignore; fi
+if [ "$MODE" = golden-collision ] || [ "$MODE" = out-swap-blocked ]; then printf collision > checks; fi
+if [ "$MODE" = out-swap ] || [ "$MODE" = out-swap-blocked ]; then
+  mv "$OBS/records.jsonl" "$OBS/original-records"
+  ln -s "$OBS/outside/other" "$OBS/records.jsonl"
+fi
 if [ "$MODE" = binary ]; then printf '\\000\\377\\002' > binary; chmod +x binary; fi
 if [ "$MODE" = nested ]; then
   git init -q --template= nested-dir
@@ -227,14 +243,15 @@ if [ "$MODE" != no-rc ]; then (
 ) & fi
 `, { mode: 0o700 });
   const passEnv = 'OBS,FIXTURE_LOG,SPRITES,MODE,EXPECTED_MODEL,EXPECTED_THINKING,EXPECTED_CAP,NODE_OPTIONS,'
-    + 'HOME,XDG_CONFIG_HOME,XDG_CACHE_HOME,XDG_DATA_HOME,PI_MODEL,PI_THINKING,GIT_FIXTURE_SENTINEL,BENCH_REPO,BENCH_SPRITE_START,BENCH_RC_GRACE_SECONDS,FIXTURE-BAD,UNSET_FIXTURE';
-  const result = spawnSync(process.execPath, [here('../run.mjs'), '--task', task.id, '--work', work, '--out', out, '--sprites', sprites,
+    + 'HOME,XDG_CONFIG_HOME,XDG_CACHE_HOME,XDG_DATA_HOME,PI_MODEL,PI_THINKING,GIT_FIXTURE_SENTINEL,GIT_INDEX_FILE,BENCH_REPO,BENCH_SPRITE_START,BENCH_RC_GRACE_SECONDS,FIXTURE-BAD,UNSET_FIXTURE';
+  const result = spawnSync(process.execPath, [here('../run.mjs'), '--task', task.id, '--work', work, '--out',
+    mode === 'out-parent' ? join(dir, 'linked-parent/records.jsonl') : out, '--sprites', sprites,
     ...(pinned ? ['--model', 'Requested/Model', '--thinking', 'high', '--rep', '2', '--max-seconds', '3'] : [])],
   { cwd: dir, encoding: 'utf8', timeout, env: { PATH: [join(dir, 'bin'), process.env.PATH].join(':'), BENCH_REPO: cwd, BENCH_SPRITE_START: launcher,
     BENCH_PASS_ENV: passEnv + (pinned ? ',FIXTURE_ACCESS' : ''), HOME: join(dir, 'runner-home'),
     XDG_CONFIG_HOME: join(dir, 'runner-home'), XDG_CACHE_HOME: join(dir, 'runner-home'), XDG_DATA_HOME: join(dir, 'runner-home'),
     OBS: dir, NODE_OPTIONS: `--require=${preload}`,
-    BENCH_FIXTURE_SECRET_TOKEN: 'placeholder', GIT_FIXTURE_SENTINEL: 'placeholder',
+    BENCH_FIXTURE_SECRET_TOKEN: 'placeholder', GIT_FIXTURE_SENTINEL: 'placeholder', GIT_INDEX_FILE: 'placeholder',
     FIXTURE_ACCESS: 'placeholder', 'FIXTURE-BAD': 'placeholder',
     BENCH_RC_GRACE_SECONDS: '0', FIXTURE_LOG: here('../../test/fixtures/single.jsonl'), SPRITES: sprites, MODE: mode,
     PI_MODEL: 'ignored', PI_THINKING: 'ignored', EXPECTED_MODEL: pinned ? 'Requested/Model' : 'unset',
@@ -250,6 +267,9 @@ for (const verdict of ['pass', 'fail']) test(`runner records golden ${verdict} a
   const golden = json(join(dir, 'golden'));
   assert.deepEqual({ launcher: launcher.secret, golden: golden.secret, collector: json(join(dir, 'collector')).secret,
     setup: readFileSync(join(dir, 'setup'), 'utf8').trim().split('\n') },
+  { launcher: 'absent', golden: 'absent', collector: 'absent', setup: ['absent', 'absent'] });
+  assert.deepEqual({ launcher: launcher.exportGit, golden: golden.exportGit, collector: json(join(dir, 'collector')).exportGit,
+    setup: readFileSync(join(dir, 'setup-git'), 'utf8').trim().split('\n') },
   { launcher: 'absent', golden: 'absent', collector: 'absent', setup: ['absent', 'absent'] });
   for (const child of [launcher, golden]) assert.ok(child.isolated && child.xdg, 'private HOME and XDG directories');
   assert.equal(launcher.path, true);
@@ -399,6 +419,55 @@ test('a special file in place of ignore metadata refuses export without running 
   assert.equal(readFileSync(join(dir, 'setup'), 'utf8'), 'absent\n');
 });
 
+for (const swap of ['nested repo', 'symlink', 'symlink parent', 'oversized file']) {
+  test(`export refuses a replacement (${swap}) swapped in after classification`, t => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'bench-race-test-')));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const sprite = join(dir, 'sprite'), trusted = join(dir, 'trusted.git'), scratch = join(dir, 'export');
+    mkdirSync(sprite);
+    mkdirSync(scratch);
+    mkdirSync(join(sprite, 'sub'));
+    const leaf = 'sub/answer', file = join(sprite, leaf);
+    writeFileSync(file, 'base\n');
+    git(sprite, 'init', '--template=');
+    git(sprite, 'add', '--', leaf);
+    git(sprite, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'Fixture');
+    const base = git(sprite, 'rev-parse', 'HEAD');
+    git(dir, 'clone', '--bare', '--no-hardlinks', sprite, trusted);
+    const monitor = join(dir, 'monitor'), marker = join(dir, 'monitor-ran');
+    writeFileSync(monitor, '#!/bin/sh\ntouch "$(dirname "$0")/monitor-ran"\n', { mode: 0o700 });
+    let liveWorktree = false, injected = false;
+    const callGit = (cwd, args, options) => {
+      liveWorktree ||= options?.env?.GIT_WORK_TREE === sprite || cwd === sprite;
+      return execFileSync('git', args, { cwd, env, stdio: ['pipe', 'pipe', 'ignore'], ...options });
+    };
+    assert.throws(() => exportPatch(scratch, sprite, trusted, base, callGit, env, () => {
+      injected = true;
+      if (swap === 'symlink parent') {
+        renameSync(join(sprite, 'sub'), join(dir, 'sub'));
+        symlinkSync(join(dir, 'sub'), join(sprite, 'sub'));
+      } else {
+        rmSync(file);
+        if (swap === 'nested repo') {
+          git(dir, 'clone', '--no-hardlinks', trusted, file);
+          git(file, 'config', 'core.fsmonitor', monitor);
+        } else if (swap === 'symlink') symlinkSync('../.git/HEAD', file);
+        else {
+          writeFileSync(file, '');
+          truncateSync(file, 20 * 1024 * 1024 + 1);
+        }
+      }
+    }), swap.startsWith('symlink') ? /refused_symlink/ : /refused_export/);
+    assert.equal(injected, true);
+    assert.equal(liveWorktree, false);
+    assert.ok(!existsSync(marker));
+    const index = callGit(scratch, ['ls-files', '--stage'], {
+      env: { ...env, GIT_DIR: join(scratch, 'export.git'), GIT_INDEX_FILE: join(scratch, 'index') },
+    }).toString();
+    assert.match(index, /^100644 [a-f0-9]+ 0\tsub\/answer\n$/);
+  });
+}
+
 test('post-write export validation rejects a symlink mode', t => {
   const dir = mkdtempSync(join(tmpdir(), 'bench-mode-test-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -428,6 +497,38 @@ test('a tracked directory swapped for a symlink is blocked before grading setup'
   assert.equal(json(join(dir, 'collector')).worktree, null);
 });
 
+test('a regular file at a golden parent records a refusal and skips grading setup', t => {
+  const { result, out, dir } = fixture(t, 'golden-collision');
+  assert.equal(result.status, 0, result.stderr);
+  const row = json(out);
+  assert.deepEqual(row.outcome, { state: 'blocked', reason: 'refused_export' });
+  assert.deepEqual(row.check, { result: 'not_run', command: 'node' });
+  assert.equal(row.changes, null);
+  assert.equal(readFileSync(join(dir, 'setup'), 'utf8'), 'absent\n');
+  assert.ok(!existsSync(join(dir, 'golden')));
+});
+
+for (const type of ['symlink', 'hardlink', 'directory', 'fifo', 'parent']) {
+  test(`runner rejects an unsafe output destination (${type}) before setup or launch`, t => {
+    const { result, dir, launcher } = fixture(t, `out-${type}`);
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /invalid suite output destination/);
+    assert.equal(launcher, null);
+    assert.ok(!existsSync(join(dir, 'setup')));
+    if (type.endsWith('link')) assert.equal(readFileSync(join(dir, 'outside/other'), 'utf8'), 'untouched');
+    if (type === 'parent') assert.ok(!existsSync(join(dir, 'outside/records.jsonl')));
+  });
+}
+
+for (const blocked of [false, true]) {
+  test(`runner appends ${blocked ? 'a refusal' : 'a verdict'} to the original output after a path swap`, t => {
+    const { result, dir } = fixture(t, blocked ? 'out-swap-blocked' : 'out-swap');
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(json(join(dir, 'original-records')).check.result, blocked ? 'not_run' : 'fail');
+    assert.equal(readFileSync(join(dir, 'outside/other'), 'utf8'), 'untouched');
+  });
+}
+
 test('a sprite without an exit file times out before any golden file is restored', t => {
   const { result, out, sprites, dir, launcher } = fixture(t, 'no-rc');
   assert.ok(readdirSync(sprites).some(file => file.endsWith('.jsonl')), 'sprite did start');
@@ -435,7 +536,7 @@ test('a sprite without an exit file times out before any golden file is restored
   assert.equal(result.stdout, '');
   assert.ok(!existsSync(join(launcher.cwd, 'checks/golden.cjs')));
   assert.ok(!existsSync(join(dir, 'golden')));
-  assert.ok(!existsSync(out));
+  assert.equal(readFileSync(out, 'utf8'), '');
 });
 
 test('a launcher error reports exit 1 without a record', t => {
@@ -443,7 +544,7 @@ test('a launcher error reports exit 1 without a record', t => {
   assert.equal(result.status, 1);
   assert.match(result.stderr, /did not produce a record/);
   assert.equal(result.stdout, '');
-  assert.ok(!existsSync(out));
+  assert.equal(readFileSync(out, 'utf8'), '');
 });
 
 test('the work repo has one synthetic commit and none of the source commits', t => {
