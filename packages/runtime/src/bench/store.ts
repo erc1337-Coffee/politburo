@@ -21,6 +21,8 @@ export function benchStore({ board, channel = 'bench', author }: {
   return {
     async record(run: BenchRun) {
       if ((await board.me()).actor !== author) throw new Error('benchmark writer does not match the configured author')
+      // Validate what the caller passed too: serialization turns Infinity and NaN into null.
+      if (!isBenchRun(run)) throw new TypeError('invalid benchmark record')
       const json = JSON.stringify(run, null, 2)
       const parsed: unknown = JSON.parse(json)
       if (!isBenchRun(parsed)) throw new TypeError('invalid benchmark record')

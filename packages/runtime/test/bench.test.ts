@@ -152,16 +152,16 @@ test('reads continue when an empty page advances the cursor', async (t) => {
 })
 
 test('validates outcome codes, check names, and run ID lengths', () => {
-  for (const reason of ['retry: IO_1.2-later', 'r'.repeat(80)]) {
+  for (const reason of ['retry:IO_1.2-later', 'exit 124', 'r'.repeat(80)]) {
     assert.ok(isBenchRun(run('valid', { outcome: { state: 'blocked', reason } })))
   }
-  for (const reason of ['', 'bad/code', 'bad!', '-retry', 'r'.repeat(81)]) {
+  for (const reason of ['', 'bad/code', 'bad!', '-retry', 'Please rerun the job', 'exit 1234', 'r'.repeat(81)]) {
     assert.equal(isBenchRun(run('invalid', { outcome: { state: 'blocked', reason } })), false, reason)
   }
-  for (const command of ['check-build', 'pnpm check:test', 'c'.repeat(60)]) {
+  for (const command of ['check-build', 'pnpm check', 'pnpm test', 'vitest', 'c'.repeat(60)]) {
     assert.ok(isBenchRun(run('valid', { check: { result: 'pass', command } })))
   }
-  for (const command of ['-check', 'check --flag', 'one two three', 'c'.repeat(61)]) {
+  for (const command of ['-check', 'check --flag', 'deploy dummy-token', 'one two three', 'c'.repeat(61)]) {
     assert.equal(isBenchRun(run('invalid', { check: { result: 'pass', command } })), false, command)
   }
   assert.ok(isBenchRun(run('r'.repeat(150))))
@@ -312,4 +312,12 @@ test('sprite records have no sprite summary and roll-ups must have one', () => {
   assert.ok(isBenchRun(run('top', { level: 'task', model: null, byModel: [], sprites: summary })))
   assert.equal(isBenchRun(run('top', { level: 'task', model: null, byModel: [], sprites: null })), false)
   assert.equal(isBenchRun(run('top', { level: 'task', model: null, byModel: null, sprites: summary })), false)
+})
+
+test('a sprite that ends before it starts is invalid, and an SDK Infinity is refused before it serializes to null', async (t) => {
+  assert.equal(isBenchRun(run('backwards', { startedAt: '2026-01-01T00:00:00.001Z', endedAt: time, wallSeconds: 0, activeSeconds: 0 })), false)
+  const { bench, team } = await fixture(t)
+  const infinite = run('infinite', { tokens: { in: Infinity, out: 2, reasoning: null, cached: null }, coverage: { tokens: 'partial' } })
+  await assert.rejects(bench.record(infinite), TypeError)
+  assert.equal((await team.channel('bench').messages()).messages.length, 0)
 })

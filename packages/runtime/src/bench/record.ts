@@ -42,9 +42,12 @@ const name = text((s) => /^[a-zA-Z0-9][a-zA-Z0-9_.:/-]*$/.test(s), { minLength: 
 const runId = text((s) => /^[a-zA-Z0-9][a-zA-Z0-9_.:-]*(?:~[1-9]\d*)?$/.test(s), { minLength: 1, maxLength: 150 })
 const taskId = text((s) => /^[a-zA-Z0-9][a-zA-Z0-9_.:/-]*(?:#\d+)?$/.test(s), { minLength: 1 })
 const repo = text((s) => /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(s), { minLength: 3 })
+// A rating's one-line reason may be a sentence about the subject.
 const reason = text((s) => !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(s))
-const outcomeReason = text((s) => /^[a-z0-9][a-z0-9_.: -]{0,79}$/i.test(s), { minLength: 1, maxLength: 80 })
-const command = text((s) => /^[a-zA-Z0-9_.:][a-zA-Z0-9_.:-]*(?: [a-zA-Z0-9_.:][a-zA-Z0-9_.:-]*)?$/.test(s), { minLength: 1, maxLength: 60 })
+// An outcome's reason is a short code (`exit 124`, `waiting_on_review`), never prose.
+const outcomeReason = text((s) => /^(?:exit \d{1,3}|[a-z0-9][a-z0-9_.:-]{0,79})$/i.test(s), { minLength: 1, maxLength: 80 })
+// A check name, optionally followed by `check` or `test` (`pnpm check`); never arguments.
+const command = text((s) => /^[a-z0-9][a-z0-9_.:-]{0,59}(?: (?:check|test))?$/i.test(s), { minLength: 1, maxLength: 60 })
 const timestamp = text((s) => /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(s) &&
   Number.isFinite(Date.parse(s)) && new Date(s).toISOString() === s, { format: 'date-time' })
 const count = field<number>({ type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
@@ -90,7 +93,7 @@ export function isBenchRun(value: unknown): value is BenchRun {
   if (!fields.accepts(value)) return false
   // Seconds have millisecond precision; compare integers at the tolerance boundary.
   const elapsedMs = Date.parse(value.endedAt) - Date.parse(value.startedAt)
-  if (Math.abs(Math.round(value.wallSeconds * 1000) - elapsedMs) > 1) return false
+  if (elapsedMs < 0 || Math.abs(Math.round(value.wallSeconds * 1000) - elapsedMs) > 1) return false
   if (value.activeSeconds !== null && value.activeSeconds > value.wallSeconds) return false
   const tokens = Object.values(value.tokens)
   if (value.coverage.tokens === 'none' && tokens.some((n) => n !== null)) return false
