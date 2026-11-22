@@ -224,11 +224,11 @@ test('a finished run without assistant turns survives collection and roll-up', t
 test('collector accepts model identifiers and reason codes, not arbitrary strings', t => {
   const model = { provider: 'P-1', name: ['M:2.v_1', 'v2'].join('/') };
   const { dir, sprite } = spriteLog(t, lines([session, turn({ provider: model.provider, model: model.name })]));
-  const good = sprite('--outcome', 'blocked', '--reason', 'WAIT_dep:2.1 - a');
+  const good = sprite('--outcome', 'blocked', '--reason', 'WAIT_dep:2.1-a');
   assert.equal(good.status, 0);
   const r = JSON.parse(good.stdout);
-  assert.deepEqual([r.model, r.outcome], [model, { state: 'blocked', reason: 'WAIT_dep:2.1 - a' }]);
-  for (const reason of ['Bad!', 'x'.repeat(81), ['a', 'b'].join('/')]) {
+  assert.deepEqual([r.model, r.outcome], [model, { state: 'blocked', reason: 'WAIT_dep:2.1-a' }]);
+  for (const reason of ['Bad!', 'x'.repeat(81), ['a', 'b'].join('/'), 'please rerun the job', 'exit 1234']) {
     exited(sprite('--outcome', 'blocked', '--reason', reason), 2);
   }
   for (const props of [{ provider: 'Bad!' }, { model: 'x'.repeat(129) }]) {
@@ -312,4 +312,32 @@ test('a sprite record carries the brief author\'s rating, and an invalid rating 
   assert.deepEqual([ok.status, JSON.parse(ok.stdout).complexity.rating], [0, {
     score: 3, size: 'M', reason: 'one small module', ratedBy: 'author', ratedAt: '2025-01-01T00:00:00.000Z' }]);
   assert.deepEqual([rate('9').status, rate('9').stdout], [2, '']);
+});
+
+test('a check name takes no arguments, and a reason is a code, not prose', t => {
+  const { sprite } = spriteLog(t, lines([session, turn({})]));
+  for (const name of ['pnpm check', 'vitest', 'pnpm test']) {
+    assert.equal(sprite('--check', 'pass', '--check-command', name).status, 0, name);
+  }
+  for (const name of ['deploy dummy-token', 'pnpm check --token x', 'node run.mjs', 'a b c']) {
+    exited(sprite('--check', 'pass', '--check-command', name), 2);
+  }
+});
+
+test('counts that stop being exact refuse the run instead of emitting a wrong total', t => {
+  const big = Number.MAX_SAFE_INTEGER;
+  const { sprite } = spriteLog(t, lines([session,
+    turn({ responseId: 'a', usage: { ...assistant.usage, input: big } }),
+    turn({ responseId: 'b', usage: { ...assistant.usage, input: 2 } })]));
+  exited(sprite(), 2);
+});
+
+test('a total passed with only some of its children is refused, with all of them it counts once', t => {
+  const dir = scratch(t);
+  const [s1] = from('single', { name: 's1', parent: 'mob1' }), [s2] = from('single', { name: 's2', parent: 'mob1' });
+  const mob = rollup([s1, s2], { level: 'mob', id: 'mob1', started: start, ended: end });
+  exited(task(file(dir, 'part.jsonl', lines([mob, s1]))), 2);
+  const full = task(file(dir, 'full.jsonl', lines([mob, s1, s2])));
+  assert.equal(full.status, 0);
+  assert.deepEqual(JSON.parse(full.stdout).tokens, mob.tokens);
 });

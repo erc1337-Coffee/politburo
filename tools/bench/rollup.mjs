@@ -35,6 +35,19 @@ function summarize(input, o) {
   }
   const parents = new Set([...unique.values()].map(r => r.parentId));
   const rows = [...unique.values()].filter(r => r.level === 'sprite' || !parents.has(r.runId));
+  // A total passed beside its children is dropped; all its sprites must then be present, or the total would silently shrink.
+  const physical = r => r.runId.replace(/~[1-9]\d*$/, '');
+  for (const dropped of unique.values()) if (dropped.level !== 'sprite' && parents.has(dropped.runId)) {
+    const under = new Set();
+    for (const r of rows) {
+      const seen = new Set();
+      for (let at = r; at && !seen.has(at.runId); at = unique.get(at.parentId)) {
+        seen.add(at.runId);
+        if (r.level === 'sprite' && at.runId === dropped.runId) under.add(physical(r));
+      }
+    }
+    requireThat(under.size === dropped.sprites.count, 'incomplete children');
+  }
   for (const r of rows) {
     // Model slices share one physical sprite's time, changes and retry count.
     const key = r.level === 'sprite' ? `sprite:${r.runId.replace(/~[1-9]\d*$/, '')}` : `rollup:${r.runId}`;

@@ -19,7 +19,10 @@ const matches = re => x => typeof x === 'string' && re.test(x);
 export const id = matches(/^(?:[\w.~:-]+|[\w.-]+\/[\w.-]+#\d+)$/);
 export const repo = matches(/^[\w.-]+\/[\w.-]+$/);
 export const thinkingLevel = matches(/^[a-z0-9][a-z0-9_-]{0,31}$/);
-export const reasonCode = matches(/^[a-z0-9][a-z0-9_.: -]{0,79}$/i);
+// A short code: `exit 124`, or one word of letters, digits and _ . : -. Never prose.
+export const reasonCode = matches(/^(?:exit \d{1,3}|[a-z0-9][a-z0-9_.:-]{0,79})$/i);
+// A check name, optionally followed by `check` or `test` (`pnpm check`). Never arguments.
+export const checkName = matches(/^[a-z0-9][a-z0-9_.:-]{0,59}(?: (?:check|test))?$/i);
 const modelName = matches(/^[a-zA-Z0-9][a-zA-Z0-9_.:/-]{0,127}$/);
 export const validModel = x => x != null && modelName(x.provider) && modelName(x.name);
 export const count = x => Number.isSafeInteger(x) && x >= 0;
@@ -29,7 +32,13 @@ export const iso = ms => new Date(ms).toISOString();
 export const seconds = ms => Math.round(ms) / 1000;
 export const elapsed = (start, end) => seconds(end - start);
 export const modelKey = ({ provider, name }) => JSON.stringify([provider, name]);
-export const add = (a, b) => a == null ? b ?? null : b == null ? a : a + b;
+export const add = (a, b) => {
+  if (a == null || b == null) return a ?? b ?? null;
+  const total = a + b;
+  // Counts that stop being exact would be wrong in a record: refuse the run.
+  if (Number.isInteger(a) && Number.isInteger(b) && !Number.isSafeInteger(total)) throw new RangeError('count overflow');
+  return total;
+};
 export const sum = (items, get) => items.reduce((total, item) => add(total, get(item)), null);
 export const proxies = (changes, reviewRounds, failedChecks, retries) => ({
   files: changes?.files ?? null, lines: changes ? changes.linesAdded + changes.linesRemoved : null,
@@ -71,6 +80,7 @@ export function args(extra, outcomeStates) {
   requireThat(o.reason == null ? o.outcome !== 'blocked' : o.outcome && reasonCode(o.reason));
   requireThat(o.check == null || checks.includes(o.check));
   requireThat(!o.checkCommand || o.check);
+  requireThat(!o.checkCommand || checkName(o.checkCommand));
   for (const key of ['checkCommand', 'complexityReason']) {
     requireThat(o[key] == null || (o[key].trim() && !/[\r\n/\\]/.test(o[key])));
   }
