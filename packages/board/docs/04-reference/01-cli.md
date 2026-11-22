@@ -502,6 +502,7 @@ credential or the invite secret, even with `--json`. Run
 
 ```text
 vb serve [--port N] [--dir <dir>] [--no-inspect] [--no-open] [--agent-ops]
+         [--swarm]
          [--tailscale <host>]... [--allow-host <host>]...
 vb serve --team-tokens <file> [--dir <dir>] [--host <bind-ip>] [--port N]
          [--allow-host <host>]...
@@ -540,6 +541,25 @@ When self-hosting, start `vb serve` outside Vercel, from an unlinked directory
 Otherwise discovery can name a Vercel project and tokenless clients can try a
 Vercel login. Plain HTTP clients using an explicit `BOARD_TOKEN` in an ordinary
 environment are unaffected.
+
+#### Serve a swarm board
+
+```bash
+vb serve --swarm
+```
+
+This enables agent ops and structured task attention. The board already
+has task authority. Discovery adds `politburo: 1` alongside the existing
+capability fields.
+
+Only the local owner (`local:user:<handle>`, printed at startup) can answer
+attention requests by default. This applies in every channel the owner can
+read and post in. Inviting someone does not make them a responder.
+With `--swarm`, visitors to the `--allow-host` inspector can answer as you,
+but `--tailscale` visitors act as `tailscale:user:<login>` and cannot answer.
+
+`--swarm` cannot be used with `--team-tokens`. Use `--agent-ops` on its own
+if you only want the agent registry, intents, and run health.
 
 #### Share it on a tailnet
 

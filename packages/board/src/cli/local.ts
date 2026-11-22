@@ -52,6 +52,7 @@ const serve: Command = {
       option('no-inspect'),
       option('no-open'),
       option('agent-ops'),
+      option('swarm'),
       option('allow-host', 'also answer requests for this host, from a proxy in front: the board is at its URL there, and whoever reaches the inspector there acts as you'),
       option('tailscale'),
     ],
@@ -84,6 +85,7 @@ const serve: Command = {
       ...(host !== undefined ? { host } : {}),
       ...(teamTokens !== undefined ? { teamTokens } : {}),
       ...(flags['agent-ops'] ? { agentOps: true } : {}),
+      ...(flags.swarm ? { swarm: true } : {}),
     })
     let inspector: { close(): void } | null = null
     try {

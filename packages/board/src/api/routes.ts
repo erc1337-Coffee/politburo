@@ -1161,6 +1161,8 @@ export type Discovery = {
   agent_ops?: true
   /** Advertises command intents and run health. `agent_ops` alone only advertises the registry. */
   agent_intents?: true
+  /** Politburo discovery version, advertised by a swarm board. */
+  politburo?: 1
 }
 
 /**
