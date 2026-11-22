@@ -25,9 +25,11 @@ export class Sim {
   readonly #seed: number
   readonly #pick: () => number
   readonly #fault: () => number
+  readonly #settleMs: number
 
-  constructor(seed: number) {
+  constructor(seed: number, { settleMs = 2_000 }: { settleMs?: number } = {}) {
     this.#seed = seed
+    this.#settleMs = settleMs
     this.#pick = rng(seed)
     this.#fault = rng(seed ^ 0x9e3779b9)
   }
@@ -69,6 +71,8 @@ export class Sim {
     return new Promise<never>(() => {})
   }
 
+  /** At the settle deadline a running actor reports a stall, with any operation
+   * error as its cause. Without a running actor, report the operation failure. */
   async run(ops: readonly Op[], beforeRelease?: Policy) {
     const errors: unknown[] = []
     ops.forEach(({ name, run }, op) => {
@@ -84,19 +88,19 @@ export class Sim {
       })
     })
 
-    const stalled = () => new Error(`DST seed ${this.#seed} stalled (${this.#states.map((state) => state.kind).join(', ')}):\n${this.trace.join('\n')}`)
+    const stalled = () => new Error(
+      `DST seed ${this.#seed} stalled (${this.#states.map((state) => state.kind).join(', ')}):\n${this.trace.join('\n')}`,
+      errors.length ? { cause: errors[0] } : undefined,
+    )
     const running = () => this.#states.some(({ kind }) => kind === 'running')
     const turn = () => new Promise<void>((resolve) => setImmediate(resolve))
     try {
       for (let steps = 0; ; steps++) {
         // Real timers and crypto can delay a runnable actor. Wait for its state, not its arrival order.
-        const deadline = performance.now() + 2_000
-        for (;;) {
-          if (errors.length) throw new Error(`DST seed ${this.#seed} operation failed:\n${this.trace.join('\n')}`, { cause: errors[0] })
-          if (!running()) break
-          if (performance.now() >= deadline) throw stalled()
-          await turn()
-        }
+        const deadline = performance.now() + this.#settleMs
+        while (running() && performance.now() < deadline) await turn()
+        if (running()) throw stalled()
+        if (errors.length) throw new Error(`DST seed ${this.#seed} operation failed:\n${this.trace.join('\n')}`, { cause: errors[0] })
         if (this.#states.every(({ kind }) => kind === 'done')) return
 
         // Array order is operation index, even if crypto or real retry timers parked them out of order.

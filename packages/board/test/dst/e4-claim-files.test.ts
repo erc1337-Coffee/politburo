@@ -20,7 +20,9 @@ const drop = (claims: ReturnType<typeof open>) => (claims.drop as (id: string, p
 let killNext = false
 let lockOwner: number | undefined
 let lockReleased = Promise.withResolvers<void>()
-const claimsFixture = new AsyncLocalStorage<{ closed: boolean; inFlight: Set<Promise<unknown>> }>()
+const TEARDOWN_MS = 2_000
+type InFlight = { label: string; pending: Promise<unknown> }
+const claimsFixture = new AsyncLocalStorage<{ closed: boolean; inFlight: Set<InFlight> }>()
 
 async function fsStep<T>(label: string, run: () => Promise<T>): Promise<T> {
   // The actor retains its scheduler even after the fixture starts tearing down.
@@ -32,9 +34,9 @@ async function fsStep<T>(label: string, run: () => Promise<T>): Promise<T> {
   const fixture = claimsFixture.getStore()
   if (!fixture) return run()
   if (fixture.closed) throw new Error('DST claims fixture is closed')
-  const pending = run()
-  fixture.inFlight.add(pending)
-  try { return await pending } finally { fixture.inFlight.delete(pending) }
+  const call = { label, pending: run() }
+  fixture.inFlight.add(call)
+  try { return await call.pending } finally { fixture.inFlight.delete(call) }
 }
 
 vi.mock('node:fs/promises', async (original) => {
@@ -88,25 +90,64 @@ vi.mock('node:timers/promises', async (original) => {
   }
 })
 
-async function withClaims<T>(run: (dir: string) => Promise<T>) {
+async function withClaims<T>(run: (dir: string) => Promise<T>, teardownMs = TEARDOWN_MS) {
   const dir = await mkdtemp(join(tmpdir(), 'board-dst-claims-'))
-  const fixture = { closed: false, inFlight: new Set<Promise<unknown>>() }
+  const fixture = { closed: false, inFlight: new Set<InFlight>() }
   vi.stubEnv('XDG_CONFIG_HOME', dir)
   lockReleased = Promise.withResolvers<void>()
+  let originalFailure: ErrorOptions | undefined
   try {
     return await claimsFixture.run(fixture, () => withClock(async () => {
       await open().put(task, proofA)
       return run(dir)
     }))
+  } catch (error) {
+    originalFailure = { cause: error }
+    throw error
   } finally {
     fixture.closed = true
-    await Promise.allSettled(fixture.inFlight)
-    killNext = false
-    lockOwner = undefined
-    vi.unstubAllEnvs()
-    await rm(dir, { recursive: true, force: true })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      if (fixture.inFlight.size) {
+        await Promise.race([
+          Promise.allSettled(Array.from(fixture.inFlight, ({ pending }) => pending)),
+          new Promise<void>((resolve) => { timer = setTimeout(resolve, teardownMs) }),
+        ])
+      }
+    } finally {
+      clearTimeout(timer)
+      const stuck = Array.from(fixture.inFlight, ({ label }) => label)
+      killNext = false
+      lockOwner = undefined
+      vi.unstubAllEnvs()
+      await rm(dir, { recursive: true, force: true })
+      if (stuck.length) throw new Error(`DST claims teardown timed out waiting for: ${stuck.join(', ')}`, originalFailure)
+    }
   }
 }
+
+it('bounds claims teardown for a stuck fs call and restores the fixture', async ({ onTestFinished }) => {
+  const fs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
+  const configHome = process.env.XDG_CONFIG_HOME
+  const operationError = new Error('fixture operation failed')
+  let dir!: string
+  // Keep even a timing-out regression isolated from subsequent tests.
+  onTestFinished(async () => {
+    vi.unstubAllEnvs()
+    if (dir) await fs.rm(dir, { recursive: true, force: true })
+  })
+
+  await expect(withClaims(async (path) => {
+    dir = path
+    void fsStep('never-settling write', () => new Promise<never>(() => {}))
+    throw operationError
+  }, 20)).rejects.toMatchObject({
+    message: expect.stringContaining('never-settling write'),
+    cause: operationError,
+  })
+  expect(process.env.XDG_CONFIG_HOME === configHome).toBe(true)
+  await expect(fs.stat(dir)).rejects.toMatchObject({ code: 'ENOENT' })
+}, 750)
 
 it('drains a released write on abort and prevents writes after claims teardown', async () => {
   const fs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
@@ -135,7 +176,7 @@ it('drains a released write on abort and prevents writes after claims teardown',
             sim.block()
             await writeStarted.promise
             sim.unblock()
-            // The driver sees the operation failure before this write can finish.
+            // Fail while the writer is still in flight.
             setImmediate(() => releaseWrite.resolve())
             throw operationError
           } },
