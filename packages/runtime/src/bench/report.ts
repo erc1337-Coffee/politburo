@@ -45,9 +45,10 @@ export function report(runs: BenchRun[]): BenchReport {
       if (usage.in === null || usage.out === null) continue
       const total = usage.in + usage.out
       tokens.push(total)
-      if (changes) {
+      const changedLines = changes ? changes.linesAdded + changes.linesRemoved : 0
+      if (changedLines > 0) {
         changedTokens += total
-        lines += changes.linesAdded + changes.linesRemoved
+        lines += changedLines
       }
     }
     tokens.sort((a, b) => a - b)
@@ -73,7 +74,7 @@ function shorten(text: string, width: number) {
   return text.length <= width ? text : `${text.slice(0, width - 3)}...`
 }
 
-export function formatReport({ rows }: BenchReport, { ids = false }: { ids?: boolean } = {}) {
+export function formatReport({ rows }: BenchReport, _options?: { ids?: boolean }) {
   const lines: string[] = []
   for (const row of rows) {
     const stats = [row.rating, `${compact(row.runs)}/${compact(row.checked)}`, compact(row.passRate),
@@ -82,17 +83,15 @@ export function formatReport({ rows }: BenchReport, { ids = false }: { ids?: boo
     const model = row.model ? `${row.model.provider}/${row.model.name}` : '-'
     const thinking = shorten(row.thinking ?? '-', Math.floor(width / 2))
     lines.push([shorten(model, width - thinking.length), thinking, stats].join('  '))
-    if (ids) {
-      let line = 'runs'
-      for (const id of row.runIds) {
-        if (line.length + id.length + 2 > 80 && line !== 'runs') {
-          lines.push(line)
-          line = 'runs'
-        }
-        line += `  ${id}`
+    let line = 'runs'
+    for (const id of row.runIds) {
+      if (line.length + id.length + 2 > 80 && line !== 'runs') {
+        lines.push(line)
+        line = 'runs'
       }
-      lines.push(line)
+      line += `  ${id}`
     }
+    lines.push(line)
   }
   return lines.join('\n')
 }

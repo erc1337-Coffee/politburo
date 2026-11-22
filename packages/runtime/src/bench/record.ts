@@ -32,18 +32,19 @@ function choices<const T extends readonly (string | number)[]>(...values: T) {
   return field<T[number]>({ enum: values }, (value) => values.includes(value as T[number]))
 }
 
-function text(test: (value: string) => boolean, schema = {}) {
-  return field<string>({ type: 'string', maxLength: 200, ...schema }, (value) =>
-    typeof value === 'string' && value.length <= 200 && value.isWellFormed() && test(value))
+function text(test: (value: string) => boolean, { maxLength = 200, ...schema }: { maxLength?: number; minLength?: number; format?: string } = {}) {
+  return field<string>({ type: 'string', maxLength, ...schema }, (value) =>
+    typeof value === 'string' && value.length <= maxLength && value.isWellFormed() && test(value))
 }
 
 // Board schemas are structural (no patterns); check names and exact timestamps here.
 const name = text((s) => /^[a-zA-Z0-9][a-zA-Z0-9_.:/-]*$/.test(s), { minLength: 1 })
-const runId = text((s) => /^[a-zA-Z0-9][a-zA-Z0-9_.:-]*(?:~[1-9]\d*)?$/.test(s), { minLength: 1 })
+const runId = text((s) => /^[a-zA-Z0-9][a-zA-Z0-9_.:-]*(?:~[1-9]\d*)?$/.test(s), { minLength: 1, maxLength: 150 })
 const taskId = text((s) => /^[a-zA-Z0-9][a-zA-Z0-9_.:/-]*(?:#\d+)?$/.test(s), { minLength: 1 })
 const repo = text((s) => /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(s), { minLength: 3 })
 const reason = text((s) => !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(s))
-const command = text((s) => /^[a-zA-Z0-9_.:-]+(?: [a-zA-Z0-9_.:-]+)*$/.test(s), { minLength: 1 })
+const outcomeReason = text((s) => /^[a-z0-9][a-z0-9_.: -]{0,79}$/i.test(s), { minLength: 1, maxLength: 80 })
+const command = text((s) => /^[a-zA-Z0-9_.:][a-zA-Z0-9_.:-]*(?: [a-zA-Z0-9_.:][a-zA-Z0-9_.:-]*)?$/.test(s), { minLength: 1, maxLength: 60 })
 const timestamp = text((s) => /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(s) &&
   Number.isFinite(Date.parse(s)) && new Date(s).toISOString() === s, { format: 'date-time' })
 const count = field<number>({ type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
@@ -66,7 +67,7 @@ const fields = object({
   parentId: nullable(runId), taskId: nullable(taskId), repo: nullable(repo),
   model: nullable(object(model)), byModel: nullable(byModel), thinking: nullable(name),
   startedAt: timestamp, endedAt: timestamp, wallSeconds: seconds, activeSeconds: nullable(seconds),
-  ...usage, outcome: object({ state: choices('done', 'failed', 'blocked', 'canceled'), reason: nullable(reason) }),
+  ...usage, outcome: object({ state: choices('done', 'failed', 'blocked', 'canceled'), reason: nullable(outcomeReason) }),
   changes: nullable(object({ files: count, linesAdded: count, linesRemoved: count })), reviewRounds: maybeCount,
   check: object({ result: nullable(choices('pass', 'fail', 'not_run')), command: nullable(command) }),
   coverage: object({ tokens: choices('complete', 'partial', 'none') }),
@@ -86,6 +87,14 @@ export const benchRunSchema = {
 export type BenchRun = Value<typeof fields>
 
 export function isBenchRun(value: unknown): value is BenchRun {
-  return fields.accepts(value) && (value.level === 'sprite'
-    ? value.byModel === null && value.sprites === null : value.model === null && value.sprites !== null && value.byModel !== null)
+  if (!fields.accepts(value)) return false
+  // Seconds have millisecond precision; compare integers at the tolerance boundary.
+  const elapsedMs = Date.parse(value.endedAt) - Date.parse(value.startedAt)
+  if (Math.abs(Math.round(value.wallSeconds * 1000) - elapsedMs) > 1) return false
+  if (value.activeSeconds !== null && value.activeSeconds > value.wallSeconds) return false
+  const tokens = Object.values(value.tokens)
+  if (value.coverage.tokens === 'none' && tokens.some((n) => n !== null)) return false
+  if (value.coverage.tokens === 'complete' && tokens.some((n) => n === null)) return false
+  return value.level === 'sprite'
+    ? value.byModel === null && value.sprites === null : value.model === null && value.sprites !== null && value.byModel !== null
 }

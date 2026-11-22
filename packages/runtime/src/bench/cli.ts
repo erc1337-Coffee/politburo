@@ -18,7 +18,7 @@ export async function benchCli([command, ...args]: string[], connect = () => boa
     if (command === 'report') {
       problem = 'could not read benchmark records'
       const data = report(await store.read())
-      const text = args.includes('--json') ? JSON.stringify(data) : formatReport(data, { ids: args.includes('--ids') })
+      const text = args.includes('--json') ? JSON.stringify(data) : formatReport(data)
       if (text) print(text)
       return 0
     }
