@@ -1,16 +1,16 @@
-import { RefreshCw } from 'lucide-react'
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
+import { Check, ChevronsUpDown, RefreshCw } from 'lucide-react'
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import type { InboxEntry } from '../../api/routes.ts'
+import type { InboxEntry, Me } from '../../api/routes.ts'
 import * as board from './board.ts'
 import { buttonSoundsEnabled, setButtonSounds } from './button-feedback.ts'
 import { Access } from './grants.tsx'
 import { Ago, here, Link, SECTIONS, type Section, type Where } from './nav.tsx'
 import { Schemas } from './schemas.tsx'
 import { mayCancelSchedule, nameOf, type State, type Viewer } from './store.ts'
-import { Header, nativeMenu, Unlisted } from './ui.tsx'
+import { AskForm, Header, Menu, MenuItem, MenuSeparator, nativeMenu, Panel, Unlisted } from './ui.tsx'
 
-import { cadence, firstLine, shownName, until } from './words.ts'
+import { cadence, firstLine, said, shownName, until } from './words.ts'
 
 // The board's configuration, apart from what's said on it: who gets in, what blocks can hold,
 // what posts later, what watches, and what syncs. One view, a tab per section.
@@ -39,6 +39,7 @@ export function Settings(props: { state: State; viewer: Viewer; now: number; lea
           button sounds
         </label>
       </Header>
+      <div className="view-body">
       <nav className="tabs">
         {sections.map((name) => (
           <Link key={name} to={`/settings/${name}`} className="tab" current={name === section}>
@@ -49,6 +50,7 @@ export function Settings(props: { state: State; viewer: Viewer; now: number; lea
       </nav>
       <ActionsSlot.Provider value={slot}>
         <div className="page">
+          <DeveloperIdentity me={state.me!} channels={Object.keys(state.channels).sort()} />
           {section === 'access' && <Access state={state} viewer={viewer} where={props.where} />}
           {section === 'schemas' && <Schemas state={state} viewer={viewer} selected={props.open} />}
           {section === 'schedules' && <Schedules state={state} viewer={viewer} now={props.now} all={props.where.params.get('show') === 'all'} />}
@@ -56,7 +58,71 @@ export function Settings(props: { state: State; viewer: Viewer; now: number; lea
           {section === 'sync' && <Sync key={props.open} state={state} entry={props.open} />}
         </div>
       </ActionsSlot.Provider>
+      </div>
     </>
+  )
+}
+
+function DeveloperIdentity({ me, channels }: { me: Me; channels: string[] }) {
+  const [open, setOpen] = useState(false)
+  const [pick, setPick] = useState('')
+  const channel = channels.includes(pick) ? pick : channels[0]
+  const [agents, setAgents] = useState<string[]>([])
+  const [problem, setProblem] = useState<string | null>(null)
+  const [editing, setEditing] = useState<board.Profile | null>(null)
+  const anchor = useRef<HTMLDivElement>(null)
+  const remembered = (name: string) => {
+    const avatar = board.avatarOf(name)
+    return avatar ? { name, avatar } : { name }
+  }
+  useEffect(() => {
+    setAgents([])
+    setProblem(null)
+    if (!open || channel === undefined) return
+    let current = true
+    void board.listProfiles(channel).then(
+      (profiles) => { if (current && profiles !== undefined) setAgents(profiles) },
+      (error) => { if (current) setProblem(said(error)) },
+    )
+    return () => { current = false }
+  }, [open, channel, me])
+  return (
+    <details className="developer-identity" onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <summary>developer options</summary>
+      <div className="profile-options" ref={anchor}>
+        {channels.length > 1 && (
+          <label>registry channel{' '}
+            <select value={channel} onChange={(event) => setPick(event.target.value)}>
+              {channels.map((path) => <option key={path} value={path}>#{path}</option>)}
+            </select>
+          </label>
+        )}
+        <Menu className="act" title="post as" trigger={<>post as… <ChevronsUpDown size={13} /></>}>
+          {!board.named && <MenuItem onClick={() => void board.setProfile(null)}>act as yourself</MenuItem>}
+          {agents.map((name) => (
+            <MenuItem key={name} onClick={() => void board.setProfile(remembered(name))}>
+              <span className="choice">{name}{me.profile === name && <Check size={13} />}</span>
+            </MenuItem>
+          ))}
+          <MenuSeparator />
+          {me.profile !== null && <MenuItem onClick={() => setEditing(remembered(me.profile!))}>change name or avatar…</MenuItem>}
+          <MenuItem onClick={() => setEditing({ name: '' })}>another profile…</MenuItem>
+          {!board.named && board.getProfile() !== undefined && <MenuItem onClick={() => void board.setProfile(undefined)}>as inspect started</MenuItem>}
+        </Menu>
+        <Panel title="post as a profile" anchor={anchor} open={editing !== null} onOpenChange={(shown) => !shown && setEditing(null)}>
+          {editing && <AskForm
+            fields={[
+              { name: 'name', placeholder: 'profile name', required: true, value: editing.name },
+              { name: 'avatar', placeholder: 'avatar URL (optional)', value: editing.avatar ?? '' },
+            ]}
+            submit="post as this"
+            onDone={() => setEditing(null)}
+            onSubmit={({ name, avatar }) => void board.setProfile({ name: name!, ...(avatar ? { avatar } : {}) })}
+          />}
+        </Panel>
+        {problem && <span className="error-text">{problem}</span>}
+      </div>
+    </details>
   )
 }
 

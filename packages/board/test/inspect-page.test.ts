@@ -1,5 +1,7 @@
-import { beforeAll, describe, expect, it, vi } from 'vitest'
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { MessageView, ScheduleView } from '../src/api/routes.ts'
+import { createBoardClient } from '../src/client/client.ts'
+import { BOARD_URL, localBoard, personToken } from './harness.ts'
 
 // The page's data module, as the page runs it: one handle on the inspector's proxy, which is
 // faked here. What the page asks the board, and what it keeps, are what a person at it sees.
@@ -7,7 +9,7 @@ import type { MessageView, ScheduleView } from '../src/api/routes.ts'
 type Asked = { method: string; path: string; query: Record<string, string>; body: unknown }
 const asked: Asked[] = []
 /** What the board answers next for a route, by `METHOD /path`: each is used once, then the route's usual answer. */
-const next = new Map<string, (() => Response)[]>()
+const next = new Map<string, (() => Response | Promise<Response>)[]>()
 const refuse = (status: number, code: string, message: string) => () => Response.json({ error: { code, message } }, { status })
 
 const schedule = (text: string): ScheduleView =>
@@ -143,23 +145,138 @@ describe("the inspector's page, starting a task", () => {
   })
 })
 
-describe("the inspector's page, working a task it claimed", () => {
-  it('keeps a claim it made while the page changed under it, and completes with it', async () => {
-    const claimed = { ...taskRoot({ channel: 'work', text: 'fix the export' }), id: '70', version: 71, revision: 71, thread: 't70', labels: { 'board.task': 'claimed' } }
-    claimed.task = { ...claimed.task!, state: 'claimed', epoch: 1, claim: { actor: 'local:user:julian', until: '2099-01-01T00:00:00.000Z' } }
-    next.set('POST /tasks/70/claim', [() => Response.json({ task: claimed, claim: { epoch: 1, token: 'secret-token', until: '2099-01-01T00:00:00.000Z' } })])
-    next.set('POST /tasks/70/complete', [() => Response.json({ task: { ...claimed, labels: { 'board.task': 'completed' }, task: { ...claimed.task, state: 'completed', claim: null, result: 'done' } } })])
+describe("the inspector's page, reading work control", () => {
+  beforeEach(async () => {
+    vi.resetModules()
+    page = await import('../src/inspect/app/board.ts')
+  })
 
-    // While the claim is on its way back, the page keeps changing: something else in it settles on every turn.
-    const claiming = page.claimTask('70')
-    let turns = Promise.resolve()
-    for (let n = 0; n < 200; n++) turns = turns.then(() => page.discard(`nothing-${n}`))
-    expect(await claiming).toBe(true)
-    await turns
+  function twoStatusReads() {
+    const old = Promise.withResolvers<Response>()
+    const newer = Promise.withResolvers<Response>()
+    next.set('GET /control', [() => old.promise, () => newer.promise])
+    return { old, newer, first: page.loadStatus(), second: page.loadStatus() }
+  }
 
-    // The claim is still this tab's: completing sends its epoch and token to the board.
-    expect(await page.completeTask('70', 'done')).toBe(true)
-    expect(posts('/tasks/70/complete')).toEqual([{ epoch: 1, token: 'secret-token', result: 'done' }])
+  it('takes a later pause epoch from a slower, older status read', async () => {
+    const { old, newer, first, second } = twoStatusReads()
+    newer.resolve(Response.json({ paused: false, pauseEpoch: 0 }))
+    await second
+    expect(page.getState().status).toEqual({ paused: false, pauseEpoch: 0 })
+    old.resolve(Response.json({ paused: true, pauseEpoch: 1 }))
+    await first
+    expect(page.getState().status).toEqual({ paused: true, pauseEpoch: 1 })
+  })
+
+  it('does not revert the pause epoch on a newer status read', async () => {
+    const { old, newer, first, second } = twoStatusReads()
+    old.resolve(Response.json({ paused: true, pauseEpoch: 1 }))
+    await first
+    expect(page.getState().status).toEqual({ paused: true, pauseEpoch: 1 })
+    newer.resolve(Response.json({ paused: false, pauseEpoch: 0 }))
+    await second
+    expect(page.getState().status).toEqual({ paused: true, pauseEpoch: 1 })
+  })
+
+  it('keeps the newer refusal in the header when the older refusal arrives last', async () => {
+    const { old, newer, first, second } = twoStatusReads()
+    newer.resolve(refuse(503, 'unavailable', 'status is temporarily unavailable')())
+    await second
+    expect(page.getState().statusRefused).toBe('status is temporarily unavailable')
+    old.resolve(refuse(403, 'forbidden', 'status access was denied')())
+    await first
+    expect(page.getState().statusRefused).toBe('status is temporarily unavailable')
+  })
+
+  it('does not show a refusal older than a successful status read', async () => {
+    const { old, newer, first, second } = twoStatusReads()
+    newer.resolve(Response.json({ paused: false, pauseEpoch: 0 }))
+    await second
+    old.resolve(refuse(503, 'unavailable', 'status is temporarily unavailable')())
+    await first
+    expect(page.getState().status).toEqual({ paused: false, pauseEpoch: 0 })
+    expect(page.getState().statusRefused).toBeNull()
+  })
+
+  it('keeps the last successful status even if a pending newer read fails', async () => {
+    const { old, newer, first, second } = twoStatusReads()
+    old.resolve(Response.json({ paused: true, pauseEpoch: 1 }))
+    await first
+    expect(page.getState().status).toEqual({ paused: true, pauseEpoch: 1 })
+    newer.resolve(refuse(503, 'unavailable', 'status is temporarily unavailable')())
+    await second
+    expect(page.getState().statusRefused).toBe('status is temporarily unavailable')
+    expect(page.getState().status).toEqual({ paused: true, pauseEpoch: 1 })
+  })
+
+  // Get real status snapshots, then deliver them through the proxy in the order each race needs.
+  async function snapshots() {
+    const api = localBoard()
+    try {
+      const token = await personToken('u_reader', BOARD_URL)
+      const client = createBoardClient({ url: BOARD_URL, token, fetch: (input, init) => api.fetch(new Request(input, init)) })
+      const sample = () => api.fetch(new Request(`${BOARD_URL}/control`, { headers: { authorization: `Bearer ${token}` } }))
+      const initial = await sample()
+      await client.pause('maintenance')
+      const paused = await sample()
+      await client.resume('finished')
+      return { initial, paused, running: await sample() }
+    } finally {
+      await api.close()
+    }
+  }
+
+  it('updates status but keeps the refusal from a newer read', async () => {
+    const { paused } = await snapshots()
+    const { old, newer, first, second } = twoStatusReads()
+    newer.resolve(refuse(503, 'unavailable', 'status is temporarily unavailable')())
+    await second
+    expect(page.getState().statusRefused).toBe('status is temporarily unavailable')
+    old.resolve(paused)
+    await first
+    expect(page.getState().status).toEqual({ paused: true, pauseEpoch: 1 })
+    expect(page.getState().statusRefused).toBe('status is temporarily unavailable')
+  })
+
+  it('clears a shown refusal when the newer status read succeeds', async () => {
+    const { initial } = await snapshots()
+    const { old, newer, first, second } = twoStatusReads()
+    old.resolve(refuse(503, 'unavailable', 'status is temporarily unavailable')())
+    await first
+    expect(page.getState().statusRefused).toBe('status is temporarily unavailable')
+    newer.resolve(initial)
+    await second
+    expect(page.getState().status).toEqual({ paused: false, pauseEpoch: 0 })
+    expect(page.getState().statusRefused).toBeNull()
+  })
+
+  it('takes running over paused in the same epoch, regardless of read or delivery order', async () => {
+    const { old, newer, first, second } = twoStatusReads()
+    const { paused, running } = await snapshots()
+    const stalePause = paused.clone()
+    // The read issued first can sample the board after the other read did.
+    newer.resolve(paused)
+    await second
+    expect(page.getState().status).toEqual({ paused: true, pauseEpoch: 1 })
+    old.resolve(running)
+    await first
+    expect(page.getState().status).toEqual({ paused: false, pauseEpoch: 1 })
+    next.set('GET /control', [() => stalePause])
+    await page.loadStatus()
+    expect(page.getState().status).toEqual({ paused: false, pauseEpoch: 1 })
+  })
+
+  it('does not apply a pause answer from the identity used before switching away and back', async () => {
+    const old = Promise.withResolvers<Response>()
+    next.set('POST /control/pause', [() => old.promise])
+    const writing = page.changePause(true, 'update the worker fleet')
+    expect(await page.setProfile({ name: 'reviewer' })).toBe(true)
+    expect(await page.setProfile(null)).toBe(true)
+    const before = page.getState().status
+    old.resolve(Response.json({ paused: true, pauseEpoch: 2 }))
+    await writing
+    expect(posts('/control/pause')).toContainEqual({ reason: 'update the worker fleet' })
+    expect(page.getState().status).toEqual(before)
   })
 })
 

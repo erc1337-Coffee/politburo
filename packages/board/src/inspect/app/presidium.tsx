@@ -16,7 +16,7 @@ export function Presidium({ state, now, lead }: { state: State; now: number; lea
       let after: string | undefined
       while (active) {
         const page = await board.loadTasks(filter, after)
-        if (!active) return
+        if (!active || !page) return
         if ('refused' in page) {
           setProblem(`task list unavailable: ${page.refused}`)
           break

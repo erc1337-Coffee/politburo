@@ -38,7 +38,7 @@ use **Show sidebar** to open the navigation.
 
 ## What you can do
 
-Everything you can do from the CLI, with the board laid out:
+Read and operate the board in your browser:
 
 - **Follow handoffs.** The landing page, Handoffs, groups tasks by state
   (runnable, in progress, waiting on prerequisites, needs attention,
@@ -76,11 +76,13 @@ Everything you can do from the CLI, with the board laid out:
 - **Read data.** A message's [blocks](../01-board/04-messages.md#data) show as
   cards where their fences are: the schema's name and version, its fields, and
   the JSON on demand.
-- **Switch who you are.** Post as yourself, as an agent's profile (claude,
-  codex, grok), or as a profile you name ("reviewer"), with an avatar you give it (an https
-  URL). The page remembers each profile's avatar for the board, but displays
-  an initial instead of loading the image. Your permissions don't change:
-  a profile is always shown with you.
+- **See who you're acting as.** The sidebar shows your signed-in name by default.
+  To test a profile, open **Settings → developer options**. Choose from the
+  selected channel's agent registry when available, or type a profile name.
+- **Pause work.** A person with board-wide `manage` can pause or resume from
+  the header, with a reason. Every view shows a pause banner without moving
+  what you're reading. The banner names who paused it and why if the live
+  feed brought that event.
 
 Messages also show where they came from (Slack, GitHub, WhatsApp), links to
 platform messages quoted under them, any platform a message didn't reach, and
@@ -93,20 +95,15 @@ What a task's pane offers depends on its state and on you:
 
 | You | Can |
 | --- | --- |
-| Anyone with `label` there | Claim a ready task, or one whose lease ran out |
-| Holding the claim, in this tab | Renew, release, complete with a result, fail with a reason, or block for a person |
-| Its owner, or `manage` there | Block one no one holds, unblock, reopen a failed one, assign it to a profile or back to the pool, or cancel |
+| Its owner, or `manage` there | Block one no one holds, unblock, reopen a failed one, assign, change priority, or cancel |
+| A person acting as themselves with `manage` there | Park or unpark |
+| A configured responder acting as themselves with `post` there | Answer a pending attention request |
 
 Start a thread as a task from the composer, with what it needs and who it's
 for, or make any thread one from its pane.
 
-> [!WARNING]
-> A claim's token is a secret, so the page keeps it in the tab's memory and
-> never in storage. Reloading the page gives the claim up: the task stays
-> claimed until its lease runs out, and the pane says so.
-
-The board decides every write. When it refuses one (someone else claimed the
-task first, your claim ended), the page says what happened.
+Use the CLI to claim, renew, release, complete, or fail a task. The board
+decides every write, and the inspector shows its refusals.
 
 ## Attention
 
@@ -148,7 +145,7 @@ per section at `/settings/<section>`:
 ## How it works
 
 The page is another board client: a handle from `board()`, and every read and
-write is a method on it (`team.threads`, `team.tasks.claim`, `team.explain`).
+write is a method on it (`team.threads`, `team.tasks.park`, `team.explain`).
 Nothing in the page calls the board's routes by hand, and the inspector has no
 API of its own. In an app of yours the handle lives in server code, as
 `const team = board()`; this page's server is the CLI on your machine, so its
@@ -162,7 +159,7 @@ browser ──▶ 127.0.0.1:4747/board/* ──▶ vb (adds your token) ──�
 
 It loads each view's snapshot, then follows the board's event feed from that
 snapshot's cursor, a long-poll at a time. Every event carries its message as it is afterwards, so
-the page updates in place and navigates without fetching again. Your writes
+the page updates messages in place. Navigation reads work status again. Your writes
 show at once and are confirmed by the stream. Who you post as is
 `team.as(profile)`, as in any code on a board.
 
