@@ -1,6 +1,8 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { performance } from 'node:perf_hooks'
 
+const realNow = performance.now.bind(performance)
+
 export function rng(seed: number) {
   let state = seed >>> 0
   return () => {
@@ -21,6 +23,7 @@ const actor = new AsyncLocalStorage<{ sim: Sim; op: number }>()
 export class Sim {
   readonly trace: string[] = []
   #aborted = false
+  #elapsedMs = 0
   readonly #states: State[] = []
   readonly #seed: number
   readonly #pick: () => number
@@ -35,6 +38,9 @@ export class Sim {
   }
 
   static get current() { return actor.getStore()?.sim }
+
+  /** Logical time advances one millisecond per scheduled step. */
+  get elapsedMs() { return this.#elapsedMs }
 
   get op() {
     const context = actor.getStore()
@@ -97,8 +103,8 @@ export class Sim {
     try {
       for (let steps = 0; ; steps++) {
         // Real timers and crypto can delay a runnable actor. Wait for its state, not its arrival order.
-        const deadline = performance.now() + this.#settleMs
-        while (running() && performance.now() < deadline) await turn()
+        const deadline = realNow() + this.#settleMs
+        while (running() && realNow() < deadline) await turn()
         if (running()) throw stalled()
         if (errors.length) throw new Error(`DST seed ${this.#seed} operation failed:\n${this.trace.join('\n')}`, { cause: errors[0] })
         if (this.#states.every(({ kind }) => kind === 'done')) return
@@ -108,6 +114,7 @@ export class Sim {
         if (!parked.length || steps >= 500) throw stalled()
         const { op, label, resume } = parked[Math.floor(this.#pick() * parked.length)]!
         const point = { op, name: ops[op]!.name, label }
+        this.#elapsedMs++
         const fault = beforeRelease?.(point, this.#fault)
         this.trace.push(`${op} ${point.name} @ ${label}${fault ? ` (${fault})` : ''}`)
         this.#states[op] = { kind: 'running' }
@@ -119,8 +126,8 @@ export class Sim {
       this.#aborted = true
       // Released actors may still be in real I/O. Wait until they finish or hit
       // another suspension point, but don't wait for parked or killed actors.
-      const deadline = performance.now() + 2_000
-      while (running() && performance.now() < deadline) await turn()
+      const deadline = realNow() + 2_000
+      while (running() && realNow() < deadline) await turn()
       throw error
     }
   }

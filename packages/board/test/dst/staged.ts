@@ -54,4 +54,3 @@ export function stagedHandle(host: ReturnType<typeof hostBoard>, token: string) 
   }
   return { client, tasks }
 }
-

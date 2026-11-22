@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { readFileSync } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
+import * as fixtureFs from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, it, vi } from 'vitest'
@@ -83,6 +83,7 @@ vi.mock('node:timers/promises', async (original) => {
       if (!sim) return timers.setTimeout(ms)
       // The lock's retry timer cannot make progress until the other actor removes
       // the lock. Wait for that change instead of racing a real polling interval.
+      sim.trace.push(`${sim.op} waiting for claim lock`)
       if (lockOwner === undefined) return
       sim.block()
       try { await lockReleased.promise } finally { sim.unblock() }
@@ -90,14 +91,48 @@ vi.mock('node:timers/promises', async (original) => {
   }
 })
 
-async function withClaims<T>(run: (dir: string) => Promise<T>, teardownMs = TEARDOWN_MS) {
-  const dir = await mkdtemp(join(tmpdir(), 'board-dst-claims-'))
+function restoreEnv(key: string, value: string | undefined) {
+  if (value === undefined) delete process.env[key]
+  else process.env[key] = value
+}
+
+async function withClaimClock<T>(run: () => Promise<T>) {
+  const clock = globalThis.performance
+  const previous = Object.getOwnPropertyDescriptor(clock, 'now')
+  const hostNow = clock.now.bind(clock)
+  Object.defineProperty(clock, 'now', {
+    configurable: true,
+    value: () => Sim.current?.elapsedMs ?? hostNow(),
+  })
+  try {
+    return await withClock(run)
+  } finally {
+    if (previous) Object.defineProperty(clock, 'now', previous)
+    else Reflect.deleteProperty(clock, 'now')
+  }
+}
+
+async function beforeDeadline(pending: Promise<unknown>, ms: number) {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      pending.then(() => true),
+      new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), ms) }),
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function withClaims<T>(run: (dir: string) => Promise<T>, { drainMs = TEARDOWN_MS, removeMs = TEARDOWN_MS } = {}) {
+  const dir = await fixtureFs.mkdtemp(join(tmpdir(), 'board-dst-claims-'))
   const fixture = { closed: false, inFlight: new Set<InFlight>() }
-  vi.stubEnv('XDG_CONFIG_HOME', dir)
+  const configHome = process.env.XDG_CONFIG_HOME
+  process.env.XDG_CONFIG_HOME = dir
   lockReleased = Promise.withResolvers<void>()
   let originalFailure: ErrorOptions | undefined
   try {
-    return await claimsFixture.run(fixture, () => withClock(async () => {
+    return await claimsFixture.run(fixture, () => withClaimClock(async () => {
       await open().put(task, proofA)
       return run(dir)
     }))
@@ -106,22 +141,22 @@ async function withClaims<T>(run: (dir: string) => Promise<T>, teardownMs = TEAR
     throw error
   } finally {
     fixture.closed = true
-    let timer: ReturnType<typeof setTimeout> | undefined
+    if (fixture.inFlight.size) {
+      await beforeDeadline(Promise.allSettled(Array.from(fixture.inFlight, ({ pending }) => pending)), drainMs)
+    }
+    const stuck = [...fixture.inFlight]
+    killNext = false
+    lockOwner = undefined
+    restoreEnv('XDG_CONFIG_HOME', configHome)
+
+    const remove = () => fixtureFs.rm(dir, { recursive: true, force: true })
+    // An already-started call can recreate the directory after the first rm.
+    for (const { pending } of stuck) void pending.then(remove, remove).catch(() => {})
+    const timedOut = stuck.map(({ label }) => label)
     try {
-      if (fixture.inFlight.size) {
-        await Promise.race([
-          Promise.allSettled(Array.from(fixture.inFlight, ({ pending }) => pending)),
-          new Promise<void>((resolve) => { timer = setTimeout(resolve, teardownMs) }),
-        ])
-      }
+      if (!await beforeDeadline(remove(), removeMs)) timedOut.push('rm')
     } finally {
-      clearTimeout(timer)
-      const stuck = Array.from(fixture.inFlight, ({ label }) => label)
-      killNext = false
-      lockOwner = undefined
-      vi.unstubAllEnvs()
-      await rm(dir, { recursive: true, force: true })
-      if (stuck.length) throw new Error(`DST claims teardown timed out waiting for: ${stuck.join(', ')}`, originalFailure)
+      if (timedOut.length) throw new Error(`DST claims teardown timed out waiting for: ${timedOut.join(', ')}`, originalFailure)
     }
   }
 }
@@ -133,7 +168,7 @@ it('bounds claims teardown for a stuck fs call and restores the fixture', async 
   let dir!: string
   // Keep even a timing-out regression isolated from subsequent tests.
   onTestFinished(async () => {
-    vi.unstubAllEnvs()
+    restoreEnv('XDG_CONFIG_HOME', configHome)
     if (dir) await fs.rm(dir, { recursive: true, force: true })
   })
 
@@ -141,13 +176,80 @@ it('bounds claims teardown for a stuck fs call and restores the fixture', async 
     dir = path
     void fsStep('never-settling write', () => new Promise<never>(() => {}))
     throw operationError
-  }, 20)).rejects.toMatchObject({
+  }, { drainMs: 20 })).rejects.toMatchObject({
     message: expect.stringContaining('never-settling write'),
     cause: operationError,
   })
   expect(process.env.XDG_CONFIG_HOME === configHome).toBe(true)
   await expect(fs.stat(dir)).rejects.toMatchObject({ code: 'ENOENT' })
 }, 750)
+
+it('removes the claims directory again after a write outlives teardown', async () => {
+  const fs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
+  const configHome = process.env.XDG_CONFIG_HOME
+  const releaseWrite = Promise.withResolvers<void>()
+  let dir: string | undefined
+  let write: Promise<void> | undefined
+  try {
+    await expect(withClaims(async (path) => {
+      dir = path
+      write = fsStep('resumed write', async () => {
+        await releaseWrite.promise
+        await fs.mkdir(path, { recursive: true })
+        await fs.writeFile(join(path, 'resumed'), 'probe')
+      })
+    }, { drainMs: 20 })).rejects.toThrow('timed out waiting for: resumed write')
+    await expect(fs.stat(dir!)).rejects.toMatchObject({ code: 'ENOENT' })
+
+    releaseWrite.resolve()
+    await write
+    await vi.waitFor(() => expect(fs.stat(dir!)).rejects.toMatchObject({ code: 'ENOENT' }), { timeout: 500 })
+    expect(process.env.XDG_CONFIG_HOME === configHome).toBe(true)
+  } finally {
+    releaseWrite.resolve()
+    await write?.catch(() => {})
+    restoreEnv('XDG_CONFIG_HOME', configHome)
+    if (dir) await fs.rm(dir, { recursive: true, force: true })
+  }
+})
+
+it('bounds claims teardown when removing the directory stalls', async ({ onTestFinished }) => {
+  const fs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
+  const releaseRemove = Promise.withResolvers<void>()
+  const remove = vi.spyOn(fixtureFs, 'rm').mockImplementation(async (path, options) => {
+    await releaseRemove.promise
+    await fs.rm(path, options)
+  })
+  onTestFinished(async () => {
+    releaseRemove.resolve()
+    await Promise.allSettled(remove.mock.results.map(({ value }) => value))
+    remove.mockRestore()
+  })
+  await expect(withClaims(async () => {}, { removeMs: 20 })).rejects.toThrow('timed out waiting for: rm')
+}, 750)
+
+it('preserves the caller environment across claims teardown', async () => {
+  const otherKey = 'BOARD_DST_ENV_PROBE'
+  const configHome = process.env.XDG_CONFIG_HOME
+  const otherValue = process.env[otherKey]
+  try {
+    vi.stubEnv('XDG_CONFIG_HOME', 'caller-config')
+    vi.stubEnv(otherKey, 'caller-probe')
+    await withClaims(async (path) => {
+      expect(process.env.XDG_CONFIG_HOME === path).toBe(true)
+    })
+    expect(process.env.XDG_CONFIG_HOME === 'caller-config').toBe(true)
+    expect(process.env[otherKey] === 'caller-probe').toBe(true)
+
+    vi.stubEnv('XDG_CONFIG_HOME', undefined)
+    await withClaims(async () => {})
+    expect(Object.hasOwn(process.env, 'XDG_CONFIG_HOME')).toBe(false)
+    expect(process.env[otherKey] === 'caller-probe').toBe(true)
+  } finally {
+    restoreEnv('XDG_CONFIG_HOME', configHome)
+    restoreEnv(otherKey, otherValue)
+  }
+})
 
 it('drains a released write on abort and prevents writes after claims teardown', async () => {
   const fs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
@@ -209,13 +311,15 @@ it('drains a released write on abort and prevents writes after claims teardown',
 const claimsSource = readFileSync(new URL('../../src/cli/claims.ts', import.meta.url), 'utf8')
 const hasClaimLock = /\.lock`/.test(claimsSource)
 
-function claimRace(seed: number) {
+function claimRace(seed: number, sampleTime?: (now: number) => void) {
   return withClaims(async () => {
     const scheduler = new Sim(seed)
     let putCompleted = false
     await scheduler.run([
       { name: 'put B', run: async () => {
+        if (sampleTime) sampleTime(performance.now())
         await open().put(task, proofB)
+        if (sampleTime) sampleTime(performance.now())
         putCompleted = true
         return 'saved'
       } },
@@ -234,6 +338,28 @@ function claimRace(seed: number) {
     return { violations: checkSavedClaim(putCompleted, proofB, recovered), trace: scheduler.trace }
   })
 }
+
+it('replays a claims seed despite jumps in the host clock', async () => {
+  const replay = async () => {
+    const times: number[] = []
+    const result = await claimRace(20, (now) => times.push(now))
+    return { ...result, times }
+  }
+  const baseline = await replay()
+  expect(baseline.times[1]).toBeGreaterThan(baseline.times[0]!)
+  if (hasClaimLock) expect(baseline.trace).toContain('0 waiting for claim lock')
+
+  // Cross the lock's five-second deadline without sleeping. Sampling inside the
+  // put also exercises the substitution on checkouts without the lock.
+  const hostNow = performance.now.bind(performance)
+  let skew = 0
+  const slowHost = vi.spyOn(performance, 'now').mockImplementation(() => hostNow() + (skew += 6_000))
+  try {
+    expect(await replay()).toEqual(baseline)
+  } finally {
+    slowHost.mockRestore()
+  }
+})
 
 const title = 'E4: a stale drop does not lose a successful replacement put (I5)'
 if (!hasClaimLock && process.env.DST_EXPECT !== 'e4') {
