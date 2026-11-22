@@ -1038,6 +1038,7 @@ export type TaskView = Omit<Task, 'needs' | 'claim' | 'priority' | 'attention'> 
   /** The tasks it waits for, by their IDs. */
   needs: string[]
   /** Who holds it. One whose `until` has passed is over: the task is claimable, and `ready` once the board says so. */
+  /** The claim's admission epoch, on boards that expose pause fencing. */
   claim: { actor: string; until: string; binding?: TaskBinding; pauseEpoch?: number } | null
 }
 

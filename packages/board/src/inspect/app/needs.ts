@@ -13,7 +13,7 @@ export function claimOrder(roots: readonly TaskRoot[], state: State, viewer: Vie
   const pauseEpoch = state.status?.pauseEpoch
   return roots.filter((root) => {
     const { task, channel } = root
-    const ready = task.state === 'ready' || (hasClaim(root) && (overdue(root, now) || (pauseEpoch !== undefined && (root.task.claim.pauseEpoch ?? 0) !== pauseEpoch)))
+    const ready = task.state === 'ready' || (hasClaim(root) && (overdue(root, now) || (pauseEpoch !== undefined && root.task.claim.pauseEpoch !== undefined && root.task.claim.pauseEpoch !== pauseEpoch)))
     return !root.deleted && !task.parked && ready && viewer.may('label', channel) &&
       (assigned(root, viewer) || (task.for === null && task.owner === viewer.principal))
   }).sort((a, b) => priorityRank(b.task.priority) - priorityRank(a.task.priority) ||
