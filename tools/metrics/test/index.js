@@ -287,24 +287,32 @@ exec ${timeout} "\${args[@]}"`)
       helpers = httpHelpers()
     })
   })
+  function isHttpHelper(pid) {
+    try {
+      return readFileSync(`/proc/${pid}/comm`, 'utf8').trim() === 'git-remote-http' &&
+        readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').includes(remote)
+    } catch (err) {
+      if (!['ENOENT', 'ESRCH', 'EACCES'].includes(err.code)) throw err
+      return false
+    }
+  }
   function httpHelpers() {
-    return readdirSync('/proc').filter((pid) => {
-      if (!/^\d+$/.test(pid)) return false
-      try {
-        return readFileSync(`/proc/${pid}/comm`, 'utf8').trim() === 'git-remote-http' &&
-          readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').includes(remote)
-      } catch (err) {
-        if (!['ENOENT', 'ESRCH', 'EACCES'].includes(err.code)) throw err
-        return false
-      }
-    }).map(Number)
+    return readdirSync('/proc').filter((pid) => /^\d+$/.test(pid) && isHttpHelper(pid)).map(Number)
   }
   t.after(async () => {
-    for (const pid of new Set([...helpers, ...httpHelpers()])) {
-      if (live(pid)) process.kill(pid, 'SIGKILL')
+    try {
+      for (const pid of new Set([...helpers, ...httpHelpers()])) {
+        if (!isHttpHelper(pid)) continue
+        try {
+          process.kill(pid, 'SIGKILL')
+        } catch (err) {
+          if (err.code !== 'ESRCH') throw err
+        }
+      }
+    } finally {
+      for (const socket of sockets) socket.destroy()
+      await new Promise((resolve) => server.close(resolve))
     }
-    for (const socket of sockets) socket.destroy()
-    await new Promise((resolve) => server.close(resolve))
   })
   server.listen(0, '127.0.0.1')
   await once(server, 'listening')
