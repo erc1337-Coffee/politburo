@@ -763,10 +763,10 @@ export function createBoardClient(options: ClientOptions) {
       /** What a claim you hold does, from the `epoch` and `token` it answered: for a process that kept them, as `vb` does between commands. */
       held,
       /** Holds a task no one has claimed for a person: yours, or any with manage in its channel. A claimed one's hold is its claim's (`claim.block`). */
-      block: (id: string, reason: string, opts: { kind?: string } = {}) => taskWrite(id, 'block', { reason, ...opts }),
+      block: (id: string, reason: string, opts: { kind?: string } = {}) => taskWrite(id, 'block', { reason, ...opts }, 'epoch' in opts || 'token' in opts),
       /** Holds a task for a decision on the given snapshot. A claimed task needs its live claim proof. */
       ask: (id: string, request: RequestAttentionBody) =>
-        call<Protocol['requestTaskAttention']['output']>('POST', `/tasks/${path(id)}/attention`, { body: request, claim: true }),
+        call<Protocol['requestTaskAttention']['output']>('POST', `/tasks/${path(id)}/attention`, { body: request, claim: request.claim !== undefined }),
       /** Reads the current request, if any. */
       attention: (id: string) => call<Protocol['taskAttention']['output']>('GET', `/tasks/${path(id)}/attention`),
       /** Records a responder's choice and routes the task together. */

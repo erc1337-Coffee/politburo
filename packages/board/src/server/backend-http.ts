@@ -118,13 +118,15 @@ function attachmentOf(id: string, response: Response): Protocol['attachment']['o
 }
 
 /** The protocol methods that are a claim's own writes: each carries its proof. */
-const CLAIM_WRITES = new Set<Method>(['renewTask', 'releaseTask', 'completeTask', 'failTask', 'handoffTask', 'requestTaskAttention'])
+const CLAIM_WRITES = new Set<Method>(['renewTask', 'releaseTask', 'completeTask', 'failTask', 'handoffTask'])
 /** The ones that carry a claim's token only when the caller brings one. */
 const CLAIM_WITH_TOKEN = new Set<Method>(['createTask', 'claimTask', 'claimReadyTask', 'blockTask', 'setTaskPriority'])
 
 /** Whether a call's request carries a claim's token, by the method and its input: the flag the client's transport refuses redirects for. */
 const carriesClaim = (method: Method, input: Record<string, unknown>): boolean =>
-  CLAIM_WRITES.has(method) || (CLAIM_WITH_TOKEN.has(method) && input.token !== undefined)
+  CLAIM_WRITES.has(method) ||
+  (CLAIM_WITH_TOKEN.has(method) && input.token !== undefined) ||
+  (method === 'requestTaskAttention' && input.claim !== undefined)
 
 /**
  * Another board that speaks the protocol, at `url` (in Node, the one the environment points at

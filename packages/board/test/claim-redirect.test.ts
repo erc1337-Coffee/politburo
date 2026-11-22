@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { http } from '../src/backend-http/index.ts'
 import { board } from '../src/server/index.ts'
 import { createBoardClient } from '../src/client/client.ts'
+import { inspector } from '../src/inspect/handler.ts'
 import { bearer, BOARD_URL, personToken, testBoard } from './harness.ts'
 
 const servers: Server[] = []
@@ -13,7 +14,7 @@ afterEach(async () => {
 
 type Seen = { method: string | undefined; url: string | undefined; headers: IncomingMessage['headers']; body: string }
 
-async function listen(handler: (seen: Seen, respond: { redirect(to: string): void; ok(): void; status(code: number, to?: string): void }) => void) {
+async function listen(handler: (seen: Seen, respond: { redirect(to: string): void; ok(): void; json(body: unknown): void; status(code: number, to?: string): void }) => void) {
   const seen: Seen[] = []
   const server = createServer((req, res) => {
     const chunks: Buffer[] = []
@@ -24,6 +25,7 @@ async function listen(handler: (seen: Seen, respond: { redirect(to: string): voi
       handler(one, {
         redirect: (to) => void res.writeHead(307, { location: to }).end(),
         ok: () => void res.writeHead(200, { 'content-type': 'application/json' }).end('{"task":{}}'),
+        json: (body) => void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(body)),
         status: (code, to) => void res.writeHead(code, to ? { location: to } : {}).end(),
       })
     })
@@ -123,7 +125,7 @@ describe('a claim-bearing request that is answered with a redirect', () => {
     const client = createBoardClient({ url: configured.url, fetch: (input, init) => globalThis.fetch(input, init) })
     const sneaky = { toJSON: () => ({ claim: { epoch: 1, token: SECRET } }) }
 
-    await expect(client.tasks.ask('task-1', sneaky as never)).rejects.toMatchObject({ code: 'redirect_refused' })
+    await expect(client.tasks.handoff('task-1', sneaky as never)).rejects.toMatchObject({ code: 'redirect_refused' })
 
     expect(elsewhere.seen).toEqual([])
     expect(configured.seen[0]?.body).toContain(SECRET)
@@ -141,6 +143,16 @@ describe('a claim-bearing request that is answered with a redirect', () => {
     expect(elsewhere.seen.map((one) => one.url)).toEqual(['/uploaded'])
   })
 
+  it('a decision request with no claim is not flagged, and follows a redirect as it does today', async () => {
+    const elsewhere = await listen((_, respond) => respond.ok())
+    const configured = await listen((_, respond) => respond.redirect(`${elsewhere.url}/asked`))
+    const client = createBoardClient({ url: configured.url, fetch: (input, init) => globalThis.fetch(input, init) })
+
+    await client.tasks.ask('task-1', { question: 'ship it?' } as never).catch(() => {})
+
+    expect(elsewhere.seen.map((one) => one.url)).toEqual(['/asked'])
+  })
+
   it('a claim that brings no token is not a flagged request, and follows a redirect as it does today', async () => {
     const elsewhere = await listen((_, respond) => respond.ok())
     const configured = await listen((_, respond) => respond.redirect(`${elsewhere.url}/claim`))
@@ -152,20 +164,44 @@ describe('a claim-bearing request that is answered with a redirect', () => {
   })
 })
 
-describe('every verb that carries a claim token flags its request', () => {
-  const carrying = (sent: { body: string; redirect: RequestRedirect | undefined }[]) => sent.filter((one) => one.body.includes(SECRET))
+describe('the inspector, which forwards the writes of its page', () => {
+  it('refuses a redirect to a write, since the write may carry a claim\'s proof', async () => {
+    const elsewhere = await listen((_, respond) => respond.ok())
+    // It says who the app is when asked (a read), and redirects a write.
+    const configured = await listen((one, respond) => (one.method === 'GET' ? respond.json({ principal: 'local:user:app', profile: null }) : respond.redirect(`${elsewhere.url}/stolen`)))
+    const upstream = createBoardClient({ url: configured.url, token: 't', profile: null, fetch: (input, init) => globalThis.fetch(input, init) })
+    const handle = inspector({ board: upstream, basePath: '/board/' })
+    const origin = 'https://factory.example.com'
 
+    const response = await handle(
+      new Request(`${origin}/board/board/tasks/task-1/renew`, {
+        method: 'POST',
+        headers: { 'x-inspect-token': 'page', 'sec-fetch-site': 'same-origin', origin, 'x-board-profile': 'claude', 'content-type': 'application/json' },
+        body: JSON.stringify({ epoch: 1, token: SECRET }),
+      }),
+    )
+
+    expect(response.status).toBe(502)
+    expect(JSON.stringify(await response.json())).toContain('answered a claim')
+    expect(elsewhere.seen).toEqual([])
+    expect(configured.seen.filter((one) => one.method === 'POST').map((one) => one.body)).toEqual([JSON.stringify({ epoch: 1, token: SECRET })])
+  })
+})
+
+describe('every verb that carries a claim token flags its request', () => {
+  /** What each call sent, when the board answers every request with a 307. */
   async function record(run: (client: ReturnType<typeof createBoardClient>) => Promise<unknown>) {
-    const sent: { body: string; redirect: RequestRedirect | undefined }[] = []
+    const sent: string[] = []
     const client = createBoardClient({
       url: 'http://board.invalid',
       fetch: async (_input, init) => {
-        sent.push({ body: typeof init?.body === 'string' ? init.body : '', redirect: init?.redirect })
-        return Response.json({})
+        sent.push(typeof init?.body === 'string' ? init.body : '')
+        // What fetch gives back for `redirect: 'manual'`; one that follows would go on to the Location.
+        return init?.redirect === 'manual' ? new Response(null, { status: 307, headers: { location: 'http://elsewhere.invalid/' } }) : Response.json({})
       },
     })
-    await run(client).catch(() => {})
-    return sent
+    const outcome = await run(client).then(() => 'resolved', (error: { code?: string }) => error.code)
+    return { outcome, sent: sent.filter((body) => body.includes(SECRET)) }
   }
 
   const verbs: Record<string, (client: ReturnType<typeof createBoardClient>) => Promise<unknown>> = {
@@ -184,20 +220,23 @@ describe('every verb that carries a claim token flags its request', () => {
   }
 
   it.each(Object.keys(verbs))('%s', async (name) => {
-    const sent = carrying(await record(verbs[name]!))
+    const { outcome, sent } = await record(verbs[name]!)
 
-    expect(sent.length).toBeGreaterThan(0)
-    expect(sent.map((one) => one.redirect)).toEqual(sent.map(() => 'manual'))
+    expect(outcome).toBe('redirect_refused')
+    expect(sent).toHaveLength(1)
   })
 
-  it('through a handle on another board over http(), each claim write is flagged', async () => {
+  it('through a handle on another board over http(), each claim write is refused its redirect', async () => {
     const team = testBoard()
     const token = await personToken('u_julian')
-    const sent: { url: string; body: string; redirect: RequestRedirect | undefined }[] = []
+    let redirecting = false
+    const sent: string[] = []
     const fetch = bearer(async (input, init) => {
       const request = new Request(input, init)
-      sent.push({ url: new URL(request.url).pathname, body: await request.clone().text(), redirect: init?.redirect })
-      return team.fetch(request)
+      const body = await request.clone().text()
+      if (!redirecting || !body.includes('"token"')) return team.fetch(request)
+      sent.push(body)
+      return new Response(null, { status: 307, headers: { location: 'http://elsewhere.invalid/' } })
     }, token)
     const handle = board({ backend: http(BOARD_URL, { fetch }) }).as(null)
     const writes: Record<string, (claim: NonNullable<Awaited<ReturnType<typeof handle.tasks.claim>>>) => Promise<unknown>> = {
@@ -214,10 +253,18 @@ describe('every verb that carries a claim token flags its request', () => {
       const { task } = await handle.tasks.create('work', `for ${name}`)
       const claim = await handle.tasks.claim(task.id, { lease: 30 })
       sent.length = 0
-      await write(claim).catch(() => {})
-      const mine = sent.filter((one) => one.body.includes(claim.token))
-      expect(mine.map((one) => one.url), name).not.toEqual([])
-      expect(mine.map((one) => one.redirect), name).toEqual(mine.map(() => 'manual'))
+      redirecting = true
+      await expect(write(claim), name).rejects.toMatchObject({ code: 'redirect_refused' })
+      redirecting = false
+      expect(sent, name).toHaveLength(1)
     }
+
+    // A claim and a create that bring their own token, and a decision request with a claim's proof.
+    const own = 'A'.repeat(43)
+    const { task: second } = await handle.tasks.create('work', 'for its own token')
+    redirecting = true
+    await expect(handle.tasks.claim(second.id, { token: own })).rejects.toMatchObject({ code: 'redirect_refused' })
+    await expect(handle.tasks.create('work', { text: 'claimed on creation', claim: true, token: own })).rejects.toMatchObject({ code: 'redirect_refused' })
+    expect(sent.filter((body) => body.includes(own))).toHaveLength(2)
   })
 })

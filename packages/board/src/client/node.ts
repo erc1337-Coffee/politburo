@@ -373,7 +373,7 @@ export function connect(
   url = url.replace(/\/+$/, '')
   const rawFetch: typeof fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init))
   const doFetch = guarded(url, rawFetch, options.token)
-  const joinedFetch: typeof fetch = (input, init) => rawFetch(input, { ...init, redirect: 'error' })
+  const joinedFetch: typeof fetch = (input, init) => rawFetch(input, { ...init, redirect: init?.redirect === 'manual' ? 'manual' : 'error' })
   // Every token is for `url`, the board it's sent to. A board whose discovery claims another
   // audience gets none, so its answer can't get us to mint one it could replay.
   let discovery: Promise<Discovery> | undefined
@@ -689,6 +689,8 @@ async function through(doFetch: typeof fetch, input: RequestInfo | URL, init: Re
     if (location) {
       const next = new URL(location, target)
       if (next.pathname.startsWith('/sso-api')) throw wall(response.status)
+      // A caller that asked for the redirect itself (a claim's request, which goes nowhere else) gets it back, followed by no one.
+      if (init.redirect === 'manual') return response
       if (method === 'GET' || method === 'HEAD') {
         if (hops >= 20) throw new BoardError('too_many_redirects', `${target} redirected more than 20 times.`, response.status)
         if (next.origin !== new URL(target).origin) {
