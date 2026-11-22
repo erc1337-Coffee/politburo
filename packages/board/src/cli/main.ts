@@ -7,7 +7,7 @@ import { everyChannel } from '../client/channels.ts'
 import { withMentions } from '../api/tail.ts'
 import { BoardError, type Filters, type ProfileOption, type Written } from '../client/client.ts'
 import type { Mentioned } from '../contract/mentions.ts'
-import { boardUrl, connect, environmentProfile, handFetch, handLogin, handToken, JOINED, PASSED, vercelProjectFile } from '../client/node.ts'
+import { boardUrl, connect, handFetch, handLogin, handToken, JOINED, PASSED, vercelProjectFile } from '../client/node.ts'
 import { http } from '../backend-http/index.ts'
 import { credentialed, credentialSource, handTeam, vercel } from '../backend-vercel/index.ts'
 import { board as boardAt, type Board } from '../server/index.ts'
@@ -251,6 +251,7 @@ let typed: string[] = []
 let warnings: Warning[] = []
 /** The board this run reached by its URL, for a failure to name. */
 let reached: string | null = null
+/** The team whose default board this run reached, nothing naming one of its boards: `--scope`'s, or the one the environment finds. */
 let teamDefault: { team: string | undefined } | null = null
 /** Where the credential this run sent came from, as `whoami` says it, for a refusal to say which to replace. */
 let sent: () => string | null = () => null
@@ -1070,7 +1071,10 @@ function failureOf(error: unknown, hold: TaskHold = 'unknown'): Failure {
   if (status === 409) {
     // A grant change this caller couldn't take back: it keeps itself in, or says to go ahead.
     if (code === 'grant_lockout' && current.command === 'grants') return theirs('conflict', code, `Can't ${doing()}: it would lock you out.`, lockoutRecoveries())
-    if (code === 'agent_generation_conflict' && current.command === 'agents') return theirs('conflict', code, `Can't ${doing()}.`, agentConflictRecovery())
+    if (code === 'agent_generation_conflict' && current.command === 'agents') {
+      const recovery = agentConflictRecovery()
+      return theirs('conflict', code, `Can't ${doing()}.`, recovery)
+    }
     // A reply's --after: what's newer is in its thread, after the message it named.
     const { args } = current
     const newer = code === 'newer_message' && flags.after !== undefined && args[0] !== undefined
