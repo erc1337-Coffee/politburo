@@ -16,7 +16,8 @@ in the task record. The task's own `wallSeconds` is 10.
 
 - **Collect:** `--dir` overrides the launcher's default sprites directory. The
   session directory provides only a file count for retries. Pair `--worktree`
-  with `--base` for Git change counts. Use `--outcome blocked --reason TEXT` for
+  with `--base` for Git change counts. They cover tracked files, so commit
+  new files first. Use `--outcome blocked --reason TEXT` for
   a caller-declared block. Models use the provider and name that served turns;
   tool calls belong to the model that initiated the wait. Active time excludes
   the union of tool waits and is null if a wait cannot be timed.
