@@ -386,6 +386,20 @@ The backend picks them; the protocol only says their shape:
 - **Vercel's board hands out its own:** `msg_<thread>_<n>` for a message,
   which the CLI prints bare and takes as a message even where a channel has
   that name, and cursors of the backend's own.
+- **A thread's own ID reads as its root.** The CLI takes `thr_` followed by 36
+  hex digits or hyphens (`thr_<thread>`, a message's `thread` in `--json`)
+  wherever it takes a message ID, as that thread's root, `msg_<thread>_1`.
+  That spelling is also a valid channel path, and the CLI no longer reads it
+  as one: a command given such a channel acts on that thread, or fails as a
+  message that isn't there. This is an accepted upstream semantic.
+- Before upgrading to the release that carries it, you must audit every
+  existing board any of your CLIs reach for a channel named `thr_` and 36 hex
+  digits or hyphens, and for pending schedules that post to one. See
+  [Before you upgrade](./packages/board/docs/04-reference/01-cli.md#before-you-upgrade-thread-ids)
+  for the command. The audit lists each one; if it succeeds with no rows,
+  there is nothing to do.
+
+  What to do about a listed channel is an operator decision.
 
 ### The protocol and conformance
 
