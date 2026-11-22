@@ -538,7 +538,7 @@ function refreshAttentionEvents(events: BoardEventView[]) {
 
 const attentionFailure = (error: unknown) => ({
   words: said(error),
-  unsupported: error instanceof BoardError && error.status === 501 && error.code === 'no_task_attention',
+  unsupported: error instanceof BoardError && error.status === 501,
 })
 
 export function attentionRendered(rendered: store.State) {
@@ -566,8 +566,9 @@ export async function answerAttention(id: string, requestId: string, optionId: s
   set((s) => attentionStore.beginAnswer(s, root, attention, option.label))
   try {
     await team.tasks.answer(id, requestId, { option: option.id, commit: attention.commit })
+    set((s) => attentionStore.finishAnswer(s, id, attention))
   } catch (error) {
-    set((s) => attentionStore.failAnswer(s, id, attention, attentionFailure(error)))
+    set((s) => attentionStore.finishAnswer(s, id, attention, attentionFailure(error)))
   }
 }
 

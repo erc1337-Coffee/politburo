@@ -3,7 +3,7 @@ import type { ActorView, BlockView, BoardEventView, ChannelView, Discovery, Gran
 import { findBlocks } from '../../contract/blocks.ts'
 import { canonicalEmoji } from '../../contract/emoji.ts'
 import type { ScheduleTiming } from '../../server/index.default.ts'
-import { confirmAttention, reconcileAttention, type AttentionState } from './attention-store.ts'
+import { confirmAttention, needsAttentionAnswer, reconcileAttention, type AttentionState } from './attention-store.ts'
 import { shownName } from './words.ts'
 
 // The board, as this page knows it. Pure functions over plain state: the page
@@ -598,7 +598,7 @@ export function moves(state: State, root: TaskRoot, viewer: Viewer, now: number)
     held,
     elsewhere: !held && current === 'claimed' && task.claim?.actor === viewer.actor,
     hold: owns && (current === 'waiting' || current === 'ready'),
-    unblock: owns && current === 'blocked' && !task.parked && task.attentionId === undefined,
+    unblock: owns && current === 'blocked' && !task.parked && !needsAttentionAnswer(state, root),
     reopen: owns && current === 'failed',
     assign: owns && !finished,
     cancel: owns && current !== 'completed' && current !== 'canceled',

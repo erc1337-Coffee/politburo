@@ -31,4 +31,3 @@ export function keyAction(event: KeyEvent, ctx: { focused: unknown; choice: Choi
   const optionId = choice.attention?.options[Number(event.key) - 1]?.id
   return optionId === undefined ? null : { type: 'answer', selected, optionId } as const
 }
-

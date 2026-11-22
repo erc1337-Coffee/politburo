@@ -393,7 +393,7 @@ describe('the inspector store', () => {
   // --- attention ---
 
   const hold = (id: number, root: Partial<MessageView> = {}) => {
-    const held = task(id, { state: 'blocked', attentionId: 'request' }, root)
+    const held = task(id, { state: 'blocked', blocked: { kind: 'needs_input', reason: 'Go ahead?' }, attentionId: 'request' }, root)
     if (!attentionStore.holdsAttention(held)) throw new Error('expected a hold')
     return held
   }
@@ -414,7 +414,7 @@ describe('the inspector store', () => {
     const stale = hold(5, { createdAt: at(-5) })
     const canceled = hold(2, { createdAt: at(-2) })
     let state = store.merge(start, [canceled, stale, oldest,
-      task(4, { state: 'failed', attentionId: 'request' }), task(1, { state: 'blocked', attentionId: 'request' }, { deleted: true }), task(3, { state: 'blocked' }), message(6),
+      task(4, { state: 'failed', attentionId: 'request' }), { ...hold(1), deleted: true }, task(3, { state: 'blocked' }), message(6),
     ])
     state = withRead(state, stale, here(request(stale, 'stale')))
     state = withRead(state, canceled, here(request(canceled, 'canceled')))
@@ -426,7 +426,10 @@ describe('the inspector store', () => {
   it('offers unblock for a plain hold but not for an attention hold', () => {
     const owner = viewer(['post', 'manage'])
     expect(store.moves(start, task(1, { state: 'blocked' }), owner, NOW).unblock).toBe(true)
-    expect(store.moves(start, hold(1), owner, NOW).unblock).toBe(false)
+    const held = hold(1)
+    const state = store.merge(start, [held])
+    expect(store.moves(state, held, owner, NOW).unblock).toBe(false)
+    expect(store.moves(withRead(state, held, here(request(held, 'canceled'))), held, owner, NOW).unblock).toBe(true)
   })
 
   it('never replaces an attention view with one read at an older task version or revision', () => {
@@ -469,7 +472,7 @@ describe('the inspector store', () => {
     const known = withRead(store.merge(start, [root]), root, here(request(root)))
     const displayed = request(root)
     const sending = attentionStore.beginAnswer(known, root, displayed, 'Yes')
-    const failed = attentionStore.failAnswer(sending, root.id, displayed, { words: 'not a responder', unsupported: false })
+    const failed = attentionStore.finishAnswer(sending, root.id, displayed, { words: 'not a responder', unsupported: false })
     expect(shownAttention(failed, root)).toMatchObject({ answering: null, disabled: true, error: 'not a responder', attention: { status: 'pending' } })
     const refreshed = withRead(failed, root, here({ ...request(root), commit: 'b'.repeat(40) }))
     expect(shownAttention(refreshed, root)).toMatchObject({ disabled: false, error: undefined })
@@ -482,7 +485,7 @@ describe('the inspector store', () => {
     const sending = attentionStore.beginAnswer(known, root, old, 'Yes')
     const current = { ...old, commit: 'b'.repeat(40) }
     const refreshed = withRead(sending, root, here(current))
-    const failed = attentionStore.failAnswer(refreshed, root.id, old, { words: 'no longer current', unsupported: false })
+    const failed = attentionStore.finishAnswer(refreshed, root.id, old, { words: 'no longer current', unsupported: false })
     expect(shownAttention(failed, root)).toMatchObject({ attention: current, answering: null, disabled: false, error: undefined })
   })
 
@@ -491,7 +494,7 @@ describe('the inspector store', () => {
     const displayed = request(root)
     const known = withRead(store.merge(start, [root]), root, here(displayed))
     const sending = attentionStore.beginAnswer(known, root, displayed, 'Yes')
-    const failed = attentionStore.failAnswer(sending, root.id, displayed, { words: 'message not found', unsupported: false })
+    const failed = attentionStore.finishAnswer(sending, root.id, displayed, { words: 'message not found', unsupported: false })
     const refreshed = withRead(failed, root, here(displayed))
     expect(shownAttention(refreshed, root)).toMatchObject({ disabled: false, error: 'message not found' })
     expect(attentionStore.hasUnshownRefusal(refreshed)).toBe(true)

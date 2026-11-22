@@ -112,7 +112,8 @@ task first, your claim ended), the page says what happened.
 
 Open a request to read the question, options, and what each choice does. Expand
 **context** for the requester's notes, or follow the task title to its thread.
-A task with an attention request cannot be unblocked from its thread.
+You cannot unblock a pending attention hold from its thread. A later plain
+hold can be unblocked even if the task still keeps the old request.
 
 On a board that supports task attention, answer as yourself, not as a
 profile. You need post access and the board must allow you to answer in that

@@ -3,9 +3,22 @@ import { byWritten, isTask, type State, type TaskRoot, type Viewer } from './sto
 
 type AttentionRoot = TaskRoot & { task: TaskView & { attentionId: string } }
 
-/** Every blocked task with an attention ID counts, even if the request is stale or canceled. */
+/** A task can retain an old attention ID on a later ordinary hold. */
 export const holdsAttention = (root: MessageView | undefined): root is AttentionRoot =>
-  isTask(root) && !root.deleted && root.task.state === 'blocked' && root.task.attentionId !== undefined
+  isTask(root) && !root.deleted && root.task.state === 'blocked' && root.task.attentionId !== undefined &&
+  (root.task.blocked?.kind === 'needs_input' || root.task.blocked?.kind === 'awaiting_approval')
+
+export function needsAttentionAnswer(state: State, root: TaskRoot): boolean {
+  if (!holdsAttention(root)) return false
+  const item = state.attention[root.id]
+  if (item?.answered?.id === root.task.attentionId) return false
+  const read = item?.view?.id === root.task.attentionId ? item.view.result : undefined
+  if (read?.is !== 'here') return true
+  if (read.value === null) return false
+  // `stale` can be derived from a still-pending request (e.g. expiry).
+  // The board's unblock checks the stored status, so keep it hidden in that case.
+  return read.value.id !== root.task.attentionId || (read.value.status !== 'answered' && read.value.status !== 'canceled')
+}
 
 export function attentionTasks(state: State): AttentionRoot[] {
   return Object.values(state.messages).filter(holdsAttention).sort(byWritten)
@@ -20,6 +33,7 @@ type AttentionItem = {
   latest?: AttentionRead
   view?: AttentionRead & { result: AttentionResult }
   answering?: { request: AttentionView; label: string }
+  writing?: AttentionView
   lock?: Snapshot & { through: number }
   notice?: Snapshot & { words: string; shown: boolean }
   /** A feed-confirmed answer stays in place for this visit, not in the open count. */
@@ -45,6 +59,8 @@ export function beginAttentionRead(state: State, root: AttentionRoot) {
 }
 
 export function finishAttentionRead(state: State, id: string, read: AttentionRead, result: AttentionResult): State {
+  if (result.is === 'failed' && result.unsupported && !state.attentionUnsupported)
+    state = { ...state, attentionUnsupported: true }
   const item = state.attention[id]
   const root = state.messages[id]
   if (!item || read.serial !== item.latest?.serial || !holdsAttention(root) || root.task.attentionId !== read.id) return state
@@ -54,27 +70,33 @@ export function finishAttentionRead(state: State, id: string, read: AttentionRea
     if (notice && !sameSnapshot(notice, result.value)) notice = undefined
     if (lock && (!sameSnapshot(lock, result.value) || read.serial > lock.through)) lock = undefined
   }
-  const next = putAttention(state, id, { ...item, notice, lock, view: { ...read, result } })
-  return result.is === 'failed' && result.unsupported ? { ...next, attentionUnsupported: true } : next
+  return putAttention(state, id, { ...item, notice, lock, view: { ...read, result } })
 }
 
 export function beginAnswer(state: State, root: TaskRoot, request: AttentionView, label: string): State {
-  return putAttention(state, root.id, { ...state.attention[root.id], answering: { request, label } })
+  return putAttention(state, root.id, { ...state.attention[root.id], writing: request, answering: { request, label } })
 }
 
-export function failAnswer(state: State, id: string, request: AttentionView, failure: AttentionFailure): State {
+/** The HTTP write can finish before or after the feed settles its overlay. */
+export function finishAnswer(state: State, id: string, request: AttentionView, failure?: AttentionFailure): State {
+  if (failure?.unsupported && !state.attentionUnsupported) state = { ...state, attentionUnsupported: true }
   const item = state.attention[id]
+  if (item?.writing !== request) return state
+  const next = { ...item, writing: undefined }
+  if (!failure) return putAttention(state, id, next)
+  if (item.answering?.request === request) next.answering = undefined
   const root = state.messages[id]
-  if (item?.answering?.request !== request) return state
-  const next = { ...item, answering: undefined }
   const read = item.view?.result
-  if (holdsAttention(root) && root.task.attentionId === request.id &&
-      (read?.is !== 'here' || sameSnapshot(request, read.value))) {
+  if (isTask(root) && !root.deleted && root.task.attentionId === request.id) {
     const { id, commit } = request
-    next.lock = { id, commit, through: item.latest?.serial ?? 0 }
-    next.notice = { id, commit, words: failure.words, shown: false }
+    const notice = { id, commit, words: failure.words, shown: false }
+    if (item.answered?.id === id) next.notice = notice
+    else if (holdsAttention(root) && (read?.is !== 'here' || sameSnapshot(request, read.value))) {
+      next.lock = { id, commit, through: item.latest?.serial ?? 0 }
+      next.notice = notice
+    }
   }
-  return { ...putAttention(state, id, next), attentionUnsupported: state.attentionUnsupported || failure.unsupported }
+  return putAttention(state, id, next)
 }
 
 /** All accepted roots pass here, including snapshots from thread and task lists. The request ID binds its immutable commit. */
@@ -84,8 +106,10 @@ export function reconcileAttention(state: State, views: MessageView[]): State {
     if (!item || state.messages[root.id] !== root) continue
     const current = holdsAttention(root) ? root.task.attentionId : undefined
     const { lock, notice } = item
-    if ((lock && lock.id !== current) || (notice && notice.id !== current))
-      state = putAttention(state, root.id, { ...item, lock: lock?.id === current ? lock : undefined, notice: notice?.id === current ? notice : undefined })
+    const receipt = isTask(root) && !root.deleted && item.answered?.id === root.task.attentionId ? item.answered : undefined
+    if ((lock && lock.id !== current) || (notice && notice.id !== current && notice.id !== receipt?.id))
+      state = putAttention(state, root.id, { ...item, lock: lock?.id === current ? lock : undefined,
+        notice: notice?.id === current || notice?.id === receipt?.id ? notice : undefined })
   }
   return state
 }
@@ -98,10 +122,15 @@ export function confirmAttention(state: State, event: BoardEventView): State {
   const item = state.attention[incoming.id]
   if (!root || !item) return state
   const { answering, view } = item
-  if (event.type === 'task.attention_answered' && !holdsAttention(root) && !root.deleted && root.task?.attentionId === event.payload.requestId) {
+  if (event.type === 'task.attention_answered') {
+    const { requestId, receipt } = event.payload
     const read = view?.result.is === 'here' ? view.result.value : null
-    const request = [read, answering?.request].find((request) => request?.id === event.payload.requestId)
-    if (request) return putAttention(state, root.id, { ...item, answering: undefined, answered: { ...request, status: 'answered', receipt: event.payload.receipt } })
+    const request = [answering?.request, read, item.writing].find((request) => request?.id === requestId)
+    const overlay = answering?.request.id === requestId ? undefined : answering
+    const answered = request && !root.deleted && root.task?.attentionId === requestId
+      ? { ...request, status: 'answered' as const, receipt } : item.answered
+    if (overlay !== answering || answered !== item.answered)
+      return putAttention(state, root.id, { ...item, answering: overlay, answered })
   }
   if (answering && state.messages[incoming.id] === incoming && (!holdsAttention(root) || root.task.attentionId !== answering.request.id))
     return putAttention(state, root.id, { ...item, answering: undefined })
@@ -123,9 +152,9 @@ export function attentionFor(state: State, root: TaskRoot, viewer: Viewer | null
   const read = item?.view?.id === root.task.attentionId ? item?.view?.result : undefined
   const value = read?.is === 'here' ? read.value : null
   const overlay = item?.answering?.request.id === root.task.attentionId ? item?.answering : undefined
-  const attention = held ? (value?.id === root.task.attentionId ? value : null)
-    : item?.answered?.id === root.task.attentionId ? item?.answered ?? null : overlay?.request ?? null
-  const readError = held && read?.is === 'failed' ? read.words : null
+  const receipt = item?.answered?.id === root.task.attentionId ? item?.answered : undefined
+  const attention = receipt ?? (held ? (value?.id === root.task.attentionId ? value : null) : overlay?.request ?? null)
+  const readError = !receipt && held && read?.is === 'failed' ? read.words : null
   const answering = overlay?.label ?? null
   const unsupported = state.attentionUnsupported || state.discovery?.task_attention !== true
   const me = state.me

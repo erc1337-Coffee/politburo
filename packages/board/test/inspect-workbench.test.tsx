@@ -344,6 +344,8 @@ const attentionList = () => document.querySelector<HTMLElement>('[aria-label="at
 const decision = (id: string) => document.getElementById(`attention-${id}`)!
 const choice = (id: string) => decision(id)?.querySelector<HTMLButtonElement>('button.attention-choice')
 const selectedDecision = () => attentionList().querySelector('[aria-current="true"]')?.id
+const threadPane = () => document.querySelector('aside[aria-label="Thread"]')
+const unblockButton = () => [...(threadPane()?.querySelectorAll('button') ?? [])].find((button) => button.textContent === 'unblock')
 const attentionRead = (r: Request) => r.method === 'GET' && r.url.endsWith('/attention')
 const answerWrite = (r: Request) => r.method === 'POST' && r.url.endsWith('/answer')
 const isFeed = (r: Request) => {
@@ -656,6 +658,119 @@ it.each(['before', 'after'] as const)('ignores a superseded read that arrives %s
   await vi.waitFor(() => expect(decision(a.id).textContent).toContain('read only: the request is stale'))
   await act(async () => pending[0]!.release.resolve())
   expect(decision(a.id).textContent).toContain('read only: the request is stale')
+})
+
+it('settles Ship it from the feed without rolling back a newer thread hold', async () => {
+  const { client, open } = await workbench({ attentionResponders: responders })
+  const a = await hold(client, 'First draft', 'Use this draft?')
+  const feed = gate()
+  const answer = Promise.withResolvers<number>()
+  await open('/attention', { transport: async (r, send) => {
+    if (isFeed(r)) await feed.promise
+    const response = await send()
+    if (answerWrite(r)) answer.resolve(response.status)
+    return response
+  } })
+  await vi.waitFor(() => expect(choice(a.id)?.disabled).toBe(false))
+  choice(a.id)!.click()
+  expect(await answer.promise).toBe(200)
+  await client.tasks.block(a.id, 'Wait for translation')
+  decision(a.id).querySelector('a')!.click()
+  await vi.waitFor(() => expect(threadPane()?.textContent).toContain('Wait for translation'))
+  expect(decision(a.id).textContent).toContain('answering Ship it')
+  feed.resolve()
+  await vi.waitFor(() => expect(decision(a.id)?.textContent).toContain('answered · Ship it'))
+  expect(decision(a.id).textContent).not.toContain('answering')
+  expect(threadPane()?.textContent).toContain('Wait for translation')
+  expect(inboxCount()).toBeUndefined()
+})
+
+it.each(['same request', 'replacement'] as const)('scopes a late competing 409 to its receipt: %s', async (scenario) => {
+  const { client, open } = await workbench({ attentionResponders: responders })
+  const a = await hold(client, 'First draft', 'Use this draft?')
+  const sendAnswer = gate()
+  const releaseRefusal = gate()
+  const refused = Promise.withResolvers<number>()
+  await open('/attention', { transport: async (r, send) => {
+    if (!answerWrite(r)) return send()
+    await sendAnswer.promise
+    const response = await send()
+    refused.resolve(response.status)
+    await releaseRefusal.promise
+    return response
+  } })
+  await vi.waitFor(() => expect(choice(a.id)?.disabled).toBe(false))
+  choice(a.id)!.click()
+  await client.tasks.answer(a.id, a.attention.id, { option: 'stop', commit })
+  await vi.waitFor(() => expect(decision(a.id).textContent).toContain('answered · Stop'))
+  sendAnswer.resolve()
+  expect(await refused.promise).toBe(409)
+  if (scenario === 'replacement') {
+    await client.tasks.reopen(a.id)
+    await client.tasks.ask(a.id, { ...a.request, question: 'Use the replacement?' })
+    await vi.waitFor(() => expect(decision(a.id).textContent).toContain('Use the replacement?'))
+  }
+  await act(async () => releaseRefusal.resolve())
+  if (scenario === 'same request') {
+    await vi.waitFor(() => expect(decision(a.id).textContent).toContain(staleWords))
+    expect(decision(a.id).textContent).toContain('answered · Stop')
+    expect(choice(a.id)).toBeNull()
+  } else {
+    expect(decision(a.id).textContent).not.toContain(staleWords)
+    expect(inboxLink().textContent).not.toContain('refused')
+    expect(choice(a.id)?.disabled).toBe(false)
+  }
+})
+
+it('offers a working unblock for a plain hold after an answered request', async () => {
+  const { client, open } = await workbench({ attentionResponders: responders })
+  const a = await hold(client, 'First draft', 'Use this draft?')
+  await client.tasks.answer(a.id, a.attention.id, { option: 'ship', commit })
+  const root = await client.tasks.block(a.id, 'Wait for translation')
+  expect(root.task?.attentionId).toBe(a.attention.id)
+  await open(`/attention?thread=${a.id}`)
+  await vi.waitFor(() => expect(threadPane()?.textContent).toContain('Wait for translation'))
+  expect(unblockButton()).toBeDefined()
+  unblockButton()!.click()
+  await vi.waitFor(() => expect(threadPane()?.textContent).not.toContain('Wait for translation'))
+  expect((await client.tasks.list({ state: 'ready' })).tasks.map(({ message }) => message.id)).toContain(a.id)
+})
+
+it('keeps a stale request read-only without offering an unblock the board refuses', async () => {
+  const { client, open } = await workbench({ attentionResponders: responders })
+  const a = await hold(client, 'First draft', 'Use this draft?')
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(Date.parse(a.attention.expiresAt) + 1)
+  await expect(client.tasks.unblock(a.id)).rejects.toMatchObject({ status: 409, code: 'attention_required' })
+  await open(`/attention?thread=${a.id}`)
+  await vi.waitFor(() => expect(decision(a.id)?.textContent).toContain('read only: the request is stale'))
+  await vi.waitFor(() => expect(threadPane()?.textContent).toContain('Use this draft?'))
+  expect(unblockButton()).toBeUndefined()
+  expect(choice(a.id)).toBeNull()
+})
+
+it.each(['read', 'write'] as const)('hides all answer buttons on a 501 with a different code from %s', async (operation) => {
+  const { client, open } = await workbench({ attentionResponders: responders })
+  const a = await hold(client, 'First draft', 'Use this draft?')
+  const b = await hold(client, 'Second draft', 'Use the second draft?')
+  const release = gate()
+  const words = 'this deployment has not enabled attention'
+  await open('/attention', { transport: async (r, send) => {
+    const refused = operation === 'read' ? attentionRead(r) && r.url.endsWith(`/${a.id}/attention`) : answerWrite(r)
+    if (!refused) return send()
+    await release.promise
+    // Model a backend with a different 501 code; all other traffic goes to the local board.
+    return Response.json({ error: { code: 'not_implemented', message: words } }, { status: 501 })
+  } })
+  await vi.waitFor(() => expect(choice(b.id)?.disabled).toBe(false))
+  if (operation === 'write') {
+    await vi.waitFor(() => expect(choice(a.id)?.disabled).toBe(false))
+    choice(a.id)!.click()
+  }
+  release.resolve()
+  await vi.waitFor(() => expect(decision(a.id).textContent).toContain(words))
+  expect(choice(a.id)).toBeNull()
+  expect(choice(b.id)).toBeNull()
 })
 
 it('keeps the answering overlay after HTTP success until the real feed confirms', async () => {
