@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync,
-  realpathSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync,
+  readFileSync, realpathSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -22,12 +22,30 @@ const treePath = x => text(x) && x.split('/').every(part => /^[a-z0-9_.-]+$/i.te
 const integer = (x, min = 1) => /^\d+$/.test(String(x)) && Number.isSafeInteger(Number(x)) && Number(x) >= min;
 const quiet = { stdio: 'ignore' };
 const capture = { stdio: ['ignore', 'pipe', 'ignore'] };
-// Do not let inherited Git routing or object-store overrides reach the scratch repo.
-const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
-const git = (cwd, args, options) => execFileSync('git', args, { cwd, env, ...capture, ...options });
+const buffered = { maxBuffer: 64 * 1024 * 1024 };
+const pipeInput = { stdio: ['pipe', 'pipe', 'ignore'] };
 const goldenName = ([bin, ...args]) => bin === 'pnpm' && args.includes('exec') ? args[args.indexOf('exec') + 1] : bin;
 
-function loadTask(repo, id) {
+function privateDir(work, prefix) {
+  const dir = mkdtempSync(join(work, prefix));
+  chmodSync(dir, 0o700);
+  return dir;
+}
+
+function childEnv(work, o) {
+  const home = privateDir(work, 'bench-home-');
+  const env = Object.assign(Object.create(null), { HOME: home, XDG_CONFIG_HOME: join(home, 'config'),
+    XDG_CACHE_HOME: join(home, 'cache'), XDG_DATA_HOME: join(home, 'data') });
+  for (const key of ['PATH', 'LANG', 'LC_ALL', 'TZ', 'TERM', 'TMPDIR', ...(process.env.BENCH_PASS_ENV ?? '').split(',')]) {
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && !/^(GIT_|BENCH_)/.test(key) && !(key in env)
+      && key !== 'PI_MODEL' && key !== 'PI_THINKING' && process.env[key] !== undefined) env[key] = process.env[key];
+  }
+  if (o.model != null) env.PI_MODEL = o.model;
+  if (o.thinking != null) env.PI_THINKING = o.thinking;
+  return env;
+}
+
+function loadTask(repo, id, git, env) {
   const matches = JSON.parse(readFileSync(join(repo, SUITE, 'tasks.json'), 'utf8')).filter(x => x.id === id);
   const [task] = matches;
   requireThat(matches.length === 1 && /^[a-z0-9][a-z0-9-]*$/.test(id) && text(task.title)
@@ -62,71 +80,81 @@ async function reserveName(o, sprites) {
   }
 }
 
-function copyGolden(repo, cwd, task) {
+function goldenPath(cwd, file, create) {
   requireThat(realpathSync(cwd) === cwd);
-  for (const file of task.goldenFiles) {
-    const target = join(cwd, file);
-    // Create one directory at a time, without writing through a sprite's symlink.
-    let dir = cwd;
-    for (const part of file.split('/').slice(0, -1)) {
-      dir = join(dir, part);
-      if (!existsSync(dir)) mkdirSync(dir);
-      requireThat(realpathSync(dir) === dir);
-    }
-    try { unlinkSync(target); } catch (e) { if (e.code !== 'ENOENT') throw e; }
-    writeFileSync(target, git(repo, ['show', `${task.goldenRef}:${file}`]), { flag: 'wx' });
+  let dir = cwd;
+  for (const part of file.split('/').slice(0, -1)) {
+    dir = join(dir, part);
+    const stat = lstatSync(dir, { throwIfNoEntry: false });
+    if (stat) requireThat(stat.isDirectory());
+    else if (create) mkdirSync(dir);
   }
+  return join(cwd, file);
 }
 
-async function run(o, repo, task, grace) {
-  const work = resolve(o.work ?? tmpdir()), sprites = resolve(o.sprites ?? join(sep, 'tmp', 'sprites'));
-  const out = resolve(o.out ?? 'results.jsonl');
-  mkdirSync(work, { recursive: true });
+function unlinkIfPresent(file) {
+  try { unlinkSync(file); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+}
+
+async function run(o, repo, task, grace, work, git, env) {
+  const sprites = resolve(o.sprites ?? join(sep, 'tmp', 'sprites')), out = resolve(o.out ?? 'results.jsonl');
   mkdirSync(sprites, { recursive: true });
-  const dir = mkdtempSync(join(realpathSync(work), 'bench-')), cwd = join(dir, 'tree');
-  mkdirSync(cwd);
-  const archive = git(repo, ['archive', task.base], { maxBuffer: 64 * 1024 * 1024 });
-  execFileSync('tar', ['-xf', '-'], { cwd, input: archive, stdio: ['pipe', 'ignore', 'ignore'] });
-  git(cwd, ['init', '--template=']);
-  git(cwd, ['add', '-f', '--all']);
-  git(cwd, ['-c', 'user.name=Benchmark', '-c', 'user.email=bench@example.invalid', '-c', 'core.hooksPath=/dev/null',
-    'commit', '--allow-empty', '--no-gpg-sign', '-m', 'Benchmark base']);
-  for (const [cmd, ...args] of task.setup) execFileSync(cmd, args, { cwd, env, ...quiet });
-  // Setup output (a lockfile touch, a build) belongs to the base, not to the sprite's changes.
-  git(cwd, ['add', '--all']);
-  git(cwd, ['-c', 'user.name=Benchmark', '-c', 'user.email=bench@example.invalid', '-c', 'core.hooksPath=/dev/null',
-    'commit', '--amend', '--allow-empty', '--no-edit', '--no-gpg-sign']);
-  const base = git(cwd, ['rev-parse', 'HEAD']).toString().trim();
+  const dir = privateDir(work, 'bench-'), sprite = join(dir, 'tree');
+  mkdirSync(sprite);
+  const archive = git(repo, ['archive', task.base], buffered);
+  const setup = cwd => {
+    for (const [cmd, ...args] of task.setup) execFileSync(cmd, args, { cwd, env, ...quiet });
+  };
+  const initBase = cwd => {
+    execFileSync('tar', ['-xf', '-'], { cwd, env, input: archive, stdio: ['pipe', 'ignore', 'ignore'] });
+    git(cwd, ['init', '--template=']);
+    const commit = (...args) => git(cwd, ['-c', 'user.name=Benchmark', '-c', 'user.email=bench@example.invalid',
+      '-c', 'core.hooksPath=/dev/null', 'commit', '--allow-empty', '--no-gpg-sign', ...args]);
+    git(cwd, ['add', '-f', '--all']);
+    commit('-m', 'Benchmark base');
+    setup(cwd);
+    // Tracked setup output belongs to the base, not to the sprite's changes.
+    git(cwd, ['add', '--all']);
+    commit('--amend', '--no-edit');
+    return git(cwd, ['rev-parse', 'HEAD']).toString().trim();
+  };
+  initBase(sprite);
   const brief = join(dir, 'brief.md');
   copyFileSync(join(repo, task.briefFile), brief);
-
   const launcher = process.env.BENCH_SPRITE_START ? resolve(process.env.BENCH_SPRITE_START) : 'sprite-start';
-  const spriteEnv = { ...env };
-  for (const key of ['BENCH_REPO', 'BENCH_SPRITE_START', 'BENCH_RC_GRACE_SECONDS', 'PI_MODEL', 'PI_THINKING']) delete spriteEnv[key];
-  if (o.model != null) spriteEnv.PI_MODEL = o.model;
-  if (o.thinking != null) spriteEnv.PI_THINKING = o.thinking;
   const { name, prefix, lock } = await reserveName(o, sprites);
   try {
     const cap = Number(o['max-seconds'] ?? task.timeCapSeconds), wait = (cap + grace) * 1000;
     const deadline = performance.now() + wait;
-    execFileSync(launcher, [name, brief, String(cap)], { cwd, env: spriteEnv, timeout: wait, ...quiet });
+    execFileSync(launcher, [name, brief, String(cap)], { cwd: sprite, env, timeout: wait, ...quiet });
     while (!existsSync(`${prefix}.rc`)) {
       if (performance.now() >= deadline) return 1;
       await sleep(Math.min(100, deadline - performance.now()));
     }
-    // Stage the sprite's work so files it created count as changes; the golden files come after.
-    git(cwd, ['add', '--all']);
-    copyGolden(repo, cwd, task);
+    git(sprite, ['add', '--all']);
+    const tree = git(sprite, ['write-tree']).toString().trim();
+    // Transfer the staged objects once. Unlike an archive, this honors neither export-ignore nor export-subst.
+    const snapshot = git(sprite, ['pack-objects', '--stdout', '--revs'], { ...buffered, ...pipeInput, input: `${tree}\n` });
+    const cwd = privateDir(work, 'bench-grade-'), base = initBase(cwd);
+    git(cwd, ['index-pack', '--stdin'], { ...pipeInput, input: snapshot });
+    const checkoutSnapshot = () => git(cwd, ['read-tree', '--reset', '-u', tree]);
+    checkoutSnapshot();
+    // Ignored files from base setup must not carry over to grading setup.
+    git(cwd, ['clean', '-ffdx']);
+    for (const file of task.goldenFiles) {
+      const target = goldenPath(cwd, file, true);
+      requireThat(!lstatSync(target, { throwIfNoEntry: false })?.isSymbolicLink());
+      unlinkIfPresent(target);
+      writeFileSync(target, git(repo, ['show', `${task.goldenRef}:${file}`]), { flag: 'wx' });
+    }
+    setup(cwd);
     const [cmd, ...args] = task.goldenCommand;
     const verdict = spawnSync(cmd, args, { cwd, env, ...quiet });
     if (verdict.error) throw verdict.error;
     const check = verdict.status === 0 ? 'pass' : 'fail';
-    // Put back what the sprite had at each golden path, so restored test code is not counted as its change.
-    for (const file of task.goldenFiles) {
-      const tracked = spawnSync('git', ['ls-files', '--error-unmatch', '--', file], { cwd, env, ...quiet }).status === 0;
-      if (tracked) git(cwd, ['checkout', '--', file]);
-      else unlinkSync(join(cwd, file));
-    }
+    // Roll back golden files and tracked setup/check effects before measuring churn.
+    for (const file of task.goldenFiles) unlinkIfPresent(goldenPath(cwd, file, false));
+    checkoutSnapshot();
     const { score, size, reason, ratedBy, ratedAt } = task.rating;
     const collector = fileURLToPath(new URL('../sprite-usage.mjs', import.meta.url));
     const rows = execFileSync(process.execPath, [collector, name, '--dir', sprites, '--worktree', cwd, '--base', base,
@@ -140,7 +168,7 @@ async function run(o, repo, task, grace) {
 }
 
 async function main() {
-  let o, repo, task, grace;
+  let o, repo, grace;
   try {
     ({ values: o } = parseArgs({ options: fields('task model thinking rep out work sprites max-seconds'.split(' '), () => ({ type: 'string' })) }));
     const slash = o.model?.indexOf('/') ?? -1;
@@ -149,10 +177,17 @@ async function main() {
       && (o.thinking == null || thinkingLevel(o.thinking)) && integer(o.rep ?? 1) && integer(o['max-seconds'] ?? 1)
       && [o.out, o.work, o.sprites].every(x => x == null || text(x)) && integer(grace, 0) && grace <= 60);
     repo = resolve(process.env.BENCH_REPO ?? fileURLToPath(new URL('../../../', import.meta.url)));
-    task = loadTask(repo, o.task);
   } catch { console.error('error: invalid suite arguments or manifest'); return 2; }
-  try { return await run(o, repo, task, grace); }
-  catch { console.error('error: benchmark run did not produce a record'); return 1; }
+  try {
+    const requestedWork = resolve(o.work ?? tmpdir());
+    mkdirSync(requestedWork, { recursive: true });
+    const work = realpathSync(requestedWork), env = childEnv(work, o);
+    const git = (cwd, args, options) => execFileSync('git', args, { cwd, env, ...capture, ...options });
+    let task;
+    try { task = loadTask(repo, o.task, git, env); }
+    catch { console.error('error: invalid suite arguments or manifest'); return 2; }
+    return await run(o, repo, task, grace, work, git, env);
+  } catch { console.error('error: benchmark run did not produce a record'); return 1; }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) process.exitCode = await main();

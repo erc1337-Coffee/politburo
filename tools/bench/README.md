@@ -71,3 +71,8 @@ Only the runner pins models. Group by complexity; report pass rate with a Wilson
 interval, median and p90 wall seconds and tokens, and tokens per changed line.
 Name the source run IDs for every reported number. Use sprite records for
 model-grouped reporting.
+
+The [suite runner](../../design/benchmark-suite.md) grades a staged snapshot
+in a separate tree and leaves both trees under `--work` for inspection. Its
+children get an allowlisted environment and a fresh home. Use `BENCH_PASS_ENV`
+to name any additional variables the launcher needs, including model access.
