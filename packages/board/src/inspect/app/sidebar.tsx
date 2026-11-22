@@ -1,6 +1,7 @@
-import { Check, ChevronsUpDown, ClipboardList, House, LayoutGrid, PanelLeftClose, Settings } from 'lucide-react'
+import { Check, ChevronsUpDown, CircleHelp, ClipboardList, House, LayoutGrid, PanelLeftClose, Settings } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import type { ChannelView, Me } from '../../api/routes.ts'
+import { attentionTasks, hasUnshownRefusal } from './attention-store.ts'
 import * as board from './board.ts'
 import { toast } from './chrome.ts'
 import { HomeEmblem } from './home-emblem.tsx'
@@ -53,6 +54,7 @@ export function Sidebar({ state, current, onHome, onCollapse }: { state: State; 
     return [...out]
   }, [state.channels])
   const open = openTasks(state)
+  const attention = useMemo(() => attentionTasks(state).length, [state.messages])
   const where = boardWords(state.discovery)
   const copy = (text: string) => void navigator.clipboard.writeText(text).then(() => toast(`copied ${text}`))
   return (
@@ -79,6 +81,12 @@ export function Sidebar({ state, current, onHome, onCollapse }: { state: State; 
           <ClipboardList size={14} aria-hidden="true" />
           <span className="name">tasks</span>
           {open !== null && open > 0 && <span className="count">{open}</span>}
+        </Link>
+        <Link to="/attention" className="item" current={current.view === 'attention'}>
+          <CircleHelp size={14} aria-hidden="true" />
+          <span className="name">attention</span>
+          {attention > 0 && <span className="count">{attention}</span>}
+          {hasUnshownRefusal(state) && <span className="faint">refused</span>}
         </Link>
         <h2>channels</h2>
         {groups.map(([group, channels]) => (

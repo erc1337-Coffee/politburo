@@ -7,6 +7,7 @@ import { createBoardClient, type ProfileOption } from '../src/client/client.ts'
 import { shell } from '../src/inspect/shell.ts'
 import { slack } from '../src/sync/slack.ts'
 import { BOARD_URL, localBoard, personToken } from './harness.ts'
+import { deploymentToken } from './tokens.ts'
 import { fakePlatform } from './sync-fixtures.ts'
 
 let visit = 0
@@ -16,11 +17,16 @@ afterAll(() => vi.unstubAllGlobals())
 let root: Root | undefined
 let disconnect: (() => Promise<void>) | undefined
 let local: ReturnType<typeof localBoard> | undefined
+const releaseGates: (() => void)[] = []
+const otherBoards: ReturnType<typeof localBoard>[] = []
 
 afterEach(async () => {
   root?.unmount()
   root = undefined
+  for (const release of releaseGates.splice(0)) release()
   await disconnect?.()
+  for (const board of otherBoards.splice(0)) await board.close()
+  vi.useRealTimers()
   disconnect = undefined
   await local?.close()
   local = undefined
@@ -51,7 +57,9 @@ async function workbench(options: Parameters<typeof localBoard>[0] = {}) {
   }
   return {
     api, as, client: as(),
-    async open(path = '/', options: { profile?: string; can?: string; holdSchedules?: (profile: string | null) => Promise<void> | undefined } = {}) {
+    async open(path = '/', options: { profile?: string; can?: string; holdSchedules?: (profile: string | null) => Promise<void> | undefined;
+      token?: string; transport?: (request: Request, send: () => Promise<Response>) => Promise<Response>
+    } = {}) {
       browser.settings.enableImageFileLoading = false
       browser.setViewport({ width: 1280, height: 900 })
       browser.setURL(`http://inspector-${++visit}.test${path}`)
@@ -63,7 +71,7 @@ async function workbench(options: Parameters<typeof localBoard>[0] = {}) {
       vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
         const request = new Request(input, init)
         if (request.url !== proxy && !request.url.startsWith(`${proxy}/`)) return closed()
-        const isStream = request.headers.get('accept') === 'text/event-stream'
+        const isStream = new URL(request.url).pathname === '/board/events'
         if (page.signal.aborted) {
           // A refusal stops the handle from reconnecting after this tab closes.
           if (isStream) streamClosed.resolve()
@@ -71,12 +79,14 @@ async function workbench(options: Parameters<typeof localBoard>[0] = {}) {
         }
         if (isStream) streaming = true
         const headers = new Headers(request.headers)
-        headers.set('authorization', `Bearer ${token}`)
+        headers.set('authorization', `Bearer ${options.token ?? token}`)
         if (options.can) headers.set('x-board-can', options.can)
-        const response = api.fetch(new Request(`${BOARD_URL}${request.url.slice(proxy.length)}`, {
+        const forwarded = new Request(`${BOARD_URL}${request.url.slice(proxy.length)}`, {
           method: request.method, headers, signal: page.signal,
           ...(request.method === 'GET' || request.method === 'HEAD' ? {} : { body: await request.arrayBuffer() }),
-        }))
+        })
+        const send = () => api.fetch(forwarded)
+        const response = options.transport ? options.transport(forwarded, send) : send()
         if (options.holdSchedules && request.method === 'GET' && new URL(request.url).pathname === '/board/schedules') {
           const result = await response
           await options.holdSchedules(headers.get('x-board-profile'))
@@ -320,4 +330,468 @@ it('opens Sync from Settings and shows the selected inbox', async () => {
   const support = await vi.waitFor(() => link('support slack'))
   support.click()
   await vi.waitFor(() => expect(mainText()).toContain('Can someone check my invoice?'))
+})
+
+const responders = { work: ['vercel:user:u_reader'] }
+const commit = 'a'.repeat(40)
+const question = '<img src=x onerror=alert(1)>'
+const staleWords = 'the attention request or its snapshot is no longer current'
+const unsupportedWords = 'this board does not keep task attention requests'
+const readOnlyWords = 'answering needs a person acting as themselves with post access'
+const inboxLink = () => document.querySelector<HTMLAnchorElement>('a[href="/attention"]')!
+const inboxCount = () => inboxLink().querySelector('.count')?.textContent
+const attentionList = () => document.querySelector<HTMLElement>('[aria-label="attention requests"]')!
+const decision = (id: string) => document.getElementById(`attention-${id}`)!
+const choice = (id: string) => decision(id)?.querySelector<HTMLButtonElement>('button.attention-choice')
+const selectedDecision = () => attentionList().querySelector('[aria-current="true"]')?.id
+const threadPane = () => document.querySelector('aside[aria-label="Thread"]')
+const unblockButton = () => [...(threadPane()?.querySelectorAll('button') ?? [])].find((button) => button.textContent === 'unblock')
+const attentionRead = (r: Request) => r.method === 'GET' && r.url.endsWith('/attention')
+const answerWrite = (r: Request) => r.method === 'POST' && r.url.endsWith('/answer')
+const isFeed = (r: Request) => {
+  const url = new URL(r.url)
+  return url.pathname.endsWith('/events') && Number(url.searchParams.get('wait')) > 0
+}
+const gate = () => {
+  const g = Promise.withResolvers<void>()
+  releaseGates.push(g.resolve)
+  return g
+}
+
+async function hold(client: ReturnType<typeof createBoardClient>, text: string, question: string) {
+  const { task } = await client.tasks.create('work', { text })
+  const draft = {
+    kind: 'awaiting_approval', question, context: 'The wording has been reviewed.',
+    options: [
+      { id: 'ship', label: 'Ship it', consequence: 'Publish the revised docs', next: 'resume' },
+      { id: 'stop', label: 'Stop', consequence: 'Keep the current docs', next: 'fail' },
+    ],
+    evidence: [{ message: task.id, revision: task.revision }], revision: task.revision, commit,
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  } as const
+  const request = { ...draft, options: [...draft.options], evidence: [...draft.evidence] }
+  const { attention } = await client.tasks.ask(task.id, request)
+  return { id: task.id, attention, request }
+}
+
+function press(target: HTMLElement, key: string) {
+  const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })
+  flushSync(() => target.dispatchEvent(event))
+  return event.defaultPrevented
+}
+
+it('opens Attention from the sidebar, counts only holds, escapes questions, and applies each allowed read as it arrives', async () => {
+  const { client, open } = await workbench({ attentionResponders: responders })
+  await client.tasks.create('work', { text: 'A ready task' })
+  const a = await hold(client, 'First draft', question)
+  const b = await hold(client, 'Second draft', 'Use the second draft?')
+  const release = gate()
+  const reads: string[] = []
+  await open('/', { transport: async (r, send) => {
+    const response = await send()
+    if (attentionRead(r)) {
+      reads.push(r.url)
+      if (r.url.endsWith(`/${a.id}/attention`)) await release.promise
+    }
+    return response
+  } })
+  await vi.waitFor(() => expect(inboxCount()).toBe('2'))
+  expect(reads).toEqual([])
+  inboxLink().click()
+  await vi.waitFor(() => expect(choice(b.id)?.disabled).toBe(false))
+  expect(location.pathname).toBe('/attention')
+  expect(inboxLink().getAttribute('aria-current')).toBe('page')
+  expect(decision(a.id).textContent).toContain('reading request')
+  expect([...attentionList().querySelectorAll('article')].map((row) => row.id)).toEqual([`attention-${a.id}`, `attention-${b.id}`])
+  release.resolve()
+  await vi.waitFor(() => expect(decision(a.id).querySelector('.attention-question')?.textContent).toBe(question))
+  expect(decision(a.id).querySelector('img')).toBeNull()
+  decision(a.id).querySelector('a')!.click()
+  await vi.waitFor(() => expect(document.querySelector('aside[aria-label="Thread"]')?.textContent).toContain('First draft'))
+  expect([...document.querySelectorAll('aside[aria-label="Thread"] button')].some((button) => button.textContent === 'unblock')).toBe(false)
+  expect(reads).toHaveLength(2)
+  link('Handoffs').click()
+  const c = await hold(client, 'Third draft', 'Use the third draft?')
+  await vi.waitFor(() => expect(inboxCount()).toBe('3'))
+  expect(reads).toHaveLength(2)
+  inboxLink().click()
+  await vi.waitFor(() => expect(choice(c.id)?.disabled).toBe(false))
+  const d = await hold(client, 'Fourth draft', 'Use the fourth draft?')
+  await vi.waitFor(() => expect(choice(d.id)?.disabled).toBe(false))
+})
+
+it('lets j/k from the focused empty Attention list reach the open thread composer', async () => {
+  const { client, open } = await workbench({ attentionResponders: responders })
+  const { task } = await client.tasks.create('work', { text: 'Check the title' })
+  await open(`/attention?thread=${task.id}`)
+  const reply = await vi.waitFor(() => {
+    const field = document.querySelector<HTMLTextAreaElement>('textarea[data-composer="thread"]')
+    expect(field).not.toBeNull()
+    return field!
+  })
+  expect(inboxCount()).toBeUndefined()
+  for (const key of ['j', 'k']) {
+    attentionList().focus()
+    expect(press(attentionList(), key)).toBe(false)
+    expect(document.activeElement).toBe(reply)
+  }
+})
+
+it('consumes only real moves and enabled digits, and requires reselection after a replacement or removal', async () => {
+  const { client, open } = await workbench({ attentionResponders: responders })
+  const a = await hold(client, 'First draft', 'Use the first draft?')
+  const b = await hold(client, 'Second draft', 'Use the second draft?')
+  await open('/attention')
+  await vi.waitFor(() => expect(choice(b.id)?.disabled).toBe(false))
+  const list = attentionList()
+  list.focus()
+  expect(press(list, '1')).toBe(false)
+  expect(press(list, 'j')).toBe(true)
+  expect(selectedDecision()).toBe(`attention-${a.id}`)
+  expect(press(list, 'k')).toBe(false)
+  expect(press(list, 'j')).toBe(true)
+  expect(selectedDecision()).toBe(`attention-${b.id}`)
+  expect(press(list, '3')).toBe(false)
+  choice(b.id)!.focus()
+  expect(press(choice(b.id)!, '1')).toBe(false)
+  expect(press(list, '1')).toBe(false)
+  list.focus()
+  await client.tasks.ask(b.id, { ...b.request, question: 'Use the replacement?', replaces: b.attention.id })
+  await vi.waitFor(() => expect(decision(b.id).textContent).toContain('Use the replacement?'))
+  expect(selectedDecision()).toBeUndefined()
+  expect(press(list, '1')).toBe(false)
+  expect(press(list, 'k')).toBe(true)
+  expect(selectedDecision()).toBe(`attention-${b.id}`)
+  expect(press(list, '2')).toBe(true)
+  await vi.waitFor(() => expect(decision(b.id).textContent).toContain('answered · Stop'))
+  expect((await client.tasks.attention(b.id)).attention).toMatchObject({ status: 'answered', receipt: { option: 'stop' } })
+  expect(selectedDecision()).toBeUndefined()
+  expect(press(list, '1')).toBe(false)
+  expect(inboxCount()).toBe('1')
+  expect(press(list, 'j')).toBe(true)
+  await client.tasks.cancel(a.id, 'superseded')
+  await vi.waitFor(() => expect(decision(a.id)).toBeNull())
+  expect(selectedDecision()).toBeUndefined()
+  expect(inboxCount()).toBeUndefined()
+})
+
+it.each(['profile', 'deployment', 'read only', 'no discovery'] as const)('explains why Attention is read only with %s', async (identity) => {
+  const { client, open } = await workbench({ attentionResponders: responders })
+  const a = await hold(client, 'First draft', 'Use this draft?')
+  await open('/attention', {
+    ...(identity === 'profile' ? { profile: 'reviewer' } : {}),
+    ...(identity === 'deployment' ? { token: await deploymentToken('marketing', 'prj_marketing', 'production', { audience: BOARD_URL }) } : {}),
+    ...(identity === 'read only' ? { can: '*=read' } : {}),
+    transport: async (r, send) => {
+      const response = await send()
+      if (identity !== 'no discovery' || r.url.replace(/\/$/, '') !== BOARD_URL) return response
+      const { task_attention: _, ...discovery } = await response.json()
+      return Response.json(discovery)
+    },
+  })
+  await vi.waitFor(() => expect(decision(a.id)?.textContent).toContain(`read only: ${identity === 'no discovery' ? unsupportedWords : readOnlyWords}`))
+  expect(decision(a.id).textContent).toContain('Use this draft?')
+  expect(choice(a.id)).toBeNull()
+  attentionList().focus()
+  expect(press(attentionList(), 'j')).toBe(true)
+  expect(press(attentionList(), '1')).toBe(false)
+})
+
+it.each([403, 409] as const)('shows the board’s %i write refusal without an extra read', async (status) => {
+  const { client, open } = await workbench({ attentionResponders: status === 403 ? { work: ['vercel:user:u_other'] } : responders })
+  const a = await hold(client, 'First draft', 'Use this draft?')
+  let reads = 0
+  const answer = Promise.withResolvers<number>()
+  await open('/attention', { transport: async (r, send) => {
+    const response = await send()
+    if (attentionRead(r)) reads++
+    if (answerWrite(r)) answer.resolve(response.status)
+    return response
+  } })
+  await vi.waitFor(() => expect(choice(a.id)?.disabled).toBe(false))
+  if (status === 409) {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.parse(a.attention.expiresAt) + 1)
+  }
+  choice(a.id)!.click()
+  expect(await answer.promise).toBe(status)
+  await vi.waitFor(() => expect(decision(a.id).textContent).toContain(status === 409 ? staleWords : 'only a configured responder acting as themselves with read and post access can answer task attention'))
+  expect(decision(a.id).textContent).not.toContain('answering')
+  expect(choice(a.id)?.disabled).toBe(true)
+  expect(reads).toBe(1)
+})
+
+it.each(['read', 'write'] as const)('shows a real 501 on %s and offers no answer', async (operation) => {
+  const { client, open } = await workbench({ attentionResponders: responders })
+  const unsupported = localBoard()
+  otherBoards.push(unsupported)
+  const a = await hold(client, 'First draft', 'Use this draft?')
+  const refused = Promise.withResolvers<number>()
+  await open('/attention', { transport: async (r, send) => {
+    if (!(operation === 'read' ? attentionRead(r) : answerWrite(r))) return send()
+    const response = await unsupported.fetch(r)
+    refused.resolve(response.status)
+    return response
+  } })
+  if (operation === 'write') {
+    await vi.waitFor(() => expect(choice(a.id)?.disabled).toBe(false))
+    choice(a.id)!.click()
+  }
+  expect(await refused.promise).toBe(501)
+  await vi.waitFor(() => expect(decision(a.id)?.textContent).toContain(unsupportedWords))
+  expect(choice(a.id)).toBeNull()
+})
+
+it('flags an unseen 404 off-view, renders its words, then unlocks the same request on navigation refresh', async () => {
+  const { client, open } = await workbench({ attentionResponders: responders })
+  const empty = localBoard({ attentionResponders: responders })
+  otherBoards.push(empty)
+  const a = await hold(client, 'First draft', 'Use this draft?')
+  const writing = Promise.withResolvers<number>()
+  const releaseWrite = gate()
+  const releaseRead = gate()
+  let reads = 0
+  await open('/attention', { transport: async (r, send) => {
+    if (answerWrite(r)) {
+      const response = await empty.fetch(r)
+      writing.resolve(response.status)
+      await releaseWrite.promise
+      return response
+    }
+    const response = await send()
+    if (attentionRead(r) && ++reads === 2) await releaseRead.promise
+    return response
+  } })
+  await vi.waitFor(() => expect(choice(a.id)?.disabled).toBe(false))
+  choice(a.id)!.click()
+  expect(await writing.promise).toBe(404)
+  link('Handoffs').click()
+  await vi.waitFor(() => expect(location.pathname).toBe('/'))
+  releaseWrite.resolve()
+  await vi.waitFor(() => expect(inboxLink().textContent).toContain('refused'))
+  expect(reads).toBe(1)
+  inboxLink().click()
+  await vi.waitFor(() => expect(decision(a.id)?.textContent).toContain(`message not found: #${a.id}`))
+  await vi.waitFor(() => expect(inboxLink().textContent).not.toContain('refused'))
+  expect(choice(a.id)?.disabled).toBe(true)
+  releaseRead.resolve()
+  await vi.waitFor(() => expect(choice(a.id)?.disabled).toBe(false))
+  expect((await client.tasks.attention(a.id)).attention?.id).toBe(a.attention.id)
+})
+
+it.each(['feed', 'thread'] as const)('clears an unseen refusal for A when a newer %s root shows B, even if the attention read fails', async (source) => {
+  const { client, open } = await workbench({ attentionResponders: responders })
+  const empty = localBoard({ attentionResponders: responders })
+  otherBoards.push(empty)
+  const a = await hold(client, 'Draft for review', 'Use A?')
+  const beforeAnswer = gate()
+  const feed = gate()
+  const writing = Promise.withResolvers<number>()
+  const refusedRead = Promise.withResolvers<string>()
+  const listed = gate()
+  let replace = false
+  await open('/attention', { transport: async (r, send) => {
+    if (source === 'thread' && isFeed(r)) await feed.promise
+    if (answerWrite(r)) {
+      await beforeAnswer.promise
+      const response = await (source === 'feed' ? empty.fetch(r) : send())
+      writing.resolve(response.status)
+      return response
+    }
+    if (replace && attentionRead(r)) {
+      const response = await empty.fetch(r)
+      refusedRead.resolve((await response.clone().json()).error.message)
+      return response
+    }
+    const response = await send()
+    if (r.method === 'GET' && new URL(r.url).pathname.endsWith('/tasks') && new URL(r.url).searchParams.get('state') === 'all') listed.resolve()
+    return response
+  } })
+  await vi.waitFor(() => expect(choice(a.id)?.disabled).toBe(false))
+  choice(a.id)!.click()
+  link('Handoffs').click()
+  const thread = await vi.waitFor(() => link('Draft for review', lane('Needs attention')))
+  await listed.promise
+  const replaceA = () => client.tasks.ask(a.id, { ...a.request, question: 'Use B?', replaces: a.attention.id })
+  // Until an accepted root shows B, the refused write belongs to the A the page saw.
+  if (source === 'thread') await replaceA()
+  beforeAnswer.resolve()
+  expect(await writing.promise).toBe(source === 'thread' ? 409 : 404)
+  await vi.waitFor(() => expect(inboxLink().textContent).toContain('refused'))
+  if (source === 'thread') thread.click()
+  else await replaceA()
+  await vi.waitFor(() => expect(inboxLink().textContent).not.toContain('refused'))
+  replace = true
+  inboxLink().click()
+  const words = await refusedRead.promise
+  await vi.waitFor(() => expect(decision(a.id)?.textContent).toContain(words))
+  expect(decision(a.id).textContent).not.toContain(staleWords)
+  expect(inboxLink().textContent).not.toContain('refused')
+})
+
+it.each(['before', 'after'] as const)('ignores a superseded read that arrives %s the newer response', async (order) => {
+  const { client, open } = await workbench({ attentionResponders: responders })
+  const a = await hold(client, 'First draft', 'Use this draft?')
+  const pending = [0, 1].map(() => ({ captured: gate(), release: gate() }))
+  let reads = 0
+  await open('/attention', { transport: async (r, send) => {
+    const response = await send()
+    if (attentionRead(r)) {
+      const read = pending[reads++]!
+      read.captured.resolve()
+      await read.release.promise
+    }
+    return response
+  } })
+  await pending[0]!.captured.promise
+  link('Handoffs').click()
+  await vi.waitFor(() => expect(location.pathname).toBe('/'))
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(Date.parse(a.attention.expiresAt) + 1)
+  inboxLink().click()
+  await pending[1]!.captured.promise
+  if (order === 'before') {
+    await act(async () => pending[0]!.release.resolve())
+    expect(decision(a.id).textContent).toContain('reading request')
+  }
+  pending[1]!.release.resolve()
+  await vi.waitFor(() => expect(decision(a.id).textContent).toContain('read only: the request is stale'))
+  await act(async () => pending[0]!.release.resolve())
+  expect(decision(a.id).textContent).toContain('read only: the request is stale')
+})
+
+it('settles Ship it from the feed without rolling back a newer thread hold', async () => {
+  const { client, open } = await workbench({ attentionResponders: responders })
+  const a = await hold(client, 'First draft', 'Use this draft?')
+  const feed = gate()
+  const answer = Promise.withResolvers<number>()
+  await open('/attention', { transport: async (r, send) => {
+    if (isFeed(r)) await feed.promise
+    const response = await send()
+    if (answerWrite(r)) answer.resolve(response.status)
+    return response
+  } })
+  await vi.waitFor(() => expect(choice(a.id)?.disabled).toBe(false))
+  choice(a.id)!.click()
+  expect(await answer.promise).toBe(200)
+  await client.tasks.block(a.id, 'Wait for translation')
+  decision(a.id).querySelector('a')!.click()
+  await vi.waitFor(() => expect(threadPane()?.textContent).toContain('Wait for translation'))
+  expect(decision(a.id).textContent).toContain('answering Ship it')
+  feed.resolve()
+  await vi.waitFor(() => expect(decision(a.id)?.textContent).toContain('answered · Ship it'))
+  expect(decision(a.id).textContent).not.toContain('answering')
+  expect(threadPane()?.textContent).toContain('Wait for translation')
+  expect(inboxCount()).toBeUndefined()
+})
+
+it.each(['same request', 'replacement'] as const)('scopes a late competing 409 to its receipt: %s', async (scenario) => {
+  const { client, open } = await workbench({ attentionResponders: responders })
+  const a = await hold(client, 'First draft', 'Use this draft?')
+  const sendAnswer = gate()
+  const releaseRefusal = gate()
+  const refused = Promise.withResolvers<number>()
+  await open('/attention', { transport: async (r, send) => {
+    if (!answerWrite(r)) return send()
+    await sendAnswer.promise
+    const response = await send()
+    refused.resolve(response.status)
+    await releaseRefusal.promise
+    return response
+  } })
+  await vi.waitFor(() => expect(choice(a.id)?.disabled).toBe(false))
+  choice(a.id)!.click()
+  await client.tasks.answer(a.id, a.attention.id, { option: 'stop', commit })
+  await vi.waitFor(() => expect(decision(a.id).textContent).toContain('answered · Stop'))
+  sendAnswer.resolve()
+  expect(await refused.promise).toBe(409)
+  if (scenario === 'replacement') {
+    await client.tasks.reopen(a.id)
+    await client.tasks.ask(a.id, { ...a.request, question: 'Use the replacement?' })
+    await vi.waitFor(() => expect(decision(a.id).textContent).toContain('Use the replacement?'))
+  }
+  await act(async () => releaseRefusal.resolve())
+  if (scenario === 'same request') {
+    await vi.waitFor(() => expect(decision(a.id).textContent).toContain(staleWords))
+    expect(decision(a.id).textContent).toContain('answered · Stop')
+    expect(choice(a.id)).toBeNull()
+  } else {
+    expect(decision(a.id).textContent).not.toContain(staleWords)
+    expect(inboxLink().textContent).not.toContain('refused')
+    expect(choice(a.id)?.disabled).toBe(false)
+  }
+})
+
+it('offers a working unblock for a plain hold after an answered request', async () => {
+  const { client, open } = await workbench({ attentionResponders: responders })
+  const a = await hold(client, 'First draft', 'Use this draft?')
+  await client.tasks.answer(a.id, a.attention.id, { option: 'ship', commit })
+  const root = await client.tasks.block(a.id, 'Wait for translation')
+  expect(root.task?.attentionId).toBe(a.attention.id)
+  await open(`/attention?thread=${a.id}`)
+  await vi.waitFor(() => expect(threadPane()?.textContent).toContain('Wait for translation'))
+  expect(unblockButton()).toBeDefined()
+  unblockButton()!.click()
+  await vi.waitFor(() => expect(threadPane()?.textContent).not.toContain('Wait for translation'))
+  expect((await client.tasks.list({ state: 'ready' })).tasks.map(({ message }) => message.id)).toContain(a.id)
+})
+
+it('keeps a stale request read-only without offering an unblock the board refuses', async () => {
+  const { client, open } = await workbench({ attentionResponders: responders })
+  const a = await hold(client, 'First draft', 'Use this draft?')
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(Date.parse(a.attention.expiresAt) + 1)
+  await expect(client.tasks.unblock(a.id)).rejects.toMatchObject({ status: 409, code: 'attention_required' })
+  await open(`/attention?thread=${a.id}`)
+  await vi.waitFor(() => expect(decision(a.id)?.textContent).toContain('read only: the request is stale'))
+  await vi.waitFor(() => expect(threadPane()?.textContent).toContain('Use this draft?'))
+  expect(unblockButton()).toBeUndefined()
+  expect(choice(a.id)).toBeNull()
+})
+
+it.each(['read', 'write'] as const)('hides all answer buttons on a 501 with a different code from %s', async (operation) => {
+  const { client, open } = await workbench({ attentionResponders: responders })
+  const a = await hold(client, 'First draft', 'Use this draft?')
+  const b = await hold(client, 'Second draft', 'Use the second draft?')
+  const release = gate()
+  const words = 'this deployment has not enabled attention'
+  await open('/attention', { transport: async (r, send) => {
+    const refused = operation === 'read' ? attentionRead(r) && r.url.endsWith(`/${a.id}/attention`) : answerWrite(r)
+    if (!refused) return send()
+    await release.promise
+    // Model a backend with a different 501 code; all other traffic goes to the local board.
+    return Response.json({ error: { code: 'not_implemented', message: words } }, { status: 501 })
+  } })
+  await vi.waitFor(() => expect(choice(b.id)?.disabled).toBe(false))
+  if (operation === 'write') {
+    await vi.waitFor(() => expect(choice(a.id)?.disabled).toBe(false))
+    choice(a.id)!.click()
+  }
+  release.resolve()
+  await vi.waitFor(() => expect(decision(a.id).textContent).toContain(words))
+  expect(choice(a.id)).toBeNull()
+  expect(choice(b.id)).toBeNull()
+})
+
+it('keeps the answering overlay after HTTP success until the real feed confirms', async () => {
+  const { client, open } = await workbench({ attentionResponders: responders })
+  const a = await hold(client, 'First draft', 'Use this draft?')
+  const feed = gate()
+  const answer = Promise.withResolvers<number>()
+  await open('/attention', { transport: async (r, send) => {
+    if (isFeed(r)) await feed.promise
+    const response = await send()
+    if (answerWrite(r)) answer.resolve(response.status)
+    return response
+  } })
+  await vi.waitFor(() => expect(choice(a.id)?.disabled).toBe(false))
+  choice(a.id)!.click()
+  expect(await answer.promise).toBe(200)
+  expect((await client.tasks.attention(a.id)).attention?.status).toBe('answered')
+  expect(decision(a.id).textContent).toContain('answering Ship it')
+  expect(choice(a.id)?.disabled).toBe(true)
+  expect(inboxCount()).toBe('1')
+  feed.resolve()
+  await vi.waitFor(() => expect(decision(a.id).textContent).toContain('answered · Ship it'))
+  expect(inboxCount()).toBeUndefined()
 })

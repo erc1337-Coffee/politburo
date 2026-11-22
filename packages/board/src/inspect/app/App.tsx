@@ -1,6 +1,7 @@
 import { ListTodo, PanelLeftOpen, X } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import type { MessageView, SyncedView } from '../../api/routes.ts'
+import { Attention } from './attention.tsx'
 import * as board from './board.ts'
 import { setEditing } from './chrome.ts'
 import { Composer } from './composer.tsx'
@@ -282,6 +283,7 @@ export function App() {
           <Channel key={current.channel} channel={current.channel} state={state} options={options} known={known} lead={expand} filters={filters} />
         )}
         {current.view === 'tasks' && <Tasks state={state} viewer={viewer} now={now} lead={expand} where={where} known={known} />}
+        {current.view === 'attention' && <Attention state={state} viewer={viewer} lead={expand} />}
         {current.view === 'settings' && <Settings state={state} viewer={viewer} now={now} lead={expand} where={where} section={current.section} open={current.open} />}
         {current.view === 'missing' && (
           <>

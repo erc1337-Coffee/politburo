@@ -10,6 +10,7 @@ import { board, BoardError, type Attachment, type EventsState, type ExplainPrinc
 // Everything under that line reads as it would in your app: plain `team.*` calls.
 import { http } from '../../backend-http/index.default.ts'
 import { everyChannel } from '../../client/channels.ts'
+import * as attentionStore from './attention-store.ts'
 import { toast } from './chrome.ts'
 import { listing } from './listing.ts'
 import { base } from './nav.tsx'
@@ -181,6 +182,7 @@ export async function boot() {
     const events = queue
     queue = []
     listed.apply(events)
+    if (attentionOpen) refreshAttentionEvents(events)
     // A schedule's own state isn't in the feed, but its sends are: one that landed means the list moved.
     if (events.some((event) => event.message?.schedule !== undefined)) void loadSchedules()
   }
@@ -195,7 +197,7 @@ export async function boot() {
   void team.actors().then((actors) => set((s) => ({ ...s, actors: { ...Object.fromEntries(actors.map((actor) => [actor.id, actor])), ...s.actors } })), () => {})
   void loadSchemas()
   void loadSchedules()
-  void loadTasks({ state: 'open', label: [] }).then((listed) => 'cursor' in listed && !listed.more && set((s) => ({ ...s, tasksCounted: true })))
+  openTaskPages = loadOpenTasks()
 }
 
 // #region guide inspector/live.ts
@@ -482,6 +484,91 @@ export async function loadTasks(filter: store.TaskFilter, after?: string): Promi
     return { cursor: page.cursor, last: roots.at(-1), more: roots.length === PAGE }
   } catch (error) {
     return { refused: refusal(error), tooWide: (error as { code?: unknown } | null)?.code === 'channel_tree_too_large' }
+  }
+}
+
+/** The shared open-task index also supplies the sidebar counts. */
+async function loadOpenTasks() {
+  let after: string | undefined
+  for (;;) {
+    const page = await loadTasks({ state: 'open', label: [] }, after)
+    if ('refused' in page) {
+      set((s) => ({ ...s, tasksRefused: page.refused }))
+      return
+    }
+    if (!page.more || page.cursor === after) break
+    after = page.cursor
+  }
+  set((s) => ({ ...s, tasksCounted: true }))
+}
+
+let openTaskPages: Promise<void> | undefined
+let attentionOpen = false
+
+export function openAttention() {
+  attentionOpen = true
+  let visiting = true
+  for (const root of attentionStore.attentionTasks(state)) void readAttention(root)
+  // A direct visit can start while the initial task pages are still loading.
+  void openTaskPages?.then(() => {
+    if (!visiting) return
+    for (const root of attentionStore.attentionTasks(state))
+      if (state.attention[root.id]?.latest?.id !== root.task.attentionId) void readAttention(root)
+  })
+  return () => {
+    visiting = false
+    attentionOpen = false
+    set(attentionStore.leaveAttention)
+  }
+}
+
+function refreshAttentionEvents(events: BoardEventView[]) {
+  const touched = new Set<string>()
+  for (const event of events) {
+    const message = event.message
+    if (store.isTask(message)) touched.add(message.id)
+    // Editing or deleting a reply can invalidate evidence in the request.
+    if ((event.type === 'message.edited' || event.type === 'message.deleted') && message?.re) touched.add(message.re)
+  }
+  for (const id of touched) {
+    const root = state.messages[id]
+    if (attentionStore.holdsAttention(root)) void readAttention(root)
+  }
+}
+
+const attentionFailure = (error: unknown) => ({
+  words: said(error),
+  unsupported: error instanceof BoardError && error.status === 501,
+})
+
+export function attentionRendered(rendered: store.State) {
+  set((s) => attentionStore.showAttentionRefusals(s, rendered))
+}
+
+async function readAttention(root: ReturnType<typeof attentionStore.attentionTasks>[number]) {
+  const reading = attentionStore.beginAttentionRead(state, root)
+  set(() => reading.state)
+  const result = await team.tasks.attention(root.id).then<attentionStore.AttentionResult, attentionStore.AttentionResult>(
+    ({ attention }) => ({ is: 'here', value: attention }),
+    (error: unknown) => ({ is: 'failed', ...attentionFailure(error) }),
+  )
+  set((s) => attentionStore.finishAttentionRead(s, root.id, reading.read, result))
+}
+
+/** Only the feed settles a successful answer. */
+export async function answerAttention(id: string, requestId: string, optionId: string) {
+  const root = state.messages[id]
+  if (!attentionStore.holdsAttention(root) || !state.me) return
+  const { attention, reason, disabled } = attentionStore.attentionFor(state, root, viewerOf(state.me))
+  if (!attention || attention.id !== requestId || reason !== null || disabled) return
+  const option = attention.options.find((option) => option.id === optionId)
+  if (!option) return
+  set((s) => attentionStore.beginAnswer(s, root, attention, option.label))
+  try {
+    await team.tasks.answer(id, requestId, { option: option.id, commit: attention.commit })
+    set((s) => attentionStore.finishAnswer(s, id, attention))
+  } catch (error) {
+    set((s) => attentionStore.finishAnswer(s, id, attention, attentionFailure(error)))
   }
 }
 
