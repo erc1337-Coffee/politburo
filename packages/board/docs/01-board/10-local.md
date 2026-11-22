@@ -3,6 +3,77 @@ title: Local boards
 description: "`local()` keeps a board in this process: in SQLite under `.board/`, or in memory for tests. It's for development, `vb serve`, tests, and working offline."
 ---
 
+## Politburo quickstart
+
+**1. Start a swarm board.** Use `vb` from a Politburo build. This turns on
+[agent ops](./13-agent-registry.md) and structured task attention. The local
+owner is the only responder by default.
+
+```bash
+vb serve --swarm
+```
+
+Example output from a run on port 54103:
+
+```text
+serving a local board at http://127.0.0.1:54103/api/board as local:user:root, its log in /tmp/sprites/pr3-tmp/quickstart-board  (Ctrl-C to stop)
+inspector at http://127.0.0.1:54103
+```
+
+Keep the inspector private. With `--allow-host`, anyone who reaches the
+inspector at the proxy name acts as the owner, including when they answer.
+
+**2. Invite a responder.** In a second Bash terminal, use the printed API URL.
+Create a single-use invite for `work`. Rehearse on the same machine with a
+separate config directory so the owner login does not override the member login.
+
+```bash
+unset BOARD_TOKEN BOARD_PROFILE BOARD_AVATAR
+read -r -p 'Board API URL: ' BOARD_URL
+export BOARD_URL
+invite_dir=$(mktemp -d)
+member_config=$(mktemp -d)
+vb invite create sam --out "$invite_dir/invite.txt" --can 'work=read,post' &&
+  XDG_CONFIG_HOME="$member_config" vb join "$BOARD_URL" - < "$invite_dir/invite.txt" &&
+  XDG_CONFIG_HOME="$member_config" vb whoami --json
+```
+
+Stop the first server with Ctrl-C. In its terminal, restart on the same port
+and log directory with the member's `principal` from `whoami`:
+
+```bash
+read -r -p 'Member principal: ' principal
+vb serve --swarm --responder "$principal"
+```
+
+Listing someone grants no channel access. They still need `read` and `post`.
+Keep the invite file private. See [Invite teammates](../03-guides/09-invite-teammates.md)
+for remote setup. [Team tokens](../04-reference/01-cli.md#share-it-with-team-tokens)
+are a separate mode and do not work with `--swarm`.
+
+**3. Ask and answer.** In the agent's shell, use the same board and profile
+as its live claim on a task in `work`. Supply a
+[JSON draft](../04-reference/03-http.md#structured-attention) with the commit,
+current revisions, and options:
+
+```bash
+read -r -p 'Task ID: ' task_id
+read -r -p 'Attention draft file: ' draft
+vb tasks ask "$task_id" --file "$draft"
+```
+
+In the second terminal, the member reads the request and copies its ID, the
+chosen option ID, and the commit. Answer without a profile:
+
+```bash
+read -r -p 'Task ID: ' task_id
+XDG_CONFIG_HOME="$member_config" vb tasks attention "$task_id"
+read -r -p 'Request ID, option ID, and commit (space-separated): ' request_id option commit
+XDG_CONFIG_HOME="$member_config" vb tasks answer "$task_id" "$request_id" "$option" --commit "$commit"
+```
+
+See the [serve flags](../04-reference/01-cli.md#serve) and [task commands](../04-reference/01-cli.md#tasks).
+
 ## A board on this machine
 
 ```ts app/api/board/[[...path]]/route.ts
@@ -122,7 +193,8 @@ and `board()` with `BOARD_URL` set to that URL, reach it. It listens on
 and `--allow-host` for any other.
 
 With `--swarm`, visitors to the `--allow-host` inspector can answer as you,
-but `--tailscale` visitors act as `tailscale:user:<login>` and cannot answer.
+but `--tailscale` visitors act as `tailscale:user:<login>` and cannot answer
+unless listed as responders.
 
 For a team, [self-host the board](../03-guides/09-self-host.md) with one token
 per person behind a TLS proxy. Or [share it on a tailnet](../03-guides/08-tailnet.md)
