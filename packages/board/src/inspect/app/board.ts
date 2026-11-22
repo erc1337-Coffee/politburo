@@ -307,22 +307,28 @@ export const loadFiltered = (channel: string, filter: store.Filter) => {
 // --- work control and registry ------------------------------------------------------
 
 let statusRead = 0
-let statusApplied = 0
+let statusSettled = 0
+let statusApplied: { read: number; epoch: number } | undefined
 
 export async function loadStatus() {
   const read = ++statusRead
   const as = identity
   try {
     const status = await team.status()
-    if (read <= statusApplied || as !== identity) return
+    if (as !== identity) return
+    statusSettled = Math.max(statusSettled, read)
     set((s) => {
+      // A read may sample a later epoch even if it started first. Only break ties by request order.
+      if (status.pauseEpoch === statusApplied?.epoch && read < statusApplied.read) return s
       const next = store.applyStatus(s, status)
-      if (next !== s) statusApplied = read
+      if (next !== s) statusApplied = { read, epoch: status.pauseEpoch }
       return next
     })
   } catch (error) {
-    // Some boards do not support work control. A refusal does not supersede a status answer.
-    if (read > statusApplied && as === identity) set((s) => ({ ...s, statusRefused: said(error) }))
+    // A refusal only adds a note to the header; it never replaces a successful status.
+    if (as !== identity || read <= statusSettled) return
+    statusSettled = read
+    set((s) => ({ ...s, statusRefused: said(error) }))
   }
 }
 

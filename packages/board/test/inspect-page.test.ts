@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it, vi } from 'vitest'
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { MessageView, ScheduleView } from '../src/api/routes.ts'
 
 // The page's data module, as the page runs it: one handle on the inspector's proxy, which is
@@ -144,12 +144,60 @@ describe("the inspector's page, starting a task", () => {
 })
 
 describe("the inspector's page, reading work control", () => {
-  it('keeps the last successful status even if a pending newer read fails', async () => {
+  beforeEach(async () => {
+    vi.resetModules()
+    page = await import('../src/inspect/app/board.ts')
+  })
+
+  function twoStatusReads() {
     const old = Promise.withResolvers<Response>()
     const newer = Promise.withResolvers<Response>()
     next.set('GET /control', [() => old.promise, () => newer.promise])
-    const first = page.loadStatus()
-    const second = page.loadStatus()
+    return { old, newer, first: page.loadStatus(), second: page.loadStatus() }
+  }
+
+  it('takes a later pause epoch from a slower, older status read', async () => {
+    const { old, newer, first, second } = twoStatusReads()
+    newer.resolve(Response.json({ paused: false, pauseEpoch: 0 }))
+    await second
+    expect(page.getState().status).toEqual({ paused: false, pauseEpoch: 0 })
+    old.resolve(Response.json({ paused: true, pauseEpoch: 1 }))
+    await first
+    expect(page.getState().status).toEqual({ paused: true, pauseEpoch: 1 })
+  })
+
+  it('does not revert the pause epoch on a newer status read', async () => {
+    const { old, newer, first, second } = twoStatusReads()
+    old.resolve(Response.json({ paused: true, pauseEpoch: 1 }))
+    await first
+    expect(page.getState().status).toEqual({ paused: true, pauseEpoch: 1 })
+    newer.resolve(Response.json({ paused: false, pauseEpoch: 0 }))
+    await second
+    expect(page.getState().status).toEqual({ paused: true, pauseEpoch: 1 })
+  })
+
+  it('keeps the newer refusal in the header when the older refusal arrives last', async () => {
+    const { old, newer, first, second } = twoStatusReads()
+    newer.resolve(refuse(503, 'unavailable', 'status is temporarily unavailable')())
+    await second
+    expect(page.getState().statusRefused).toBe('status is temporarily unavailable')
+    old.resolve(refuse(403, 'forbidden', 'status access was denied')())
+    await first
+    expect(page.getState().statusRefused).toBe('status is temporarily unavailable')
+  })
+
+  it('does not show a refusal older than a successful status read', async () => {
+    const { old, newer, first, second } = twoStatusReads()
+    newer.resolve(Response.json({ paused: false, pauseEpoch: 0 }))
+    await second
+    old.resolve(refuse(503, 'unavailable', 'status is temporarily unavailable')())
+    await first
+    expect(page.getState().status).toEqual({ paused: false, pauseEpoch: 0 })
+    expect(page.getState().statusRefused).toBeNull()
+  })
+
+  it('keeps the last successful status even if a pending newer read fails', async () => {
+    const { old, newer, first, second } = twoStatusReads()
     old.resolve(Response.json({ paused: true, pauseEpoch: 1 }))
     await first
     expect(page.getState().status).toEqual({ paused: true, pauseEpoch: 1 })

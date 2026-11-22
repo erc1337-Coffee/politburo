@@ -414,8 +414,6 @@ it('shows live pause detail on every view and lets the manager resume with a rea
   await client.pause('maintenance window')
   const me = await client.me()
   await vi.waitFor(() => expect(banner().textContent).toMatch(new RegExp(`^paused by ${me.name}, .+ ago: maintenance window$`)))
-  expect(banner().parentElement?.classList.contains('workspace')).toBe(true)
-  expect(getComputedStyle(banner()).position).toBe('absolute')
   link('Presidium').click()
   await vi.waitFor(() => expect(document.querySelector('main h1')?.textContent).toBe('PRESIDIUM'))
   expect(banner().textContent).toContain('maintenance window')
@@ -431,6 +429,56 @@ it('shows live pause detail on every view and lets the manager resume with a rea
   } finally {
     await received.return(undefined)
   }
+})
+
+it('keeps the message scroller in place through a live pause and resume', async () => {
+  const { client, open } = await workbench()
+  for (let i = 1; i <= 20; i++) await client.post('work', `Release log entry ${i}`)
+  await open('/c/work')
+  await vi.waitFor(() => {
+    expect(document.querySelector('.live')?.textContent).toBe('live')
+    expect(document.querySelectorAll('main .message')).toHaveLength(20)
+    button('Pause')
+  })
+  const scroller = document.querySelector<HTMLElement>('main .feed')!
+  const banner = document.querySelector<HTMLElement>('.pause-banner')!
+  const workspace = scroller.closest('.workspace')!
+  scroller.scrollTop = 300
+  expect(scroller.scrollTop).toBe(300)
+
+  // Happy DOM has no layout. Check the rendered structure that preserves the feed's geometry:
+  // the banner is out of flow and neither the scroller nor its ancestors acquire an inset.
+  const flow = () => {
+    const chain = []
+    for (let el: HTMLElement | null = scroller; el; el = el.parentElement) {
+      const style = getComputedStyle(el)
+      chain.push([el, style.height, style.minHeight, style.paddingTop, style.marginTop])
+    }
+    return chain
+  }
+  const before = flow()
+  const stillReading = () => {
+    expect(document.querySelector('main .feed')).toBe(scroller)
+    expect(scroller.scrollTop).toBe(300)
+    expect(flow()).toEqual(before)
+  }
+
+  await client.pause('waiting for the release window')
+  await vi.waitFor(() => {
+    expect(banner.hidden).toBe(false)
+    expect(banner.textContent).toContain('waiting for the release window')
+  })
+  expect(banner.parentElement).toBe(workspace)
+  expect(getComputedStyle(workspace).position).toBe('relative')
+  expect(getComputedStyle(banner).position).toBe('absolute')
+  stillReading()
+
+  await client.resume('the release window opened')
+  await vi.waitFor(() => {
+    expect(banner.hidden).toBe(true)
+    button('Pause')
+  })
+  stillReading()
 })
 
 async function submitReason(placeholder: string, text: string) {

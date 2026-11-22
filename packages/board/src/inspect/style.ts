@@ -108,8 +108,10 @@ textarea, [contenteditable]:not([contenteditable='false']) { cursor: text; }
 
 .shell { display: flex; flex-direction: column; height: 100dvh; overflow: hidden; }
 .workspace { --header-height: 46px; position: relative; display: flex; flex: 1; min-height: 0; }
-/* Overlay below the header so a live pause neither moves the scrollers nor covers Resume. */
+/* Overlay below the header so a live pause neither moves the message feeds nor covers Resume. */
 .pause-banner { position: absolute; top: var(--header-height); inset-inline: 0; z-index: calc(var(--overlay-layer) + 1); max-height: 50%; overflow-y: auto; padding: 6px var(--inset); background: var(--selected); color: var(--bright); overflow-wrap: anywhere; }
+/* Keep tabs and the first row of non-feed views below even a wrapped banner. */
+.main > .header + :is(.tabs, .page) { margin-top: var(--pause-inset, 0px); }
 @media (min-width: 64rem) {
   .shell { margin: 12px; height: calc(100dvh - 24px); border-radius: 7px; box-shadow: 0 2px 3px var(--shadow); }
 }

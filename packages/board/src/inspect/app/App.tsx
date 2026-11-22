@@ -307,7 +307,7 @@ export function App() {
       }}
     >
       <div className="workspace">
-        <div className="pause-banner" role="status" hidden={banner === null}>{banner}</div>
+        <PauseBanner text={banner} />
         {nav && <div className="scrim" onClick={() => setNav(false)} />}
         <nav id="board-sidebar" className="sidebar" aria-label="Board navigation" tabIndex={-1} hidden={!nav && sidebar.collapsed} style={{ width: sidebar.width, opacity: sidebar.fade }}>
           <Sidebar
@@ -350,6 +350,25 @@ export function App() {
       <Toasts />
     </div>
   )
+}
+
+function PauseBanner({ text }: { text: string | null }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const shown = text !== null
+  useLayoutEffect(() => {
+    if (!shown) return
+    const banner = ref.current!
+    const workspace = banner.parentElement!
+    const measure = () => workspace.style.setProperty('--pause-inset', `${banner.getBoundingClientRect().height}px`)
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(banner, { box: 'border-box' })
+    return () => {
+      observer.disconnect()
+      workspace.style.removeProperty('--pause-inset')
+    }
+  }, [shown])
+  return <div ref={ref} className="pause-banner" role="status" hidden={!shown}>{text}</div>
 }
 
 // --- views ---------------------------------------------------------------------------
