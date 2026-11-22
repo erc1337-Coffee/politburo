@@ -120,10 +120,30 @@ function lane(title: string) {
 
 const mainText = () => document.querySelector('main')?.textContent
 
+it('shows loading before the empty Needs action sentence on an empty board', async () => {
+  const { open } = await workbench()
+  const listed = Promise.withResolvers<void>()
+  releaseGates.push(() => listed.resolve())
+  await open('/', { transport: async (request, send) => {
+    if (routePath(request) === '/tasks') await listed.promise
+    return send()
+  } })
+  await vi.waitFor(() => {
+    expect(document.querySelector('main h1')?.textContent).toBe('Needs action')
+    expect(mainText()).toContain('loading…')
+    expect(mainText()).not.toContain('nothing needs anyone')
+  })
+  listed.resolve()
+  await vi.waitFor(() => expect(mainText()).toContain('nothing needs anyone'))
+  link('Handoffs').click()
+  await vi.waitFor(() => expect(document.querySelector('main h1')?.textContent).toBe('HANDOFFS'))
+  expect(location.pathname).toBe('/handoffs')
+})
+
 it('keeps a focused Handoff in its original lane when another reader claims it', async () => {
   const { api, as, open } = await workbench()
   const { task } = await api.tasks.create('work', { text: 'Review the release' })
-  await open()
+  await open('/handoffs')
   const reading = await vi.waitFor(() => link('Review the release', lane('Runnable')))
   reading.focus()
   expect(document.activeElement).toBe(reading)
@@ -146,7 +166,7 @@ it('shows a completed task and its result in the Delivered lane', async () => {
   const { api, open } = await workbench()
   const { task } = await api.tasks.create('work', { text: 'Publish the release notes' })
   await (await api.tasks.claim(task.id)).complete('Release notes are live')
-  await open()
+  await open('/handoffs')
   await vi.waitFor(() => {
     const delivered = lane('Delivered')
     expect(link('Publish the release notes', delivered)).toBeDefined()
@@ -170,7 +190,7 @@ it('PRESIDIUM shows totals from all task pages', async () => {
 it('typing over Handoffs focuses the open thread reply', async () => {
   const { api, open } = await workbench()
   const { task } = await api.tasks.create('work', { text: 'Check the build' })
-  await open(`/?thread=${task.id}`)
+  await open(`/handoffs?thread=${task.id}`)
   const reply = await vi.waitFor(() => {
     const field = document.querySelector<HTMLTextAreaElement>('textarea[placeholder="reply to thread…"]')
     expect(field).not.toBeNull()
@@ -569,7 +589,7 @@ it('shows live pause detail on every view and lets the manager resume with a rea
   await client.pause('maintenance window')
   const me = await client.me()
   await vi.waitFor(() => expect(banner().textContent).toMatch(new RegExp(`^paused by ${me.name}, .+ ago: maintenance window$`)))
-  for (const [path, title] of [['/presidium', 'PRESIDIUM'], ['/c/work', '#work'], ['/tasks', 'tasks'], ['/attention', 'attention'], ['/settings/access', 'settings'], ['/', 'HANDOFFS']]) {
+  for (const [path, title] of [['/presidium', 'PRESIDIUM'], ['/c/work', '#work'], ['/tasks', 'tasks'], ['/attention', 'attention'], ['/settings/access', 'settings'], ['/handoffs', 'HANDOFFS']]) {
     document.querySelector<HTMLAnchorElement>(`.sidebar a[href="${path}"]`)!.click()
     await vi.waitFor(() => expect(document.querySelector('main h1')?.textContent).toBe(title))
     expect(banner().hidden).toBe(false)
@@ -874,7 +894,7 @@ it('opens Attention from the sidebar, counts only holds, escapes questions, and 
   const b = await hold(client, 'Second draft', 'Use the second draft?')
   const release = gate()
   const reads: string[] = []
-  await open('/', { transport: async (r, send) => {
+  await open('/handoffs', { transport: async (r, send) => {
     const response = await send()
     if (attentionRead(r)) {
       reads.push(r.url)
@@ -1087,7 +1107,7 @@ it('flags an unseen 404 off-view, renders its words, then unlocks the same reque
   choice(a.id)!.click()
   expect(await writing.promise).toBe(404)
   link('Handoffs').click()
-  await vi.waitFor(() => expect(location.pathname).toBe('/'))
+  await vi.waitFor(() => expect(location.pathname).toBe('/handoffs'))
   releaseWrite.resolve()
   await vi.waitFor(() => expect(inboxLink().textContent).toContain('refused'))
   expect(reads).toBe(1)
@@ -1166,7 +1186,7 @@ it.each(['before', 'after'] as const)('ignores a superseded read that arrives %s
   } })
   await pending[0]!.captured.promise
   link('Handoffs').click()
-  await vi.waitFor(() => expect(location.pathname).toBe('/'))
+  await vi.waitFor(() => expect(location.pathname).toBe('/handoffs'))
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(Date.parse(a.attention.expiresAt) + 1)
   inboxLink().click()

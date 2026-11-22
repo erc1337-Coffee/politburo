@@ -7,6 +7,7 @@ import { setEditing } from './chrome.ts'
 import { Composer } from './composer.tsx'
 import { Feed, Toasts } from './feed.tsx'
 import { Home } from './home.tsx'
+import { NeedsAction } from './needs-action.tsx'
 import { HomeEmblem } from './home-emblem.tsx'
 import { Messages, Pendings, type RowOptions } from './message.tsx'
 import { here, navigate, route, useLocation, useNow, useTypeToFocus } from './nav.tsx'
@@ -245,7 +246,8 @@ export function App() {
     const title = current.view === 'channel' ? `#${current.channel}`
       : current.view === 'settings' ? `${current.section} · settings`
       : current.view === 'missing' ? 'nothing here'
-      : current.view === 'home' ? 'HANDOFFS'
+      : current.view === 'needs' ? 'Needs action'
+      : current.view === 'handoffs' ? 'HANDOFFS'
       : current.view === 'presidium' ? 'PRESIDIUM'
       : current.view
     document.title = `${title} · ${named}`
@@ -325,7 +327,8 @@ export function App() {
         </nav>
         <main className="main" inert={narrow && (nav || where.thread !== null)}>
           <HeaderActions.Provider value={paneIsFront ? null : headerActions}>
-            {current.view === 'home' && <Home key={identity} state={state} now={now} lead={expand} />}
+            {current.view === 'needs' && <NeedsAction key={identity} state={state} viewer={viewer} now={now} lead={expand} />}
+            {current.view === 'handoffs' && <Home key={identity} state={state} now={now} lead={expand} />}
             {current.view === 'presidium' && <Presidium key={identity} state={state} now={now} lead={expand} />}
             {current.view === 'channel' && (
               <Channel key={current.channel} channel={current.channel} state={state} options={options} known={known} lead={expand} filters={filters} />

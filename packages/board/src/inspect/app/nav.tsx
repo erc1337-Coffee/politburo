@@ -134,11 +134,13 @@ export function useTypeToFocus(composer: string) {
 /**
  * "now", "12s", "4m": a relative time that changes exactly when its label
  * would. Each one schedules its own next update: every second in the first
- * minute, then on the minute, the hour, the day.
+ * minute, then on the minute, the hour, the day, unless given the view's clock.
  */
-export function Ago({ iso, prefix = '' }: { iso: string; prefix?: string }) {
+export function Ago({ iso, prefix = '', now }: { iso: string; prefix?: string; now?: number }) {
   const [, tick] = useReducer((n: number) => n + 1, 0)
+  const ticking = now === undefined
   useEffect(() => {
+    if (!ticking) return
     let timer: ReturnType<typeof setTimeout>
     const schedule = () => {
       const age = Math.max(0, Date.now() - Date.parse(iso))
@@ -150,12 +152,12 @@ export function Ago({ iso, prefix = '' }: { iso: string; prefix?: string }) {
     }
     schedule()
     return () => clearTimeout(timer)
-  }, [iso])
-  const age = Date.now() - Date.parse(iso)
+  }, [iso, ticking])
+  const time = now ?? Date.now()
   return (
     <span className="time" title={new Date(iso).toLocaleString()}>
       {prefix}
-      {age < 5_000 ? 'now' : ago(iso)}
+      {ticking && time - Date.parse(iso) < 5_000 ? 'now' : ago(iso, time)}
     </span>
   )
 }
