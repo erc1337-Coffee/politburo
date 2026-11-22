@@ -86,7 +86,7 @@ Wilson interval, median and p90 time and tokens, and tokens per changed line
 with their source run IDs, not as a leaderboard.
 
 The archive and delayed test copy prevent direct leakage in the supplied
-working tree. They do not sandbox the agent or rule out prior exposure to
+working tree. A sprite subprocess that outlives its sprite could still write into the copy while the golden files are restored; grading in a second, runner-owned tree is a follow-up. The sprite and the golden check inherit the runner's environment, because the launcher needs the model's credentials from it; run the suite from a shell that holds nothing else. `sprite-start` writes the sprite's own `.out` and `.jsonl.err` files, which can hold raw diagnostics, under the sprites directory; they are never read or committed here. They do not sandbox the agent or rule out prior exposure to
 this change. Keep the source checkout and prior run artifacts outside what
 the agent can access. Do not treat this suite as a test of resistance to
 an agent seeking the answer or tampering with the checker.

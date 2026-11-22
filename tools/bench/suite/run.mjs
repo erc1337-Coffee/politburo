@@ -121,6 +121,12 @@ async function run(o, repo, task, grace) {
     const verdict = spawnSync(cmd, args, { cwd, env, ...quiet });
     if (verdict.error) throw verdict.error;
     const check = verdict.status === 0 ? 'pass' : 'fail';
+    // Put back what the sprite had at each golden path, so restored test code is not counted as its change.
+    for (const file of task.goldenFiles) {
+      const tracked = spawnSync('git', ['ls-files', '--error-unmatch', '--', file], { cwd, env, ...quiet }).status === 0;
+      if (tracked) git(cwd, ['checkout', '--', file]);
+      else unlinkSync(join(cwd, file));
+    }
     const { score, size, reason, ratedBy, ratedAt } = task.rating;
     const collector = fileURLToPath(new URL('../sprite-usage.mjs', import.meta.url));
     const rows = execFileSync(process.execPath, [collector, name, '--dir', sprites, '--worktree', cwd, '--base', base,

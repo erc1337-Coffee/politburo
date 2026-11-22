@@ -102,14 +102,14 @@ printf 'sprite stdout\n'
 printf 'sprite stderr\n' >&2
 [ "$MODE" != fail-start ] || exit 9
 cp "$FIXTURE_LOG" "$SPRITES/$1.jsonl"
-if [ "$MODE" = pass ]; then printf fixed > answer; printf 'one\ntwo\n' > added; fi
-if [ "$MODE" != no-rc ]; then (sleep 0.1; printf '0\n' > "$SPRITES/$1.rc") & fi
+if [ "$MODE" = pass ]; then printf fixed > answer; printf 'one\ntwo\n' > added; printf 'mine\n' > golden.mjs; fi
+if [ "$MODE" != no-rc ]; then (sleep 0.1; printf '%s\n' "$RC" > "$SPRITES/$1.rc") & fi
 `, { mode: 0o700 });
   const pinned = mode === 'pass';
   const result = spawnSync(process.execPath, [here('../run.mjs'), '--task', task.id, '--work', work, '--out', out, '--sprites', sprites,
     ...(pinned ? ['--model', 'Requested/Model', '--thinking', 'high', '--rep', '2', '--max-seconds', '3'] : [])],
   { cwd: dir, encoding: 'utf8', timeout: 10_000, env: { ...env, BENCH_REPO: cwd, BENCH_SPRITE_START: launcher,
-    BENCH_RC_GRACE_SECONDS: '0', FIXTURE_LOG: here('../../test/fixtures/single.jsonl'), SPRITES: sprites, MODE: mode,
+    BENCH_RC_GRACE_SECONDS: '0', FIXTURE_LOG: here('../../test/fixtures/single.jsonl'), SPRITES: sprites, MODE: mode, RC: pinned ? '3' : '0',
     PI_MODEL: 'ignored', PI_THINKING: 'ignored', EXPECTED_MODEL: pinned ? 'Requested/Model' : 'unset',
     EXPECTED_THINKING: pinned ? 'high' : 'unset', EXPECTED_CAP: pinned ? '3' : '1' } });
   if (result.error) throw result.error;
@@ -134,7 +134,10 @@ for (const verdict of ['pass', 'fail']) test(`runner records golden ${verdict} a
   assert.deepEqual(row.model, { provider: 'p1', name: 'm1' });
   assert.equal(row.thinking, 'low');
   // A file the sprite created counts as a change; the restored golden file does not.
-  assert.deepEqual(row.changes, verdict === 'pass' ? { files: 2, linesAdded: 3, linesRemoved: 1 } : { files: 0, linesAdded: 0, linesRemoved: 0 });
+  // The sprite's own file at the golden path counts (1 line), the restored golden file does not.
+  assert.deepEqual(row.changes, verdict === 'pass' ? { files: 3, linesAdded: 4, linesRemoved: 1 } : { files: 0, linesAdded: 0, linesRemoved: 0 });
+  // The verdict does not follow the sprite's exit code.
+  assert.deepEqual(row.outcome, verdict === 'pass' ? { state: 'failed', reason: 'exit 3' } : { state: 'done', reason: null });
 });
 
 test('a sprite without an exit file times out before any golden file is restored', t => {
