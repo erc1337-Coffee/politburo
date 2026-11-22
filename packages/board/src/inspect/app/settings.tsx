@@ -39,6 +39,7 @@ export function Settings(props: { state: State; viewer: Viewer; now: number; lea
           button sounds
         </label>
       </Header>
+      <div className="view-body">
       <nav className="tabs">
         {sections.map((name) => (
           <Link key={name} to={`/settings/${name}`} className="tab" current={name === section}>
@@ -57,6 +58,7 @@ export function Settings(props: { state: State; viewer: Viewer; now: number; lea
           {section === 'sync' && <Sync key={props.open} state={state} entry={props.open} />}
         </div>
       </ActionsSlot.Provider>
+      </div>
     </>
   )
 }

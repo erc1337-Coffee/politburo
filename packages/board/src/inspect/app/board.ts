@@ -92,6 +92,7 @@ const handleFor = (choice: Profile | null | undefined) => {
 let team = handleFor(profile)
 let identity = 0
 let profileChoice = 0
+let feedFollow: AbortController | undefined
 
 /** Switches who you post as, then learns the identity that is, and remembers it once the board takes it. */
 export async function setProfile(next: Profile | null | undefined): Promise<boolean> {
@@ -100,13 +101,15 @@ export async function setProfile(next: Profile | null | undefined): Promise<bool
   try {
     const me = await handle.me()
     if (choice !== profileChoice) return false
-    const alreadyReading = state.me !== null
+    const restart = feedFollow !== undefined
     team = handle
     identity++
+    feedFollow?.abort()
+    feedFollow = undefined
     profile = next
-    set((s) => ({ ...s, me, schedules: { is: 'loading' } }))
-    void loadSchedules()
-    if (alreadyReading) void loadStatus()
+    set((s) => ({ ...s, me, schedules: { is: 'loading' }, live: restart ? 'reconnecting' : s.live }))
+    if (restart) void boot().catch((error) => toast(said(error)))
+    else void loadSchedules()
   } catch (error) {
     if (choice === profileChoice) toast(`couldn't switch: ${said(error)}`)
     return false
@@ -192,33 +195,40 @@ export async function boot(): Promise<void> {
   if (!snapshot || !current()) return boot()
   const [me, discovery, channels] = snapshot
   set((s) => ({ ...s, me, discovery, channels: Object.fromEntries(channels.map((c) => [c.path, c])) }))
+  const controller = feedFollow = new AbortController()
   // A burst of events is one render: they're folded in a frame at a time.
   let queue: BoardEventView[] = []
   const flush = () => {
     const events = queue
     queue = []
+    if (!current()) return
     listed.apply(events)
     // A schedule's own state isn't in the feed, but its sends are: one that landed means the list moved.
     if (events.some((event) => event.message?.schedule !== undefined)) void loadSchedules()
   }
   follow(
+    handle,
     after,
+    controller.signal,
     (event) => {
+      if (!current()) return
       if (event.type === 'work.control') {
         // Apply the transition immediately so the store can reject older status snapshots.
         set((s) => store.applyEvent(s, event))
         void loadStatus()
       } else if (queue.push(event) === 1) requestAnimationFrame(flush)
     },
-    (feed) => set((s) => ({ ...s, live: feed === 'live' ? 'live' : 'reconnecting' })),
-  ).catch((error) => toast(`live updates stopped: ${said(error)}`))
+    (feed) => { if (current()) set((s) => ({ ...s, live: feed === 'live' ? 'live' : 'reconnecting' })) },
+  ).catch((error) => { if (current()) toast(`live updates stopped: ${said(error)}`) })
   // Read after the feed's cursor is fixed: a pause is either in this snapshot or in the feed.
   void loadStatus()
   // Who's who, for the names of a task's owner and holder; and the open tasks, for their count.
-  void team.actors().then((actors) => set((s) => ({ ...s, actors: { ...Object.fromEntries(actors.map((actor) => [actor.id, actor])), ...s.actors } })), () => {})
+  void handle.actors().then((actors) => {
+    if (current()) set((s) => ({ ...s, actors: { ...Object.fromEntries(actors.map((actor) => [actor.id, actor])), ...s.actors } }))
+  }, () => {})
   void loadSchemas()
   void loadSchedules()
-  void loadTasks({ state: 'open', label: [] }).then((listed) => 'cursor' in listed && !listed.more && set((s) => ({ ...s, tasksCounted: true })))
+  void loadTasks({ state: 'open', label: [] }).then((listed) => current() && 'cursor' in listed && !listed.more && set((s) => ({ ...s, tasksCounted: true })))
 }
 
 // #region guide inspector/live.ts
@@ -228,8 +238,8 @@ export async function boot(): Promise<void> {
  * The handle retries a dropped connection itself; this throws only when the board refuses the feed (a
  * token that ran out, say).
  */
-async function follow(after: string | undefined, each: (event: BoardEventView) => void, onState: (state: EventsState) => void) {
-  for await (const event of team.events({ all: true, ...(after !== undefined ? { after } : {}) }, { onState })) each(event)
+async function follow(team: ReturnType<typeof board>, after: string | undefined, signal: AbortSignal, each: (event: BoardEventView) => void, onState: (state: EventsState) => void) {
+  for await (const event of team.events({ all: true, ...(after !== undefined ? { after } : {}) }, { signal, onState })) each(event)
 }
 // #endregion
 
@@ -308,7 +318,7 @@ export const loadFiltered = (channel: string, filter: store.Filter) => {
 
 let statusRead = 0
 let statusSettled = 0
-let statusApplied: { read: number; epoch: number } | undefined
+let statusRefusedAt = 0
 
 export async function loadStatus() {
   const read = ++statusRead
@@ -318,16 +328,14 @@ export async function loadStatus() {
     if (as !== identity) return
     statusSettled = Math.max(statusSettled, read)
     set((s) => {
-      // A read may sample a later epoch even if it started first. Only break ties by request order.
-      if (status.pauseEpoch === statusApplied?.epoch && read < statusApplied.read) return s
+      // Work state is ordered by the board's transitions; the refusal is ordered by request.
       const next = store.applyStatus(s, status)
-      if (next !== s) statusApplied = { read, epoch: status.pauseEpoch }
-      return next
+      return next.statusRefused !== null && read > statusRefusedAt ? { ...next, statusRefused: null } : next
     })
   } catch (error) {
     // A refusal only adds a note to the header; it never replaces a successful status.
     if (as !== identity || read <= statusSettled) return
-    statusSettled = read
+    statusSettled = statusRefusedAt = read
     set((s) => ({ ...s, statusRefused: said(error) }))
   }
 }
@@ -511,6 +519,8 @@ const listTasks = (query: { state?: 'open' | 'all' | TaskView['state']; channel?
  * one list reads, as Vercel's board says for a caller who doesn't read every channel.
  */
 export async function loadTasks(filter: store.TaskFilter, after?: string): Promise<{ cursor: string; last: MessageView | undefined; more: boolean } | { refused: string; tooWide: boolean }> {
+  const handle = team
+  const as = identity
   try {
     const page = await listTasks({
         state: filter.state,
@@ -521,7 +531,7 @@ export async function loadTasks(filter: store.TaskFilter, after?: string): Promi
         ...(after ? { after } : {}),
       })
     const roots = page.tasks.map((task) => task.message)
-    set((s) => store.merge(s, roots))
+    if (handle === team && as === identity) set((s) => store.merge(s, roots))
     return { cursor: page.cursor, last: roots.at(-1), more: roots.length === PAGE }
   } catch (error) {
     return { refused: refusal(error), tooWide: (error as { code?: unknown } | null)?.code === 'channel_tree_too_large' }
@@ -559,12 +569,15 @@ export const makeTask = (re: string, options: { needs: string[]; for: string | n
 
 /** The board's registry: the built-ins, then its own. It says what each block's fields mean. */
 export async function loadSchemas() {
+  const handle = team
+  const as = identity
+  const current = () => handle === team && as === identity
   try {
-    const schemas = await team.schemas()
-    set((s) => ({ ...s, schemas, schemasRefused: null }))
+    const schemas = await handle.schemas()
+    if (current()) set((s) => ({ ...s, schemas, schemasRefused: null }))
   } catch (error) {
     // Blocks still show, by their data alone; the registry's view says what the board answered.
-    set((s) => ({ ...s, schemasRefused: said(error) }))
+    if (current()) set((s) => ({ ...s, schemasRefused: said(error) }))
   }
 }
 

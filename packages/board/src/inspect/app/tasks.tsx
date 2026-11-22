@@ -85,6 +85,7 @@ export function Tasks(props: { state: State; viewer: Viewer; now: number; lead: 
       <Header title="tasks" meta="oldest first" live={state.live} lead={props.lead}>
         <TaskFilterButton filter={filter} channels={Object.keys(state.channels).sort()} owners={owners} assignees={assignees} state={state} known={props.known} count={chips.length} />
       </Header>
+      <div className="view-body">
       <nav className="tabs plain">
         {STATES.map((name) => (
           <Link key={name} to={here({ params: { state: name === 'open' ? null : name } })} className="tab" current={filter.state === name}>
@@ -137,6 +138,7 @@ export function Tasks(props: { state: State; viewer: Viewer; now: number; lead: 
         tasks={{ state, always: true }}
         onSend={({ text, noSync, channel, labels, files, task }) => void board.send({ channel, re: null, text, noSync, labels, files, ...(task ? { task } : {}) })}
       />}
+      </div>
     </>
   )
 }

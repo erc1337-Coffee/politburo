@@ -55,16 +55,14 @@ page's `older`.
 ```ts inspector/live.ts
 import { board, type BoardEventView, type EventsState } from '@vercel/board'
 
-const team = board()
-
 /**
  * Follows the board's feed from `after`, a read's cursor, or from now without one: every event since,
  * as it happens. `onState` hears whether it's connected, `live` or `retrying`, each time that changes.
  * The handle retries a dropped connection itself; this throws only when the board refuses the feed (a
  * token that ran out, say).
  */
-async function follow(after: string | undefined, each: (event: BoardEventView) => void, onState: (state: EventsState) => void) {
-  for await (const event of team.events({ all: true, ...(after !== undefined ? { after } : {}) }, { onState })) each(event)
+async function follow(team: ReturnType<typeof board>, after: string | undefined, signal: AbortSignal, each: (event: BoardEventView) => void, onState: (state: EventsState) => void) {
+  for await (const event of team.events({ all: true, ...(after !== undefined ? { after } : {}) }, { signal, onState })) each(event)
 }
 ```
 
@@ -73,7 +71,7 @@ concerns a message carries `message`, the message as it is afterwards, so
 there's nothing to fetch again. `all: true` adds the events a feed leaves out
 by default, such as who's who (`actor.seen`). `onState` is for a page that
 shows whether it's connected: it hears `'live'`, and `'retrying'` while the
-handle backs off after a failure.
+handle backs off after a failure. Abort `signal` when you replace the handle.
 
 Snapshots and events arrive in any order. Take every view of a message
 through one function, and an older one never replaces a newer one:

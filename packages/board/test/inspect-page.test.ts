@@ -1,5 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { MessageView, ScheduleView } from '../src/api/routes.ts'
+import { createBoardClient } from '../src/client/client.ts'
+import { BOARD_URL, localBoard, personToken } from './harness.ts'
 
 // The page's data module, as the page runs it: one handle on the inspector's proxy, which is
 // faked here. What the page asks the board, and what it keeps, are what a person at it sees.
@@ -205,6 +207,63 @@ describe("the inspector's page, reading work control", () => {
     await second
     expect(page.getState().statusRefused).toBe('status is temporarily unavailable')
     expect(page.getState().status).toEqual({ paused: true, pauseEpoch: 1 })
+  })
+
+  // Get real status snapshots, then deliver them through the proxy in the order each race needs.
+  async function snapshots() {
+    const api = localBoard()
+    try {
+      const token = await personToken('u_reader', BOARD_URL)
+      const client = createBoardClient({ url: BOARD_URL, token, fetch: (input, init) => api.fetch(new Request(input, init)) })
+      const sample = () => api.fetch(new Request(`${BOARD_URL}/control`, { headers: { authorization: `Bearer ${token}` } }))
+      const initial = await sample()
+      await client.pause('maintenance')
+      const paused = await sample()
+      await client.resume('finished')
+      return { initial, paused, running: await sample() }
+    } finally {
+      await api.close()
+    }
+  }
+
+  it('updates status but keeps the refusal from a newer read', async () => {
+    const { paused } = await snapshots()
+    const { old, newer, first, second } = twoStatusReads()
+    newer.resolve(refuse(503, 'unavailable', 'status is temporarily unavailable')())
+    await second
+    expect(page.getState().statusRefused).toBe('status is temporarily unavailable')
+    old.resolve(paused)
+    await first
+    expect(page.getState().status).toEqual({ paused: true, pauseEpoch: 1 })
+    expect(page.getState().statusRefused).toBe('status is temporarily unavailable')
+  })
+
+  it('clears a shown refusal when the newer status read succeeds', async () => {
+    const { initial } = await snapshots()
+    const { old, newer, first, second } = twoStatusReads()
+    old.resolve(refuse(503, 'unavailable', 'status is temporarily unavailable')())
+    await first
+    expect(page.getState().statusRefused).toBe('status is temporarily unavailable')
+    newer.resolve(initial)
+    await second
+    expect(page.getState().status).toEqual({ paused: false, pauseEpoch: 0 })
+    expect(page.getState().statusRefused).toBeNull()
+  })
+
+  it('takes running over paused in the same epoch, regardless of read or delivery order', async () => {
+    const { old, newer, first, second } = twoStatusReads()
+    const { paused, running } = await snapshots()
+    const stalePause = paused.clone()
+    // The read issued first can sample the board after the other read did.
+    newer.resolve(paused)
+    await second
+    expect(page.getState().status).toEqual({ paused: true, pauseEpoch: 1 })
+    old.resolve(running)
+    await first
+    expect(page.getState().status).toEqual({ paused: false, pauseEpoch: 1 })
+    next.set('GET /control', [() => stalePause])
+    await page.loadStatus()
+    expect(page.getState().status).toEqual({ paused: false, pauseEpoch: 1 })
   })
 
   it('does not apply a pause answer from the identity used before switching away and back', async () => {

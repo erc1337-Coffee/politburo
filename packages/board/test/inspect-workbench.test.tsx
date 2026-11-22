@@ -53,12 +53,12 @@ async function workbench(options: Parameters<typeof localBoard>[0] = {}) {
   return {
     api, as, client: as(),
     async open(path = '/', options: {
-      profile?: string; named?: boolean; can?: string
+      profile?: string; named?: boolean; can?: string; width?: number
       holdSchedules?: (profile: string | null) => Promise<void> | undefined
       proxy?: (request: Request, forward: (request: Request) => Promise<Response>) => Promise<Response>
     } = {}) {
       browser.settings.enableImageFileLoading = false
-      browser.setViewport({ width: 1280, height: 900 })
+      browser.setViewport({ width: options.width ?? 1280, height: 900 })
       browser.setURL(`http://inspector-${++visit}.test${path}`)
       const profile = options.profile ? { name: options.profile } : null
       const html = new DOMParser().parseFromString(shell({ token: 'inspector-test', base: '', profile, named: options.named ?? false }), 'text/html')
@@ -79,7 +79,7 @@ async function workbench(options: Parameters<typeof localBoard>[0] = {}) {
         headers.set('authorization', `Bearer ${token}`)
         if (options.can) headers.set('x-board-can', options.can)
         const outbound = new Request(`${BOARD_URL}${request.url.slice(proxy.length)}`, {
-          method: request.method, headers, signal: page.signal,
+          method: request.method, headers, signal: AbortSignal.any([page.signal, request.signal]),
           ...(request.method === 'GET' || request.method === 'HEAD' ? {} : { body: await request.arrayBuffer() }),
         })
         const response = options.proxy ? options.proxy(outbound, api.fetch) : api.fetch(outbound)
@@ -360,6 +360,152 @@ it('drops a registry answer from the previous profile at the data boundary', asy
   }
 })
 
+it('does not merge a delayed actors directory from the boot profile after switching', async () => {
+  const { as, open } = await workbench()
+  const post = await as('directory-only').post('work', 'Ready for review')
+  const editor = await as('editor').post('work', 'Editor is ready')
+  const reading = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  await open('/settings/access', {
+    profile: 'reviewer',
+    proxy: async (request, forward) => {
+      if (routePath(request) !== '/actors') return forward(request)
+      if (request.headers.get('x-board-profile') === 'editor') {
+        // The new handle's directory doesn't include the old entry.
+        const url = new URL(request.url)
+        url.searchParams.set('id', editor.by.actor)
+        return forward(new Request(url, request))
+      }
+      const response = await forward(request)
+      reading.resolve()
+      await release.promise
+      return response
+    },
+  })
+  try {
+    await reading.promise
+    await switchProfile('editor')
+    const page = await import('../src/inspect/app/board.ts')
+    await vi.waitFor(() => expect(page.getState().actors[editor.by.actor]?.name).toBe('editor'))
+    await act(async () => release.resolve())
+    expect(page.getState().actors[post.by.actor]).toBeUndefined()
+  } finally {
+    release.resolve()
+  }
+})
+
+it('aborts the boot feed and discards an event already queued by the previous profile', async () => {
+  const { client, open } = await workbench()
+  await client.post('work', 'Ready for review')
+  const oldSignals: AbortSignal[] = []
+  let newFeed = false
+  await open('/settings/access', {
+    profile: 'reviewer',
+    proxy: async (request, forward) => {
+      if (routePath(request) === '/events') {
+        if (request.headers.get('x-board-profile') === 'reviewer') oldSignals.push(request.signal)
+        else if (request.headers.get('x-board-profile') === 'editor') newFeed = true
+      }
+      return forward(request)
+    },
+  })
+  const page = await import('../src/inspect/app/board.ts')
+  await vi.waitFor(() => expect(page.getState().live).toBe('live'))
+  const frames: FrameRequestCallback[] = []
+  const frame = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((run) => frames.push(run))
+  try {
+    const stale = await client.post('work', 'Queued by the old feed')
+    await vi.waitFor(() => expect(frames).not.toHaveLength(0))
+    frame.mockRestore()
+    await switchProfile('editor')
+    await vi.waitFor(() => expect(newFeed).toBe(true))
+    expect(oldSignals.length).toBeGreaterThan(0)
+    expect(oldSignals.every((signal) => signal.aborted)).toBe(true)
+    for (const flush of frames) flush(performance.now())
+    expect(page.getState().messages[stale.id]).toBeUndefined()
+    const fresh = await client.post('work', 'Read by the new feed')
+    await vi.waitFor(() => expect(page.getState().messages[fresh.id]?.text).toBe(fresh.text))
+  } finally {
+    frame.mockRestore()
+  }
+})
+
+it('drops a late status read after a profile switch', async () => {
+  const { client, open } = await workbench()
+  const sampled = Promise.withResolvers<void>()
+  const releaseOld = Promise.withResolvers<void>()
+  const releaseNew = Promise.withResolvers<void>()
+  const releaseEvents = Promise.withResolvers<void>()
+  let hold = false
+  await open('/settings/access', {
+    profile: 'reviewer',
+    proxy: async (request, forward) => {
+      const response = await forward(request)
+      const profile = request.headers.get('x-board-profile')
+      const path = routePath(request)
+      if (path === '/events' && profile === 'reviewer' && hold) await releaseEvents.promise
+      if (path === '/control' && hold) {
+        if (profile === 'reviewer') {
+          sampled.resolve()
+          await releaseOld.promise
+        } else await releaseNew.promise
+      }
+      return response
+    },
+  })
+  const page = await import('../src/inspect/app/board.ts')
+  await vi.waitFor(() => {
+    expect(page.getState().live).toBe('live')
+    expect(page.getState().status).toEqual({ paused: false, pauseEpoch: 0 })
+  })
+  try {
+    hold = true
+    await client.pause('old profile samples the pause')
+    const reading = page.loadStatus()
+    await sampled.promise
+    await client.resume('before switching')
+    await switchProfile('editor')
+    releaseOld.resolve()
+    await reading
+    expect(page.getState().status).toEqual({ paused: false, pauseEpoch: 0 })
+    releaseNew.resolve()
+    await vi.waitFor(() => expect(page.getState().status).toEqual({ paused: false, pauseEpoch: 1 }))
+  } finally {
+    releaseOld.resolve()
+    releaseNew.resolve()
+    releaseEvents.resolve()
+  }
+})
+
+it.each([
+  { width: 390, profile: undefined },
+  { width: 1280, profile: undefined },
+  { width: 390, profile: 'reviewer' },
+])('shows one acting-as label with the sidebar hidden or open ($width, $profile)', async ({ width, profile }) => {
+  const { as, client, open } = await workbench()
+  await client.post('work', 'Ready for review')
+  await open('/c/work', { width, ...(profile ? { profile } : {}) })
+  const identity = `acting as ${(await as(profile ?? null).me()).name}`
+  const header = () => document.querySelector('main .header')?.textContent
+  const rail = () => document.querySelector<HTMLElement>('.sidebar')!
+  const openRail = () => {
+    expect(getComputedStyle(rail()).display).not.toBe('none')
+    expect(rail().hidden).toBe(false)
+    expect(rail().querySelector('.whoami')?.textContent).toContain(identity)
+    expect(header()).not.toContain('acting as')
+  }
+  if (width >= 1024) {
+    await vi.waitFor(openRail)
+    button('Hide sidebar').click()
+  }
+  await vi.waitFor(() => {
+    expect(header()).toContain(identity)
+    expect(rail().hidden || getComputedStyle(rail()).display === 'none').toBe(true)
+  })
+  button('Show sidebar').click()
+  await vi.waitFor(openRail)
+})
+
 it('shows a pause that lands before the first channels cursor is captured', async () => {
   const { client, open } = await workbench()
   let earlyStatus: Promise<Response> | undefined
@@ -407,6 +553,7 @@ it('asks for a reason to Pause, shows the board’s refusal, and lets the manage
 
 it('shows live pause detail on every view and lets the manager resume with a reason', async () => {
   const { client, open } = await workbench()
+  await client.post('work', 'Release notes')
   await open()
   const banner = () => document.querySelector<HTMLElement>('.pause-banner')!
   await vi.waitFor(() => button('Pause'))
@@ -414,9 +561,12 @@ it('shows live pause detail on every view and lets the manager resume with a rea
   await client.pause('maintenance window')
   const me = await client.me()
   await vi.waitFor(() => expect(banner().textContent).toMatch(new RegExp(`^paused by ${me.name}, .+ ago: maintenance window$`)))
-  link('Presidium').click()
-  await vi.waitFor(() => expect(document.querySelector('main h1')?.textContent).toBe('PRESIDIUM'))
-  expect(banner().textContent).toContain('maintenance window')
+  for (const [path, title] of [['/presidium', 'PRESIDIUM'], ['/c/work', '#work'], ['/tasks', 'tasks'], ['/settings/access', 'settings'], ['/', 'HANDOFFS']]) {
+    document.querySelector<HTMLAnchorElement>(`.sidebar a[href="${path}"]`)!.click()
+    await vi.waitFor(() => expect(document.querySelector('main h1')?.textContent).toBe(title))
+    expect(banner().hidden).toBe(false)
+    expect(banner().textContent).toContain('maintenance window')
+  }
   button('Resume').click()
   await submitReason('reason', 'maintenance ended')
   await vi.waitFor(() => {
@@ -434,51 +584,65 @@ it('shows live pause detail on every view and lets the manager resume with a rea
 it('keeps the message scroller in place through a live pause and resume', async () => {
   const { client, open } = await workbench()
   for (let i = 1; i <= 20; i++) await client.post('work', `Release log entry ${i}`)
-  await open('/c/work')
+  const thread = await client.post('work', 'Release review')
+  await client.reply(thread.id, 'The review starts here')
+  await open(`/c/work?thread=${thread.id}`)
   await vi.waitFor(() => {
     expect(document.querySelector('.live')?.textContent).toBe('live')
-    expect(document.querySelectorAll('main .message')).toHaveLength(20)
+    expect(document.querySelectorAll('main .message')).toHaveLength(21)
+    expect(document.querySelector('.pane .feed')?.textContent).toContain('The review starts here')
     button('Pause')
   })
-  const scroller = document.querySelector<HTMLElement>('main .feed')!
+  const scrollers = [...document.querySelectorAll<HTMLElement>('main .feed, .pane .feed, .sidebar-scroll')]
+  expect(scrollers).toHaveLength(3)
   const banner = document.querySelector<HTMLElement>('.pause-banner')!
-  const workspace = scroller.closest('.workspace')!
-  scroller.scrollTop = 300
-  expect(scroller.scrollTop).toBe(300)
-
-  // Happy DOM has no layout. Check the rendered structure that preserves the feed's geometry:
-  // the banner is out of flow and neither the scroller nor its ancestors acquire an inset.
-  const flow = () => {
-    const chain = []
-    for (let el: HTMLElement | null = scroller; el; el = el.parentElement) {
-      const style = getComputedStyle(el)
-      chain.push([el, style.height, style.minHeight, style.paddingTop, style.marginTop])
-    }
-    return chain
-  }
-  const before = flow()
-  const stillReading = () => {
-    expect(document.querySelector('main .feed')).toBe(scroller)
-    expect(scroller.scrollTop).toBe(300)
-    expect(flow()).toEqual(before)
-  }
+  // Happy DOM doesn't lay out the page. Supply the box measurement, not the style or scroll behavior.
+  const height = 32
+  banner.getBoundingClientRect = () => new DOMRect(0, 46, 1256, banner.hidden ? 0 : height)
+  scrollers.forEach((el) => {
+    Object.defineProperty(el, 'scrollHeight', { value: 1200 })
+    el.scrollTop = 300
+    el.dispatchEvent(new Event('scroll'))
+  })
 
   await client.pause('waiting for the release window')
   await vi.waitFor(() => {
     expect(banner.hidden).toBe(false)
     expect(banner.textContent).toContain('waiting for the release window')
+    expect(scrollers.map((el) => el.scrollTop)).toEqual([332, 332, 332])
   })
-  expect(banner.parentElement).toBe(workspace)
-  expect(getComputedStyle(workspace).position).toBe('relative')
-  expect(getComputedStyle(banner).position).toBe('absolute')
-  stillReading()
+  expect(banner.parentElement).toBe(document.querySelector('.workspace'))
+  expect(getComputedStyle(banner.parentElement!).display).toBe('grid')
+  expect(['', 'static', 'relative']).toContain(getComputedStyle(banner).position)
+  expect(getComputedStyle(banner).overflowY).toBe('auto')
 
   await client.resume('the release window opened')
   await vi.waitFor(() => {
     expect(banner.hidden).toBe(true)
+    expect(scrollers.map((el) => el.scrollTop)).toEqual([300, 300, 300])
     button('Pause')
   })
-  stillReading()
+
+  // A browser can clamp the pinned pane's old offset as soon as the banner goes away.
+  const pane = document.querySelector<HTMLElement>('.pane .feed')!
+  const bottom = () => pane.scrollHeight - pane.clientHeight
+  let offset = 300
+  Object.defineProperties(pane, {
+    clientHeight: { get: () => 300 - (banner.hidden ? 0 : height) },
+    scrollTop: { get: () => Math.min(offset, bottom()), set: (top: number) => { offset = Math.min(top, bottom()) } },
+  })
+  pane.scrollTop = bottom()
+  pane.dispatchEvent(new Event('scroll'))
+  await client.pause('waiting again')
+  await vi.waitFor(() => {
+    expect(banner.hidden).toBe(false)
+    expect(pane.scrollTop).toBe(bottom())
+  })
+  await client.resume('finished')
+  await vi.waitFor(() => {
+    expect(banner.hidden).toBe(true)
+    expect(pane.scrollTop).toBe(bottom())
+  })
 })
 
 async function submitReason(placeholder: string, text: string) {
@@ -517,6 +681,39 @@ it('lets a person park and unpark an unheld ready task without offering to claim
   unpark.click()
   await submitReason('why it can go ahead', 'the window opened')
   await vi.waitFor(() => expect(document.querySelector('.task-card .task-state')?.textContent).toBe('ready'))
+})
+
+it('offers Priority, Park and Cancel but no lease actions on another actor’s claimed task; Answer follows a hold', async () => {
+  const { as, client, open } = await workbench({ attentionResponders: { work: ['vercel:user:u_reader'] } })
+  const { task } = await client.tasks.create('work', { text: 'Review the release' })
+  const worker = as('worker')
+  const { token, epoch } = await worker.tasks.claim(task.id)
+  await open(`/?thread=${task.id}`)
+  await vi.waitFor(() => {
+    expect(document.querySelector('.task-card .task-state')?.textContent).toBe('claimed')
+    expect(document.querySelector('.task-card .task-head')?.textContent).toContain('by worker')
+  })
+  button('more').click()
+  await vi.waitFor(() => {
+    for (const action of ['change priority…', 'park…', 'cancel the task…']) menuItem(action)
+    const controls = [...document.querySelectorAll('.task-card button, [role="menuitem"]')]
+    const names = controls.flatMap((el) => [el.textContent, el.getAttribute('title'), el.getAttribute('aria-label')])
+    expect(names.join(' ')).not.toMatch(/\b(claim|renew|release|complete|answer)\b/i)
+  })
+  // A structured attention request ends the claim; only then can a person be offered Answer.
+  await worker.tasks.ask(task.id, {
+    claim: { token, epoch }, kind: 'awaiting_approval', question: 'Release this commit?', context: 'Checks passed.',
+    options: [
+      { id: 'proceed', label: 'Proceed', consequence: 'Resume work', next: 'resume' },
+      { id: 'revise', label: 'Revise', consequence: 'Make changes first', next: 'resume' },
+    ],
+    revision: task.revision, evidence: [{ message: task.id, revision: task.revision }],
+    expiresAt: new Date(Date.now() + 60_000).toISOString(), commit: 'a'.repeat(40),
+  })
+  await vi.waitFor(() => {
+    expect(document.querySelector('.task-card .task-state')?.textContent).toBe('blocked')
+    expect([...document.querySelectorAll('.task-card button')].map((el) => el.textContent)).toContain('answer…')
+  })
 })
 
 it('clears blind schedules on profile switch and ignores a late list', async () => {

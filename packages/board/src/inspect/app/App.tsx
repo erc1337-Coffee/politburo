@@ -293,7 +293,7 @@ export function App() {
   const control = viewer.manages && viewer.person && viewer.profile === null && state.status
     ? <PauseControl key={viewer.actor} paused={state.status.paused} /> : null
   const headerActions = <>
-    {viewer.profile !== null && (narrow || sidebar.collapsed) && <span className="meta" title={state.me.actor}>acting as {shownName(state.me)}</span>}
+    {(narrow ? !nav : sidebar.collapsed) && <span className="meta" title={state.me.actor}>acting as {shownName(state.me)}</span>}
     {state.statusRefused && <span className="meta" title={state.statusRefused}>{state.statusRefused}</span>}
     {control}
   </>
@@ -333,7 +333,7 @@ export function App() {
             {current.view === 'missing' && (
               <>
                 <Header title="nothing here" lead={expand} />
-                <p className="empty">no such page</p>
+                <div className="view-body"><p className="empty">no such page</p></div>
               </>
             )}
           </HeaderActions.Provider>
@@ -354,21 +354,27 @@ export function App() {
 
 function PauseBanner({ text }: { text: string | null }) {
   const ref = useRef<HTMLDivElement>(null)
-  const shown = text !== null
+  const height = useRef(0)
   useLayoutEffect(() => {
-    if (!shown) return
     const banner = ref.current!
     const workspace = banner.parentElement!
-    const measure = () => workspace.style.setProperty('--pause-inset', `${banner.getBoundingClientRect().height}px`)
-    measure()
-    const observer = new ResizeObserver(measure)
-    observer.observe(banner, { box: 'border-box' })
-    return () => {
-      observer.disconnect()
-      workspace.style.removeProperty('--pause-inset')
+    const compensate = () => {
+      const next = banner.hidden ? 0 : banner.getBoundingClientRect().height
+      const delta = next - height.current
+      if (!delta) return
+      height.current = next
+      for (const el of workspace.querySelectorAll<HTMLElement>('.sidebar *, .main *, .pane *')) {
+        // A disappearing banner can clamp scrollTop to the new bottom before we read it.
+        if (el.hasAttribute('data-pinned')) el.scrollTop = el.scrollHeight
+        else if (el.scrollTop > 0) el.scrollTop += delta
+      }
     }
-  }, [shown])
-  return <div ref={ref} className="pause-banner" role="status" hidden={!shown}>{text}</div>
+    compensate()
+    const observer = new ResizeObserver(compensate)
+    observer.observe(banner, { box: 'border-box' })
+    return () => observer.disconnect()
+  }, [text])
+  return <div ref={ref} className="pause-banner" role="status" hidden={text === null}>{text}</div>
 }
 
 // --- views ---------------------------------------------------------------------------
@@ -433,6 +439,7 @@ function Channel(props: { channel: string; state: State; options: RowOptions; kn
       >
         <FilterControls filters={props.filters} />
       </Header>
+      <div className="view-body">
       <FilterChips filter={filter} onChange={props.filters.setFilter} />
       <Feed scope={channel} first={roots[0]?.id ?? ''} last={`${newest}+${pending.length}`} older={() => board.loadOlder(channel)}>
         {roots.length === 0 && pending.length === 0 && (
@@ -455,6 +462,7 @@ function Channel(props: { channel: string; state: State; options: RowOptions; kn
           if (mine) setEditing(mine.id)
         }}
       />}
+      </div>
     </>
   )
 }
@@ -497,6 +505,7 @@ function ThreadPane(props: { id: string; state: State; viewer: Viewer; now: numb
           <X size={15} strokeWidth={1.75} />
         </button>
       </Header>
+      <div className="view-body">
       {t && isTask(t.root) && <TaskCard root={t.root} state={state} viewer={viewer} />}
       {(synced.length > 0 || scheduled.length > 0) && (
         <dl className="facts thread-facts" {...nativeMenu}>
@@ -561,6 +570,7 @@ function ThreadPane(props: { id: string; state: State; viewer: Viewer; now: numb
           }}
         />
       )}
+      </div>
     </>
   )
 }

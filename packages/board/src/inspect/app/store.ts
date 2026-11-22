@@ -272,7 +272,7 @@ const byControl = (a: BoardStatus, b: BoardStatus) => a.pauseEpoch - b.pauseEpoc
 /** Takes a board answer unless it predates a status or transition already seen. */
 export function applyStatus(state: State, status: BoardStatus): State {
   if (state.status && byControl(status, state.status) < 0) return state
-  return { ...state, status, statusRefused: null }
+  return { ...state, status }
 }
 
 function applyControl(state: State, event: NonNullable<State['control']>): State {

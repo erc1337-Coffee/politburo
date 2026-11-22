@@ -55,7 +55,7 @@ export function Sidebar({ state, current, onHome, onCollapse }: { state: State; 
   const where = boardWords(state.discovery)
   const copy = (text: string) => void navigator.clipboard.writeText(text).then(() => toast(`copied ${text}`))
   return (
-    <div className="sidebar-col">
+    <>
       <div className="brand">
         <HomeEmblem onNavigate={onHome} />
         <Link to="/" className="wordmark" title={where.at ? `${where.name} · ${where.at}` : where.name} onNavigate={onHome}>
@@ -65,6 +65,7 @@ export function Sidebar({ state, current, onHome, onCollapse }: { state: State; 
           <PanelLeftClose size={15} strokeWidth={1.75} aria-hidden="true" />
         </button>
       </div>
+      <div className="view-body">
       <div className="sidebar-scroll">
         <Link to="/presidium" className="item" current={current.view === 'presidium'}>
           <LayoutGrid size={14} aria-hidden="true" />
@@ -117,6 +118,7 @@ export function Sidebar({ state, current, onHome, onCollapse }: { state: State; 
           <span className="as">acting as {shownName(state.me!)}</span>
         </div>
       </div>
-    </div>
+      </div>
+    </>
   )
 }
