@@ -105,6 +105,26 @@ retries. Cooldowns and access incidents are in memory. An auth incident gets
 one access probe after cooldown, if configured; only a successful probe clears
 it. A failed probe leaves the provider unavailable in that router instance.
 
+## Benchmarks
+
+`bench-run@1` blocks hold counts, identifiers, ratings, and times in the
+unsynced `bench` channel. The first write for a run ID wins. Use the same
+trusted board actor for ingest and report; the report ignores other writers
+and counts sprites, not roll-ups. The first ingest needs permission to
+register the schema.
+
+With `BOARD_URL` set, run from the repository root:
+
+```sh
+node packages/runtime/src/bench/cli.ts ingest runs.jsonl
+node packages/runtime/src/bench/cli.ts report --ids
+node packages/runtime/src/bench/cli.ts report --json
+```
+
+Text columns are model, thinking, rating, runs/checked, pass rate, median
+wall seconds, median tokens, p90 tokens, and tokens per changed line. A dash
+means unknown. JSON includes full names, run IDs, and token coverage counts.
+
 ## Remote work
 
 `localGit({ repoDir, identity })` exchanges UTF-8 text files (up to 64 KiB)
