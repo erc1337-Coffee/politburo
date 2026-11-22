@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises'
+import { parse } from 'yaml'
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -34,5 +35,5 @@ export function tagProblems(registry: unknown): string[] {
 }
 
 export async function readRegistry(file?: string): Promise<unknown> {
-  return JSON.parse(await readFile(file ?? new URL('../registry/tags.json', import.meta.url), 'utf8'))
+  return parse(await readFile(file ?? new URL('../registry/tags.json', import.meta.url), 'utf8'))
 }

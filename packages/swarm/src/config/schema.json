@@ -38,13 +38,62 @@
           "additionalProperties": false,
           "required": ["passive", "neutral", "hostile", "boss"],
           "properties": {
-            "passive": {"$ref": "#/definitions/job_pools"},
-            "neutral": {"$ref": "#/definitions/job_pools"},
-            "hostile": {"$ref": "#/definitions/job_pools"},
+            "passive": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["audit", "research", "review", "status", "gather", "plan"],
+              "properties": {
+                "audit": {"$ref": "#/definitions/pool"},
+                "research": {"$ref": "#/definitions/pool"},
+                "review": {"$ref": "#/definitions/pool"},
+                "status": {"$ref": "#/definitions/pool"},
+                "gather": {"$ref": "#/definitions/pool"},
+                "plan": {"$ref": "#/definitions/pool"}
+              }
+            },
+            "neutral": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["build", "fix", "refactor", "sync", "port", "docs", "ci"],
+              "properties": {
+                "build": {"$ref": "#/definitions/pool"},
+                "fix": {"$ref": "#/definitions/pool"},
+                "refactor": {"$ref": "#/definitions/pool"},
+                "sync": {"$ref": "#/definitions/pool"},
+                "port": {"$ref": "#/definitions/pool"},
+                "docs": {"$ref": "#/definitions/pool"},
+                "ci": {"$ref": "#/definitions/pool"}
+              }
+            },
+            "hostile": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["integrate", "merge", "revert", "release", "raid", "cleanup"],
+              "properties": {
+                "integrate": {"$ref": "#/definitions/pool"},
+                "merge": {"$ref": "#/definitions/pool"},
+                "revert": {"$ref": "#/definitions/pool"},
+                "release": {"$ref": "#/definitions/pool"},
+                "raid": {"$ref": "#/definitions/pool"},
+                "cleanup": {"$ref": "#/definitions/pool"}
+              }
+            },
             "boss": {"$ref": "#/definitions/pool"}
           }
         },
-        "sprite_items": {"$ref": "#/definitions/job_pools"}
+        "sprite_items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["implement", "fix", "review", "verify", "research", "docs"],
+          "properties": {
+            "implement": {"$ref": "#/definitions/pool"},
+            "fix": {"$ref": "#/definitions/pool"},
+            "review": {"$ref": "#/definitions/pool"},
+            "verify": {"$ref": "#/definitions/pool"},
+            "research": {"$ref": "#/definitions/pool"},
+            "docs": {"$ref": "#/definitions/pool"}
+          }
+        }
       }
     },
     "tiers": {
@@ -192,11 +241,6 @@
   "definitions": {
     "strings": {"type": "array", "items": {"type": "string"}},
     "pool": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
-    "job_pools": {
-      "type": "object",
-      "additionalProperties": false,
-      "patternProperties": {"^(?!(?:__proto__|constructor)$)": {"$ref": "#/definitions/pool"}}
-    },
     "count": {"type": "integer", "minimum": 0},
     "minutes": {"type": "integer", "minimum": 1},
     "nonnegative": {"type": "number", "minimum": 0},

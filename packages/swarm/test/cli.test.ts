@@ -61,6 +61,26 @@ test('config validate rejects an unknown field and does not hide its dotted path
   assert.match(result.stderr, /^error: claims\.houres: [^\n]+\n$/)
 })
 
+test('config validate does not report a cyclic YAML alias as a config error', (t) => {
+  const party = join(tempDir(t), 'party.yaml')
+  writeFileSync(party, 'claims: &self\n  dock: *self\n')
+
+  const result = run('config', 'validate', '--json', '--party', party)
+  assert.equal(result.status, 1)
+  assert.equal(result.stderr, '')
+  assert.deepEqual(JSON.parse(result.stdout), { valid: false, field: '', message: 'aliases are not allowed' })
+})
+
+test('config validate leaks terminal control characters from an unknown key', (t) => {
+  const party = join(tempDir(t), 'party.json')
+  writeFileSync(party, JSON.stringify({ claims: { 'bad\x1b\n\x7f\x9b': true } }))
+
+  const result = run('config', 'validate', '--party', party)
+  assert.equal(result.status, 1)
+  assert.doesNotMatch(result.stderr.slice(0, -1), /[\x00-\x1f\x7f-\x9f]/)
+  assert.match(result.stderr, /^error: claims\.bad\\u001b\\u000a\\u007f\\u009b:/)
+})
+
 test('config validate reports valid without requiring files', () => {
   const result = run('config', 'validate')
   assert.equal(result.status, 0, result.stderr)

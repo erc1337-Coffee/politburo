@@ -4,6 +4,7 @@ exec 3>&2 2>/dev/null
 fail() { printf 'error: %s\n' "$1" >&3; exit 1; }
 trap 'fail "swarm lines measurement failed"' ERR
 
+unset CDPATH
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 head_ref=HEAD
 while (($#)); do
@@ -17,6 +18,7 @@ while (($#)); do
 done
 
 unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE
+for key in "${!GIT_TRACE@}"; do unset "$key"; done
 export GIT_ALLOW_PROTOCOL= GIT_NO_LAZY_FETCH=1 LC_ALL=C
 g() { git --no-replace-objects -C "$repo" "$@"; }
 head=$(g rev-parse --verify --end-of-options "$head_ref^{commit}") || fail "could not resolve head"

@@ -72,3 +72,25 @@ test('swarm lines excludes uncommitted and non-TypeScript lines, tracks commit c
   assert.equal(bad.stdout, '')
   assert.match(bad.stderr, /^error: [^\r\n]+\n$/)
 })
+
+test('swarm lines leaks Git traces or fails repo lookup with CDPATH', () => {
+  function metric(env, ...args) {
+    const result = spawnSync('bash', ['tools/metrics/swarm-lines.sh', ...args], {
+      cwd: new URL('../../../', import.meta.url),
+      env: { ...process.env, ...env },
+      encoding: 'utf8',
+      timeout: 10_000,
+    })
+    assert.ifError(result.error)
+    return result
+  }
+
+  const bad = metric({ GIT_TRACE: '3' }, '--head', 'nope')
+  assert.equal(bad.status, 1)
+  assert.equal(bad.stderr, 'error: could not resolve head\n')
+
+  const good = metric({ CDPATH: '.' })
+  assert.equal(good.status, 0, good.stderr)
+  assert.equal(good.stderr, '')
+  assert.equal(JSON.parse(good.stdout).metric, 'swarm_lines')
+})

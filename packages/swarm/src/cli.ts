@@ -19,8 +19,16 @@ function readLayer(path: string | undefined): unknown {
   return parseConfigText(text)
 }
 
+function printError(headline: string) {
+  const safe = headline.replace(/[\x00-\x1f\x7f-\x9f]/g, (char) => {
+    return `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`
+  })
+  console.error(`error: ${safe}`)
+}
+
 function misuse(message: string): number {
-  console.error(`error: ${message}\n${usage}`)
+  printError(message)
+  console.error(usage)
   return 2
 }
 
@@ -74,11 +82,10 @@ function main(args: string[]): number {
       if (values.json) {
         console.log(JSON.stringify({ valid: false, field, message }))
       } else {
-        const headline = field ? `${field}: ${message}` : message
-        console.error(`error: ${headline.replace(/\s*\r?\n\s*/g, ' ')}`)
+        printError(field ? `${field}: ${message}` : message)
       }
     } else if (error instanceof ReadError) {
-      console.error(`error: ${error.message}`)
+      printError(error.message)
     } else {
       throw error
     }

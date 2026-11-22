@@ -1,5 +1,5 @@
-import Ajv from 'ajv'
-import { parseDocument } from 'yaml'
+import Ajv, { type ErrorObject } from 'ajv'
+import { parseDocument, visit } from 'yaml'
 import defaults from './defaults.json' with { type: 'json' }
 import schema from './schema.json' with { type: 'json' }
 
@@ -15,28 +15,29 @@ export class ConfigError extends Error {
   }
 }
 
-const validate = new Ajv.default({ allErrors: false, ownProperties: true }).compile(schema)
+const validate = new Ajv.default({ allErrors: true, ownProperties: true }).compile(schema)
 
 export function defaultConfig(): PartyConfig {
   return structuredClone(defaults)
 }
 
 export function parseConfigText(text: string): unknown {
-  const trimmed = text.trimStart()
-  const json = trimmed.startsWith('{') || trimmed.startsWith('[')
-  try {
-    if (json) return JSON.parse(trimmed)
-    const doc = parseDocument(text)
-    if (doc.errors.length) throw doc.errors[0]
-    return doc.toJS()
-  } catch {
-    throw new ConfigError('', json ? 'invalid JSON' : 'invalid YAML')
-  }
+  const doc = parseDocument(text)
+  const error = doc.errors[0]
+  if (error) throw new ConfigError('', error.code === 'DUPLICATE_KEY' ? 'duplicate key' : 'invalid YAML or JSON')
+  visit(doc, {
+    Alias() {
+      throw new ConfigError('', 'aliases are not allowed')
+    },
+  })
+  return doc.toJS()
 }
 
-export function validateConfig(tree: unknown): asserts tree is PartyConfig {
-  if (validate(tree)) return
-  const error = validate.errors![0]!
+function unknownField() {
+  return validate.errors?.find((error) => error.keyword === 'additionalProperties')
+}
+
+function configError(error: ErrorObject): ConfigError {
   const path = error.instancePath
     .split('/')
     .slice(1)
@@ -46,7 +47,11 @@ export function validateConfig(tree: unknown): asserts tree is PartyConfig {
   } else if (error.keyword === 'required') {
     path.push(error.params.missingProperty)
   }
-  throw new ConfigError(path.join('.'), error.message ?? 'invalid value')
+  return new ConfigError(path.join('.'), error.message ?? 'invalid value')
+}
+
+export function validateConfig(tree: unknown): asserts tree is PartyConfig {
+  if (!validate(tree)) throw configError(unknownField() ?? validate.errors![0]!)
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -66,8 +71,13 @@ function merge(base: unknown, layer: unknown): unknown {
 
 export function loadConfig(layers: { party?: unknown; repo?: unknown } = {}): PartyConfig {
   let tree: unknown = defaultConfig()
-  if (layers.party !== undefined) tree = merge(tree, layers.party)
-  if (layers.repo !== undefined) tree = merge(tree, layers.repo)
+  for (const layer of [layers.party, layers.repo]) {
+    if (layer === undefined) continue
+    validate(layer)
+    const error = unknownField()
+    if (error) throw configError(error)
+    tree = merge(tree, layer)
+  }
   validateConfig(tree)
   return tree
 }
