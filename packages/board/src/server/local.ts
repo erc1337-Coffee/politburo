@@ -74,40 +74,61 @@ function unwritable(error: unknown): string {
 export function local(options: LocalOptions = {}): LocalBackend {
   const dir = resolve(options.dir ?? '.board')
   let binding: BoardBinding | null = null
-  let opening: Promise<{ backend: ReturnType<typeof a2>; store: BoardStore; scheduler: LocalScheduler }> | null = null
+  let opening: Promise<{ backend: ReturnType<typeof a2>; close(): Promise<void> }> | null = null
 
   /** The board, opened on its first use: binding does no I/O. One that didn't open is tried again on the next call. */
   function open() {
     if (!binding) throw new Error("local: this backend isn't serving a board yet: pass it to board({ backend })")
     const bound = binding
-    opening ??= (async () => {
+    if (opening) return opening
+    const opened = (async () => {
       const file = localFile(bound.name)
       let store: BoardStore
+      let unlock: (() => void) | null = null
       if (options.memory) store = (await import('../store/memory.ts')).memory()
       else {
         const { mkdir } = await import('node:fs/promises')
+        const { lockDirectory } = await import('../store/directory-lock.ts')
         const { sqlite } = await import('../store/sqlite.ts')
         const path = join(dir, `${file}.db`)
         try {
           await mkdir(dir, { recursive: true, mode: 0o700 })
+          unlock = lockDirectory(dir)
+          if (!unlock) throw new HttpError(409, 'board_dir_locked', `another process owns the board directory at ${dir}`, {
+            origin: 'handle', hint: 'Use --url to reach the board in that process.',
+          })
           store = sqlite({ path })
         } catch (error) {
+          unlock?.()
+          if (error instanceof HttpError) throw error
           throw new HttpError(500, 'no_store', `can't open the board at ${path}: ${unwritable(error)}`)
         }
       }
       const scheduler = localScheduler()
-      const backend = a2({
-        store, scheduler, blob: options.memory ? memoryBlob() : fsBlob(join(dir, file)),
-        ...(options.attentionResponders !== undefined ? { attentionResponders: options.attentionResponders } : {}),
-        agentOps: options.agentOps === true,
-        ...(options.politburo === 1 ? { politburo: 1 } : {}),
-        ...(options.agentHealthFreshnessSeconds === undefined ? {} : { agentHealthFreshnessSeconds: options.agentHealthFreshnessSeconds }),
-      })
-      backend.bind(bound)
-      return { backend, store, scheduler }
+      const close = async () => {
+        // Its timers first: one that fired after would run against a closed file.
+        scheduler.stop()
+        await store.close()
+        unlock?.()
+      }
+      try {
+        const backend = a2({
+          store, scheduler, blob: options.memory ? memoryBlob() : fsBlob(join(dir, file)),
+          ...(options.attentionResponders !== undefined ? { attentionResponders: options.attentionResponders } : {}),
+          agentOps: options.agentOps === true,
+          ...(options.politburo === 1 ? { politburo: 1 } : {}),
+          ...(options.agentHealthFreshnessSeconds === undefined ? {} : { agentHealthFreshnessSeconds: options.agentHealthFreshnessSeconds }),
+        })
+        backend.bind(bound)
+        return { backend, close }
+      } catch (error) {
+        await close()
+        throw error
+      }
     })()
-    opening.catch(() => (opening = null))
-    return opening
+    opening = opened
+    void opened.catch(() => { if (opening === opened) opening = null })
+    return opened
   }
 
   const methods = Object.fromEntries(
@@ -132,9 +153,7 @@ export function local(options: LocalOptions = {}): LocalBackend {
       const opened = opening
       opening = null
       const board = opened && (await opened.catch(() => null))
-      // Its timers first: one that fired after would run against a closed file.
-      board?.scheduler.stop()
-      await board?.store.close()
+      await board?.close()
     },
   }
 }
