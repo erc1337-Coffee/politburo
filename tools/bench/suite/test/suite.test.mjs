@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync,
   rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -75,6 +76,20 @@ const home = () => ({ isolated: e.HOME !== obs('runner-home') && path.dirname(e.
   && (fs.statSync(e.HOME).mode & 0o777) === 0o700,
   xdg: ['CONFIG', 'CACHE', 'DATA'].every(key => path.dirname(e['XDG_' + key + '_HOME']) === e.HOME) });
 `;
+function treeDigest(root, { lstatSync, readFileSync, readdirSync, readlinkSync }, join, createHash) {
+  const hash = createHash('sha256');
+  function walk(rel) {
+    const file = join(root, rel), stat = lstatSync(file);
+    const type = stat.isDirectory() ? 'dir' : stat.isSymbolicLink() ? 'link' : 'file';
+    const content = type === 'link' ? readlinkSync(file)
+      : type === 'file' ? createHash('sha256').update(readFileSync(file)).digest('hex') : null;
+    hash.update(JSON.stringify([rel, type, stat.mode, content]));
+    if (type === 'dir') for (const child of readdirSync(file).sort()) walk(join(rel, child));
+  }
+  walk('.');
+  return hash.digest('hex');
+}
+
 function fixture(t, mode) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'bench-suite-test-')));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -89,13 +104,16 @@ function fixture(t, mode) {
   };
   writeFileSync(join(cwd, 'answer'), 'base');
   writeFileSync(join(cwd, 'obsolete'), 'obsolete\n');
-  writeFileSync(join(cwd, '.gitignore'), 'ignored\n');
+  writeFileSync(join(cwd, 'setup-location'), 'not set up\n');
+  writeFileSync(join(cwd, '.gitignore'), 'ignored\nignored-link\n');
   writeFileSync(join(cwd, '.gitattributes'), 'added export-ignore\n');
   const base = commit();
   writeFileSync(join(cwd, 'answer'), 'fixed');
   mkdirSync(join(cwd, 'checks'));
   writeFileSync(join(cwd, 'checks/golden.cjs'), `${observe}
-note('golden', { cwd: process.cwd(), secret: present('BENCH_FIXTURE_SECRET_TOKEN'), ...home() });
+note('golden', { cwd: process.cwd(), secret: present('BENCH_FIXTURE_SECRET_TOKEN'), ...home(),
+  baseLocationRestored: fs.readFileSync('setup-location', 'utf8') === JSON.parse(fs.readFileSync(obs('launcher'))).cwd,
+  extraSetupFile: fs.existsSync('setup-extra') });
 console.log('check stdout');
 console.error('check stderr');
 if (e.MODE === 'straggler') {
@@ -111,6 +129,8 @@ process.exitCode = fs.readFileSync('answer', 'utf8') === 'fixed' &&
   const setup = `${observe}
 fs.appendFileSync(obs('setup'), present('BENCH_FIXTURE_SECRET_TOKEN') + '\\n');
 const answer = fs.readFileSync('answer');
+fs.writeFileSync('setup-location', process.cwd());
+if (fs.existsSync('ready')) fs.writeFileSync('setup-extra', 'rerun only');
 fs.writeFileSync('ready', answer);
 fs.writeFileSync('ignored', answer);
 `;
@@ -138,6 +158,10 @@ note('launcher', { cwd: process.cwd(), secret: present('BENCH_FIXTURE_SECRET_TOK
   path: e.PATH?.split(path.delimiter)[0] === obs('bin'),
   gradingAlreadyExists: fs.readdirSync(obs('work')).some(name => name.startsWith('bench-grade-')) });
 `);
+  writeFileSync(join(dir, 'tree-probe.cjs'), `${observe}
+${treeDigest.toString()}
+note('sprite-digest', treeDigest(process.cwd(), fs, path.join, require('node:crypto').createHash));
+`);
   const pinned = mode === 'pass';
   writeFileSync(launcher, `#!/bin/sh
 set -eu
@@ -153,6 +177,11 @@ if [ "$MODE" = pass ] || [ "$MODE" = straggler ]; then
   printf fixed > answer; printf 'one\ntwo\n' > added; mkdir checks; printf 'mine\n' > checks/golden.cjs
   ln checks/golden.cjs "$OBS/sprite-original"
 fi
+if [ "$MODE" = unstaged ] || [ "$MODE" = one-line ]; then printf fixed > answer; fi
+if [ "$MODE" = unstaged ]; then
+  printf 'new\n' > added; printf 'not work\n' > ignored; ln -s "$OBS/missing-target" ignored-link
+  node "$OBS/tree-probe.cjs"
+fi
 if [ "$MODE" = straggler ]; then rm obsolete; fi
 if [ "$MODE" = symlink ]; then ln -s "$OBS/outside" checks; fi
 if [ "$MODE" != no-rc ]; then (
@@ -165,12 +194,13 @@ if [ "$MODE" != no-rc ]; then (
 ) & fi
 `, { mode: 0o700 });
   const passEnv = 'OBS,FIXTURE_LOG,SPRITES,MODE,EXPECTED_MODEL,EXPECTED_THINKING,EXPECTED_CAP,NODE_OPTIONS,'
-    + 'HOME,XDG_CONFIG_HOME,PI_MODEL,PI_THINKING,GIT_FIXTURE_SENTINEL,BENCH_REPO,BENCH_SPRITE_START,BENCH_RC_GRACE_SECONDS,FIXTURE-BAD,UNSET_FIXTURE';
+    + 'HOME,XDG_CONFIG_HOME,XDG_CACHE_HOME,XDG_DATA_HOME,PI_MODEL,PI_THINKING,GIT_FIXTURE_SENTINEL,BENCH_REPO,BENCH_SPRITE_START,BENCH_RC_GRACE_SECONDS,FIXTURE-BAD,UNSET_FIXTURE';
   const result = spawnSync(process.execPath, [here('../run.mjs'), '--task', task.id, '--work', work, '--out', out, '--sprites', sprites,
     ...(pinned ? ['--model', 'Requested/Model', '--thinking', 'high', '--rep', '2', '--max-seconds', '3'] : [])],
   { cwd: dir, encoding: 'utf8', timeout: 10_000, env: { PATH: [join(dir, 'bin'), process.env.PATH].join(':'), BENCH_REPO: cwd, BENCH_SPRITE_START: launcher,
     BENCH_PASS_ENV: passEnv + (pinned ? ',FIXTURE_ACCESS' : ''), HOME: join(dir, 'runner-home'),
-    XDG_CONFIG_HOME: join(dir, 'runner-home'), OBS: dir, NODE_OPTIONS: `--require=${preload}`,
+    XDG_CONFIG_HOME: join(dir, 'runner-home'), XDG_CACHE_HOME: join(dir, 'runner-home'), XDG_DATA_HOME: join(dir, 'runner-home'),
+    OBS: dir, NODE_OPTIONS: `--require=${preload}`,
     BENCH_FIXTURE_SECRET_TOKEN: 'placeholder', GIT_FIXTURE_SENTINEL: 'placeholder',
     FIXTURE_ACCESS: 'placeholder', 'FIXTURE-BAD': 'placeholder',
     BENCH_RC_GRACE_SECONDS: '0', FIXTURE_LOG: here('../../test/fixtures/single.jsonl'), SPRITES: sprites, MODE: mode,
@@ -187,7 +217,7 @@ for (const verdict of ['pass', 'fail']) test(`runner records golden ${verdict} a
   const golden = json(join(dir, 'golden'));
   assert.deepEqual({ launcher: launcher.secret, golden: golden.secret, collector: json(join(dir, 'collector')),
     setup: readFileSync(join(dir, 'setup'), 'utf8').trim().split('\n') },
-  { launcher: 'absent', golden: 'absent', collector: 'absent', setup: ['absent', 'absent', 'absent'] });
+  { launcher: 'absent', golden: 'absent', collector: 'absent', setup: ['absent', 'absent'] });
   for (const child of [launcher, golden]) assert.ok(child.isolated && child.xdg, 'private HOME and XDG directories');
   assert.equal(launcher.path, true);
   assert.equal(launcher.allowed, verdict === 'pass' ? 'present' : 'absent');
@@ -210,6 +240,25 @@ for (const verdict of ['pass', 'fail']) test(`runner records golden ${verdict} a
   assert.deepEqual(row.changes, verdict === 'pass' ? { files: 3, linesAdded: 4, linesRemoved: 1 } : { files: 0, linesAdded: 0, linesRemoved: 0 });
   // The verdict does not follow the sprite's exit code.
   assert.deepEqual(row.outcome, verdict === 'pass' ? { state: 'failed', reason: 'exit 3' } : { state: 'done', reason: null });
+});
+
+test('grading counts unstaged and untracked work without changing any sprite bytes', t => {
+  const { result, out, dir, launcher } = fixture(t, 'unstaged');
+  assert.equal(result.status, 0, result.stderr);
+  const after = treeDigest(launcher.cwd, { lstatSync, readFileSync, readdirSync, readlinkSync }, join, createHash);
+  assert.equal(after, json(join(dir, 'sprite-digest')), 'sprite tree and .git must be unchanged');
+  assert.deepEqual(json(out).changes, { files: 2, linesAdded: 2, linesRemoved: 1 });
+});
+
+for (const mode of ['noop', 'one-line']) test(`directory-dependent setup does not count as work (${mode})`, t => {
+  const { result, out, dir, launcher } = fixture(t, mode);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(json(out).changes, mode === 'noop'
+    ? { files: 0, linesAdded: 0, linesRemoved: 0 } : { files: 1, linesAdded: 1, linesRemoved: 1 });
+  const golden = json(join(dir, 'golden'));
+  assert.equal(golden.baseLocationRestored, true, 'grading setup did not replace the tracked base content');
+  assert.equal(golden.extraSetupFile, false, 'grading setup left no nonignored output');
+  assert.equal(git(golden.cwd, 'rev-parse', 'HEAD'), git(launcher.cwd, 'rev-parse', 'HEAD'));
 });
 
 test('grading a snapshot ignores a late edit and symlink swap in the sprite tree', t => {

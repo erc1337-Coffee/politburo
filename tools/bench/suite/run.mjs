@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { appendFileSync, chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync,
-  readFileSync, realpathSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, constants, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync,
+  readFileSync, realpathSync, renameSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -96,6 +96,18 @@ function unlinkIfPresent(file) {
   try { unlinkSync(file); } catch (e) { if (e.code !== 'ENOENT') throw e; }
 }
 
+function snapshotPack(work, sprite, git) {
+  const copy = privateDir(work, 'bench-snapshot-');
+  try {
+    cpSync(sprite, copy, { recursive: true, dereference: false, verbatimSymlinks: true, mode: constants.COPYFILE_FICLONE });
+    git(copy, ['add', '--all']);
+    const tree = git(copy, ['write-tree']).toString().trim();
+    // Unlike an archive, a pack honors neither export-ignore nor export-subst.
+    const pack = git(copy, ['pack-objects', '--stdout', '--revs'], { ...buffered, ...pipeInput, input: `${tree}\n` });
+    return { tree, pack };
+  } finally { rmSync(copy, { recursive: true, force: true }); }
+}
+
 async function run(o, repo, task, grace, work, git, env) {
   const sprites = resolve(o.sprites ?? join(sep, 'tmp', 'sprites')), out = resolve(o.out ?? 'results.jsonl');
   mkdirSync(sprites, { recursive: true });
@@ -108,17 +120,17 @@ async function run(o, repo, task, grace, work, git, env) {
   const initBase = cwd => {
     execFileSync('tar', ['-xf', '-'], { cwd, env, input: archive, stdio: ['pipe', 'ignore', 'ignore'] });
     git(cwd, ['init', '--template=']);
-    const commit = (...args) => git(cwd, ['-c', 'user.name=Benchmark', '-c', 'user.email=bench@example.invalid',
-      '-c', 'core.hooksPath=/dev/null', 'commit', '--allow-empty', '--no-gpg-sign', ...args]);
     git(cwd, ['add', '-f', '--all']);
-    commit('-m', 'Benchmark base');
     setup(cwd);
     // Tracked setup output belongs to the base, not to the sprite's changes.
     git(cwd, ['add', '--all']);
-    commit('--amend', '--no-edit');
+    git(cwd, ['-c', 'user.name=Benchmark', '-c', 'user.email=bench@example.invalid',
+      '-c', 'core.hooksPath=/dev/null', 'commit', '--allow-empty', '--no-gpg-sign', '-m', 'Benchmark base']);
     return git(cwd, ['rev-parse', 'HEAD']).toString().trim();
   };
-  initBase(sprite);
+  const base = initBase(sprite), savedGit = join(dir, 'base.git');
+  // Save the base before launch, without copying its ignored setup output.
+  cpSync(join(sprite, '.git'), savedGit, { recursive: true, verbatimSymlinks: true });
   const brief = join(dir, 'brief.md');
   copyFileSync(join(repo, task.briefFile), brief);
   const launcher = process.env.BENCH_SPRITE_START ? resolve(process.env.BENCH_SPRITE_START) : 'sprite-start';
@@ -131,23 +143,23 @@ async function run(o, repo, task, grace, work, git, env) {
       if (performance.now() >= deadline) return 1;
       await sleep(Math.min(100, deadline - performance.now()));
     }
-    git(sprite, ['add', '--all']);
-    const tree = git(sprite, ['write-tree']).toString().trim();
-    // Transfer the staged objects once. Unlike an archive, this honors neither export-ignore nor export-subst.
-    const snapshot = git(sprite, ['pack-objects', '--stdout', '--revs'], { ...buffered, ...pipeInput, input: `${tree}\n` });
-    const cwd = privateDir(work, 'bench-grade-'), base = initBase(cwd);
-    git(cwd, ['index-pack', '--stdin'], { ...pipeInput, input: snapshot });
+    const { tree, pack } = snapshotPack(work, sprite, git);
+    const cwd = privateDir(work, 'bench-grade-');
+    renameSync(savedGit, join(cwd, '.git'));
+    git(cwd, ['reset', '--hard', base]);
+    git(cwd, ['index-pack', '--stdin'], { ...pipeInput, input: pack });
     const checkoutSnapshot = () => git(cwd, ['read-tree', '--reset', '-u', tree]);
+    // Give setup the sprite's inputs (e.g. lockfiles), then keep only its ignored output.
     checkoutSnapshot();
-    // Ignored files from base setup must not carry over to grading setup.
-    git(cwd, ['clean', '-ffdx']);
+    setup(cwd);
+    checkoutSnapshot();
+    git(cwd, ['clean', '-ffd']);
     for (const file of task.goldenFiles) {
       const target = goldenPath(cwd, file, true);
       requireThat(!lstatSync(target, { throwIfNoEntry: false })?.isSymbolicLink());
       unlinkIfPresent(target);
       writeFileSync(target, git(repo, ['show', `${task.goldenRef}:${file}`]), { flag: 'wx' });
     }
-    setup(cwd);
     const [cmd, ...args] = task.goldenCommand;
     const verdict = spawnSync(cmd, args, { cwd, env, ...quiet });
     if (verdict.error) throw verdict.error;

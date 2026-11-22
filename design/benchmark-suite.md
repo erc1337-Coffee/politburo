@@ -88,6 +88,8 @@ Every child gets the same allowlist: `PATH`, `LANG`, `LC_ALL`, `TZ`, `TERM`
 and `TMPDIR` if set. `PI_MODEL` and `PI_THINKING` come only from the runner's
 flags. `HOME` is a new mode-0700 directory under `--work`, with
 `XDG_CONFIG_HOME`, `XDG_CACHE_HOME` and `XDG_DATA_HOME` pointing inside it.
+These XDG paths are generated inside the private per-run `HOME`, not copied
+from the runner's environment, so they cannot leak the runner's XDG values.
 
 Set `BENCH_PASS_ENV` to a comma-separated list of variable names, not
 values. The runner copies set variables whose names match
