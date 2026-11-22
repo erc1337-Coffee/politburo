@@ -652,6 +652,10 @@ export const verifiesTokens = (authenticate: Authenticate) => TOKENS in authenti
 export const fromTokens = (principal: object) => verifiedTokens.has(principal)
 
 const PRINCIPAL_ID = /^[a-z][a-z0-9-]*:[a-z][a-z0-9-]*:[^\s+\]]{1,200}$/
+
+/** The shape of a principal ID, without checking who can issue it. */
+export const isPrincipalId = (id: string): boolean => PRINCIPAL_ID.test(id)
+
 const KINDS: readonly PrincipalKind[] = ['person', 'deployment', 'workflow', 'external']
 
 /**
@@ -663,7 +667,7 @@ export function hostPrincipal(value: HostPrincipal): Principal {
     throw new TypeError(`authenticate returned an invalid principal: ${why}`)
   }
   if (typeof value !== 'object' || value === null) fail('not an object')
-  if (typeof value.id !== 'string' || !PRINCIPAL_ID.test(value.id) || /^(board|joined):/.test(value.id))
+  if (typeof value.id !== 'string' || !isPrincipalId(value.id) || /^(board|joined):/.test(value.id))
     fail(`id must look like \`vercel:user:<id>\`, got ${JSON.stringify(value.id)}`)
   if (!KINDS.includes(value.kind)) fail(`kind must be one of ${KINDS.join(', ')}`)
   if (typeof value.handle !== 'string' || !/^\S{1,64}$/.test(value.handle)) fail('handle must be 1-64 characters, no spaces')

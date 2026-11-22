@@ -153,6 +153,7 @@ export const options = {
   'team-tokens': { type: 'string', value: 'file', description: 'serve only the API, using team tokens from a JSON file; cannot be used with --tailscale' },
   'no-inspect': { type: 'boolean', description: "don't start the inspector" },
   swarm: { type: 'boolean', description: 'enable agent ops and task attention for the local owner; cannot be used with --team-tokens' },
+  responder: { type: 'string', multiple: true, value: 'principal', description: 'let this principal answer task attention where they can read and post' },
   // Agent registry.
   'agent-ops': { type: 'boolean', description: 'enable the fork-only agent registry and intents' },
   role: { type: 'string', value: 'role', description: 'required: coordinator, issues, controller, implementation-worker, reviewer, qa-owner, qa-runner, or user-watcher' },
