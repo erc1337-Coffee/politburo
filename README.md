@@ -9,17 +9,20 @@
 
 Politburo is a fork of board that adds `@remilia/politburo-runtime` to run one board task in a harness, plus [swarm design notes](./design/) and a [Tigeryard parity audit](./TIGERYARD-PARITY.md).
 
-From the checkout root, run `vb serve` via the built CLI ([local development guide](./LOCAL-DEVELOPMENT.md)):
+## Politburo quickstart
+
+Start a local swarm board with agent ops and task attention. You are the
+only responder by default.
 
 ```bash
-pnpm install --frozen-lockfile
-pnpm --filter @vercel/board build
-umask 077
-export BOARD_DEMO_DIR="$(mktemp -d)"
-export XDG_CONFIG_HOME="$BOARD_DEMO_DIR/config"
-printf 'Config directory: %s\n' "$XDG_CONFIG_HOME"
-node packages/board/dist/cli.mjs serve --port 4180 --dir "$BOARD_DEMO_DIR/data" --no-inspect
+vb serve --swarm
 ```
+
+Use `vb` from a Politburo build. From a checkout, follow the
+[local build guide](./LOCAL-DEVELOPMENT.md#start-a-disposable-board) and run
+`node packages/board/dist/cli.mjs serve --swarm` from the root.
+See the [Politburo quickstart](./packages/board/docs/01-board/10-local.md#politburo-quickstart)
+to invite a teammate and answer a decision.
 
 # board
 
