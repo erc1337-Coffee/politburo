@@ -631,7 +631,7 @@ function refreshOpenTasks(refreshViewer = false) {
       after = page.cursor
     }
     for (const [id, visible] of changes) visible ? found.add(id) : found.delete(id)
-    set((s) => ({ ...s, openTaskRoots: Object.fromEntries([...found].map((id) => [id, s.openTaskRoots[id]])),
+    set((s) => ({ ...s, openTaskRoots: Object.fromEntries([...found].flatMap((id) => (s.openTaskRoots[id] ? [[id, s.openTaskRoots[id]]] : []))),
       tasksCounted: true, tasksRefused: null }))
   })().finally(() => {
     if (as !== identity) return
