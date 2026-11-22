@@ -102,7 +102,7 @@ printf 'sprite stdout\n'
 printf 'sprite stderr\n' >&2
 [ "$MODE" != fail-start ] || exit 9
 cp "$FIXTURE_LOG" "$SPRITES/$1.jsonl"
-if [ "$MODE" = pass ]; then printf fixed > answer; fi
+if [ "$MODE" = pass ]; then printf fixed > answer; printf 'one\ntwo\n' > added; fi
 if [ "$MODE" != no-rc ]; then (sleep 0.1; printf '0\n' > "$SPRITES/$1.rc") & fi
 `, { mode: 0o700 });
   const pinned = mode === 'pass';
@@ -133,7 +133,8 @@ for (const verdict of ['pass', 'fail']) test(`runner records golden ${verdict} a
   assert.deepEqual(row.complexity.rating, rating);
   assert.deepEqual(row.model, { provider: 'p1', name: 'm1' });
   assert.equal(row.thinking, 'low');
-  assert.equal(row.changes.files, verdict === 'pass' ? 1 : 0);
+  // A file the sprite created counts as a change; the restored golden file does not.
+  assert.deepEqual(row.changes, verdict === 'pass' ? { files: 2, linesAdded: 3, linesRemoved: 1 } : { files: 0, linesAdded: 0, linesRemoved: 0 });
 });
 
 test('a sprite without an exit file times out before any golden file is restored', t => {

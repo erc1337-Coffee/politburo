@@ -91,8 +91,12 @@ async function run(o, repo, task, grace) {
   git(cwd, ['add', '-f', '--all']);
   git(cwd, ['-c', 'user.name=Benchmark', '-c', 'user.email=bench@example.invalid', '-c', 'core.hooksPath=/dev/null',
     'commit', '--allow-empty', '--no-gpg-sign', '-m', 'Benchmark base']);
-  const base = git(cwd, ['rev-parse', 'HEAD']).toString().trim();
   for (const [cmd, ...args] of task.setup) execFileSync(cmd, args, { cwd, env, ...quiet });
+  // Setup output (a lockfile touch, a build) belongs to the base, not to the sprite's changes.
+  git(cwd, ['add', '--all']);
+  git(cwd, ['-c', 'user.name=Benchmark', '-c', 'user.email=bench@example.invalid', '-c', 'core.hooksPath=/dev/null',
+    'commit', '--amend', '--allow-empty', '--no-edit', '--no-gpg-sign']);
+  const base = git(cwd, ['rev-parse', 'HEAD']).toString().trim();
   const brief = join(dir, 'brief.md');
   copyFileSync(join(repo, task.briefFile), brief);
 
@@ -110,6 +114,8 @@ async function run(o, repo, task, grace) {
       if (performance.now() >= deadline) return 1;
       await sleep(Math.min(100, deadline - performance.now()));
     }
+    // Stage the sprite's work so files it created count as changes; the golden files come after.
+    git(cwd, ['add', '--all']);
     copyGolden(repo, cwd, task);
     const [cmd, ...args] = task.goldenCommand;
     const verdict = spawnSync(cmd, args, { cwd, env, ...quiet });

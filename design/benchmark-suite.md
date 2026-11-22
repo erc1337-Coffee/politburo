@@ -81,7 +81,7 @@ Three tasks prove the pipeline. They cannot rank models or establish a
 representative complexity curve. These tasks are related and historical.
 A pass establishes only what the golden command covers. It does not score
 maintainability, review effort, human waits or coordination across sprites.
-Tracked Git churn misses untracked edits. Report the design's pass rate and
+Churn counts what the sprite left in the work tree, new files included, relative to the base after setup. Report the design's pass rate and
 Wilson interval, median and p90 time and tokens, and tokens per changed line
 with their source run IDs, not as a leaderboard.
 
