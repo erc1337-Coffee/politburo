@@ -63,7 +63,7 @@ it('locks the local directory until its last store closes or its owner is killed
   const team = board({ backend, name: 'contender' })
   const locked = {
     status: 409, code: 'board_dir_locked', origin: 'handle',
-    message: expect.stringContaining('another process owns the board directory'),
+    message: "another process owns this board's directory",
     hint: expect.stringContaining('--url'),
   }
   try {
@@ -89,6 +89,31 @@ it('locks the local directory until its last store closes or its owner is killed
     await owner.kill()
     await backend.close()
     await recovered.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+}, 20_000)
+
+it('returns a path-free directory conflict to the handle and unauthenticated discovery', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'board-lock-'))
+  const owner = startOwner(dir)
+  const backend = local({ dir })
+  const team = board({ backend })
+  const error = {
+    code: 'board_dir_locked',
+    message: "another process owns this board's directory",
+    hint: 'Use --url to reach the board in that process.',
+  }
+  try {
+    expect(await owner.send('holding the directory')).toBe('holding the directory')
+    const response = await team.fetch(new Request('http://localhost/'))
+    expect(response.status).toBe(409)
+    const body = await response.text()
+    expect(body).not.toContain(dir)
+    expect(JSON.parse(body)).toEqual({ error })
+    await expect(team.channels()).rejects.toMatchObject({ ...error, status: 409, origin: 'handle' })
+  } finally {
+    await owner.kill()
+    await backend.close()
     await rm(dir, { recursive: true, force: true })
   }
 }, 20_000)

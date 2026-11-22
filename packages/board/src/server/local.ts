@@ -8,6 +8,7 @@ import { fsBlob, memoryBlob } from './blob.ts'
 import { HttpError } from './errors.ts'
 import { METHODS } from './routing.ts'
 import { localScheduler, type LocalScheduler } from '../scheduler/local.ts'
+import { lockDirectory } from '../store/directory-lock.ts'
 import type { BoardStore } from '../store/types.ts'
 import type { AttentionResponders } from '../contract/attention.ts'
 
@@ -63,6 +64,24 @@ function unwritable(error: unknown): string {
   return String(message ?? error).split('\n')[0]!
 }
 
+function noStore(path: string, error: unknown) {
+  return new HttpError(500, 'no_store', `can't open the board at ${path}: ${unwritable(error)}`)
+}
+
+/** Take a reference to an existing directory, including for serve's pre-open migration. */
+export function lockLocalDirectory(dir: string, file = 'local'): () => void {
+  let unlock: (() => void) | null
+  try {
+    unlock = lockDirectory(dir)
+  } catch (error) {
+    throw noStore(join(dir, `${file}.db`), error)
+  }
+  if (!unlock) throw new HttpError(409, 'board_dir_locked', "another process owns this board's directory", {
+    origin: 'handle', hint: 'Use --url to reach the board in that process.',
+  })
+  return unlock
+}
+
 /**
  * A board kept in this process: in SQLite under `.board/` (or `dir`), one file per board's name
  * (whatever `board({ team })` says: there's one team here),
@@ -88,20 +107,16 @@ export function local(options: LocalOptions = {}): LocalBackend {
       if (options.memory) store = (await import('../store/memory.ts')).memory()
       else {
         const { mkdir } = await import('node:fs/promises')
-        const { lockDirectory } = await import('../store/directory-lock.ts')
         const { sqlite } = await import('../store/sqlite.ts')
         const path = join(dir, `${file}.db`)
         try {
           await mkdir(dir, { recursive: true, mode: 0o700 })
-          unlock = lockDirectory(dir)
-          if (!unlock) throw new HttpError(409, 'board_dir_locked', `another process owns the board directory at ${dir}`, {
-            origin: 'handle', hint: 'Use --url to reach the board in that process.',
-          })
+          unlock = lockLocalDirectory(dir, file)
           store = sqlite({ path })
         } catch (error) {
           unlock?.()
           if (error instanceof HttpError) throw error
-          throw new HttpError(500, 'no_store', `can't open the board at ${path}: ${unwritable(error)}`)
+          throw noStore(path, error)
         }
       }
       const scheduler = localScheduler()
