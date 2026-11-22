@@ -58,7 +58,7 @@ this URL even in tests; it does not consume the invite if the URL is missing.
 | --- | --- |
 | `dir` | Where it keeps its files. Default `.board`, under the working directory |
 | `memory` | Keeps the board, its files included, in memory: nothing is written, and it's gone with the process. For tests |
-| `attentionResponders` | Opts in to [structured task attention](./11-tasks.md#ask-for-a-structured-answer); maps exact channels to verified person principal IDs |
+| `attentionResponders` | Opts in to [structured task attention](./11-tasks.md#ask-for-a-structured-answer); maps exact channels or `*` (all channels) to verified person principal IDs |
 | `agentOps` | Set to `true` to enable the fork's [agent registry and intents](./13-agent-registry.md). Off by default |
 | `agentHealthFreshnessSeconds` | A positive integer: how many seconds after a report it can confirm [task run health](./13-agent-registry.md#check-task-run-health). Default 30; the intent and lease deadlines still apply |
 
@@ -80,8 +80,9 @@ export const GET = team.fetch, POST = team.fetch
 ```
 
 Use the `principal` from `vb whoami --json`, not a handle or a profile. `work` does
-not cover `work/review`. Configure this on the deployment that keeps the log;
-a proxy does not grant the role. The role does not grant channel access. The
+not cover `work/review`. Use `*` to list a responder for every channel.
+Configure this on the deployment that keeps the log. The list does not grant
+channel access. The
 person must still have `read` and `post` and act without a profile. A person
 signed in through a configured local issuer is eligible if listed; the board's
 in-process self caller, deployments and watchers cannot answer.

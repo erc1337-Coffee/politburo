@@ -944,7 +944,8 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
       const { principal, actor, author } = identity
       const { channel } = await taskOf(principal.access, id)
       if (!verifiedRequest || principal.kind !== 'person' || actor.id !== principal.id || author.profile !== null ||
-          !principal.access.can('post', channel) || !responders.get(channel)?.has(principal.id)) {
+          !principal.access.can('post', channel) ||
+          !(responders.get(channel)?.has(principal.id) || responders.get('*')?.has(principal.id))) {
         throw forbidden('only a configured responder acting as themselves with read and post access can answer task attention')
       }
       const root = await changeTask(identity, id, async (found, position) => {

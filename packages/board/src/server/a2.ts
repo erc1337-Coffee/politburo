@@ -61,9 +61,10 @@ export type A2Options = {
    * platform's files where they are. `local()` always passes one.
    */
   blob?: BlobStore
-  /** Enables structured attention; only these verified people may answer in each exact channel. */
+  /** Enables structured attention with a responder allowlist. */
   attentionResponders?: AttentionResponders
   agentOps?: boolean
+  politburo?: 1
   agentHealthFreshnessSeconds?: number
 }
 
@@ -523,6 +524,7 @@ function build(options: A2Options, binding: BoardBinding) {
         task_authority: true,
         ...(agents ? { agent_ops: true } : {}),
         ...(intents ? { agent_intents: true } : {}),
+        ...(options.politburo === 1 ? { politburo: 1 } : {}),
       }
       return body
     },
