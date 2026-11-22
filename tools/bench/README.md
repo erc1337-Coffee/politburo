@@ -39,7 +39,7 @@ in the task record. The task's own `wallSeconds` is 10.
   Aggregate active time is unknown without attention data;
   `sprites.activeSeconds` sums the known sprite times.
 - Both accept `--parent`, `--task`, `--review-rounds`, `--failed-checks`, and
-  `--check pass|fail|not_run` with optional `--check-command NAME`. Roll-ups
+  `--check pass|fail|not_run` with optional `--check-command NAME` (a name, optionally followed by `check` or `test`; never arguments). A `--reason` is a short code such as `waiting_on_review`, never prose. Roll-ups
   accept `--outcome done|failed|blocked|canceled` with `--reason CODE` as needed.
   A reason code is at most 80 characters, starts with an ASCII letter or
   digit, and otherwise allows letters, digits, spaces, and `_.:-`.
