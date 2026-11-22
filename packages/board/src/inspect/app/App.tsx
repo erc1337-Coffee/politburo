@@ -16,9 +16,9 @@ import { Sidebar } from './sidebar.tsx'
 import { actorFor, TaskCard, taskIds } from './task.tsx'
 import { Tasks } from './tasks.tsx'
 import { FilterButton, FilterChips } from './filters.tsx'
-import { byWritten, channelRows, channelThreads, filtering, isTask, knownLabels, listingOf, matches, mayCancelSchedule, profilesOf, thread as threadOf, threadSchedules, type Filter, type State, type Viewer } from './store.ts'
-import { Ask, Header, nativeMenu, ResizeHandle, type KnownLabels } from './ui.tsx'
-import { boardWords, cadence, firstLine, until } from './words.ts'
+import { byWritten, channelRows, channelThreads, filtering, isTask, knownLabels, listingOf, matches, mayCancelSchedule, pauseBanner, profilesOf, thread as threadOf, threadSchedules, type Filter, type State, type Viewer } from './store.ts'
+import { Ask, AskForm, Header, HeaderActions, nativeMenu, Panel, ResizeHandle, type KnownLabels } from './ui.tsx'
+import { boardWords, cadence, firstLine, shownName, until } from './words.ts'
 
 const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`
 
@@ -134,6 +134,34 @@ function NameGate({ done }: { done: () => void }) {
   )
 }
 
+function PauseControl({ paused }: { paused: boolean }) {
+  const [action, setAction] = useState<boolean | null>(null)
+  const [busy, setBusy] = useState(false)
+  const label = (pause: boolean) => pause ? 'Pause' : 'Resume'
+  return (
+    <Panel
+      title={label(action ?? !paused)}
+      trigger={label(!paused)}
+      triggerTitle={label(!paused)}
+      triggerClass="act"
+      open={action !== null}
+      onOpenChange={(open) => setAction(open ? !paused : null)}
+    >
+      <AskForm
+        fields={[{ name: 'reason', placeholder: 'reason', required: true }]}
+        submit={label(action ?? !paused)}
+        disabled={busy}
+        onDone={() => setAction(null)}
+        onSubmit={({ reason }) => {
+          if (action === null) return
+          setBusy(true)
+          void board.changePause(action, reason!).finally(() => setBusy(false))
+        }}
+      />
+    </Panel>
+  )
+}
+
 // --- the app -----------------------------------------------------------------------
 
 export function App() {
@@ -183,6 +211,13 @@ export function App() {
   const [naming, setNaming] = useState(board.needsName)
   useEffect(() => {
     if (!naming) board.boot().catch((error: Error) => setFailed(error.message))
+  }, [naming])
+
+  useEffect(() => {
+    if (naming) return
+    const read = () => void board.loadStatus()
+    addEventListener('popstate', read)
+    return () => removeEventListener('popstate', read)
   }, [naming])
 
   // Old thread links open the thread pane.
@@ -253,7 +288,17 @@ export function App() {
       </button>
     </>
   ) : null
-  const expand = narrow && where.thread !== null ? null : headerLead
+  const identity = board.getIdentity()
+  const paneIsFront = narrow && where.thread !== null
+  const expand = paneIsFront ? null : headerLead
+  const banner = pauseBanner(state, now)
+  const control = viewer.manages && viewer.person && viewer.profile === null && state.status
+    ? <PauseControl key={viewer.actor} paused={state.status.paused} /> : null
+  const headerActions = <>
+    {(narrow ? !nav : sidebar.collapsed) && <span className="meta" title={state.me.actor}>acting as {shownName(state.me)}</span>}
+    {state.statusRefused && <span className="meta" title={state.statusRefused}>{state.statusRefused}</span>}
+    {control}
+  </>
   return (
     <div
       ref={shell}
@@ -263,44 +308,76 @@ export function App() {
         if (where.thread === null && !nav && event.target instanceof HTMLElement && event.target.closest('.main')) threadOpener.current = event.target
       }}
     >
-      {nav && <div className="scrim" onClick={() => setNav(false)} />}
-      <nav id="board-sidebar" className="sidebar" aria-label="Board navigation" tabIndex={-1} hidden={!nav && sidebar.collapsed} style={{ width: sidebar.width, opacity: sidebar.fade }}>
-        <Sidebar
-          state={state}
-          current={current}
-          onHome={() => setNav(false)}
-          onCollapse={() => {
-            if (nav) setNav(false)
-            else sidebar.collapse(true)
-          }}
-        />
-        <ResizeHandle side="right" label="resize the sidebar" onDrag={sidebar.drag} onDone={sidebar.done} onStep={sidebar.step} />
-      </nav>
-      <main className="main" inert={narrow && (nav || where.thread !== null)}>
-        {current.view === 'home' && <Home state={state} now={now} lead={expand} />}
-        {current.view === 'presidium' && <Presidium state={state} now={now} lead={expand} />}
-        {current.view === 'channel' && (
-          <Channel key={current.channel} channel={current.channel} state={state} options={options} known={known} lead={expand} filters={filters} />
+      <div className="workspace">
+        <PauseBanner text={banner} />
+        {nav && <div className="scrim" onClick={() => setNav(false)} />}
+        <nav id="board-sidebar" className="sidebar" aria-label="Board navigation" tabIndex={-1} hidden={!nav && sidebar.collapsed} style={{ width: sidebar.width, opacity: sidebar.fade }}>
+          <Sidebar
+            state={state}
+            current={current}
+            onHome={() => setNav(false)}
+            onCollapse={() => {
+              if (nav) setNav(false)
+              else sidebar.collapse(true)
+            }}
+          />
+          <ResizeHandle side="right" label="resize the sidebar" onDrag={sidebar.drag} onDone={sidebar.done} onStep={sidebar.step} />
+        </nav>
+        <main className="main" inert={narrow && (nav || where.thread !== null)}>
+          <HeaderActions.Provider value={paneIsFront ? null : headerActions}>
+            {current.view === 'home' && <Home key={identity} state={state} now={now} lead={expand} />}
+            {current.view === 'presidium' && <Presidium key={identity} state={state} now={now} lead={expand} />}
+            {current.view === 'channel' && (
+              <Channel key={current.channel} channel={current.channel} state={state} options={options} known={known} lead={expand} filters={filters} />
+            )}
+            {current.view === 'tasks' && <Tasks key={identity} state={state} viewer={viewer} now={now} lead={expand} where={where} known={known} />}
+            {current.view === 'attention' && <Attention key={identity} state={state} viewer={viewer} lead={expand} />}
+            {current.view === 'settings' && <Settings state={state} viewer={viewer} now={now} lead={expand} where={where} section={current.section} open={current.open} />}
+            {current.view === 'missing' && (
+              <>
+                <Header title="nothing here" lead={expand} />
+                <div className="view-body"><p className="empty">no such page</p></div>
+              </>
+            )}
+          </HeaderActions.Provider>
+        </main>
+        {where.thread !== null && (
+          <aside className="pane" aria-label="Thread" inert={nav}>
+            <ResizeHandle side="left" label="resize the thread" onDrag={pane.drag} onDone={pane.done} onStep={pane.step} />
+            <HeaderActions.Provider value={paneIsFront ? headerActions : null}>
+              <ThreadPane key={where.thread} id={where.thread} state={state} viewer={viewer} now={now} known={known} lead={narrow ? headerLead : null} />
+            </HeaderActions.Provider>
+          </aside>
         )}
-        {current.view === 'tasks' && <Tasks state={state} viewer={viewer} now={now} lead={expand} where={where} known={known} />}
-        {current.view === 'attention' && <Attention state={state} viewer={viewer} lead={expand} />}
-        {current.view === 'settings' && <Settings state={state} viewer={viewer} now={now} lead={expand} where={where} section={current.section} open={current.open} />}
-        {current.view === 'missing' && (
-          <>
-            <Header title="nothing here" lead={expand} />
-            <p className="empty">no such page</p>
-          </>
-        )}
-      </main>
-      {where.thread !== null && (
-        <aside className="pane" aria-label="Thread" inert={nav}>
-          <ResizeHandle side="left" label="resize the thread" onDrag={pane.drag} onDone={pane.done} onStep={pane.step} />
-          <ThreadPane key={where.thread} id={where.thread} state={state} viewer={viewer} now={now} known={known} lead={narrow ? headerLead : null} />
-        </aside>
-      )}
+      </div>
       <Toasts />
     </div>
   )
+}
+
+function PauseBanner({ text }: { text: string | null }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const height = useRef(0)
+  useLayoutEffect(() => {
+    const banner = ref.current!
+    const workspace = banner.parentElement!
+    const compensate = () => {
+      const next = banner.hidden ? 0 : banner.getBoundingClientRect().height
+      const delta = next - height.current
+      if (!delta) return
+      height.current = next
+      for (const el of workspace.querySelectorAll<HTMLElement>('.sidebar *, .main *, .pane *')) {
+        // A disappearing banner can clamp scrollTop to the new bottom before we read it.
+        if (el.hasAttribute('data-pinned')) el.scrollTop = el.scrollHeight
+        else if (el.scrollTop > 0) el.scrollTop += delta
+      }
+    }
+    compensate()
+    const observer = new ResizeObserver(compensate)
+    observer.observe(banner, { box: 'border-box' })
+    return () => observer.disconnect()
+  }, [text])
+  return <div ref={ref} className="pause-banner" role="status" hidden={text === null}>{text}</div>
 }
 
 // --- views ---------------------------------------------------------------------------
@@ -332,13 +409,15 @@ function Channel(props: { channel: string; state: State; options: RowOptions; kn
   const canPost = options.viewer.may('post', channel)
   useTypeToFocus('main')
   const [loading, setLoading] = useState(true)
+  const identity = board.getIdentity()
   useEffect(() => {
-    void board.loadChannel(channel).finally(() => setLoading(false))
-  }, [channel])
+    setLoading(true)
+    void board.loadChannel(channel).finally(() => { if (identity === board.getIdentity()) setLoading(false) })
+  }, [channel, identity])
   const key = JSON.stringify(filter)
   useEffect(() => {
     if (filtering(filter)) void board.loadFiltered(channel, filter)
-  }, [channel, key])
+  }, [channel, key, identity])
   // The board's thread list, by latest activity; a filter, or a board from before `older`, the messages loaded.
   const listed = !!listingOf(state, channel) && !filtering(filter)
   const { threads: all, pending: posts } = useMemo(
@@ -365,6 +444,7 @@ function Channel(props: { channel: string; state: State; options: RowOptions; kn
       >
         <FilterControls filters={props.filters} />
       </Header>
+      <div className="view-body">
       <FilterChips filter={filter} onChange={props.filters.setFilter} />
       <Feed scope={channel} first={roots[0]?.id ?? ''} last={`${newest}+${pending.length}`} older={() => board.loadOlder(channel)}>
         {roots.length === 0 && pending.length === 0 && (
@@ -387,6 +467,7 @@ function Channel(props: { channel: string; state: State; options: RowOptions; kn
           if (mine) setEditing(mine.id)
         }}
       />}
+      </div>
     </>
   )
 }
@@ -395,9 +476,13 @@ function ThreadPane(props: { id: string; state: State; viewer: Viewer; now: numb
   const { id, state, viewer } = props
   useTypeToFocus('thread')
   const [missing, setMissing] = useState(false)
+  const identity = board.getIdentity()
   useEffect(() => {
-    void board.loadThread(id).then(() => setMissing(!board.getState().messages[id]))
-  }, [id])
+    setMissing(false)
+    void board.loadThread(id).then(() => {
+      if (identity === board.getIdentity()) setMissing(!board.getState().messages[id])
+    })
+  }, [id, identity])
   const t = useMemo(() => threadOf(state, id), [state.messages, state.ops, state.pending, state.actors, id])
   // Where the thread's copies are, on the platforms it syncs with.
   const [synced, setSynced] = useState<SyncedView['targets']>([])
@@ -429,7 +514,8 @@ function ThreadPane(props: { id: string; state: State; viewer: Viewer; now: numb
           <X size={15} strokeWidth={1.75} />
         </button>
       </Header>
-      {t && isTask(t.root) && <TaskCard root={t.root} state={state} viewer={viewer} />}
+      <div className="view-body">
+      {t && isTask(t.root) && <TaskCard key={identity} root={t.root} state={state} viewer={viewer} />}
       {(synced.length > 0 || scheduled.length > 0) && (
         <dl className="facts thread-facts" {...nativeMenu}>
           {synced.length > 0 && (
@@ -493,6 +579,7 @@ function ThreadPane(props: { id: string; state: State; viewer: Viewer; now: numb
           }}
         />
       )}
+      </div>
     </>
   )
 }

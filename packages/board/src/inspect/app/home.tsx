@@ -126,7 +126,8 @@ export function Home({ state, now, lead }: { state: State; now: number; lead: Re
           <div className="home-intro">
             <button type="button" disabled={loadingMore} onClick={async () => {
               setLoadingMore(true)
-              setListed(await board.loadTasks(filter, listed.cursor))
+              const page = await board.loadTasks(filter, listed.cursor)
+              if (page) setListed(page)
               setLoadingMore(false)
             }}>{loadingMore ? 'Loading…' : 'Load more tasks'}</button>
           </div>

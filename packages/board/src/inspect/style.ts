@@ -106,19 +106,25 @@ textarea, [contenteditable]:not([contenteditable='false']) { cursor: text; }
 .grow { flex: 1; min-width: 0; }
 .hint { color: var(--faint); font-size: 11px; }
 
-.shell { display: flex; height: 100dvh; overflow: hidden; }
+.shell { display: flex; flex-direction: column; height: 100dvh; overflow: hidden; }
+/* The columns share the header and body tracks, with a full-width pause row between them. */
+.workspace { --header-height: 46px; display: grid; grid-template: var(--header-height) auto minmax(0, 1fr) / minmax(0, 1fr); flex: 1; min-height: 0; }
+.pause-banner { grid-area: 2 / 1 / 3 / -1; z-index: calc(var(--nav-layer) + 1); max-height: 6em; overflow-y: auto; padding: 6px var(--inset); background: var(--selected); color: var(--bright); overflow-wrap: anywhere; }
+:is(.sidebar, .main, .pane) { position: relative; grid-area: 1 / 1 / -1 / 2; grid-template-rows: subgrid; min-width: 0; min-height: 0; }
+:is(.sidebar, .main, .pane) > :is(.brand, .header) { grid-row: 1; }
+:is(.sidebar, .main, .pane) > :is(.view-body, .page) { grid-row: 3; }
+.view-body { display: flex; flex-direction: column; min-height: 0; }
 @media (min-width: 64rem) {
   .shell { margin: 12px; height: calc(100dvh - 24px); border-radius: 7px; box-shadow: 0 2px 3px var(--shadow); }
 }
 
 /* --- sidebar: an opaque navigation rail --- */
-.sidebar { position: relative; flex-shrink: 0; display: none; background: var(--rail); }
-.sidebar-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.sidebar { display: none; background: var(--rail); }
 /* What's said on the board scrolls; its settings and who you are stay put under it. */
 .sidebar-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 8px 12px; }
 .sidebar-foot { flex-shrink: 0; padding: 4px 8px 12px; }
 .brand {
-  height: 46px;
+  height: var(--header-height);
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -161,14 +167,10 @@ textarea, [contenteditable]:not([contenteditable='false']) { cursor: text; }
 .sidebar .item.unread { color: var(--bright); font-weight: 600; }
 .sidebar .count { color: var(--faint); font-size: 11px; font-weight: 400; }
 .sidebar .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
-.whoami-wrap { padding-top: 2px; }
-.whoami { width: 100%; display: flex; align-items: center; gap: 6px; padding: 6px 8px; color: var(--muted); font-size: 11px; text-align: left; }
-.whoami:hover, .whoami[data-popup-open] { background: var(--shade); color: var(--bright); }
+.whoami { display: flex; align-items: center; gap: 6px; padding: 6px 8px; color: var(--muted); font-size: 11px; }
 .whoami .as { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.whoami.naming { flex-direction: column; align-items: stretch; }
-.whoami.naming .send { align-self: flex-end; }
-.whoami.naming input { width: 100%; height: 28px; padding: 0 8px; border: 0; background: var(--shade); font-size: 12px; }
-.whoami.naming input:focus-visible { outline: 2px solid var(--focus); }
+.developer-identity { margin-bottom: 12px; color: var(--muted); }
+.profile-options { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 0; }
 .choice { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .choice svg { color: var(--accent); }
 
@@ -182,18 +184,20 @@ textarea, [contenteditable]:not([contenteditable='false']) { cursor: text; }
 .resize:focus-visible i { background: var(--focus); }
 
 /* --- main and the thread pane --- */
-.main, .pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-.main { flex: 1; background: var(--panel); }
-.pane { position: fixed; inset: 0; width: auto !important; background: var(--bg); z-index: var(--overlay-layer); }
+.main, .pane { display: grid; }
+.main { background: var(--panel); }
+.pane { background: var(--bg); z-index: var(--overlay-layer); }
 .resize { display: none; }
 @media (min-width: 64rem) {
-  .sidebar:not([hidden]) { display: flex; }
-  .pane { position: relative; flex-shrink: 0; width: var(--pane-width) !important; max-width: max(320px, calc(100% - var(--sidebar-width) - 20rem)); }
+  .workspace { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .sidebar:not([hidden]) { display: grid; }
+  .main { grid-column: 2; }
+  .pane { grid-column: 3; width: min(var(--pane-width), max(320px, calc(100vw - 24px - var(--sidebar-width) - 20rem))); }
   .resize { display: flex; }
 }
 
 .header {
-  height: 46px;
+  height: var(--header-height);
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -746,8 +750,8 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 .inbox-row pre { margin: 4px 0 0; color: var(--faint); font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* --- a narrow page: the sidebar comes over it when it's asked for --- */
-.shell.nav .sidebar { display: flex; position: fixed; inset: 0 auto 0 0; z-index: var(--nav-layer); width: min(280px, 84vw) !important; opacity: 1 !important; }
-.shell.nav .scrim { display: block; position: fixed; inset: 0; z-index: calc(var(--nav-layer) - 1); background: var(--scrim); }
+.shell.nav .sidebar { display: grid; z-index: var(--nav-layer); width: min(280px, 84vw) !important; opacity: 1 !important; }
+.shell.nav .scrim { display: block; grid-area: 1 / 1 / -1 / 2; z-index: calc(var(--nav-layer) - 1); background: var(--scrim); }
 :is(.brand .at, .sidebar h2, .sidebar .count, .whoami, .header .meta, .live, .time, .id, .divider, .where, .edited, .undelivered, .hint, .task-state, .task-now, .task-where) { font: var(--metadata); }
 :is(.chip, .label button, .file button, .sidebar h2 .tool, .replies, .clear) { min-height: 24px; }
 .emoji-grid { grid-template-columns: repeat(12, minmax(0, 1fr)); width: min(372px, calc(100vw - 24px)); }

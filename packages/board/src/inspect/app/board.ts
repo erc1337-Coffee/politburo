@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react'
-import type { BoardEventView, Explanation, GrantInput, GrantWriteOptions, InboxEntry, Me, MessageView, SchemaInput, SyncedView, TaskView } from '../../api/routes.ts'
+import { flushSync } from 'react-dom'
+import type { AttentionAnswerBody, BoardEventView, Explanation, GrantInput, GrantWriteOptions, InboxEntry, Me, MessageView, SchemaInput, SyncedView, TaskView } from '../../api/routes.ts'
 // `@vercel/board/access`, in an app of yours.
 import { compileAccess } from '../../server/access.ts'
 import { board, BoardError, type Attachment, type EventsState, type ExplainPrincipal, type PostOptions, type ScheduleTiming } from '../../server/index.default.ts'
@@ -10,6 +11,7 @@ import { board, BoardError, type Attachment, type EventsState, type ExplainPrinc
 // Everything under that line reads as it would in your app: plain `team.*` calls.
 import { http } from '../../backend-http/index.default.ts'
 import { everyChannel } from '../../client/channels.ts'
+import type { TaskPriority } from '../../contract/schemas.ts'
 import * as attentionStore from './attention-store.ts'
 import { toast } from './chrome.ts'
 import { listing } from './listing.ts'
@@ -58,7 +60,8 @@ const stored = <T>(key: string): T | undefined => {
 /** The profile `vb inspect` started as (`--as claude`), which the page is told beside its token. */
 const started: Profile | null = (() => {
   try {
-    return JSON.parse(meta('inspect-profile') || 'null') as Profile | null
+    const value = JSON.parse(meta('inspect-profile') || 'null') as string | Profile | null
+    return typeof value === 'string' ? { name: value } : value
   } catch {
     return null
   }
@@ -89,18 +92,37 @@ const handleFor = (choice: Profile | null | undefined) => {
 
 /** The handle every call below goes through: you, or you as the profile you picked. */
 let team = handleFor(profile)
+let identity = 0
+let profileChoice = 0
+let feedFollow: AbortController | undefined
+let bootStarted = false
+
+export const getIdentity = () => identity
 
 /** Switches who you post as, then learns the identity that is, and remembers it once the board takes it. */
 export async function setProfile(next: Profile | null | undefined): Promise<boolean> {
+  const choice = ++profileChoice
   const handle = handleFor(next)
   try {
     const me = await handle.me()
-    team = handle
-    profile = next
-    set((s) => ({ ...s, me, schedules: { is: 'loading' } }))
-    void loadSchedules()
+    if (choice !== profileChoice) return false
+    feedFollow?.abort()
+    feedFollow = undefined
+    openTaskPages = undefined
+    // Publish the new handle and its acting-as label in the same turn.
+    flushSync(() => {
+      team = handle
+      identity++
+      profile = next
+      loaded.clear()
+      listed = listingForCurrentHandle()
+      set((s) => ({ ...s, me, schedules: { is: 'loading' }, live: bootStarted ? 'reconnecting' : s.live,
+        tasksCounted: false, tasksRefused: null, attention: {}, attentionUnsupported: false }))
+    })
+    if (bootStarted) void boot().catch((error) => toast(said(error)))
+    else void loadSchedules()
   } catch (error) {
-    toast(`couldn't switch: ${said(error)}`)
+    if (choice === profileChoice) toast(`couldn't switch: ${said(error)}`)
     return false
   }
   if (next) {
@@ -118,7 +140,7 @@ export async function setProfile(next: Profile | null | undefined): Promise<bool
 /** What you may do where: `me.can` is each channel pattern's permissions, and `compileAccess` answers for a channel. */
 export function viewerOf(me: Me): store.Viewer {
   const access = compileAccess(me.can)
-  return { actor: me.actor, principal: me.principal, profile: me.profile, may: (permission, channel) => access.can(permission, channel), manages: access.at('manage', '*') }
+  return { actor: me.actor, principal: me.principal, profile: me.profile, may: (permission, channel) => access.can(permission, channel), manages: access.at('manage', '*'), person: me.kind === 'person' }
 }
 
 // --- the page's state: what the board said, folded by store.ts --------------------------------
@@ -151,7 +173,9 @@ const loaded = new Map<string, Promise<void>>()
 function once(key: string, load: () => Promise<void>): Promise<void> {
   let promise = loaded.get(key)
   if (!promise) {
+    const as = identity
     promise = load().catch((error) => {
+      if (as !== identity) return
       loaded.delete(key)
       toast(said(error))
     })
@@ -163,41 +187,64 @@ function once(key: string, load: () => Promise<void>): Promise<void> {
 // --- reading -----------------------------------------------------------------------
 
 /** The page shows once it knows who you are and the channels the sidebar lists. */
-export async function boot() {
+export async function boot(): Promise<void> {
+  bootStarted = true
+  const handle = team
+  const as = identity
+  const current = () => handle === team && as === identity
   // Keep the first page's cursor so live updates cover posts while later pages are loading.
   let after: string | undefined
-  const [me, discovery, channels] = await Promise.all([
-    team.me(),
-    team.discovery().catch(() => null),
+  const snapshot = await Promise.all([
+    handle.me(),
+    handle.discovery().catch(() => null),
     everyChannel({ channels: async (query) => {
-      const page = await team.channels(query)
+      const page = await handle.channels(query)
       after ??= page.cursor
       return page
     } }),
-  ])
+  ]).catch((error) => {
+    if (current()) throw error
+    return null
+  })
+  if (!snapshot || !current()) return
+  const [me, discovery, channels] = snapshot
   set((s) => ({ ...s, me, discovery, channels: Object.fromEntries(channels.map((c) => [c.path, c])) }))
+  const controller = feedFollow = new AbortController()
   // A burst of events is one render: they're folded in a frame at a time.
   let queue: BoardEventView[] = []
   const flush = () => {
     const events = queue
     queue = []
+    if (!current()) return
     listed.apply(events)
-    if (attentionOpen) refreshAttentionEvents(events)
+    if (attentionVisit) refreshAttentionEvents(events)
     // A schedule's own state isn't in the feed, but its sends are: one that landed means the list moved.
     if (events.some((event) => event.message?.schedule !== undefined)) void loadSchedules()
   }
   follow(
+    handle,
     after,
+    controller.signal,
     (event) => {
-      if (queue.push(event) === 1) requestAnimationFrame(flush)
+      if (!current()) return
+      if (event.type === 'work.control') {
+        // Apply the transition immediately so the store can reject older status snapshots.
+        set((s) => store.applyEvent(s, event))
+        void loadStatus()
+      } else if (queue.push(event) === 1) requestAnimationFrame(flush)
     },
-    (feed) => set((s) => ({ ...s, live: feed === 'live' ? 'live' : 'reconnecting' })),
-  ).catch((error) => toast(`live updates stopped: ${said(error)}`))
+    (feed) => { if (current()) set((s) => ({ ...s, live: feed === 'live' ? 'live' : 'reconnecting' })) },
+  ).catch((error) => { if (current()) toast(`live updates stopped: ${said(error)}`) })
+  // Read after the feed's cursor is fixed: a pause is either in this snapshot or in the feed.
+  void loadStatus()
   // Who's who, for the names of a task's owner and holder; and the open tasks, for their count.
-  void team.actors().then((actors) => set((s) => ({ ...s, actors: { ...Object.fromEntries(actors.map((actor) => [actor.id, actor])), ...s.actors } })), () => {})
+  void handle.actors().then((actors) => {
+    if (current()) set((s) => ({ ...s, actors: { ...Object.fromEntries(actors.map((actor) => [actor.id, actor])), ...s.actors } }))
+  }, () => {})
   void loadSchemas()
   void loadSchedules()
   openTaskPages = loadOpenTasks()
+  if (attentionVisit) refreshAttentionAfterPages(attentionVisit)
 }
 
 // #region guide inspector/live.ts
@@ -207,8 +254,8 @@ export async function boot() {
  * The handle retries a dropped connection itself; this throws only when the board refuses the feed (a
  * token that ran out, say).
  */
-async function follow(after: string | undefined, each: (event: BoardEventView) => void, onState: (state: EventsState) => void) {
-  for await (const event of team.events({ all: true, ...(after !== undefined ? { after } : {}) }, { onState })) each(event)
+async function follow(team: ReturnType<typeof board>, after: string | undefined, signal: AbortSignal, each: (event: BoardEventView) => void, onState: (state: EventsState) => void) {
+  for await (const event of team.events({ all: true, ...(after !== undefined ? { after } : {}) }, { signal, onState })) each(event)
 }
 // #endregion
 
@@ -216,7 +263,7 @@ async function follow(after: string | undefined, each: (event: BoardEventView) =
 const PAGE = 200
 
 /** One channel's newest messages across its threads, roots and replies alike, oldest first. */
-const readChannel = (channel: string) => team.channel(channel).messages({ limit: PAGE })
+const readChannel = (channel: string, handle = team) => handle.channel(channel).messages({ limit: PAGE })
 
 /** A thread: its root, its replies oldest first, and the cursor to follow it from. */
 const readThread = (id: string) => team.thread(id)
@@ -226,27 +273,35 @@ const readThread = (id: string) => team.thread(id)
  * Each channel's view, a page of its threads at a time (by messages on a board from before `older`), through
  * whichever handle you post as now.
  */
-const listed = listing(
-  { threads: (query) => team.threads(query), messages: (channel) => readChannel(channel) },
-  () => state,
-  set,
-)
+function listingForCurrentHandle() {
+  const handle = team
+  const as = identity
+  return listing(
+    { threads: (query) => handle.threads(query), messages: (channel) => readChannel(channel, handle) },
+    () => state,
+    (next) => { if (as === identity) set(next) },
+  )
+}
+
+let listed = listingForCurrentHandle()
 
 export const loadChannel = (channel: string) => once(`channel:${channel}`, () => listed.load(channel))
 
 export async function loadOlder(channel: string): Promise<boolean> {
+  const as = identity
   try {
     return await listed.older(channel)
   } catch (error) {
-    toast(said(error))
+    if (as === identity) toast(said(error))
     return true
   }
 }
 
 export const loadThread = (id: string) =>
   once(`thread:${id}`, async () => {
+    const as = identity
     const { message: root, replies } = await readThread(id)
-    set((s) => store.merge(s, [root, ...replies]))
+    if (as === identity) set((s) => store.merge(s, [root, ...replies]))
   })
 
 /** Threads a filtered view asks the board for, and how many of them it reads whole. */
@@ -266,6 +321,7 @@ export const loadFiltered = (channel: string, filter: store.Filter) => {
   const kind = `${filter.from ? 'from' : ''}:${filter.text ? 'text' : ''}:${filter.label.length > 0 ? 'label' : ''}`
   if (unsupported.has(kind)) return Promise.resolve()
   return once(`filtered:${channel}:${JSON.stringify(filter)}`, async () => {
+    const as = identity
     const page = await team
       .threads({
         channel,
@@ -275,12 +331,63 @@ export const loadFiltered = (channel: string, filter: store.Filter) => {
         limit: FILTERED,
       })
       .catch((error: unknown) => {
-        if ((error as { status?: unknown } | null)?.status === 501) unsupported.add(kind)
+        if (as === identity && (error as { status?: unknown } | null)?.status === 501) unsupported.add(kind)
         throw error
       })
+    if (as !== identity) return
     set((s) => store.merge(s, page.threads.flatMap((thread) => (thread.last ? [thread.message, thread.last] : [thread.message]))))
     await Promise.all(page.threads.filter((thread) => thread.replies > 1).slice(0, FILTERED_WHOLE).map((thread) => loadThread(thread.message.id)))
   })
+}
+
+// --- work control and registry ------------------------------------------------------
+
+let statusRead = 0
+let statusSettled = 0
+let statusRefusedAt = 0
+
+export async function loadStatus() {
+  const read = ++statusRead
+  const as = identity
+  try {
+    const status = await team.status()
+    if (as !== identity) return
+    statusSettled = Math.max(statusSettled, read)
+    set((s) => {
+      // Work state is ordered by the board's transitions; the refusal is ordered by request.
+      const next = store.applyStatus(s, status)
+      return next.statusRefused !== null && read > statusRefusedAt ? { ...next, statusRefused: null } : next
+    })
+  } catch (error) {
+    // A refusal only adds a note to the header; it never replaces a successful status.
+    if (as !== identity || read <= statusSettled) return
+    statusSettled = statusRefusedAt = read
+    set((s) => ({ ...s, statusRefused: said(error) }))
+  }
+}
+
+export async function changePause(paused: boolean, reason: string) {
+  const as = identity
+  try {
+    const status = await (paused ? team.pause(reason) : team.resume(reason))
+    if (as === identity) set((s) => store.applyStatus(s, status))
+  } catch (error) {
+    if (as === identity) toast(refusal(error))
+  }
+}
+
+export async function listProfiles(channel: string): Promise<string[] | undefined> {
+  const handle = team
+  const as = identity
+  try {
+    const { agents } = await handle.agents.list(channel)
+    if (handle !== team || as !== identity) return
+    return [...new Set(agents.flatMap(({ binding }) => binding.profile === null ? [] : [binding.profile]))].sort()
+  } catch (error) {
+    if (handle !== team || as !== identity) return
+    if (!(error instanceof BoardError && error.code === 'no_agent_ops')) throw error
+    return []
+  }
 }
 
 // --- writing -----------------------------------------------------------------------
@@ -328,7 +435,9 @@ export async function send(
   }
   set((s) => ({ ...s, pending: [...s.pending.filter((p) => p.key !== key), pending] }))
   try {
+    const as = identity
     const attachments = await Promise.all(files.map((file) => team.upload({ data: file, name: file.name })))
+    if (as !== identity) throw new Error('the acting identity changed before this was sent; retry to send as the current identity')
     const content = {
       text: post.text,
       ...(attachments.length ? { attachments } : {}),
@@ -351,7 +460,7 @@ export async function send(
       ? (await team.tasks.create(post.channel, { ...options, needs: post.task.needs, for: post.task.for })).task
       : await write(post.re === null ? { channel: post.channel } : { re: post.re }, options)
     outgoing.delete(key)
-    set((s) => store.sent(s, key, sent))
+    set((s) => as === identity ? store.sent(s, key, sent) : { ...s, pending: s.pending.filter((p) => p.key !== key) })
   } catch (error) {
     set((s) => ({ ...s, pending: s.pending.map((p) => (p.key === key ? { ...p, error: refusal(error) } : p)) }))
   }
@@ -430,46 +539,13 @@ const listTasks = (query: { state?: 'open' | 'all' | TaskView['state']; channel?
   team.tasks.list({ ...query, limit: PAGE })
 // #endregion
 
-// #region guide inspector/claims.ts
-/**
- * The claims this tab holds, by task: each claim's `epoch` and `token`, which its writes carry.
- * The token is a secret, so it lives in memory and nowhere else: never in storage, where a script
- * on the page or another tab could read it. A reload gives the claims up, and their leases run out.
- */
-const claims = new Map<string, { epoch: number; token: string }>()
-
-/** Claims a task, and keeps the claim. A task that can't be claimed now throws a 409: `task_claimed`, `task_waiting`, `task_assigned`. */
-async function claim(id: string): Promise<MessageView> {
-  const claimed = await team.tasks.claim(id)
-  claims.set(id, { epoch: claimed.epoch, token: claimed.token })
-  return claimed.task
-}
-
-/** What this tab's claim on a task does: `renew`, `release`, `complete`, `fail`, and `block`. Once the claim is over, each throws a 409 `claim_lost` and changes nothing. */
-function held(id: string) {
-  const mine = claims.get(id)
-  if (!mine) throw new BoardError('claim_lost', 'this tab holds no claim on it', 409)
-  return team.tasks.held(id, mine)
-}
-// #endregion
-
-// The store knows which claims are live, from what the board shows; once it drops one it had,
-// its token goes too. One the store hasn't taken in yet is kept: a claim's token is here a
-// moment before the store hears of it, and anything that changes the store in between runs this.
-const recorded = new Set<string>()
-listeners.add(() => {
-  for (const id of claims.keys()) {
-    if (state.claims[id]) recorded.add(id)
-    else if (recorded.delete(id)) claims.delete(id)
-  }
-})
-
 /**
  * The tasks a filter keeps, a page at a time, into the store. Answers where the list ends for
  * now, or what the board refused it for: `tooWide` when the filter's tree holds more channels than
  * one list reads, as Vercel's board says for a caller who doesn't read every channel.
  */
-export async function loadTasks(filter: store.TaskFilter, after?: string): Promise<{ cursor: string; last: MessageView | undefined; more: boolean } | { refused: string; tooWide: boolean }> {
+export async function loadTasks(filter: store.TaskFilter, after?: string): Promise<{ cursor: string; last: MessageView | undefined; more: boolean } | { refused: string; tooWide: boolean } | undefined> {
+  const as = identity
   try {
     const page = await listTasks({
         state: filter.state,
@@ -479,19 +555,23 @@ export async function loadTasks(filter: store.TaskFilter, after?: string): Promi
         ...(filter.for ? { for: filter.for } : {}),
         ...(after ? { after } : {}),
       })
+    if (as !== identity) return
     const roots = page.tasks.map((task) => task.message)
     set((s) => store.merge(s, roots))
     return { cursor: page.cursor, last: roots.at(-1), more: roots.length === PAGE }
   } catch (error) {
+    if (as !== identity) return
     return { refused: refusal(error), tooWide: (error as { code?: unknown } | null)?.code === 'channel_tree_too_large' }
   }
 }
 
 /** The shared open-task index also supplies the sidebar counts. */
 async function loadOpenTasks() {
+  const as = identity
   let after: string | undefined
   for (;;) {
     const page = await loadTasks({ state: 'open', label: [] }, after)
+    if (!page || as !== identity) return
     if ('refused' in page) {
       set((s) => ({ ...s, tasksRefused: page.refused }))
       return
@@ -503,21 +583,25 @@ async function loadOpenTasks() {
 }
 
 let openTaskPages: Promise<void> | undefined
-let attentionOpen = false
+let attentionVisit: symbol | undefined
 
-export function openAttention() {
-  attentionOpen = true
-  let visiting = true
-  for (const root of attentionStore.attentionTasks(state)) void readAttention(root)
-  // A direct visit can start while the initial task pages are still loading.
+function refreshAttentionAfterPages(visit: symbol) {
+  const as = identity
+  // A direct visit can start before boot has even requested the first page.
   void openTaskPages?.then(() => {
-    if (!visiting) return
+    if (attentionVisit !== visit || as !== identity) return
     for (const root of attentionStore.attentionTasks(state))
       if (state.attention[root.id]?.latest?.id !== root.task.attentionId) void readAttention(root)
   })
+}
+
+export function openAttention() {
+  const visit = attentionVisit = Symbol()
+  for (const root of attentionStore.attentionTasks(state)) void readAttention(root)
+  refreshAttentionAfterPages(visit)
   return () => {
-    visiting = false
-    attentionOpen = false
+    if (attentionVisit !== visit) return
+    attentionVisit = undefined
     set(attentionStore.leaveAttention)
   }
 }
@@ -546,13 +630,14 @@ export function attentionRendered(rendered: store.State) {
 }
 
 async function readAttention(root: ReturnType<typeof attentionStore.attentionTasks>[number]) {
+  const as = identity
   const reading = attentionStore.beginAttentionRead(state, root)
   set(() => reading.state)
   const result = await team.tasks.attention(root.id).then<attentionStore.AttentionResult, attentionStore.AttentionResult>(
     ({ attention }) => ({ is: 'here', value: attention }),
     (error: unknown) => ({ is: 'failed', ...attentionFailure(error) }),
   )
-  set((s) => attentionStore.finishAttentionRead(s, root.id, reading.read, result))
+  if (as === identity) set((s) => attentionStore.finishAttentionRead(s, root.id, reading.read, result))
 }
 
 /** Only the feed settles a successful answer. */
@@ -563,78 +648,66 @@ export async function answerAttention(id: string, requestId: string, optionId: s
   if (!attention || attention.id !== requestId || reason !== null || disabled) return
   const option = attention.options.find((option) => option.id === optionId)
   if (!option) return
+  const as = identity
   set((s) => attentionStore.beginAnswer(s, root, attention, option.label))
   try {
     await team.tasks.answer(id, requestId, { option: option.id, commit: attention.commit })
-    set((s) => attentionStore.finishAnswer(s, id, attention))
+    if (as === identity) set((s) => attentionStore.finishAnswer(s, id, attention))
   } catch (error) {
-    set((s) => attentionStore.finishAnswer(s, id, attention, attentionFailure(error)))
+    if (as === identity) set((s) => attentionStore.finishAnswer(s, id, attention, attentionFailure(error)))
   }
 }
 
 /** A task write: the root it answers goes in the store, and a refusal is said in the page's words. */
-async function work(id: string, write: () => Promise<MessageView>): Promise<boolean> {
+async function work(write: () => Promise<MessageView>): Promise<boolean> {
+  const as = identity
   try {
     const root = await write()
+    if (as !== identity) return false
     set((s) => store.merge(s, [root]))
     return true
   } catch (error) {
-    // The board never says who holds it now, only that this claim doesn't.
-    if (error instanceof BoardError && error.code === 'claim_lost') set((s) => store.unclaimed(s, id))
-    toast(refusal(error))
+    if (as === identity) toast(refusal(error))
     return false
   }
 }
 
-/** Claims a task for the board's default lease, and tells the store which claim this tab now holds. */
-export async function claimTask(id: string): Promise<boolean> {
-  try {
-    const root = await claim(id)
-    set((s) => store.claimed(s, root, { epoch: claims.get(id)!.epoch }))
-    // The feed was ahead and the task has moved on: the store never held this claim, so its token goes here.
-    if (!state.claims[id]) claims.delete(id)
-    return true
-  } catch (error) {
-    toast(refusal(error))
-    return false
-  }
-}
-
-export const renewTask = (id: string) => work(id, async () => (await held(id).renew()).task)
-export const releaseTask = (id: string) => work(id, async () => held(id).release())
-export const completeTask = (id: string, result?: string) => work(id, async () => held(id).complete(result))
-export const failTask = (id: string, reason: string) => work(id, async () => held(id).fail(reason))
-/** Holds a task for a person: through this tab's claim while it has one, which ends the claim, or else as its owner. */
-export const blockTask = (id: string, reason: string, kind?: string) =>
-  work(id, async () => {
-    const root = state.messages[id]
-    const mine = store.isTask(root) && store.holding(state, root, Date.now()) !== undefined
-    return mine ? held(id).block(reason, kind ? { kind } : {}) : team.tasks.block(id, reason, kind ? { kind } : {})
-  })
-export const unblockTask = (id: string) => work(id, () => team.tasks.unblock(id))
-export const reopenTask = (id: string) => work(id, () => team.tasks.reopen(id))
+export const blockTask = (id: string, reason: string, kind?: string) => work(() => team.tasks.block(id, reason, kind ? { kind } : {}))
+export const unblockTask = (id: string) => work(() => team.tasks.unblock(id))
+export const reopenTask = (id: string) => work(() => team.tasks.reopen(id))
 /** `actor` is one of the owner's (`<owner>+<profile>`), or null for anyone who may claim it. */
-export const assignTask = (id: string, actor: string | null) => work(id, () => team.tasks.assign(id, actor))
-export const cancelTask = (id: string, reason: string) => work(id, () => team.tasks.cancel(id, reason))
+export const assignTask = (id: string, actor: string | null) => work(() => team.tasks.assign(id, actor))
+export const cancelTask = (id: string, reason: string) => work(() => team.tasks.cancel(id, reason))
+export const parkTask = (id: string, reason: string) => work(() => team.tasks.park(id, reason))
+export const unparkTask = (id: string, reason: string) => work(() => team.tasks.unpark(id, reason))
+export const prioritizeTask = (id: string, priority: TaskPriority) => work(() => team.tasks.priority(id, priority))
+export async function loadAttention(id: string) {
+  const as = identity
+  try {
+    const result = await team.tasks.attention(id)
+    if (as === identity) return result
+  } catch (error) {
+    if (as === identity) throw error
+  }
+}
+export const answerTask = (id: string, request: string, answer: AttentionAnswerBody) => work(async () => (await team.tasks.answer(id, request, answer)).task)
 
 /** Makes the thread `re` roots a task, as it is. */
-export const makeTask = (re: string, options: { needs: string[]; for: string | null }) => work(re, async () => (await team.tasks.create({ re }, options)).task)
-
-// A claim's token is only in this tab: leaving the page gives up what it holds, so the browser asks first.
-addEventListener('beforeunload', (event) => {
-  if (Object.keys(state.claims).length > 0) event.preventDefault()
-})
+export const makeTask = (re: string, options: { needs: string[]; for: string | null }) => work(async () => (await team.tasks.create({ re }, options)).task)
 
 // --- schemas: what a message's blocks hold -------------------------------------------------
 
 /** The board's registry: the built-ins, then its own. It says what each block's fields mean. */
 export async function loadSchemas() {
+  const handle = team
+  const as = identity
+  const current = () => handle === team && as === identity
   try {
-    const schemas = await team.schemas()
-    set((s) => ({ ...s, schemas, schemasRefused: null }))
+    const schemas = await handle.schemas()
+    if (current()) set((s) => ({ ...s, schemas, schemasRefused: null }))
   } catch (error) {
     // Blocks still show, by their data alone; the registry's view says what the board answered.
-    set((s) => ({ ...s, schemasRefused: said(error) }))
+    if (current()) set((s) => ({ ...s, schemasRefused: said(error) }))
   }
 }
 
@@ -643,9 +716,10 @@ export const findSchema = (id: string) => once(`schema:${id}`, loadSchemas)
 
 /** Registers a schema version, for good. Answers what the board refused it for, in its words, or null once it's kept. */
 export async function registerSchema(input: SchemaInput): Promise<string | null> {
+  const as = identity
   try {
     const { schema } = await team.createSchema(input)
-    set((s) => store.addSchema(s, schema))
+    if (as === identity) set((s) => store.addSchema(s, schema))
     return null
   } catch (error) {
     return said(error)
@@ -673,10 +747,11 @@ const lockout = (error: unknown) => error instanceof BoardError && error.code ==
  * `lockMeOut` on a yes, and a no leaves the board's refusal as it was.
  */
 async function askingFirst<T>(write: (options: GrantWriteOptions) => Promise<T>): Promise<T> {
+  const as = identity
   try {
     return await write({})
   } catch (error) {
-    if (!lockout(error) || !confirm(`${said(error)}: only someone who still manages grants there could change it then. Go ahead?`)) throw error
+    if (as !== identity || !lockout(error) || !confirm(`${said(error)}: only someone who still manages grants there could change it then. Go ahead?`)) throw error
     return write({ lockMeOut: true })
   }
 }
