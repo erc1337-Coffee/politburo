@@ -40,28 +40,42 @@ Swarm mail is a thread root in `swarm/<tag>/inbox`, labeled `swarm.class`,
 leaves the board's operational inbox unused. See the
 [frontend mapping](swarm-frontend.md#mapping).
 
-Keep the plain one-line summary and fenced YAML header shown below as text.
-Keep `summary` to at most 120 characters. On the board, the structured block
-carries `from`, `ref`, `summary` and `body`; the board message supplies the ID
-and time, and the labels carry class, urgency and state.
-
-Use `ref` to identify the work, `body` to point to the details and `at` for
-the header timestamp. Read every header, but open the referenced body only
-when handling its class.
+On the board, the secretary writes a plain one-line summary followed by
+this JSON block. Keep `summary` to at most 120 characters. Use `ref` to
+identify the work and `body` for a reply ID or file name.
 
 ````text
 Three renamed fields need a naming decision.
-```yaml
-id: ex-0412
-class: spawner.decide
-urgency: p1
-from: ex 120-COW2
-ref: {pr: 42, task: 812}
-summary: "Three renamed fields need a naming decision."
-body: "thread 813"
-at: 2026-11-20T21:14Z
+```json#swarm-message@1
+{
+  "from": "ex 120-COW2",
+  "ref": {"pr": 42, "task": "812"},
+  "summary": "Three renamed fields need a naming decision.",
+  "body": "813"
+}
 ```
 ````
+
+Set `swarm.class` to `spawner.decide`, `swarm.urgency` to `p1` and
+`swarm.state` to `open` for this example. The board assigns the message ID
+and creation time. The secretary does not write `id` or `at` in the message
+block.
+
+This YAML illustrates a header read from the board. Its `at` comes from the
+message's `createdAt`. Do not post the YAML as text.
+Read every header, but open the referenced body only when handling its class.
+
+```yaml
+id: "814"
+at: "2026-11-20T21:14:00Z"
+class: spawner.decide
+urgency: p1
+state: open
+from: ex 120-COW2
+ref: {pr: 42, task: "812"}
+summary: "Three renamed fields need a naming decision."
+body: "813"
+```
 
 The sender sets `class` and `urgency`. The secretary trusts them for routing.
 The spawner fixes the dispatch brief of a mob that keeps misclassifying.
@@ -103,17 +117,33 @@ secretary model only for work it handles and to send forwards.
 ## Digest
 
 Post the 30-minute digest for the spawner as a message with a
-`swarm-digest@1` block in `swarm/<tag>/inbox`, once per window. Put a plain
-one-line summary first and use the fields shown below for the digest.
-Include headers only, never bodies.
+`swarm-digest@1` JSON block in `swarm/<tag>/inbox`, once per window. Put a
+plain one-line summary first. The secretary writes the batch key and copies
+board-assigned message IDs into `act_on`, highest urgency first. The board
+assigns the digest message its own ID, separate from the batch key. Include
+headers only in `items`, sorted p0 to p3. Do not copy the referenced bodies.
 
-```yaml
-batch: ex-2026-11-20T21:30Z
-repo: example
-window: {from: 2026-11-20T21:00Z, to: 2026-11-20T21:30Z}
-counts: {p0: 0, p1: 1, p2: 6, p3: 4}
-act_on: [ex-0412]           # ids that need the spawner, highest urgency first
-items: [...]                # headers, sorted p0 to p3
+```json#swarm-digest@1
+{
+  "batch": "ex-2026-11-20T21:30Z",
+  "repo": "example",
+  "window": {"from": "2026-11-20T21:00Z", "to": "2026-11-20T21:30Z"},
+  "counts": {"p0": 0, "p1": 1, "p2": 0, "p3": 0},
+  "act_on": ["814"],
+  "items": [
+    {
+      "id": "814",
+      "at": "2026-11-20T21:14:00Z",
+      "class": "spawner.decide",
+      "urgency": "p1",
+      "state": "open",
+      "from": "ex 120-COW2",
+      "ref": {"pr": 42, "task": "812"},
+      "summary": "Three renamed fields need a naming decision.",
+      "body": "813"
+    }
+  ]
+}
 ```
 
 ## Transport and records
