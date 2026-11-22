@@ -502,10 +502,10 @@ credential or the invite secret, even with `--json`. Run
 
 ```text
 vb serve [--port N] [--dir <dir>] [--no-inspect] [--no-open] [--agent-ops]
-         [--swarm]
+         [--swarm] [--responder <principal>]...
          [--tailscale <host>]... [--allow-host <host>]...
 vb serve --team-tokens <file> [--dir <dir>] [--host <bind-ip>] [--port N]
-         [--allow-host <host>]...
+         [--allow-host <host>]... [--responder <principal>]...
 ```
 
 Without `--team-tokens`, runs a board on this machine until Ctrl-C, at
@@ -557,6 +557,16 @@ attention requests by default. This applies in every channel the owner can
 read and post in. Inviting someone does not make them a responder.
 `--swarm` cannot be used with `--team-tokens`. Use `--agent-ops` on its own
 if you only want the agent registry, intents, and run health.
+
+#### Choose who can answer task attention
+
+Pass `--responder <principal>` to enable structured task attention without
+turning on agent ops. Use the `principal` from `vb whoami --json`, not a handle
+or a profile. With `--team-tokens`, use `team:user:<handle>`.
+
+Repeat `--responder` to list more people. With `--swarm`, the local owner can
+also answer. Without it, only the listed people can answer. Listing someone
+does not grant channel access. They still need `read` and `post`.
 
 #### Share it on a tailnet
 
