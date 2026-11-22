@@ -1,6 +1,5 @@
-"""Signal a verified process: 0 on success, 1 on refusal, 2 without pidfd support."""
+"""Signal a verified process: 0 on success, 1 on refusal."""
 
-import errno
 import os
 import signal
 import sys
@@ -8,7 +7,7 @@ import sys
 
 def main():
     if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
-        return 2
+        return 1
 
     try:
         pid_arg, start_time, sig = sys.argv[1:]
@@ -19,10 +18,7 @@ def main():
 
         # Bind to the process before checking its identity. A subsequent PID
         # reuse cannot redirect a signal sent through this fd.
-        try:
-            fd = os.pidfd_open(pid)
-        except OSError as exc:
-            return 2 if exc.errno == errno.ENOSYS else 1
+        fd = os.pidfd_open(pid)
         try:
             with open(f"/proc/{pid}/stat", "rb") as stat:
                 # After the final ') ', state is field 3 and start time is 22.

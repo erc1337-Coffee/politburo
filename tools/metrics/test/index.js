@@ -272,28 +272,16 @@ function live(identity) {
   return Boolean(current && current.startTime === identity.startTime)
 }
 
-function signalIfSame(identity, signal) {
-  return spawnSync('python3', ['-I', signalScript, String(identity.pid), identity.startTime, signal], { stdio: 'ignore' })
+function signalIfSame(identity, signal, { python = 'python3', script = signalScript } = {}) {
+  return spawnSync(python, ['-I', script, String(identity.pid), identity.startTime, signal], {
+    stdio: 'ignore', timeout: 1_000, killSignal: 'SIGKILL',
+  })
 }
 
-function pidfdUnavailable(result) {
-  return result.error?.code === 'ENOENT' || result.status === 2
-}
-
-export function killIfSame(identity, signal) {
+export function killIfSame(identity, signal, options) {
   if (!Number.isSafeInteger(identity?.pid) || identity.pid <= 1) return false
-  const result = signalIfSame(identity, signal)
-  if (!pidfdUnavailable(result)) return result.status === 0
-
-  // Without Python or pidfd support, fall back to checking immediately before
-  // kill. This best-effort fallback still has a PID reuse window.
-  try {
-    if (!live(identity)) return false
-    return process.kill(identity.pid, signal)
-  } catch (err) {
-    if (err.code !== 'ESRCH') throw err
-    return false
-  }
+  const result = signalIfSame(identity, signal, options)
+  return !result.error && result.signal === null && result.status === 0
 }
 
 function killOwnedGroup(child, signal) {
@@ -321,7 +309,23 @@ for (const stale of [true, false]) {
   })
 }
 
-test('pidfd helper refuses a live PID with a stale start time', { timeout: 2_000 }, async (t) => {
+for (const [name, option] of [['helper script', 'script'], ['python3 command', 'python']]) {
+  test(`cleanup leaves a matching process alive when the ${name} is missing`, { timeout: 2_000 }, async (t) => {
+    const missing = join(temp(t), 'missing')
+    const child = spawn('cat', { detached: true, stdio: ['pipe', 'ignore', 'ignore'], env: claimEnv() })
+    t.after(() => killOwnedGroup(child, 'SIGKILL'))
+    const exited = once(child, 'exit')
+    await once(child, 'spawn')
+    const identity = processIdentity(child.pid)
+    assert.ok(identity)
+    const signalled = killIfSame(identity, 'SIGKILL', { [option]: missing })
+    child.stdin.end()
+    assert.deepEqual(await exited, [0, null], 'cleanup killed the sleeper despite the helper startup failure')
+    assert.equal(signalled, false)
+  })
+}
+
+test('pidfd helper refuses a live PID with a stale start time', { timeout: 3_000 }, async (t) => {
   const child = spawn('cat', { detached: true, stdio: ['pipe', 'ignore', 'ignore'], env: claimEnv() })
   t.after(() => killOwnedGroup(child, 'SIGKILL'))
   const exited = once(child, 'exit')
@@ -332,11 +336,14 @@ test('pidfd helper refuses a live PID with a stale start time', { timeout: 2_000
   // Model a reused PID: the PID exists, but belongs to a different start tick.
   const stale = { ...identity, startTime: String(BigInt(identity.startTime) - 1n) }
   const result = signalIfSame(stale, 'SIGKILL')
+  // A refusal alone does not prove pidfd is available; a matching signal must succeed.
+  const matching = signalIfSame(identity, 'SIGCONT')
   child.stdin.end()
   assert.deepEqual(await exited, [0, null], 'the helper signalled a stale identity')
-  if (pidfdUnavailable(result)) return t.skip('Python with pidfd support is required')
   assert.ifError(result.error)
   assert.equal(result.status, 1)
+  assert.ifError(matching.error)
+  assert.equal(matching.status, 0, 'Python with working pidfd support is required')
 })
 
 test('fork metric fails quietly on a stalled HTTP fetch and kills the remote helper', { timeout: 8_000 }, async (t) => {
