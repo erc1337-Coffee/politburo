@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
-import { closeSync, mkdtempSync, openSync, readSync, fstatSync, rmSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { closeSync, mkdtempSync, openSync, readSync, fstatSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -76,24 +77,49 @@ const killGroup = (pid) => {
   try { process.kill(-pid, 'SIGKILL') } catch (err) { if (err.code !== 'ESRCH') throw err }
 }
 
+async function killMarkedProcesses(runId) {
+  const entry = Buffer.from(`JUDGE_RUN_ID=${runId}\0`)
+  const marker = Buffer.concat([Buffer.from([0]), entry])
+  const deadline = performance.now() + 5000
+  for (;;) {
+    let found = false
+    for (const pid of readdirSync('/proc')) {
+      if (!/^[1-9][0-9]*$/.test(pid)) continue
+      let environ
+      try { environ = readFileSync(`/proc/${pid}/environ`) } catch { continue }
+      if (!environ.subarray(0, entry.length).equals(entry) && !environ.includes(marker)) continue
+      found = true
+      try { process.kill(Number(pid), 'SIGKILL') } catch (err) { if (err.code !== 'ESRCH') throw err }
+    }
+    if (!found) return
+    requireThat(performance.now() < deadline, 'marked child processes did not exit')
+    await sleep(25)
+  }
+}
+
 async function measure({ repo, head: headRef, timeout }) {
+  requireThat(process.platform === 'linux', 'Linux /proc is required for child cleanup')
+  // Check that /proc is available before starting any children.
+  readdirSync('/proc')
+  const runId = randomUUID()
   process.umask(0o077)
   const tmp = mkdtempSync(join(tmpdir(), 'first-claim-'))
   const checkout = join(tmp, 'repo')
-  const env = { ...process.env }
-  for (const key of Object.keys(env)) {
-    if (/^(?:BOARD_|VERCEL|GIT_|XDG_|NPM_CONFIG_|PNPM_|COREPACK_)/i.test(key) ||
-        ['NODE_OPTIONS', 'SSH_ASKPASS', 'SSH_AUTH_SOCK', 'ENV', 'BASH_ENV', 'CDPATH'].includes(key)) delete env[key]
-  }
-  // Preserve ambient proxy and CA variables, including npm's proxy / CA knobs.
+  const env = {}
+  const proxyAndCA = new Set([
+    'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
+    'NODE_EXTRA_CA_CERTS', 'CURL_CA_BUNDLE', 'GIT_SSL_CAINFO', 'REQUESTS_CA_BUNDLE',
+    'NPM_CONFIG_PROXY', 'NPM_CONFIG_HTTPS_PROXY', 'NPM_CONFIG_NOPROXY', 'NPM_CONFIG_CA',
+    'NPM_CONFIG_CAFILE', 'NPM_CONFIG_STRICT_SSL',
+  ])
   for (const [key, value] of Object.entries(process.env)) {
-    if (/^npm_config_(?:proxy|https_proxy|noproxy|ca|cafile|strict_ssl)$/i.test(key)) env[key] = value
+    if (key === 'PATH' || proxyAndCA.has(key.toUpperCase())) env[key] = value
   }
   Object.assign(env, {
     HOME: tmp, XDG_CONFIG_HOME: join(tmp, 'config'), XDG_CACHE_HOME: join(tmp, 'cache'),
     XDG_DATA_HOME: join(tmp, 'share'), XDG_STATE_HOME: join(tmp, 'state'), TMPDIR: tmp,
     GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0',
-    GIT_SSH_COMMAND: 'ssh -o BatchMode=yes', CI: 'true',
+    GIT_SSH_COMMAND: 'ssh -o BatchMode=yes', CI: '1', JUDGE_RUN_ID: runId,
   })
 
   const phases = {}
@@ -227,23 +253,44 @@ async function measure({ repo, head: headRef, timeout }) {
         task.by?.profile === null, 'create did not return a ready task from the local principal')
       return task
     })
-    await phase('claim', async () => {
+    const { epoch, principal, profile } = await phase('claim', async () => {
       const { agent } = await vb('register worker', 'agents', 'register', channel,
         '--role', 'implementation-worker', '--harness', 'shell', '--as', worker)
       requireThat(agent?.status === 'enabled' && agent.binding?.profile === worker, 'worker registration was not confirmed')
-      const { task: claimed } = await vb('claim task', '--as', worker, 'tasks', 'claim', task.id, '--lease', '15m')
+      const { task: claimed, claim } = await vb('claim task', '--as', worker, 'tasks', 'claim', task.id, '--lease', '15m')
       requireThat(claimed?.id === task.id && claimed.task?.state === 'claimed' &&
+        Number.isSafeInteger(claim?.epoch) && typeof agent.binding.principal === 'string' &&
         agent.binding.principal === task.by.principal &&
         claimed.task.claim?.actor === `${agent.binding.principal}+${worker}` &&
         claimed.task.claim.actor !== task.task.owner, 'claim by the second identity was not confirmed')
+      return { epoch: claim.epoch, principal: agent.binding.principal, profile: agent.binding.profile }
     })
     await phase('complete', async () => {
-      await vb('reply with candidate', '--as', worker, 'reply', task.id, '--no-sync',
+      const { message: reply } = await vb('reply with candidate', '--as', worker, 'reply', task.id, '--no-sync',
         '--idempotency-key', `demo-review-${task.id}-v1`,
         'Candidate: replace `A sample app.` with `A sample app for local task handoffs.` Checked against the fixture text. No repository or app tests run.')
-      const { task: completed, outcome } = await vb('complete task', '--as', worker, 'tasks', 'complete', task.id,
-        'Candidate recorded for human review')
+      requireThat(typeof reply?.id === 'string' && reply.re === task.id, 'candidate reply was not confirmed')
+      const result = 'Candidate recorded for human review'
+      const { task: completed, outcome } = await vb('complete task', '--as', worker, 'tasks', 'complete', task.id, result)
       requireThat(completed?.id === task.id && completed.task?.state === 'completed' && outcome === 'completed', 'completion was not confirmed')
+
+      // Read the task's persisted event stream after the candidate reply. Other
+      // thread events may intervene, so continue from their reported cursors.
+      let after = reply.id
+      for (let i = 0; i < 10; i++) {
+        const { event } = await vb('read task history', 'wait', '--re', task.id, '--after', after, '--timeout', '5s')
+        if (event?.type === 'task.completed') {
+          const payload = event.payload
+          requireThat(payload?.id === task.id && payload.epoch === epoch && payload.result === result &&
+            payload.by?.principal === principal && payload.by.profile === profile &&
+            payload.by.profile !== task.by.profile && event.message?.task?.state === 'completed',
+            'persisted completion by the second identity was not confirmed')
+          return
+        }
+        requireThat(typeof event?.cursor === 'string' && event.cursor !== after, 'invalid task history cursor')
+        after = event.cursor
+      }
+      throw new MetricError('completion event was not found in task history')
     })
     const seconds = (performance.now() - start) / 1000
     return {
@@ -257,7 +304,12 @@ async function measure({ repo, head: headRef, timeout }) {
     cleaningUp = true
     clearTimeout(overall)
     try {
-      for (const pid of groups) killGroup(pid)
+      try {
+        for (const pid of groups) killGroup(pid)
+      } finally {
+        // Also runs on both per-command and overall timeouts.
+        await killMarkedProcesses(runId)
+      }
     } finally {
       rmSync(tmp, { recursive: true, force: true })
       for (const name of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.off(name, interrupt)
@@ -266,6 +318,7 @@ async function measure({ repo, head: headRef, timeout }) {
 }
 
 try {
+  requireThat(!process.env.NODE_DEBUG, 'NODE_DEBUG must be unset or empty')
   const value = await measure(options(process.argv.slice(2)))
   process.stdout.write(`${JSON.stringify(value)}\n`)
 } catch (err) {
