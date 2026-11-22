@@ -1027,6 +1027,46 @@ To read one, `vb read 1204`.
 
 See [Reading](../01-board/05-reading.md).
 
+### Before you upgrade: thread IDs
+
+The CLI reads `thr_` followed by 36 hex digits or hyphens as a thread's own
+ID, the root of that thread, wherever it takes a message ID. It read that
+spelling as a channel's name, and it is still a valid one. A command given
+such a channel now acts on that thread, or fails as a message that isn't
+there, and no longer reaches the channel.
+
+Before upgrading to the release that carries it, you must audit every
+existing board any of your CLIs reach for a channel named that way, and for
+pending schedules that post to one.
+
+Set `BOARD_URL` to the existing board's API URL. The audit needs Bash, `jq`,
+and `read` at `*`. It only reads.
+
+```bash
+(
+  set -o pipefail
+  after=
+  while :; do
+    page=$(vb --url "${BOARD_URL:?Set BOARD_URL to the existing board URL}" \
+      channels list --json --limit 500 ${after:+--after "$after"}) || exit
+    jq -r '.channels[].path | select(test("^thr_[0-9a-f-]{36}$")) | "channel  \(.)"' <<<"$page"
+    after=$(jq -r '.next // empty' <<<"$page")
+    [ -n "$after" ] || break
+  done
+  vb --url "$BOARD_URL" schedules --all --json | jq -r '
+    .schedules[] | select(.channel | test("^thr_[0-9a-f-]{36}$"))
+    | "schedule s\(.id)  \(.channel)"'
+)
+```
+
+The audit lists each channel whose whole path is that spelling, and each
+schedule that posts to one; a channel under another, `dev/thr_…`, is not
+affected. If it succeeds with no rows, there is nothing to do. A script or
+other automation that names such a channel is not on the board: search its
+source for `thr_[0-9a-f-]{36}`.
+
+What to do about a listed channel is an operator decision.
+
 ### download
 
 ```text

@@ -14,7 +14,7 @@ import { http } from '../backend-http/index.ts'
 import { credentialed, credentialSource, handTeam, vercel } from '../backend-vercel/index.ts'
 import { board as boardAt, type Board } from '../server/index.ts'
 import { isBoardName } from '../server/board.ts'
-import { isApiMessageId } from '../server/backend-vercel.ts'
+import { apiThreadRoot, isApiMessageId } from '../server/backend-vercel.ts'
 import { AttentionAnswerBody, AttentionAskFile } from '../contract/attention.ts'
 import { normalizeEmoji } from '../contract/emoji.ts'
 import { AgentRole, ATTACHMENTS_PER_MESSAGE_MAX, DIRECT_UPLOAD_BYTES_MAX, IntentOutcome, IntentVerb, MESSAGE_TEXT_MAX, type AgentIntent, type Attachment, AttachmentId, TaskPriority } from '../contract/schemas.ts'
@@ -251,6 +251,8 @@ let warnings: Warning[] = []
 let reached: string | null = null
 /** The handle a task command used, for a read that explains its failure. */
 let taskBoard: Board | undefined
+/** The team whose default board this run reached, nothing naming one of its boards: `--scope`'s, or the one the environment finds. */
+let teamDefault: { team: string | undefined } | null = null
 /** Where the credential this run sent came from, as `whoami` says it, for a refusal to say which to replace. */
 let sent: () => string | null = () => null
 /** How long the message text this run sends is, for a backend's refusal of it to say what to do instead. */
@@ -457,7 +459,8 @@ function messageId(value: string | undefined, what = 'message ID'): string {
   const id = value?.replace(/^#/, '') ?? ''
   if (value === undefined) throw usage(`Missing the ${what}.`, { reason: 'missing_arguments' })
   if (!/^[^\s/]+$/.test(id)) throw usage(`${value} isn't a ${what}.`)
-  return id
+  // A thread's own ID, as a message's `thread` gives it, names its root.
+  return apiThreadRoot(id) ?? id
 }
 
 /** Characters that change how a name reads without showing: invisible formatting (bidi overrides, zero-width), and line and paragraph separators. */
@@ -474,8 +477,8 @@ const exists = (path: string) =>
 const tooLarge = (path: string) =>
   new Failed({ class: 'limit', reason: 'payload_too_large', message: `Can't attach ${path}. It's over ${DIRECT_UPLOAD_BYTES_MAX / 1024 / 1024} MB, the most an attachment can be.` })
 
-/** Whether an ID goes in and out bare: a number, or one Vercel's API hands out (`msg_…`), a message even where a channel has its name. */
-const bareId = (value: string) => /^\d+$/.test(value) || isApiMessageId(value)
+/** Whether an ID goes in and out bare: a number, or one Vercel's API hands out (`msg_…`, or a thread's `thr_…`), a message even where a channel has its name. */
+const bareId = (value: string) => /^\d+$/.test(value) || isApiMessageId(value) || apiThreadRoot(value) !== null
 
 /** Whether an argument names a message rather than a channel: `#<id>`, or an ID that goes bare. */
 const isMessageRef = (value: string) => /^#[^\s/]+$/.test(value) || bareId(value)
@@ -1252,6 +1255,7 @@ function connection(url: string | undefined = flags.url, options: { token?: stri
   // A name names a team's board as --scope does, so it goes before BOARD_URL too.
   const configured = url ?? (team === undefined && name === undefined ? configuredUrl() : null)
   if (configured === null) {
+    if (name === undefined) teamDefault = { team }
     const board = boardAt({ backend: vercel({ ...(team !== undefined ? { team } : {}), ...sending(options.token, options.can, options.headers) }), ...(name !== undefined ? { name, ensure: flags.ensure === true } : {}) })
     sent = credentialSource
     return { url: null, transport: { source: credentialSource }, board: profile !== undefined ? board.as(profile) : board }
@@ -1789,8 +1793,14 @@ async function run(command: string | undefined, args: string[]): Promise<number>
             class: 'not_found',
             reason: 'channel_not_found',
             message: `Couldn't find channel ${target}.${guess ? ` Did you mean ${guess}?` : ''}`,
-            details: ['A channel appears with its first post: one nobody has posted in yet is not there to read.'],
-            next: [{ instruction: 'See its channels', argv: [...cli(), 'channels'] }],
+            details: [
+              'A channel appears with its first post: one nobody has posted in yet is not there to read.',
+              ...(teamDefault ? [`This is ${teamDefault.team ?? 'the team'}'s default board: --name reads another of its boards.`] : []),
+            ],
+            next: [
+              { instruction: 'See its channels', argv: [...cli(), 'channels', ...(teamDefault?.team !== undefined ? ['--scope', teamDefault.team] : [])] },
+              ...(teamDefault ? [{ instruction: "Read it on another of the team's boards", argv: rerun('--name', '<BOARD>') }] : []),
+            ],
           })
         }
       }
@@ -3503,6 +3513,7 @@ async function runOnce(argv: string[], options: App): Promise<number> {
   warnings = []
   reached = null
   taskBoard = undefined
+  teamDefault = null
   sent = () => null
   sentLength = 0
   self = null
