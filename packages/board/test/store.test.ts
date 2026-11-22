@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import type { BoardEventView, MessageView, ScheduleView, SchemaView, TaskView } from '../src/api/routes.ts'
+import type { AttentionView, BoardEventView, MessageView, ScheduleView, SchemaView, TaskView } from '../src/api/routes.ts'
 import { block } from '../src/contract/blocks.ts'
+import * as attentionStore from '../src/inspect/app/attention-store.ts'
 import * as store from '../src/inspect/app/store.ts'
 import { continues } from '../src/inspect/app/store.ts'
 import { boardWords, cadence, clock, laterFields, localInput, principalName, refusal, span, timingWords, until } from '../src/inspect/app/words.ts'
@@ -387,6 +388,115 @@ describe('the inspector store', () => {
     expect(refusal(board('claim_lost'))).not.toContain('the board said so')
     expect(refusal(board('claim_lost'))).toMatch(/claim/)
     expect(refusal(board('invalid_needs'))).toBe('the board said so')
+  })
+
+  // --- attention ---
+
+  const hold = (id: number, root: Partial<MessageView> = {}) => {
+    const held = task(id, { state: 'blocked', attentionId: 'request' }, root)
+    if (!attentionStore.holdsAttention(held)) throw new Error('expected a hold')
+    return held
+  }
+  const request = (root: MessageView, status: 'pending' | 'stale' | 'canceled' = 'pending'): AttentionView => ({
+    id: 'request', status, question: 'Go ahead?', context: '', kind: 'needs_input',
+    options: [{ id: 'yes', label: 'Yes', consequence: 'Keep going', next: 'resume' }],
+    revision: root.revision, evidence: [{ message: root.id, revision: root.revision }], commit: 'a'.repeat(40), expiresAt: at(60), by: root.by,
+  })
+  const here = (value: AttentionView): attentionStore.AttentionResult => ({ is: 'here', value })
+  const shownAttention = (state: store.State, root: store.TaskRoot) => attentionStore.attentionFor(state, root, null)
+  const withRead = (state: store.State, root: ReturnType<typeof hold>, result: attentionStore.AttentionResult) => {
+    const reading = attentionStore.beginAttentionRead(state, root)
+    return attentionStore.finishAttentionRead(reading.state, root.id, reading.read, result)
+  }
+
+  it('lists held attention tasks oldest first, even for stale or canceled requests', () => {
+    const oldest = hold(9, { createdAt: at(-9) })
+    const stale = hold(5, { createdAt: at(-5) })
+    const canceled = hold(2, { createdAt: at(-2) })
+    let state = store.merge(start, [canceled, stale, oldest,
+      task(4, { state: 'failed', attentionId: 'request' }), task(1, { state: 'blocked', attentionId: 'request' }, { deleted: true }), task(3, { state: 'blocked' }), message(6),
+    ])
+    state = withRead(state, stale, here(request(stale, 'stale')))
+    state = withRead(state, canceled, here(request(canceled, 'canceled')))
+    expect(shownAttention(state, stale).attention?.status).toBe('stale')
+    expect(shownAttention(state, canceled).attention?.status).toBe('canceled')
+    expect(attentionStore.attentionTasks(state).map(({ id }) => id)).toEqual(['9', '5', '2'])
+  })
+
+  it('offers unblock for a plain hold but not for an attention hold', () => {
+    const owner = viewer(['post', 'manage'])
+    expect(store.moves(start, task(1, { state: 'blocked' }), owner, NOW).unblock).toBe(true)
+    expect(store.moves(start, hold(1), owner, NOW).unblock).toBe(false)
+  })
+
+  it('never replaces an attention view with one read at an older task version or revision', () => {
+    const root = hold(1, { version: 10, revision: 4 })
+    const known = withRead(store.merge(start, [root]), root, here(request(root, 'stale')))
+    for (const older of [hold(1, { version: 9, revision: 4 }), hold(1, { version: 10, revision: 3 })]) {
+      const next = withRead(known, older, here(request(older)))
+      expect(shownAttention(next, root).attention?.status).toBe('stale')
+    }
+  })
+
+  it('shows a refused attention read where the question was', () => {
+    const root = hold(1)
+    const known = withRead(store.merge(start, [root]), root, here(request(root)))
+    const failed = withRead(known, root, { is: 'failed', words: 'message not found', unsupported: false })
+    expect(shownAttention(failed, root)).toMatchObject({ attention: null, readError: 'message not found' })
+  })
+
+  it('keeps an answer on its way until the feed confirms it, then shows the receipt in place', () => {
+    const root = hold(1)
+    const known = withRead(store.merge(start, [root]), root, here(request(root)))
+    const sending = attentionStore.beginAnswer(known, root, request(root), 'Yes')
+    expect(shownAttention(sending, root)).toMatchObject({ answering: 'Yes', disabled: true })
+    const assignment = hold(1, { version: 2 })
+    const moved = store.applyEvent(sending, { cursor: '2', type: 'task.assigned', createdAt: at(0), message: assignment,
+      payload: { id: root.id, thread: root.thread, for: null, by: root.by } })
+    expect(shownAttention(moved, assignment).answering).toBe('Yes')
+    const confirmed = task(1, { state: 'ready', attentionId: 'request' }, { version: 3 })
+    const receipt = { option: 'yes', by: root.by, at: at(1), routedTo: 'ready' as const }
+    const done = store.applyEvent(moved, { cursor: '3', type: 'task.attention_answered', createdAt: at(1), message: confirmed,
+      payload: { id: root.id, thread: root.thread, requestId: 'request', epoch: 0, by: root.by, receipt } })
+    expect(attentionStore.attentionTasks(done)).toEqual([])
+    expect(attentionStore.attentionRows(done).map(({ id }) => id)).toEqual([root.id])
+    expect(shownAttention(done, confirmed)).toMatchObject({ answering: null, attention: { status: 'answered', receipt } })
+    expect(attentionStore.attentionRows(attentionStore.leaveAttention(done))).toEqual([])
+  })
+
+  it('drops the answering overlay and shows the words of a refused answer', () => {
+    const root = hold(1)
+    const known = withRead(store.merge(start, [root]), root, here(request(root)))
+    const displayed = request(root)
+    const sending = attentionStore.beginAnswer(known, root, displayed, 'Yes')
+    const failed = attentionStore.failAnswer(sending, root.id, displayed, { words: 'not a responder', unsupported: false })
+    expect(shownAttention(failed, root)).toMatchObject({ answering: null, disabled: true, error: 'not a responder', attention: { status: 'pending' } })
+    const refreshed = withRead(failed, root, here({ ...request(root), commit: 'b'.repeat(40) }))
+    expect(shownAttention(refreshed, root)).toMatchObject({ disabled: false, error: undefined })
+  })
+
+  it('settles a refused write without marking a newer commit as refused', () => {
+    const root = hold(1)
+    const old = request(root)
+    const known = withRead(store.merge(start, [root]), root, here(old))
+    const sending = attentionStore.beginAnswer(known, root, old, 'Yes')
+    const current = { ...old, commit: 'b'.repeat(40) }
+    const refreshed = withRead(sending, root, here(current))
+    const failed = attentionStore.failAnswer(refreshed, root.id, old, { words: 'no longer current', unsupported: false })
+    expect(shownAttention(failed, root)).toMatchObject({ attention: current, answering: null, disabled: false, error: undefined })
+  })
+
+  it('keeps an unseen refusal notice after a successful refresh unlocks the same request', () => {
+    const root = hold(1)
+    const displayed = request(root)
+    const known = withRead(store.merge(start, [root]), root, here(displayed))
+    const sending = attentionStore.beginAnswer(known, root, displayed, 'Yes')
+    const failed = attentionStore.failAnswer(sending, root.id, displayed, { words: 'message not found', unsupported: false })
+    const refreshed = withRead(failed, root, here(displayed))
+    expect(shownAttention(refreshed, root)).toMatchObject({ disabled: false, error: 'message not found' })
+    expect(attentionStore.hasUnshownRefusal(refreshed)).toBe(true)
+    expect(attentionStore.hasUnshownRefusal(attentionStore.showAttentionRefusals(refreshed, known))).toBe(true)
+    expect(attentionStore.hasUnshownRefusal(attentionStore.showAttentionRefusals(refreshed, refreshed))).toBe(false)
   })
 
   // --- blocks and schemas ---
