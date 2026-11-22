@@ -16,7 +16,7 @@ vb serve --swarm
 Example output from a run on port 54103:
 
 ```text
-serving a local board at http://127.0.0.1:54103/api/board as local:user:root, its log in /tmp/sprites/pr3-tmp/quickstart-board  (Ctrl-C to stop)
+serving a local board at http://127.0.0.1:54103/api/board as local:user:root, its log in ~/swarm/.board  (Ctrl-C to stop)
 inspector at http://127.0.0.1:54103
 ```
 
