@@ -401,19 +401,24 @@ describe('the inspector store', () => {
     return attentionStore.finishAttentionRead(reading.state, root.id, reading.read, result)
   }
 
-  it('shows only open decisions, oldest first, from readable task roots', () => {
+    /** The state the page holds after its open-task read returned these roots. */
+  const seeded = (roots: store.State['messages'][string][], returned = roots) => ({ ...store.merge(start, roots), openTaskRoots: Object.fromEntries(returned.map((root) => [root.id, root])) })
+
+it('shows only open decisions, oldest first, from readable task roots', () => {
     const oldest = hold(9, { createdAt: at(-9) })
     const newest = task(2, { state: 'blocked', attentionId: 'approve', blocked: { kind: 'awaiting_approval', reason: 'Ship?' } }, { createdAt: at(-2) })
     const answered = hold(3)
     const canceled = hold(4)
     const absent = hold(5)
-    let state = store.merge(start, [newest, oldest, answered, canceled, { ...hold(6), deleted: true }, hold(7, { channel: 'private' }),
+    const roots = [newest, oldest, answered, canceled, { ...hold(6), deleted: true }, hold(7, { channel: 'private' }),
       task(8, { state: 'blocked', blocked: { kind: 'needs_input', reason: 'Ordinary hold' } }),
       task(10, { state: 'failed', attentionId: 'request' }), message(11),
-    ])
+    ]
+    // The board's read did not return the one in `private`: the viewer cannot read it.
+    let state = seeded(roots, roots.filter((root) => root.channel !== 'private'))
     state = withRead(state, answered, here({ ...request(answered), status: 'answered', receipt: { by: answered.by, option: 'yes', at: at(-1), routedTo: 'ready' } }))
     state = withRead(state, canceled, here(request(canceled, 'canceled')))
-    const prior = withRead(store.merge(start, [absent]), absent, here(request(absent)))
+    const prior = withRead(seeded([absent]), absent, here(request(absent)))
     state = { ...state, attention: { ...prior.attention, ...state.attention } }
     const groups = needsAction(state, viewer([], { may: (perm, channel) => perm === 'read' && channel === 'work' }), NOW)
     expect(groups.decisions.map(({ id }) => id)).toEqual(['9', '2'])
@@ -426,14 +431,14 @@ describe('the inspector store', () => {
     const overdue = task(2, claimedBy(ME, at(-4)), { createdAt: at(-10) })
     const live = task(3, claimedBy(ME, at(1)))
     const ready = task(4)
-    const groups = needsAction(store.merge(start, [atDeadline, overdue, live, ready]), viewer(['read', 'label']), NOW)
+    const groups = needsAction(seeded([atDeadline, overdue, live, ready]), viewer(['read', 'label']), NOW)
     expect(groups.stalled.map(({ id }) => id)).toEqual(['2', '1'])
     expect(groups.ready.map(({ id }) => id)).toEqual(['4'])
   })
 
   it('orders eligible ready work by priority, then assignment, then age', () => {
     const worker = `${ME}+worker`
-    const state = store.merge(start, [
+    const state = seeded([
       task(1, { priority: 'low' }, { createdAt: at(-10) }),
       task(2, { priority: 'urgent' }, { createdAt: at(-1) }),
       task(3, { priority: 'high' }, { createdAt: at(-4) }),

@@ -15,14 +15,10 @@ it('shows all claim-next candidates in shared claim order across ready and overd
   const { actor, principal, profile, can } = await worker.me()
   const channel = 'work'
   try {
-    const { task: fenced } = await owner.tasks.create(channel, { text: 'Fenced', priority: 'urgent', claim: true })
-    await owner.pause('Stop work')
-    await owner.resume('Restart work')
     const { task: lapsed } = await owner.tasks.create(channel, { text: 'Lapsed', priority: 'high' })
     const lease = await owner.tasks.claim(lapsed.id, { lease: 30 })
-    const { task: active } = await owner.tasks.create(channel, { text: 'Still held in the new epoch', priority: 'urgent', claim: true })
+    const { task: active } = await owner.tasks.create(channel, { text: 'Held, lease still running', priority: 'urgent', claim: true })
     const { task: oldest } = await owner.tasks.create(channel, { text: 'First root', priority: 'high' })
-    board.clock.skip(-1000)
     const { task: newer } = await owner.tasks.create(channel, { text: 'Second root', priority: 'high' })
     const { task: assigned } = await owner.tasks.create(channel, { text: 'Assigned high', priority: 'high', for: actor })
     const { task: lowest } = await owner.tasks.create(channel, { text: 'Lowest', priority: 'lowest' })
@@ -37,13 +33,12 @@ it('shows all claim-next candidates in shared claim order across ready and overd
     const { tasks } = await worker.tasks.list({ channel, state: 'open' })
     const roots = tasks.map(({ message }) => message)
     const state = merge({ ...initialState, discovery: await worker.discovery(), status: await worker.status(), openTaskRoots: Object.fromEntries(roots.map((root) => [root.id, root])) }, roots)
-    expect(Date.parse(newer.createdAt)).toBeLessThan(Date.parse(oldest.createdAt))
     expect((await worker.thread(active.id)).message.task?.claim?.until).toBe(active.task?.claim?.until)
     const { stalled, ready } = needsAction(state, viewer, Date.now())
     expect(stalled.map(({ id }) => id)).toEqual([lapsed.id])
-    expect(ready.map(({ id }) => id)).toEqual([fenced.id, assigned.id, oldest.id, newer.id, lowest.id])
+    expect(ready.map(({ id }) => id)).toEqual([assigned.id, oldest.id, newer.id, lowest.id])
     const claimable = claimOrder([...stalled, ...ready], state, viewer, Date.now())
-    for (const { id } of [fenced, assigned, lapsed, oldest, newer, lowest]) {
+    for (const { id } of [assigned, lapsed, oldest, newer, lowest]) {
       expect(claimable.shift()?.id).toBe(id)
       expect((await worker.tasks.claim({ channel }))?.task.id).toBe(id)
     }

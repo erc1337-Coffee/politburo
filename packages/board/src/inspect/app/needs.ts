@@ -8,20 +8,22 @@ type Claimed = TaskRoot & { task: TaskRoot['task'] & { claim: NonNullable<TaskRo
 const hasClaim = (root: TaskRoot): root is Claimed => root.task.state === 'claimed' && root.task.claim !== null
 const overdue = (root: Claimed, now: number) => Date.parse(root.task.claim.until) <= now
 
-/** The default claim-next queue across readable channels. `from` is explicit per claim, not a viewer setting. */
+/**
+ * The default claim-next queue across readable channels. `from` is explicit per claim, not a viewer
+ * setting. Not visible to the page: a claim fenced by a pause is claimable again after resume while
+ * its lease is unexpired; the board's API does not say so, so such a task shows as claimed.
+ */
 export function claimOrder(roots: readonly TaskRoot[], state: State, viewer: Viewer, now: number): TaskRoot[] {
-  const pauseEpoch = state.status?.pauseEpoch
   return roots.filter((root) => {
     const { task, channel } = root
-    const ready = task.state === 'ready' || (hasClaim(root) && (overdue(root, now) || (pauseEpoch !== undefined && root.task.claim.pauseEpoch !== undefined && root.task.claim.pauseEpoch !== pauseEpoch)))
+    const ready = task.state === 'ready' || (hasClaim(root) && overdue(root, now))
     return !root.deleted && !task.parked && ready && viewer.may('label', channel) &&
       (assigned(root, viewer) || (task.for === null && task.owner === viewer.principal))
   }).sort((a, b) => priorityRank(b.task.priority) - priorityRank(a.task.priority) ||
     Number(assigned(b, viewer)) - Number(assigned(a, viewer)) ||
-    // The local engine scans roots in log order, even if its clock goes backward. Without that
-    // advertised order (including on Vercel's delegated claim route), createdAt is only an
-    // approximation: equal-priority, equally assigned tasks may be claimed in a different order.
-    (state.discovery?.claim_order === 'root-id' ? Number(a.id) - Number(b.id) : byWritten(a, b)))
+    // Claim-next scans roots in the board's log order; the page has createdAt, so equal-priority,
+    // equally assigned tasks match it while the board's clock is monotone.
+    byWritten(a, b))
 }
 
 export function needsAction(state: State, viewer: Viewer, now: number) {
