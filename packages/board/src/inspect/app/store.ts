@@ -70,8 +70,9 @@ export type State = AttentionState & {
   openTaskRoots: Record<string, MessageView>
   /** Permissions read with that membership, never used to decide write identity. */
   openTaskMe: Me | null
-  /** Access refusals replace any cached contents in the thread pane. */
-  threadRefusals: Record<string, string>
+  /** The result of the open pane's own read, independent of cached messages. */
+  paneThread: { id: string; identity: number; result: 'loading' | 'readable' | { refused: string } } | null
+  openTaskAttentionRefusals: Record<string, string>
   /** Each opened channel's listing, or null on a board whose thread pages have no `older`: it loads by messages. */
   listings: Record<string, Listing | null>
   /** The board's schema registry, once it's read: what a block's fields mean. */
@@ -102,7 +103,8 @@ export const initialState: State = {
   tasksCounted: false,
   openTaskRoots: {},
   openTaskMe: null,
-  threadRefusals: {},
+  paneThread: null,
+  openTaskAttentionRefusals: {},
   tasksRefused: null,
   attention: {},
   attentionUnsupported: false,

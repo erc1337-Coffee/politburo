@@ -116,7 +116,8 @@ export async function setProfile(next: Profile | null | undefined): Promise<bool
       loaded.clear()
       listed = listingForCurrentHandle()
       set((s) => ({ ...s, me, schedules: { is: 'loading' }, live: bootStarted ? 'reconnecting' : s.live,
-        tasksCounted: false, openTaskRoots: {}, openTaskMe: null, threadRefusals: {}, tasksRefused: null, attention: {}, attentionUnsupported: false }))
+        tasksCounted: false, openTaskRoots: {}, openTaskMe: null, openTaskAttentionRefusals: {}, paneThread: null,
+        tasksRefused: null, attention: {}, attentionUnsupported: false }))
     })
     if (bootStarted) void boot().catch((error) => toast(said(error)))
     else void loadSchedules()
@@ -314,20 +315,43 @@ export const loadThread = (id: string) =>
     try {
       const { message: root, replies } = await readThread(id)
       if (as !== identity) return
-      set((s) => {
-        const merged = store.merge(s, [root, ...replies])
-        if (!Object.hasOwn(s.threadRefusals, id)) return merged
-        const { [id]: _, ...threadRefusals } = s.threadRefusals
-        return { ...merged, threadRefusals }
-      })
+      set((s) => store.merge(s, [root, ...replies]))
     } catch (error) {
-      if (as === identity && inaccessible(error)) forgetThread(id, said(error))
+      if (as === identity && inaccessible(error)) {
+        forgetThread(id, said(error))
+        refreshThreadPane(id)
+      }
       throw error
     } finally {
       // Share in-flight reads, not the access decision from a prior visit to the thread.
       if (as === identity) loaded.delete(`thread:${id}`)
     }
   })
+
+let pane: { id: string; identity: number; read: number } | undefined
+
+export function openThreadPane(id: string) {
+  const visit = pane = { id, identity, read: 0 }
+  set((s) => ({ ...s, paneThread: { id, identity, result: 'loading' } }))
+  refreshThreadPane()
+  return () => { if (pane === visit) pane = undefined }
+}
+
+function refreshThreadPane(only?: string) {
+  const visit = pane
+  if (!visit || visit.identity !== identity || (only !== undefined && only !== visit.id)) return
+  const { id } = visit
+  const read = ++visit.read
+  const current = () => pane === visit && visit.identity === identity && read === visit.read
+  void readThread(id).then(({ message, replies }) => {
+    if (!current()) return
+    set((s) => ({ ...store.merge(s, [message, ...replies]), paneThread: { id, identity, result: 'readable' } }))
+  }, (error: unknown) => {
+    if (!current()) return
+    if (inaccessible(error)) forgetThread(id, said(error))
+    else set((s) => ({ ...s, paneThread: { id, identity, result: { refused: said(error) } } }))
+  })
+}
 
 /** Threads a filtered view asks the board for, and how many of them it reads whole. */
 const FILTERED = 50
@@ -601,15 +625,14 @@ let needsVisit: symbol | undefined
 
 /** The feed updates members, but only a complete list may admit a new member. */
 function observeOpenTaskEvent(root: MessageView): boolean {
-  if (!Object.hasOwn(state.openTaskRoots, root.id)) {
-    if (store.isTask(root) && !root.deleted && store.OPEN_STATES.includes(root.task.state)) refreshOpenTasks()
-    return false
-  }
+  if (root.re !== null) return false
+  const member = Object.hasOwn(state.openTaskRoots, root.id)
+  if (!member && store.isTask(root) && !root.deleted && store.OPEN_STATES.includes(root.task.state)) refreshOpenTasks()
   const read = openTaskRead
-  // Keep member updates received during pagination even if their frame hasn't painted yet.
+  // A root can be in the in-flight snapshot even if it has never been a member here.
   if (read?.identity === identity && (read.observed.get(root.id)?.version ?? -1) <= root.version)
     read.observed.set(root.id, root)
-  return true
+  return member
 }
 
 function mergeOpenTaskEvents(updates: { root: MessageView; epoch: number }[]) {
@@ -618,11 +641,16 @@ function mergeOpenTaskEvents(updates: { root: MessageView; epoch: number }[]) {
   if (members.length) set((s) => ({ ...s, openTaskRoots: store.newest(s.openTaskRoots, members) }))
 }
 
-function forgetThread(id: string, reason: string) {
+function forgetThread(id: string, reason: string, fromNeedsAttention = false) {
   if (openTaskRead?.identity === identity) openTaskRead.refused.add(id)
+  const inPane = pane?.identity === identity && pane.id === id ? pane : undefined
+  // An older pane snapshot must not replace the refusal.
+  if (inPane) inPane.read++
   set((s) => {
     const { [id]: _, ...openTaskRoots } = s.openTaskRoots
-    return { ...s, openTaskRoots, threadRefusals: { ...s.threadRefusals, [id]: reason } }
+    return { ...s, openTaskRoots,
+      openTaskAttentionRefusals: fromNeedsAttention ? { ...s.openTaskAttentionRefusals, [id]: reason } : s.openTaskAttentionRefusals,
+      paneThread: inPane ? { id, identity, result: { refused: reason } } : s.paneThread }
   })
 }
 
@@ -657,8 +685,21 @@ function refreshOpenTasks(revalidate = false) {
         if (view && view.version > latest.version) latest = view
       return latest
     })
-    set((s) => ({ ...store.merge(s, accepted), openTaskRoots: Object.fromEntries(accepted.map((root) => [root.id, root])),
-      openTaskMe: me, tasksCounted: true, tasksRefused: null }))
+    const openTaskRoots = Object.fromEntries(accepted.filter((root) =>
+      store.isTask(root) && !root.deleted && store.OPEN_STATES.includes(root.task.state)).map((root) => [root.id, root]))
+    set((s) => {
+      const next = store.merge(s, accepted)
+      const id = pane?.identity === identity ? pane.id : undefined
+      const root = id === undefined ? undefined : next.messages[id]
+      // Do not keep a possibly revoked task on screen while its thread read is in flight.
+      // A known transition out of open work is not itself a loss of access.
+      const hide = id !== undefined && root && !Object.hasOwn(openTaskRoots, id) &&
+        (!viewerOf(me).may('read', root.channel) || (Object.hasOwn(s.openTaskRoots, id) &&
+          store.isTask(root) && !root.deleted && store.OPEN_STATES.includes(root.task.state)))
+      const paneThread = hide && s.paneThread?.result === 'readable' ? { ...s.paneThread, result: 'loading' as const } : s.paneThread
+      return { ...next, openTaskRoots, openTaskMe: me, tasksCounted: true, tasksRefused: null, openTaskAttentionRefusals: {}, paneThread }
+    })
+    refreshThreadPane()
     refreshAttentionRoots()
   }, (error: unknown) => {
     if (!current()) return
@@ -729,13 +770,27 @@ export function attentionRendered(rendered: store.State) {
 
 async function readAttention(root: ReturnType<typeof attentionStore.attentionTasks>[number]) {
   const as = identity
+  const visit = attentionVisit
+  const needs = needsVisit
+  const epoch = openTaskEpoch
+  const { id } = root
   const reading = attentionStore.beginAttentionRead(state, root)
   set(() => reading.state)
-  const result = await team.tasks.attention(root.id).then<attentionStore.AttentionResult, attentionStore.AttentionResult>(
-    ({ attention }) => ({ is: 'here', value: attention }),
-    (error: unknown) => ({ is: 'failed', ...attentionFailure(error) }),
-  )
-  if (as === identity) set((s) => attentionStore.finishAttentionRead(s, root.id, reading.read, result))
+  const current = () => as === identity && visit === attentionVisit &&
+    state.attention[id]?.latest === reading.read &&
+    (!needs || (epoch === openTaskEpoch && Object.hasOwn(state.openTaskRoots, id)))
+  try {
+    const { attention } = await team.tasks.attention(id)
+    if (current()) set((s) => attentionStore.finishAttentionRead(s, id, reading.read, { is: 'here', value: attention }))
+  } catch (error) {
+    if (!current()) return
+    if (inaccessible(error)) {
+      forgetThread(id, said(error), needs !== undefined)
+      refreshThreadPane(id)
+      if (needs) return
+    }
+    set((s) => attentionStore.finishAttentionRead(s, id, reading.read, { is: 'failed', ...attentionFailure(error) }))
+  }
 }
 
 /** Only the feed settles a successful answer. */
@@ -781,11 +836,19 @@ export const unparkTask = (id: string, reason: string) => work(() => team.tasks.
 export const prioritizeTask = (id: string, priority: TaskPriority) => work(() => team.tasks.priority(id, priority))
 export async function loadAttention(id: string) {
   const as = identity
+  const visit = pane
+  const member = Object.hasOwn(state.openTaskRoots, id)
+  const current = () => as === identity && pane === visit && (!member || Object.hasOwn(state.openTaskRoots, id))
   try {
     const result = await team.tasks.attention(id)
-    if (as === identity) return result
+    if (current() && (visit?.id !== id || state.paneThread?.result === 'readable')) return result
   } catch (error) {
-    if (as === identity) throw error
+    if (!current()) return
+    if (inaccessible(error)) {
+      forgetThread(id, said(error))
+      refreshThreadPane(id)
+    }
+    throw error
   }
 }
 export const answerTask = (id: string, request: string, answer: AttentionAnswerBody) => work(async () => (await team.tasks.answer(id, request, answer)).task)

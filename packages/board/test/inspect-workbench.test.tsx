@@ -217,6 +217,128 @@ async function grantedWorkbench() {
   return { ...bench, token, target, viewer }
 }
 
+it('evicts a focused decision when its delayed attention read is refused', async () => {
+  const { api, open, target, token, viewer } = await grantedWorkbench()
+  const { grant } = await api.createGrant({ principals: [target], can: { work: 'all' } })
+  const task = await hold(viewer, 'Private decision', 'Continue?')
+  await viewer.tasks.create('keep', { text: 'Neighbor' })
+  const requested = gate()
+  const release = gate()
+  await open('/', { token, transport: async (request, send) => {
+    if (attentionRead(request)) {
+      requested.resolve()
+      await release.promise
+    }
+    return send()
+  } })
+  const row = await vi.waitFor(() => link('Private decision', lane('Open decisions')))
+  row.focus()
+  await requested.promise
+  await api.revokeGrant(grant.id)
+  await vi.waitFor(() => expect(viewer.tasks.attention(task.id)).rejects.toMatchObject({ status: 404 }))
+  release.resolve()
+  await vi.waitFor(() => {
+    expect(mainText()).not.toContain('Private decision')
+    expect(mainText()).toContain(`message not found: #${task.id}`)
+    expect(document.activeElement).toBe(link('Neighbor', lane('Ready work')))
+  })
+})
+
+it('re-reads an already open thread when revalidation removes its task', async () => {
+  const { api, open, target, token, viewer } = await grantedWorkbench()
+  const { grant } = await api.createGrant({ principals: [target], can: { work: 'all' } })
+  const { task } = await viewer.tasks.create('work', { text: 'Private open thread' })
+  await viewer.tasks.create('keep', { text: 'Still readable' })
+  let revalidating = false
+  const release = gate()
+  await open('/', { token, transport: async (request, send) => {
+    const response = await send()
+    if (revalidating && routePath(request) === `/messages/${task.id}`) await release.promise
+    return response
+  } })
+  const row = await vi.waitFor(() => link('Private open thread', lane('Ready work')))
+  row.click()
+  await vi.waitFor(() => expect(threadPane()?.textContent).toContain('Private open thread'))
+  await api.revokeGrant(grant.id)
+  await vi.waitFor(() => expect(viewer.thread(task.id)).rejects.toMatchObject({ status: 404 }))
+  revalidating = true
+  window.dispatchEvent(new Event('focus'))
+  await vi.waitFor(() => {
+    expect(lane('Ready work').textContent).toContain('Still readable')
+    expect(mainText()).not.toContain('Private open thread')
+    expect(threadPane()?.textContent).not.toContain('Private open thread')
+    expect(threadPane()?.textContent).toContain('loading…')
+  })
+  release.resolve()
+  await vi.waitFor(() => {
+    expect(threadPane()?.textContent).not.toContain('Private open thread')
+    expect(threadPane()?.textContent).toContain(`message not found: #${task.id}`)
+    expect(location.search).toBe(`?thread=${task.id}`)
+  })
+})
+
+it('does not render a deleted task from the first list snapshot', async () => {
+  const { client, open } = await workbench()
+  const { task } = await client.tasks.create('work', { text: 'Deleted during first read' })
+  await client.tasks.create('work', { text: 'Survives first read' })
+  const sampled = gate()
+  const release = gate()
+  const consumed = gate()
+  let deletionDelivered = false
+  await open('/', { transport: async (request, send) => {
+    if (openTasksRead(request)) {
+      const response = await send()
+      sampled.resolve()
+      await release.promise
+      return response
+    }
+    if (routePath(request) !== '/events') return send()
+    if (deletionDelivered) consumed.resolve()
+    const response = await send()
+    if (response.ok) {
+      const { events } = await response.clone().json() as { events: { type: string; message?: { id: string } }[] }
+      deletionDelivered ||= events.some((event) => event.type === 'message.deleted' && event.message?.id === task.id)
+    }
+    return response
+  } })
+  await sampled.promise
+  await client.delete(task.id)
+  await consumed.promise
+  release.resolve()
+  await vi.waitFor(() => {
+    expect(lane('Ready work').textContent).toContain('Survives first read')
+    expect(mainText()).not.toContain('Deleted during first read')
+  })
+})
+
+it('renders claim-next order as soon as a lease lapses, including assignment and age ties', async () => {
+  const { client, as, open } = await workbench()
+  const worker = as('worker')
+  const { actor } = await worker.me()
+  const { task: urgent } = await client.tasks.create('work', { text: 'Lapsed urgent', priority: 'urgent' })
+  const lease = await client.tasks.claim(urgent.id, { lease: 30 })
+  const { task: first } = await client.tasks.create('work', { text: 'Older normal' })
+  const { task: second } = await client.tasks.create('work', { text: 'Newer normal' })
+  const { task: assigned } = await client.tasks.create('work', { text: 'Assigned normal', for: actor })
+  const expiry = Date.parse(lease.until)
+  const ready = () => [...lane('Ready work').querySelectorAll('a')].map((row) => row.getAttribute('href'))
+  const before = [assigned.id, first.id, second.id].map((id) => `/?thread=${id}`)
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
+  vi.setSystemTime(expiry - 10_000)
+  await open('/', { profile: 'worker' })
+  await vi.waitFor(() => expect(ready()).toEqual(before))
+  await act(async () => vi.advanceTimersByTimeAsync(expiry - Date.now() - 1))
+  expect(ready()).toEqual(before)
+  await act(async () => vi.advanceTimersByTimeAsync(1_001))
+  const rendered = ready()
+  const taken: string[] = []
+  for (let next = await worker.tasks.claim({ channel: 'work' }); next; next = await worker.tasks.claim({ channel: 'work' })) {
+    taken.push(`/?thread=${next.task.id}`)
+  }
+  expect(taken).toEqual([`/?thread=${urgent.id}`, ...before])
+  expect(rendered).toEqual(taken)
+})
+
 it('revalidates on window focus and does not re-admit a revoked row from a delayed frame', async () => {
   const { api, open, target, token, viewer } = await grantedWorkbench()
   const { grant } = await api.createGrant({ principals: [target], can: { work: 'all' } })

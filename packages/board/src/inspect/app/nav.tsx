@@ -1,5 +1,5 @@
 import { useEffect, useReducer, useRef, useState, type ReactNode } from 'react'
-import type { Filter } from './store.ts'
+import { isTask, type Filter, type State } from './store.ts'
 import { ago } from './words.ts'
 
 export { route, SECTIONS, type Route, type Section } from './routes.ts'
@@ -101,13 +101,20 @@ export function Link(props: { to: string; className?: string; current?: boolean;
   )
 }
 
-/** The current time, ticking, so "2m" ages without a reload. */
-export function useNow(every = 30_000): number {
+/** Age the page's labels, waking sooner if the next lease can change the queue. */
+export function useNow(roots: State['openTaskRoots']): number {
   const [now, setNow] = useState(Date.now)
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), every)
-    return () => clearInterval(timer)
-  }, [every])
+    let next = Infinity
+    for (const root of Object.values(roots)) {
+      if (!isTask(root) || root.deleted || root.task.state !== 'claimed' || !root.task.claim) continue
+      const expiry = Date.parse(root.task.claim.until)
+      if (expiry > now) next = Math.min(next, expiry)
+    }
+    const delay = Math.max(0, Math.min(30_000, next - Date.now()) + 1_000)
+    const timer = setTimeout(() => setNow(Date.now()), delay)
+    return () => clearTimeout(timer)
+  }, [roots, now])
   return now
 }
 

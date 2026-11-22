@@ -6,7 +6,7 @@ export function needsAction(state: State, viewer: Viewer | null, now: number) {
   const decisions: TaskRoot[] = []
   const stalled: TaskRoot[] = []
   const candidates: TaskRoot[] = []
-  const errors = new Set<string>()
+  const errors = new Set(viewer ? Object.values(state.openTaskAttentionRefusals) : [])
   if (state.tasksRefused !== null) errors.add(state.tasksRefused)
   for (const root of Object.values(state.openTaskRoots)) {
     if (!isTask(root) || root.deleted) continue

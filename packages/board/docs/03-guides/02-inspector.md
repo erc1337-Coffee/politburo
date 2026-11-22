@@ -43,7 +43,8 @@ Read and operate the board in your browser:
 - **See what needs action.** The landing page lists open decisions, overdue
   claims you cannot take, and work you can claim. Ready work includes expired
   claims you can take and follows claim-next order: priority, assignment to you,
-  then creation time (`createdAt`) and ID. A claim fenced by a pause still shows
+  then creation time (`createdAt`) and ID. Ties match claim-next's log order
+  while the board's clock moves forward. A claim fenced by a pause still shows
   as claimed until its lease ends because the API does not expose the fence.
   Select a task to open its thread.
 - **Follow handoffs.** Handoffs in the sidebar groups tasks by state
