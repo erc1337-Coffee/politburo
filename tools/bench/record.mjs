@@ -15,9 +15,16 @@ export const jsonl = (text, strict = false) => {
   return (strict ? lines : lines.filter(line => line.trim())).map(line => JSON.parse(line));
 };
 export const clock = s => typeof s === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)$/.test(s) ? Date.parse(s) : NaN;
-const text = x => typeof x === 'string';
+const matches = re => x => typeof x === 'string' && re.test(x);
+export const id = matches(/^(?:[\w.~:-]+|[\w.-]+\/[\w.-]+#\d+)$/);
+export const repo = matches(/^[\w.-]+\/[\w.-]+$/);
+export const thinkingLevel = matches(/^[a-z0-9][a-z0-9_-]{0,31}$/);
+export const reasonCode = matches(/^[a-z0-9][a-z0-9_.: -]{0,79}$/i);
+const modelName = matches(/^[a-zA-Z0-9][a-zA-Z0-9_.:/-]{0,127}$/);
+export const validModel = x => x != null && modelName(x.provider) && modelName(x.name);
+export const count = x => Number.isSafeInteger(x) && x >= 0;
 export const validRating = r => r && [1, 2, 3, 4, 5].includes(r.score) && ['S', 'M', 'L'].includes(r.size)
-  && text(r.reason) && text(r.ratedBy) && Number.isFinite(clock(r.ratedAt));
+  && typeof r.reason === 'string' && id(r.ratedBy) && Number.isFinite(clock(r.ratedAt));
 export const iso = ms => new Date(ms).toISOString();
 export const seconds = ms => Math.round(ms) / 1000;
 export const elapsed = (start, end) => seconds(end - start);
@@ -47,7 +54,6 @@ export function requireThat(ok, message = 'invalid arguments') {
 }
 
 const camel = s => s.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
-export const id = s => /^(?:[\w.~:-]+|[\w.-]+\/[\w.-]+#\d+)$/.test(s ?? '');
 export function args(extra, outcomeStates) {
   const keys = 'repo parent task outcome reason review-rounds failed-checks check check-command complexity-score complexity-size complexity-reason rated-by rated-at ' + extra;
   const { values, positionals } = parseArgs({
@@ -58,15 +64,14 @@ export function args(extra, outcomeStates) {
     requireThat(/^\d+$/.test(o[key]) && Number.isSafeInteger(Number(o[key])));
     o[key] = Number(o[key]);
   }
-  requireThat(o.repo == null || /^[\w.-]+\/[\w.-]+$/.test(o.repo));
+  requireThat(o.repo == null || repo(o.repo));
   requireThat(o.parent == null || id(o.parent));
   requireThat(o.task == null || id(o.task));
   requireThat(o.outcome == null || outcomeStates.includes(o.outcome));
-  requireThat(!o.reason || o.outcome);
-  requireThat(o.outcome !== 'blocked' || o.reason?.trim());
+  requireThat(o.reason == null ? o.outcome !== 'blocked' : o.outcome && reasonCode(o.reason));
   requireThat(o.check == null || checks.includes(o.check));
   requireThat(!o.checkCommand || o.check);
-  for (const key of ['reason', 'checkCommand', 'complexityReason', 'ratedBy']) {
+  for (const key of ['checkCommand', 'complexityReason']) {
     requireThat(o[key] == null || (o[key].trim() && !/[\r\n/\\]/.test(o[key])));
   }
   const rating = { score: Number(o.complexityScore), size: o.complexitySize,

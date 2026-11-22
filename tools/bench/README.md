@@ -14,22 +14,40 @@ For example, one two-second sprite with one turn and 12 input tokens yields
 `turns: 1`, `tokens.in: 12`, `sprites.count: 1` and `sprites.wallSeconds: 2`
 in the task record. The task's own `wallSeconds` is 10.
 
-- **Collect:** `--dir` overrides the launcher's default sprites directory. The
-  session directory provides only a file count for retries. Pair `--worktree`
-  with `--base` for Git change counts. They cover tracked files, so commit
-  new files first. Use `--outcome blocked --reason TEXT` for
-  a caller-declared block. Models use the provider and name that served turns;
-  tool calls belong to the model that initiated the wait. Active time excludes
-  the union of tool waits and is null if a wait cannot be timed.
+- **Collect:** `--dir` overrides the launcher's default sprites directory.
+  Retries count regular session files minus one, or null if there are none.
+  Pair `--worktree` with `--base` for tracked Git changes. `--base` must resolve
+  to one commit, not a range or option. Use `--outcome blocked --reason CODE`
+  for a caller-declared block.
+- One record per serving model counts distinct assistant `message_end` turns
+  and the tool calls they issue. Records share run timing. Active time excludes
+  the union of tool waits and is null if any issued call cannot be timed.
+  Thinking uses the model's last valid level, then the last level-change event
+  if valid, else null. Without an assistant turn, one record keeps the time,
+  outcome, and logged tool-call count, with no model or measured usage.
+- Token counts must be nonnegative safe integers. Missing or invalid fields
+  are unreported. Cost rounds to micros per turn before summing and is null
+  if any counted turn lacks a valid cost.
 - **Roll up:** use `--level mob|task|pr|spawner` and one or more JSONL files.
-  Keep inputs disjoint except for repeated records with the same run ID. Model
-  slices share one physical sprite's time and change counts. Usage adds only
-  known counts and stays separate in `byModel`. `--mob-session claude` marks
-  coverage partial. Aggregate active time is unknown without attention data;
+  Repeated run IDs count once. A non-sprite total is skipped if another
+  input names it as a parent. Keep other inputs disjoint; a total supplied
+  without its children is opaque. `--manifest FILE` writes the contributing
+  input IDs keyed by the roll-up ID to a new JSON file. Model slices share
+  one physical sprite's time and change counts. A sprite without a model
+  contributes to the totals but not to `byModel`. `--mob-session claude`
+  downgrades complete coverage to partial; no measured tokens stays none.
+  Aggregate active time is unknown without attention data;
   `sprites.activeSeconds` sums the known sprite times.
 - Both accept `--parent`, `--task`, `--review-rounds`, `--failed-checks`, and
   `--check pass|fail|not_run` with optional `--check-command NAME`. Roll-ups
-  accept `--outcome done|failed|blocked|canceled` with `--reason TEXT` as needed.
+  accept `--outcome done|failed|blocked|canceled` with `--reason CODE` as needed.
+  A reason code is at most 80 characters, starts with an ASCII letter or
+  digit, and otherwise allows letters, digits, spaces, and `_.:-`.
+  Provider and model identifiers are at most 128 characters, start with an
+  ASCII letter or digit, and otherwise allow letters, digits, and `_.:/-`.
+  Thinking levels are at most 32 characters, start with a lowercase ASCII
+  letter or digit, and otherwise allow lowercase letters, digits, and `_-`.
+  Roll-ups reject malformed identifiers, levels, reason codes, and counts.
 - **Exit codes:** `0` success; `2` invalid arguments or input (including a
   missing log); `3` collector only, no exit-code file yet. Errors emit no records.
 

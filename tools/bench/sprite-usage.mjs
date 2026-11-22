@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, sep } from 'node:path';
-import { args, changeKeys, cli, fields, jsonl, modelKey, print, proxies, record, requireThat, seconds, sum, tokenKeys } from './record.mjs';
+import { args, changeKeys, cli, count, fields, jsonl, modelKey, print, proxies, record, requireThat, seconds, sum, thinkingLevel, tokenKeys, validModel } from './record.mjs';
 
 const usageKeys = { in: 'input', out: 'output', reasoning: 'reasoning', cached: 'cacheRead' };
 const timestamp = x => typeof x === 'string' ? Date.parse(x) : Number.isFinite(x) ? x : NaN;
@@ -12,11 +12,14 @@ export function spriteOutcome(rc, stopReason) {
   return { state: 'failed', reason: ({ 124: 'timeout', 125: 'idle' })[rc] ?? `exit ${rc}` };
 }
 
-function activeTime(start, end, tools) {
+const validTime = (at, duration) => Number.isFinite(at) && Number.isFinite(duration) && duration >= 0;
+
+function activeTime(start, end, calls, tools) {
   const intervals = [];
-  for (const { result, durationMs } of tools.values()) {
-    const at = timestamp(result?.timestamp), duration = result?.durationMs ?? durationMs;
-    if (!Number.isFinite(at) || !Number.isFinite(duration) || duration < 0) return null;
+  for (const id of calls) {
+    const { resultAt, resultWait, execution } = tools.get(id) ?? {};
+    const [at, duration] = resultWait ?? [execution?.at ?? resultAt, execution?.duration];
+    if (!validTime(at, duration)) return null;
     const lo = Math.max(start, at - duration), hi = Math.min(end, at);
     if (lo < hi) intervals.push([lo, hi]);
   }
@@ -30,7 +33,11 @@ function activeTime(start, end, tools) {
 
 export function parseSprite(text, o) {
   const models = new Map(), tools = new Map(), seen = new Set();
-  let start, end = -Infinity, current, thinking = null, stopReason;
+  const tool = id => {
+    if (!tools.has(id)) tools.set(id, {});
+    return tools.get(id);
+  };
+  let start, end = -Infinity, thinking = null, stopReason;
   for (const e of jsonl(text)) {
     const m = e.message;
     const messages = [m, ...(e.toolResults ?? []), ...(e.messages ?? [])];
@@ -38,45 +45,59 @@ export function parseSprite(text, o) {
       if (Number.isFinite(t)) end = Math.max(end, t);
     }
     if (e.type === 'session') start ??= timestamp(e.timestamp);
-    if (e.type === 'thinking_level_change') thinking = e.thinkingLevel ?? null;
+    if (e.type === 'thinking_level_change') thinking = thinkingLevel(e.thinkingLevel) ? e.thinkingLevel : null;
     if (e.type === 'message_end' && m?.role === 'assistant') {
       const model = { provider: m.provider, name: m.model };
-      requireThat(typeof model.provider === 'string' && typeof model.name === 'string');
-      const key = modelKey(model);
-      if (!models.has(key)) models.set(key, { model, turns: [], toolCalls: 0 });
-      current = models.get(key);
+      requireThat(validModel(model));
       const id = m.responseId || JSON.stringify([m.provider, m.model, m.timestamp, m.usage?.totalTokens]);
       if (!seen.has(id)) {
+        const key = modelKey(model);
+        if (!models.has(key)) models.set(key, { model, turns: [], calls: new Set() });
+        const current = models.get(key);
         current.turns.push(m);
+        if (thinkingLevel(m.thinkingLevel)) current.thinking = m.thinkingLevel;
+        for (const item of Array.isArray(m.content) ? m.content : []) {
+          if (item?.type === 'toolCall' && item.id != null) current.calls.add(item.id);
+        }
         stopReason = m.stopReason;
         seen.add(id);
       }
     }
-    if (e.type === 'tool_execution_start' || e.type === 'tool_execution_end') {
-      if (!tools.has(e.toolCallId)) tools.set(e.toolCallId, { owner: current });
-      const tool = tools.get(e.toolCallId);
-      if (e.type === 'tool_execution_end' && !tool.ended) {
-        if (e.toolCallId != null && (tool.owner ?? current)) (tool.owner ?? current).toolCalls++;
-        Object.assign(tool, { ended: true, durationMs: e.durationMs });
+    if (e.toolCallId != null && ['tool_execution_start', 'tool_execution_end'].includes(e.type)) {
+      const timing = tool(e.toolCallId);
+      if (e.type === 'tool_execution_end' && Number.isFinite(e.durationMs) && e.durationMs >= 0) {
+        const at = timestamp(e.timestamp);
+        if (Number.isFinite(at) || !timing.execution) {
+          timing.execution = { at: Number.isFinite(at) ? at : undefined, duration: e.durationMs };
+        }
       }
     }
-    for (const result of messages.filter(x => x?.role === 'toolResult')) {
-      if (!tools.has(result.toolCallId)) tools.set(result.toolCallId, { owner: current });
-      const tool = tools.get(result.toolCallId);
-      if (!tool.result || e.type === 'message_end') tool.result = result;
+    for (const result of messages.filter(x => x?.role === 'toolResult' && x.toolCallId != null)) {
+      const timing = tool(result.toolCallId), at = timestamp(result.timestamp);
+      if (Number.isFinite(at)) timing.resultAt = at;
+      if (validTime(at, result.durationMs)) timing.resultWait = [at, result.durationMs];
     }
   }
   requireThat(Number.isFinite(start) && end >= start);
-  const activeSeconds = activeTime(start, end, tools);
-  return [...models.values()].map(({ model, turns, toolCalls }, i) => {
-    const r = record(o, models.size === 1 ? o.name : `${o.name}~${i + 1}`, 'sprite', start, end);
-    const tokens = fields(tokenKeys, k => sum(turns, m => m.usage?.[usageKeys[k]]));
-    const costs = turns.map(m => m.usage?.cost?.total);
-    const coverage = !Object.values(tokens).some(Number.isFinite) ? 'none'
-      : turns.every(m => Object.values(usageKeys).every(k => Number.isFinite(m.usage?.[k]))) ? 'complete' : 'partial';
-    return { ...r, model, thinking: turns.at(-1)?.thinkingLevel ?? thinking, activeSeconds,
-      turns: turns.length, toolCalls, tokens, coverage: { tokens: coverage },
-      costMicros: costs.length && costs.every(Number.isFinite) ? Math.round(sum(costs, x => x) * 1e6) : null,
+  if (!models.size) models.set(null, { model: null, turns: [], calls: new Set(tools.keys()) });
+  const rows = [...models.values()];
+  const activeSeconds = activeTime(start, end, new Set(rows.flatMap(r => [...r.calls])), tools);
+  return rows.map(({ model, turns, calls, thinking: lastThinking }, i) => {
+    const r = record(o, rows.length === 1 ? o.name : `${o.name}~${i + 1}`, 'sprite', start, end);
+    const usage = turns.map(m => fields(tokenKeys, k => {
+      const value = m.usage?.[usageKeys[k]];
+      return count(value) ? value : null;
+    }));
+    const tokens = fields(tokenKeys, k => sum(usage, u => u[k]));
+    const costs = turns.map(m => {
+      const cost = m.usage?.cost?.total;
+      return Number.isFinite(cost) && cost >= 0 ? Math.round(cost * 1e6) : null;
+    });
+    const coverage = !Object.values(tokens).some(count) ? 'none'
+      : usage.every(u => tokenKeys.every(k => u[k] !== null)) ? 'complete' : 'partial';
+    return { ...r, model, thinking: model ? lastThinking ?? thinking : null, activeSeconds,
+      turns: turns.length, toolCalls: calls.size, tokens, coverage: { tokens: coverage },
+      costMicros: costs.length && costs.every(count) ? sum(costs, x => x) : null,
       outcome: o.outcome === 'blocked' ? r.outcome : spriteOutcome(o.rc, stopReason), changes: o.changes ?? null,
       complexity: { rating: o.rating ?? null, proxies: proxies(o.changes, r.reviewRounds, o.failedChecks ?? null, o.retries ?? null) } };
   });
@@ -93,12 +114,17 @@ function main() {
   catch (e) { if (e.code === 'ENOENT') return 3; throw e; }
   requireThat(/^-?\d+$/.test(rc) && Number.isSafeInteger(Number(rc)));
   let retries = null, changes = null;
-  try { retries = readdirSync(prefix, { withFileTypes: true }).filter(e => e.isFile()).length - 1; }
+  try {
+    const files = readdirSync(prefix, { withFileTypes: true }).filter(e => e.isFile()).length;
+    retries = files ? files - 1 : null;
+  }
   catch (e) { if (e.code !== 'ENOENT') throw e; }
   if (o.base) {
-    const stat = execFileSync('git', ['diff', '--no-ext-diff', '--no-textconv', '--shortstat', o.base, '--'], {
+    const gitOptions = {
       cwd: o.worktree, encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' }, stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    };
+    const base = execFileSync('git', ['rev-parse', '--verify', '--end-of-options', `${o.base}^{commit}`], gitOptions).trim();
+    const stat = execFileSync('git', ['diff', '--no-ext-diff', '--no-textconv', '--shortstat', base, '--'], gitOptions);
     const counts = [/\d+(?= files? changed)/, /\d+(?= insertions?\()/, /\d+(?= deletions?\()/];
     changes = fields(changeKeys, k => Number(stat.match(counts[changeKeys.indexOf(k)])?.[0] ?? 0));
   }
