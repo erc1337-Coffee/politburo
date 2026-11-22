@@ -1,5 +1,6 @@
 import { execFile, spawn } from 'node:child_process'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, it, vi } from 'vitest'
 import type { AttentionDraft, AttentionView, MessageView } from '../src/api/routes.ts'
@@ -104,7 +105,7 @@ it('keeps standalone agent ops independent of swarm mode', async ({ onTestFinish
 const CLI = join(import.meta.dirname, '../src/cli/bin.ts')
 
 async function cliHome(cleanup: (close: () => Promise<void>) => void) {
-  const home = await mkdtemp(join(import.meta.dirname, '.swarm-serve-'))
+  const home = await mkdtemp(join(tmpdir(), 'swarm-serve-'))
   cleanup(() => rm(home, { recursive: true, force: true }))
   const options = { cwd: home, env: { HOME: home, XDG_CONFIG_HOME: home, XDG_DATA_HOME: home } }
   const run = (...args: string[]) => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
@@ -117,14 +118,14 @@ async function cliHome(cleanup: (close: () => Promise<void>) => void) {
   return { home, options, run }
 }
 
-it('serves swarm discovery and answers attention as the identity printed by vb serve', async ({ onTestFinished }) => {
-  const { home, options, run } = await cliHome(onTestFinished)
-  const child = spawn(process.execPath, [CLI, 'serve', '--swarm', '--port', '0', '--no-inspect', '--dir', join(home, 'data')], {
+async function cliServe(cleanup: (close: () => Promise<void>) => void, ...flags: string[]) {
+  const { home, options, run } = await cliHome(cleanup)
+  const child = spawn(process.execPath, [CLI, 'serve', '--port', '0', '--no-inspect', '--dir', join(home, 'data'), ...flags], {
     ...options, stdio: ['ignore', 'pipe', 'ignore'], timeout: 35_000, killSignal: 'SIGKILL',
   })
   const closed = new Promise<void>((resolve) => child.once('close', () => resolve()))
   child.on('error', () => {})
-  onTestFinished(async () => {
+  cleanup(async () => {
     child.kill('SIGTERM')
     await closed
   })
@@ -135,10 +136,15 @@ it('serves swarm discovery and answers attention as the identity printed by vb s
     if (!line) throw new Error('vb serve did not announce its URL and principal')
     return line
   }, { timeout: 12_000 })
-  const discovery = await fetch(url!)
+  const cli = (...args: string[]) => run(...args, '--url', url!, '--json')
+  return { home, url: url!, principal, cli }
+}
+
+it('serves swarm discovery and answers attention as the identity printed by vb serve', async ({ onTestFinished }) => {
+  const { home, url, principal, cli } = await cliServe(onTestFinished, '--swarm')
+  const discovery = await fetch(url)
   expect.soft(await discovery.json()).toMatchObject(SWARM)
 
-  const cli = (...args: string[]) => run(...args, '--url', url!, '--json')
   const created = await cli('tasks', 'create', CHANNEL, 'Release the build')
   expect(created.code).toBe(0)
   const { task } = JSON.parse(created.stdout) as { task: MessageView }
@@ -152,6 +158,23 @@ it('serves swarm discovery and answers attention as the identity printed by vb s
   expect(JSON.parse(answered.stdout)).toMatchObject({
     attention: { status: 'answered', receipt: { by: { principal }, option: 'go' } },
   })
+}, 30_000)
+
+it('keeps swarm off when vb serve omits --swarm', async ({ onTestFinished }) => {
+  const { url, cli } = await cliServe(onTestFinished)
+  const discovery = await fetch(url)
+  expect(discovery.status).toBe(200)
+  const capabilities = await discovery.json()
+  for (const key of ['politburo', 'agent_ops', 'task_attention']) {
+    expect.soft(capabilities).not.toHaveProperty(key)
+  }
+
+  const created = await cli('tasks', 'create', CHANNEL, 'Release the build')
+  expect(created.code).toBe(0)
+  const { task } = JSON.parse(created.stdout) as { task: MessageView }
+  const answered = await cli('tasks', 'answer', task.id, task.id, 'go', '--commit', COMMIT)
+  expect(answered.code).toBe(1)
+  expect(JSON.parse(answered.stderr)).toMatchObject({ data: { error: { status: 501, code: 'no_task_attention' } } })
 }, 30_000)
 
 it('lists --swarm in vb serve help', async ({ onTestFinished }) => {

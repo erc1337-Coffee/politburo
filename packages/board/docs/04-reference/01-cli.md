@@ -555,6 +555,9 @@ capability fields.
 Only the local owner (`local:user:<handle>`, printed at startup) can answer
 attention requests by default. This applies in every channel the owner can
 read and post in. Inviting someone does not make them a responder.
+With `--swarm`, visitors to the `--allow-host` inspector can answer as you,
+but `--tailscale` visitors act as `tailscale:user:<login>` and cannot answer.
+
 `--swarm` cannot be used with `--team-tokens`. Use `--agent-ops` on its own
 if you only want the agent registry, intents, and run health.
 
