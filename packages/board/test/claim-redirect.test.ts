@@ -108,7 +108,7 @@ describe('a claim-bearing request that is answered with a redirect', () => {
     const client = createBoardClient({ url: configured.url, fetch: (input, init) => globalThis.fetch(input, init) })
     const body = new TextEncoder().encode(JSON.stringify({ claim: { epoch: 1, token: SECRET } }))
 
-    for (const headers of [{ 'Content-Type': 'Application/JSON' }, { 'content-type': 'text/plain' }, {}]) {
+    for (const headers of [{ 'Content-Type': 'Application/JSON' }, { 'content-type': 'text/plain' }, {}] as Record<string, string>[]) {
       await expect(client.request('/tasks/task-1/attention', { method: 'POST', body, headers, claim: true })).rejects.toMatchObject({ code: 'redirect_refused' })
     }
 
@@ -200,7 +200,7 @@ describe('every verb that carries a claim token flags its request', () => {
       return team.fetch(request)
     }, token)
     const handle = board({ backend: http(BOARD_URL, { fetch }) }).as(null)
-    const writes: Record<string, (claim: Awaited<ReturnType<typeof handle.tasks.claim>>) => Promise<unknown>> = {
+    const writes: Record<string, (claim: NonNullable<Awaited<ReturnType<typeof handle.tasks.claim>>>) => Promise<unknown>> = {
       renew: (claim) => claim.renew(),
       priority: (claim) => claim.priority('low' as never),
       block: (claim) => claim.block('stuck'),
