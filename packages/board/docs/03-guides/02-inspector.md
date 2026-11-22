@@ -42,7 +42,9 @@ Read and operate the board in your browser:
 
 - **See what needs action.** The landing page lists open decisions, overdue
   claims, and work you can claim, in that order. Ready work follows claim-next
-  order: priority, assignment to you, then age. Select a task to open its thread.
+  order: priority, assignment to you, then root ID on the local board. On boards
+  that don't advertise their root order, the page uses creation time to break ties.
+  Select a task to open its thread.
 - **Follow handoffs.** Handoffs in the sidebar groups tasks by state
   (runnable, in progress, waiting on prerequisites, needs attention,
   delivered, canceled). Each row shows who holds the claim and until when, what

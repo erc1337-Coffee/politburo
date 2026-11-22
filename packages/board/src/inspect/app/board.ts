@@ -109,6 +109,7 @@ export async function setProfile(next: Profile | null | undefined): Promise<bool
     feedFollow?.abort()
     feedFollow = undefined
     openTaskPages = undefined
+    openTaskChanges = undefined
     // Publish the new handle and its acting-as label in the same turn.
     flushSync(() => {
       team = handle
@@ -117,7 +118,7 @@ export async function setProfile(next: Profile | null | undefined): Promise<bool
       loaded.clear()
       listed = listingForCurrentHandle()
       set((s) => ({ ...s, me, schedules: { is: 'loading' }, live: bootStarted ? 'reconnecting' : s.live,
-        tasksCounted: false, tasksRefused: null, attention: {}, attentionUnsupported: false }))
+        tasksCounted: false, openTaskRoots: {}, threadRefusals: {}, tasksRefused: null, attention: {}, attentionUnsupported: false }))
     })
     if (bootStarted) void boot().catch((error) => toast(said(error)))
     else void loadSchedules()
@@ -217,6 +218,7 @@ export async function boot(): Promise<void> {
     queue = []
     if (!current()) return
     listed.apply(events)
+    observeOpenTasks(events.flatMap(({ message }) => store.isTask(message) ? [message] : []))
     if (attentionVisit) refreshAttentionEvents(events)
     // A schedule's own state isn't in the feed, but its sends are: one that landed means the list moved.
     if (events.some((event) => event.message?.schedule !== undefined)) void loadSchedules()
@@ -243,7 +245,7 @@ export async function boot(): Promise<void> {
   }, () => {})
   void loadSchemas()
   void loadSchedules()
-  openTaskPages = loadOpenTasks()
+  refreshOpenTasks()
   if (attentionVisit) refreshAttentionAfterPages(attentionVisit)
 }
 
@@ -300,8 +302,23 @@ export async function loadOlder(channel: string): Promise<boolean> {
 export const loadThread = (id: string) =>
   once(`thread:${id}`, async () => {
     const as = identity
-    const { message: root, replies } = await readThread(id)
-    if (as === identity) set((s) => store.merge(s, [root, ...replies]))
+    try {
+      const { message: root, replies } = await readThread(id)
+      if (as !== identity) return
+      set((s) => {
+        const merged = store.merge(s, [root, ...replies])
+        if (!Object.hasOwn(s.threadRefusals, id)) return merged
+        const { [id]: _, ...threadRefusals } = s.threadRefusals
+        return { ...merged, threadRefusals }
+      })
+      if (store.isTask(root)) observeOpenTasks([root])
+    } catch (error) {
+      if (as === identity && inaccessible(error)) forgetThread(id, said(error))
+      throw error
+    } finally {
+      // Share in-flight reads, not the access decision from a prior visit to the thread.
+      if (as === identity) loaded.delete(`thread:${id}`)
+    }
   })
 
 /** Threads a filtered view asks the board for, and how many of them it reads whole. */
@@ -544,7 +561,7 @@ const listTasks = (query: { state?: 'open' | 'all' | TaskView['state']; channel?
  * now, or what the board refused it for: `tooWide` when the filter's tree holds more channels than
  * one list reads, as Vercel's board says for a caller who doesn't read every channel.
  */
-export async function loadTasks(filter: store.TaskFilter, after?: string): Promise<{ cursor: string; last: MessageView | undefined; more: boolean } | { refused: string; tooWide: boolean } | undefined> {
+export async function loadTasks(filter: store.TaskFilter, after?: string): Promise<{ cursor: string; last: MessageView | undefined; more: boolean; roots: MessageView[] } | { refused: string; tooWide: boolean; inaccessible: boolean } | undefined> {
   const as = identity
   try {
     const page = await listTasks({
@@ -558,32 +575,75 @@ export async function loadTasks(filter: store.TaskFilter, after?: string): Promi
     if (as !== identity) return
     const roots = page.tasks.map((task) => task.message)
     set((s) => store.merge(s, roots))
-    return { cursor: page.cursor, last: roots.at(-1), more: roots.length === PAGE }
+    return { cursor: page.cursor, last: roots.at(-1), more: roots.length === PAGE, roots }
   } catch (error) {
     if (as !== identity) return
-    return { refused: refusal(error), tooWide: (error as { code?: unknown } | null)?.code === 'channel_tree_too_large' }
+    return { refused: refusal(error), tooWide: (error as { code?: unknown } | null)?.code === 'channel_tree_too_large', inaccessible: inaccessible(error) }
   }
 }
 
-/** The shared open-task index also supplies the sidebar counts. */
-async function loadOpenTasks() {
-  const as = identity
-  let after: string | undefined
-  for (;;) {
-    const page = await loadTasks({ state: 'open', label: [] }, after)
-    if (!page || as !== identity) return
-    if ('refused' in page) {
-      set((s) => ({ ...s, tasksRefused: page.refused }))
-      return
-    }
-    if (!page.more || page.cursor === after) break
-    after = page.cursor
-  }
-  set((s) => ({ ...s, tasksCounted: true }))
-}
+const inaccessible = (error: unknown) => error instanceof BoardError && (error.status === 403 || error.status === 404)
 
 let openTaskPages: Promise<void> | undefined
+let openTaskChanges: Map<string, boolean> | undefined
 let attentionVisit: symbol | undefined
+
+/** Thread reads and authorized feed messages can arrive while the open-task pages are in flight. */
+function observeOpenTasks(roots: MessageView[]) {
+  if (roots.length === 0) return
+  for (const { id } of roots) openTaskChanges?.set(id, true)
+  set((s) => ({ ...s, openTaskRoots: store.newest(s.openTaskRoots, roots) }))
+}
+
+function forgetThread(id: string, reason: string) {
+  openTaskChanges?.set(id, false)
+  set((s) => {
+    const { [id]: _, ...openTaskRoots } = s.openTaskRoots
+    return { ...s, openTaskRoots, threadRefusals: { ...s.threadRefusals, [id]: reason } }
+  })
+}
+
+/** A complete open-task read replaces membership, not the shared message cache. */
+function refreshOpenTasks(refreshViewer = false) {
+  if (openTaskPages) return
+  const changes = openTaskChanges = new Map<string, boolean>()
+  const as = identity
+  // A return visit also refreshes label access for the claimable queue.
+  if (refreshViewer) void team.me().then((me) => {
+    if (as === identity) set((s) => ({ ...s, me }))
+  }, () => {})
+  openTaskPages = (async () => {
+    const found = new Set<string>()
+    let after: string | undefined
+    for (;;) {
+      const page = await loadTasks({ state: 'open', label: [] }, after)
+      if (!page || as !== identity) return
+      if ('refused' in page) {
+        set((s) => ({ ...s, tasksRefused: page.refused, tasksCounted: false,
+          ...(page.inaccessible ? { openTaskRoots: {} } : {}) }))
+        return
+      }
+      for (const { id } of page.roots) found.add(id)
+      // Successful pages can supply partial results; a concurrent thread refusal wins.
+      const observed = page.roots.filter(({ id }) => changes.get(id) !== false)
+      set((s) => ({ ...s, openTaskRoots: store.newest(s.openTaskRoots, observed) }))
+      if (!page.more || page.cursor === after) break
+      after = page.cursor
+    }
+    for (const [id, visible] of changes) visible ? found.add(id) : found.delete(id)
+    set((s) => ({ ...s, openTaskRoots: Object.fromEntries([...found].map((id) => [id, s.openTaskRoots[id]])),
+      tasksCounted: true, tasksRefused: null }))
+  })().finally(() => {
+    if (as !== identity) return
+    openTaskPages = undefined
+    openTaskChanges = undefined
+  })
+}
+
+export function openNeeds() {
+  refreshOpenTasks(true)
+  return openAttention()
+}
 
 function refreshAttentionAfterPages(visit: symbol) {
   const as = identity

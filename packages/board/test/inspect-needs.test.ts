@@ -1,12 +1,12 @@
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { createBoardClient } from '../src/client/client.ts'
-import { needsAction } from '../src/inspect/app/needs.ts'
+import { claimOrder, needsAction } from '../src/inspect/app/needs.ts'
 import { initialState, merge, type Viewer } from '../src/inspect/app/store.ts'
 import { compileAccess } from '../src/server/access.ts'
 import { BOARD_URL, personToken, testBoard } from './harness.ts'
 
-it('shows ready work in the order a real claim-next takes it', async () => {
-  const board = testBoard()
+it('shows all claim-next candidates in shared claim order across ready and overdue work', async () => {
+  const board = testBoard() // No scheduler: elapsed leases can still wear `claimed`.
   const fetcher: typeof fetch = (input, init) => board.fetch(new Request(input, init))
   const token = await personToken('u_julian', BOARD_URL)
   const owner = createBoardClient({ url: BOARD_URL, token, profile: null, fetch: fetcher })
@@ -14,30 +14,42 @@ it('shows ready work in the order a real claim-next takes it', async () => {
   const outsider = createBoardClient({ url: BOARD_URL, token: await personToken('u_ada', BOARD_URL), profile: null, fetch: fetcher })
   const { actor, principal, profile, can } = await worker.me()
   const channel = 'work'
-  const { task: oldest } = await owner.tasks.create(channel, { text: 'Oldest high', priority: 'high' })
-  board.clock.skip(1000)
-  const { task: newer } = await owner.tasks.create(channel, { text: 'Another high', priority: 'high' })
-  board.clock.skip(1000)
-  await owner.tasks.create(channel, { text: 'Assigned high', priority: 'high', for: actor })
-  await owner.tasks.create(channel, { text: 'Urgent', priority: 'urgent' })
-  await owner.tasks.create(channel, { text: 'Lowest', priority: 'lowest' })
-  await owner.tasks.create(channel, { text: 'Another profile’s task', priority: 'urgent', for: `${principal}+other` })
-  await outsider.tasks.create(channel, { text: 'Another owner’s task', priority: 'urgent' })
-  const { task: parked } = await owner.tasks.create(channel, { text: 'Parked', priority: 'urgent' })
-  await owner.tasks.park(parked.id, 'Not scheduled yet')
+  try {
+    const { task: fenced } = await owner.tasks.create(channel, { text: 'Fenced', priority: 'urgent', claim: true })
+    await owner.pause('Stop work')
+    await owner.resume('Restart work')
+    const { task: lapsed } = await owner.tasks.create(channel, { text: 'Lapsed', priority: 'high' })
+    const lease = await owner.tasks.claim(lapsed.id, { lease: 30 })
+    const { task: active } = await owner.tasks.create(channel, { text: 'Still held in the new epoch', priority: 'urgent', claim: true })
+    const { task: oldest } = await owner.tasks.create(channel, { text: 'First root', priority: 'high' })
+    board.clock.skip(-1000)
+    const { task: newer } = await owner.tasks.create(channel, { text: 'Second root', priority: 'high' })
+    const { task: assigned } = await owner.tasks.create(channel, { text: 'Assigned high', priority: 'high', for: actor })
+    const { task: lowest } = await owner.tasks.create(channel, { text: 'Lowest', priority: 'lowest' })
+    await owner.tasks.create(channel, { text: 'Another profile’s task', priority: 'urgent', for: `${principal}+other` })
+    await outsider.tasks.create(channel, { text: 'Another owner’s task', priority: 'urgent' })
+    const { task: parked } = await owner.tasks.create(channel, { text: 'Parked', priority: 'urgent' })
+    await owner.tasks.park(parked.id, 'Not scheduled yet')
+    vi.setSystemTime(Date.parse(lease.until) + 1)
 
-  const access = compileAccess(can)
-  const viewer: Viewer = { actor, principal, profile, may: (permission, path) => access.can(permission, path), person: true, manages: false }
-  const { tasks } = await worker.tasks.list({ channel, state: 'open' })
-  const state = merge(initialState, tasks.map(({ message }) => message))
-  expect(Date.parse(oldest.createdAt)).toBeLessThan(Date.parse(newer.createdAt))
-  const ready = needsAction(state, viewer, Date.now()).ready.map(({ id }) => id)
-  const taken: string[] = []
-  while (true) {
-    const claim = await worker.tasks.claim({ channel })
-    if (!claim) break
-    taken.push(claim.task.id)
+    const access = compileAccess(can)
+    const viewer: Viewer = { actor, principal, profile, may: (permission, path) => access.can(permission, path), person: true, manages: false }
+    const { tasks } = await worker.tasks.list({ channel, state: 'open' })
+    const roots = tasks.map(({ message }) => message)
+    const state = merge({ ...initialState, discovery: await worker.discovery(), status: await worker.status(), openTaskRoots: Object.fromEntries(roots.map((root) => [root.id, root])) }, roots)
+    expect(Date.parse(newer.createdAt)).toBeLessThan(Date.parse(oldest.createdAt))
+    expect((await worker.thread(active.id)).message.task?.claim?.until).toBe(active.task?.claim?.until)
+    const { stalled, ready } = needsAction(state, viewer, Date.now())
+    expect(stalled.map(({ id }) => id)).toEqual([lapsed.id])
+    expect(ready.map(({ id }) => id)).toEqual([fenced.id, assigned.id, oldest.id, newer.id, lowest.id])
+    const claimable = claimOrder([...stalled, ...ready], state, viewer, Date.now())
+    for (const { id } of [fenced, assigned, lapsed, oldest, newer, lowest]) {
+      expect(claimable.shift()?.id).toBe(id)
+      expect((await worker.tasks.claim({ channel }))?.task.id).toBe(id)
+    }
+    expect(claimable).toEqual([])
+    expect(await worker.tasks.claim({ channel })).toBeNull()
+  } finally {
+    vi.useRealTimers()
   }
-  expect(taken).toHaveLength(5)
-  expect(ready).toEqual(taken)
 })

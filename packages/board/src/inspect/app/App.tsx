@@ -486,7 +486,8 @@ function ThreadPane(props: { id: string; state: State; viewer: Viewer; now: numb
       if (identity === board.getIdentity()) setMissing(!board.getState().messages[id])
     })
   }, [id, identity])
-  const t = useMemo(() => threadOf(state, id), [state.messages, state.ops, state.pending, state.actors, id])
+  const refused = Object.hasOwn(state.threadRefusals, id) ? state.threadRefusals[id] : null
+  const t = useMemo(() => refused === null ? threadOf(state, id) : null, [state.messages, state.ops, state.pending, state.actors, id, refused])
   // Where the thread's copies are, on the platforms it syncs with.
   const [synced, setSynced] = useState<SyncedView['targets']>([])
   useEffect(() => {
@@ -557,7 +558,7 @@ function ThreadPane(props: { id: string; state: State; viewer: Viewer; now: numb
       )}
       <Feed scope={`thread:${id}`} first={id} last={`${t?.replies.at(-1)?.id ?? id}+${t?.pending.length ?? 0}`}>
         {!t ? (
-          <p className="empty">{missing ? 'no such thread' : 'loading…'}</p>
+          <p className={refused === null ? 'empty' : 'error'}>{refused ?? (missing ? 'no such thread' : 'loading…')}</p>
         ) : (
           <>
             <Messages messages={[t.root]} now={props.now} options={options} />

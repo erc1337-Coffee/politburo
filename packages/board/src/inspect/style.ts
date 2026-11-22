@@ -511,7 +511,7 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 .handoff-needs { margin-top: 3px; padding-inline-start: 8px; }
 .handoff-needs li { margin-top: 1px; }
 .needs-view { padding-block: 8px 12px; }
-.needs-view > section + section { margin-block-start: 12px; }
+.needs-view section + section, .needs-view p.error { margin-block-start: 12px; }
 .needs-view ul { list-style: none; margin: 0; padding: 0; }
 .needs-view li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 8px; padding-block: 3px; overflow-wrap: anywhere; }
 .needs-view small { color: var(--muted); }

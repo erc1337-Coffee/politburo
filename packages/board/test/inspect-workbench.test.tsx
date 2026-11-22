@@ -140,6 +140,110 @@ it('shows loading before the empty Needs action sentence on an empty board', asy
   expect(location.pathname).toBe('/handoffs')
 })
 
+it('renders the three Needs action groups with ordered thread links', async () => {
+  const { client, open } = await workbench({ attentionResponders: responders })
+  const { id: decisionId } = await hold(client, 'Approve wording', 'Ship it?')
+  const { task: lapsed } = await client.tasks.create('work', { text: 'Overdue urgent', priority: 'urgent' })
+  const lease = await client.tasks.claim(lapsed.id, { lease: 30 })
+  const { task: normal } = await client.tasks.create('work', { text: 'Normal work' })
+  const { task: high } = await client.tasks.create('work', { text: 'High work', priority: 'high' })
+  vi.setSystemTime(Date.parse(lease.until) + 1)
+  await open()
+  await vi.waitFor(() => {
+    expect([...document.querySelectorAll('main section h2')].map((heading) => heading.textContent)).toEqual([
+      'Open decisions', 'Stalled or overdue claims', 'Ready work',
+    ])
+    const linksIn = (title: string) => [...lane(title).querySelectorAll('a')].map((a) => [a.textContent, a.getAttribute('href')])
+    expect(linksIn('Open decisions')).toEqual([['Approve wording', `/?thread=${decisionId}`]])
+    expect(linksIn('Stalled or overdue claims')).toEqual([['Overdue urgent', `/?thread=${lapsed.id}`]])
+    expect(linksIn('Ready work')).toEqual([['High work', `/?thread=${high.id}`], ['Normal work', `/?thread=${normal.id}`]])
+  })
+})
+
+it.each(['list omission', 'thread 404'] as const)('removes a revoked Needs action row after a %s', async (read) => {
+  const { api, open } = await workbench({ attentionResponders: responders })
+  const target = { kind: 'project' as const, project: 'prj_reader' }
+  const token = await deploymentToken('dpl_reader', target.project, 'production')
+  await api.revokeGrant('g2')
+  const { grant } = await api.createGrant({ principals: [target], can: { work: 'all' } })
+  await api.createGrant({ principals: [target], can: { keep: 'all' } })
+  const viewer = createBoardClient({ url: BOARD_URL, token, profile: null, fetch: (input, init) => api.fetch(new Request(input, init)) })
+  // A decision is shown even without label access, so refreshing /me alone cannot hide it.
+  const id = read === 'list omission' ? (await hold(viewer, 'Private queue', 'Continue?')).id
+    : (await viewer.tasks.create('work', { text: 'Private queue' })).task.id
+  await viewer.tasks.create('keep', { text: 'Public queue' })
+  await open('/', { token })
+  const row = await vi.waitFor(() => link('Private queue', lane(read === 'list omission' ? 'Open decisions' : 'Ready work')))
+  if (read === 'thread 404') {
+    row.click()
+    await vi.waitFor(() => expect(threadPane()?.textContent).toContain('Private queue'))
+    document.querySelector<HTMLButtonElement>('button[aria-label="Close thread"]')!.click()
+    await vi.waitFor(() => expect(threadPane()).toBeNull())
+  }
+  await api.revokeGrant(grant.id)
+  await vi.waitFor(() => expect(viewer.thread(id)).rejects.toMatchObject({ status: 404 }))
+  if (read === 'list omission') {
+    link('Handoffs').click()
+    await vi.waitFor(() => expect(location.pathname).toBe('/handoffs'))
+    link('Needs action').click()
+  } else {
+    row.focus()
+    row.click()
+  }
+  await vi.waitFor(() => {
+    expect(lane('Ready work').textContent).toContain('Public queue')
+    expect(mainText()).not.toContain('Private queue')
+    if (read === 'thread 404') {
+      expect(threadPane()).not.toBeNull()
+      expect(threadPane()?.textContent).not.toContain('Private queue')
+    }
+  })
+})
+
+it('keeps a focused Needs action row in place until blur', async () => {
+  const { client, as, open } = await workbench()
+  const { task } = await client.tasks.create('work', { text: 'Read before claiming' })
+  await open()
+  const reading = await vi.waitFor(() => link('Read before claiming', lane('Ready work')))
+  reading.focus()
+  expect(document.activeElement).toBe(reading)
+  await as('worker').tasks.claim(task.id)
+  await client.tasks.create('work', { text: 'New ready task' })
+  // The sidebar count can only reach two after the feed has delivered the claim and the new root.
+  await vi.waitFor(() => expect(document.querySelector('a[href="/tasks"] .count')?.textContent).toBe('2'))
+  expect(link('Read before claiming', lane('Ready work'))).toBe(reading)
+  expect(document.activeElement).toBe(reading)
+  reading.blur()
+  await vi.waitFor(() => {
+    expect(mainText()).not.toContain('Read before claiming')
+    expect(link('New ready task', lane('Ready work'))).toBeDefined()
+  })
+})
+
+it('shows task and attention read refusals alongside partial Needs action results', async () => {
+  const { client, open } = await workbench({ attentionResponders: responders })
+  await hold(client, 'A decision', 'Continue?')
+  await client.tasks.create('work', { text: 'Still ready' })
+  let refuseTasks = false
+  const refuse = (message: string) => Response.json({ error: { code: 'unavailable', message } }, { status: 503 })
+  await open('/', { transport: async (request, forward) => {
+    if (attentionRead(request)) return refuse('Attention read unavailable')
+    if (refuseTasks && routePath(request) === '/tasks' && new URL(request.url).searchParams.get('state') === 'open') return refuse('Task list unavailable')
+    return forward()
+  } })
+  await vi.waitFor(() => expect(mainText()).toContain('Attention read unavailable'))
+  link('Handoffs').click()
+  await vi.waitFor(() => expect(location.pathname).toBe('/handoffs'))
+  refuseTasks = true
+  link('Needs action').click()
+  await vi.waitFor(() => {
+    expect(mainText()).toContain('Task list unavailable')
+    expect(mainText()).toContain('Attention read unavailable')
+    expect(link('A decision', lane('Open decisions'))).toBeDefined()
+    expect(link('Still ready', lane('Ready work'))).toBeDefined()
+  })
+})
+
 it('keeps a focused Handoff in its original lane when another reader claims it', async () => {
   const { api, as, open } = await workbench()
   const { task } = await api.tasks.create('work', { text: 'Review the release' })

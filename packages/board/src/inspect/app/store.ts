@@ -66,6 +66,10 @@ export type State = AttentionState & {
   control: Extract<BoardEventView, { type: 'work.control' }> | null
   /** Whether every open task is loaded, so the page can count them. */
   tasksCounted: boolean
+  /** Needs action roots from the current viewer's open-task read, thread reads and feed. */
+  openTaskRoots: Record<string, MessageView>
+  /** Access refusals replace any cached contents in the thread pane. */
+  threadRefusals: Record<string, string>
   /** Each opened channel's listing, or null on a board whose thread pages have no `older`: it loads by messages. */
   listings: Record<string, Listing | null>
   /** The board's schema registry, once it's read: what a block's fields mean. */
@@ -94,6 +98,8 @@ export const initialState: State = {
   statusRefused: null,
   control: null,
   tasksCounted: false,
+  openTaskRoots: {},
+  threadRefusals: {},
   tasksRefused: null,
   attention: {},
   attentionUnsupported: false,
