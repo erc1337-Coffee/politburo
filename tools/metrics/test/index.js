@@ -253,14 +253,56 @@ exit 9`)
   assert.ok(existsSync(marker), 'install did not receive the allowlisted environment')
 })
 
-function live(pid) {
+function processIdentity(pid) {
+  pid = Number(pid)
+  if (!Number.isSafeInteger(pid) || pid <= 1) return
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
-    return stat[stat.lastIndexOf(') ') + 2] !== 'Z'
+    // After the parenthesized comm, state is field 3 and start time is field 22.
+    const fields = stat.slice(stat.lastIndexOf(') ') + 2).split(' ')
+    if (fields[0] !== 'Z' && /^\d+$/.test(fields[19])) return { pid, startTime: fields[19] }
   } catch (err) {
-    if (err.code !== 'ENOENT' && err.code !== 'ESRCH') throw err
+    if (!['ENOENT', 'ESRCH', 'EACCES'].includes(err.code)) throw err
+  }
+}
+
+function live(identity) {
+  const current = identity && processIdentity(identity.pid)
+  return Boolean(current && current.startTime === identity.startTime)
+}
+
+export function killIfSame(identity, signal) {
+  try {
+    if (!live(identity)) return false
+    return process.kill(identity.pid, signal)
+  } catch (err) {
+    if (err.code !== 'ESRCH') throw err
     return false
   }
+}
+
+function killOwnedGroup(child, signal) {
+  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return
+  try {
+    process.kill(-child.pid, signal)
+  } catch (err) {
+    if (err.code !== 'ESRCH') throw err
+  }
+}
+
+for (const stale of [true, false]) {
+  test(`cleanup ${stale ? 'ignores a stale' : 'kills a matching'} process identity`, { timeout: 2_000 }, async (t) => {
+    // cat stays alive until stdin closes, so a stale PID must exit normally, not by SIGKILL.
+    const child = spawn('cat', { detached: true, stdio: ['pipe', 'ignore', 'ignore'], env: claimEnv() })
+    t.after(() => killOwnedGroup(child, 'SIGKILL'))
+    const exited = once(child, 'exit')
+    await once(child, 'spawn')
+    const identity = processIdentity(child.pid)
+    assert.ok(identity)
+    killIfSame(stale ? { ...identity, startTime: '-1' } : identity, 'SIGKILL')
+    if (stale) child.stdin.end()
+    assert.deepEqual(await exited, stale ? [0, null] : [null, 'SIGKILL'])
+  })
 }
 
 test('fork metric fails quietly on a stalled HTTP fetch and kills the remote helper', { timeout: 8_000 }, async (t) => {
@@ -278,13 +320,14 @@ done
 exec ${timeout} "\${args[@]}"`)
   Object.assign(env, { GIT_ALLOW_PROTOCOL: 'file:http', no_proxy: '127.0.0.1', NO_PROXY: '127.0.0.1' })
   const sockets = new Set()
-  let remote, helpers = []
+  let remote
+  const helpers = []
   const server = createServer((socket) => {
     sockets.add(socket)
     socket.once('close', () => sockets.delete(socket))
     socket.once('data', () => {
       // Record only the real helper for this fixture's URL, then never reply.
-      helpers = httpHelpers()
+      helpers.push(...httpHelpers())
     })
   })
   function isHttpHelper(pid) {
@@ -297,18 +340,12 @@ exec ${timeout} "\${args[@]}"`)
     }
   }
   function httpHelpers() {
-    return readdirSync('/proc').filter((pid) => /^\d+$/.test(pid) && isHttpHelper(pid)).map(Number)
+    if (!remote) return []
+    return readdirSync('/proc').map(processIdentity).filter((identity) => identity && isHttpHelper(identity.pid))
   }
   t.after(async () => {
     try {
-      for (const pid of new Set([...helpers, ...httpHelpers()])) {
-        if (!isHttpHelper(pid)) continue
-        try {
-          process.kill(pid, 'SIGKILL')
-        } catch (err) {
-          if (err.code !== 'ESRCH') throw err
-        }
-      }
+      for (const identity of [...helpers, ...httpHelpers()]) killIfSame(identity, 'SIGKILL')
     } finally {
       for (const socket of sockets) socket.destroy()
       await new Promise((resolve) => server.close(resolve))
@@ -317,8 +354,8 @@ exec ${timeout} "\${args[@]}"`)
   server.listen(0, '127.0.0.1')
   await once(server, 'listening')
   remote = `http://127.0.0.1:${server.address().port}/stalled.git`
-  const judge = spawn('bash', [forkScript, '--repo', fork, '--upstream-url', remote], { env })
-  t.after(() => { if (judge.exitCode === null && judge.signalCode === null) judge.kill('SIGTERM') })
+  const judge = spawn('bash', [forkScript, '--repo', fork, '--upstream-url', remote], { env, detached: true })
+  t.after(() => killOwnedGroup(judge, 'SIGTERM'))
   let stdout = '', stderr = ''
   judge.stdout.setEncoding('utf8').on('data', (chunk) => { stdout += chunk })
   judge.stderr.setEncoding('utf8').on('data', (chunk) => { stderr += chunk })
@@ -332,6 +369,20 @@ exec ${timeout} "\${args[@]}"`)
   failure({ status, signal, stdout, stderr }, /could not fetch upstream branch/)
 })
 
+// Publish field 22 from the sleeper itself, before the judge can exit and its PID be reused.
+const recordedSleeper = `stat=$(<"/proc/$$/stat")
+set -- "$1" \${stat##*) }
+printf "%s %s\\n" "$$" "\${21}" > "$1"
+exec sleep 120`
+
+function recordedIdentity(file) {
+  if (!existsSync(file)) return
+  const [pid, startTime] = readFileSync(file, 'utf8').trim().split(' ')
+  if (Number.isSafeInteger(Number(pid)) && Number(pid) > 1 && /^\d+$/.test(startTime)) {
+    return { pid: Number(pid), startTime }
+  }
+}
+
 for (const [prefix, name] of [
   ['', 'kills a background child that clears its environment'],
   ['setsid ', 'kills a separate-session child that clears its environment'],
@@ -342,23 +393,22 @@ for (const [prefix, name] of [
     const { root, fork } = fixture(t)
     const pidFile = join(root, 'cleared-env-pid')
     const env = claimEnv()
-    shim(root, env, 'pnpm', `env -i ${prefix}/bin/bash -c 'echo "$$" > "$1"; exec sleep 120' child ${JSON.stringify(pidFile)} &
+    shim(root, env, 'pnpm', `env -i ${prefix}/bin/bash -c '${recordedSleeper}' child ${JSON.stringify(pidFile)} &
 while [[ ! -s ${JSON.stringify(pidFile)} ]]; do sleep .01; done
 exit 9`)
-    let result, pid
+    let identity
+    t.after(() => killIfSame(identity, 'SIGKILL'))
+    let result
     try {
       result = run(process.execPath, [claimScript, '--repo', fork, '--timeout', '3'], env)
     } finally {
-      pid = existsSync(pidFile) && Number(readFileSync(pidFile, 'utf8'))
-      if (Number.isSafeInteger(pid) && pid > 1) {
-        t.after(() => { if (live(pid)) process.kill(pid, 'SIGKILL') })
-      }
+      identity = recordedIdentity(pidFile)
     }
-    assert.ok(Number.isSafeInteger(pid) && pid > 1, 'the env -i child did not start')
+    assert.ok(identity, 'the env -i child did not start')
     failure(result, /install failed \(exit 9\)/)
     const until = performance.now() + 250
-    while (live(pid) && performance.now() < until) await sleep(10)
-    assert.ok(!live(pid), 'the env -i child survived its command')
+    while (live(identity) && performance.now() < until) await sleep(10)
+    assert.ok(!live(identity), 'the env -i child survived its command')
   })
 }
 
@@ -366,15 +416,19 @@ test('claim metric kills a detached pnpm descendant on timeout', (t) => {
   const { root, fork } = fixture(t)
   const pidFile = join(root, 'detached-pid')
   const env = claimEnv()
-  shim(root, env, 'pnpm', `setsid sleep 120 &
-printf '%s\\n' "$!" >${JSON.stringify(pidFile)}
+  shim(root, env, 'pnpm', `setsid /bin/bash -c '${recordedSleeper}' child ${JSON.stringify(pidFile)} &
 wait`)
-  const result = run(process.execPath, [claimScript, '--repo', fork, '--timeout', '2'], env)
-  const pid = Number(readFileSync(pidFile, 'utf8'))
-  assert.ok(Number.isSafeInteger(pid) && pid > 1)
-  t.after(() => { if (live(pid)) process.kill(pid, 'SIGKILL') })
+  let identity
+  t.after(() => killIfSame(identity, 'SIGKILL'))
+  let result
+  try {
+    result = run(process.execPath, [claimScript, '--repo', fork, '--timeout', '2'], env)
+  } finally {
+    identity = recordedIdentity(pidFile)
+  }
+  assert.ok(identity, 'the detached descendant did not start')
   failure(result, /timed out|overall timeout/)
-  assert.ok(!live(pid), 'a detached descendant is still live')
+  assert.ok(!live(identity), 'a detached descendant is still live')
 })
 
 const worktree = fileURLToPath(new URL('../../..', import.meta.url))
@@ -433,9 +487,10 @@ ln -s ${JSON.stringify(wrapper)} packages/board/dist/cli.mjs`)
 function servingChild(judge) {
   try {
     for (const pid of readFileSync(`/proc/${judge}/task/${judge}/children`, 'utf8').trim().split(/\s+/)) {
-      if (!pid) continue
+      const identity = processIdentity(pid)
+      if (!identity) continue
       const args = readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0')
-      if (args[2] === 'serve' && args[3] === '--port') return { pid: Number(pid), port: Number(args[4]) }
+      if (args[2] === 'serve' && args[3] === '--port') return { ...identity, port: Number(args[4]) }
     }
   } catch (err) {
     if (err.code !== 'ENOENT' && err.code !== 'ESRCH') throw err
@@ -454,21 +509,25 @@ function listening(port) {
 
 test('claim metric times out after a real board starts and kills the stopped server', { ...realBoard, timeout: 10_000 }, async (t) => {
   const start = performance.now()
-  const judge = spawn(process.execPath, [claimScript, '--repo', worktree, '--timeout', '5'], { env: offlineBoard(t) })
+  const judge = spawn(process.execPath, [claimScript, '--repo', worktree, '--timeout', '5'], {
+    env: offlineBoard(t), detached: true,
+  })
   const closed = once(judge, 'close')
   let stdout = '', stderr = '', stopped
   judge.stdout.setEncoding('utf8').on('data', (chunk) => { stdout += chunk })
   judge.stderr.setEncoding('utf8').on('data', (chunk) => { stderr += chunk })
   t.after(() => {
-    if (judge.exitCode === null && judge.signalCode === null) judge.kill('SIGTERM')
-    if (stopped && live(stopped)) process.kill(stopped, 'SIGKILL')
+    try {
+      killIfSame(stopped, 'SIGKILL')
+    } finally {
+      killOwnedGroup(judge, 'SIGTERM')
+    }
   })
   const until = performance.now() + 4500
   while (judge.exitCode === null && performance.now() < until) {
     const board = servingChild(judge.pid)
-    if (board && await listening(board.port)) {
-      process.kill(board.pid, 'SIGSTOP')
-      stopped = board.pid
+    if (board && await listening(board.port) && killIfSame(board, 'SIGSTOP')) {
+      stopped = board
       break
     }
     await sleep(10)
