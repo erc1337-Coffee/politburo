@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url'
 
 const forkScript = fileURLToPath(new URL('../fork-thinness.sh', import.meta.url))
 const claimScript = fileURLToPath(new URL('../time-to-first-claim.mjs', import.meta.url))
+const signalScript = fileURLToPath(new URL('./signal-if-same.py', import.meta.url))
 const src = 'packages/board/src/'
 const unit = 'lines added in packages/board/src vs merge base with the selected upstream branch'
 
@@ -271,7 +272,21 @@ function live(identity) {
   return Boolean(current && current.startTime === identity.startTime)
 }
 
+function signalIfSame(identity, signal) {
+  return spawnSync('python3', ['-I', signalScript, String(identity.pid), identity.startTime, signal], { stdio: 'ignore' })
+}
+
+function pidfdUnavailable(result) {
+  return result.error?.code === 'ENOENT' || result.status === 2
+}
+
 export function killIfSame(identity, signal) {
+  if (!Number.isSafeInteger(identity?.pid) || identity.pid <= 1) return false
+  const result = signalIfSame(identity, signal)
+  if (!pidfdUnavailable(result)) return result.status === 0
+
+  // Without Python or pidfd support, fall back to checking immediately before
+  // kill. This best-effort fallback still has a PID reuse window.
   try {
     if (!live(identity)) return false
     return process.kill(identity.pid, signal)
@@ -299,11 +314,30 @@ for (const stale of [true, false]) {
     await once(child, 'spawn')
     const identity = processIdentity(child.pid)
     assert.ok(identity)
-    killIfSame(stale ? { ...identity, startTime: '-1' } : identity, 'SIGKILL')
+    const signalled = killIfSame(stale ? { ...identity, startTime: '-1' } : identity, 'SIGKILL')
     if (stale) child.stdin.end()
+    assert.equal(signalled, !stale)
     assert.deepEqual(await exited, stale ? [0, null] : [null, 'SIGKILL'])
   })
 }
+
+test('pidfd helper refuses a live PID with a stale start time', { timeout: 2_000 }, async (t) => {
+  const child = spawn('cat', { detached: true, stdio: ['pipe', 'ignore', 'ignore'], env: claimEnv() })
+  t.after(() => killOwnedGroup(child, 'SIGKILL'))
+  const exited = once(child, 'exit')
+  await once(child, 'spawn')
+  const identity = processIdentity(child.pid)
+  assert.ok(identity)
+
+  // Model a reused PID: the PID exists, but belongs to a different start tick.
+  const stale = { ...identity, startTime: String(BigInt(identity.startTime) - 1n) }
+  const result = signalIfSame(stale, 'SIGKILL')
+  child.stdin.end()
+  assert.deepEqual(await exited, [0, null], 'the helper signalled a stale identity')
+  if (pidfdUnavailable(result)) return t.skip('Python with pidfd support is required')
+  assert.ifError(result.error)
+  assert.equal(result.status, 1)
+})
 
 test('fork metric fails quietly on a stalled HTTP fetch and kills the remote helper', { timeout: 8_000 }, async (t) => {
   const { root, fork, env } = fixture(t)
