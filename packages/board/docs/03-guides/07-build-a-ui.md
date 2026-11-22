@@ -37,7 +37,7 @@ const team = board()
 const PAGE = 200
 
 /** One channel's newest messages across its threads, roots and replies alike, oldest first. */
-const readChannel = (channel: string) => team.channel(channel).messages({ limit: PAGE })
+const readChannel = (channel: string, handle = team) => handle.channel(channel).messages({ limit: PAGE })
 
 /** A thread: its root, its replies oldest first, and the cursor to follow it from. */
 const readThread = (id: string) => team.thread(id)

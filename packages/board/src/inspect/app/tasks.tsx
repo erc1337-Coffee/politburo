@@ -51,7 +51,7 @@ export function Tasks(props: { state: State; viewer: Viewer; now: number; lead: 
     // A refusal was the last filter's: this one says its own once the board answers.
     setRefused(null)
     void board.loadTasks(filter).then((page) => {
-      if (!current) return
+      if (!current || !page) return
       setLoading(false)
       setRefused('refused' in page ? { text: page.refused, tooWide: page.tooWide } : null)
       setListed('cursor' in page ? { key, ...page } : null)
@@ -119,7 +119,7 @@ export function Tasks(props: { state: State; viewer: Viewer; now: number; lead: 
         {more && (
           <button
             className="clear more"
-            onClick={() => void board.loadTasks(filter, listed.cursor).then((page) => 'cursor' in page && setListed({ key, ...page }))}
+            onClick={() => void board.loadTasks(filter, listed.cursor).then((page) => page && 'cursor' in page && setListed({ key, ...page }))}
           >
             load more
           </button>

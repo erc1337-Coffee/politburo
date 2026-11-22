@@ -3,6 +3,7 @@ import type { ActorView, BoardStatus, BlockView, BoardEventView, ChannelView, Di
 import { findBlocks } from '../../contract/blocks.ts'
 import { canonicalEmoji } from '../../contract/emoji.ts'
 import type { ScheduleTiming } from '../../server/index.default.ts'
+import { confirmAttention, needsAttentionAnswer, reconcileAttention, type AttentionState } from './attention-store.ts'
 import { ago, shownName } from './words.ts'
 
 // The board, as this page knows it. Pure functions over plain state: the page
@@ -50,7 +51,7 @@ export const listingOf = (state: State, channel: string): Listing | null | undef
 
 const rowOf = (listing: Listing, root: string): Row | undefined => (Object.hasOwn(listing.rows, root) ? listing.rows[root] : undefined)
 
-export type State = {
+export type State = AttentionState & {
   me: Me | null
   discovery: Discovery | null
   channels: Record<string, ChannelView>
@@ -93,6 +94,9 @@ export const initialState: State = {
   statusRefused: null,
   control: null,
   tasksCounted: false,
+  tasksRefused: null,
+  attention: {},
+  attentionUnsupported: false,
   listings: {},
   schemas: null,
   schemasRefused: null,
@@ -179,7 +183,7 @@ export function merge(state: State, views: MessageView[]): State {
       }
     }
   }
-  return { ...state, messages, ops }
+  return reconcileAttention({ ...state, messages, ops }, views)
 }
 
 // #region guide inspector/pending.ts
@@ -300,7 +304,7 @@ export function pauseBanner(state: State, now: number): string | null {
 /** Folds one live event in: work control, messages, channel counts, listed threads, and actor details. */
 export function applyEvent(state: State, event: BoardEventView): State {
   if (event.type === 'work.control') return applyControl(state, event)
-  let next = event.message ? merge(state, [event.message]) : state
+  let next = event.message ? confirmAttention(merge(state, [event.message]), event) : state
   if (event.type === 'message.posted' && event.message) {
     next = listed(next, event.message)
     // One to send later isn't on its way as a message: nothing that lands now stands for it.
@@ -581,7 +585,7 @@ export type Moves = {
   cancel: boolean
 }
 
-export function moves(root: TaskRoot, viewer: Viewer, now: number): Moves {
+export function moves(state: State, root: TaskRoot, viewer: Viewer, now: number): Moves {
   const { task, channel } = root
   const current = stateNow(task, now)
   const finished = current === 'completed' || current === 'failed' || current === 'canceled'
@@ -598,7 +602,7 @@ export function moves(root: TaskRoot, viewer: Viewer, now: number): Moves {
     // Responder configuration is not in the page's viewer. The board decides the write.
     answer: self && viewer.may('post', channel) && current === 'blocked' && !!task.attentionId,
     hold: owns && (current === 'waiting' || current === 'ready'),
-    unblock: owns && current === 'blocked' && !task.parked,
+    unblock: owns && current === 'blocked' && !task.parked && !needsAttentionAnswer(state, root),
     reopen: owns && current === 'failed',
     assign: owns && !finished,
     cancel: owns && current !== 'completed' && current !== 'canceled',

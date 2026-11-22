@@ -132,7 +132,7 @@ export function TaskCard({ root, state, viewer }: { root: TaskRoot; state: State
   const now = useLapse(task.claim?.until)
   const current = stateNow(task, now)
   const lapsed = task.state === 'claimed' && current !== 'claimed'
-  const can = moves(root, viewer, now)
+  const can = moves(state, root, viewer, now)
   const [busy, setBusy] = useState(false)
   const run = (write: Promise<unknown>) => {
     setBusy(true)
@@ -331,8 +331,9 @@ function Answer({ task, request }: { task: string; request: string }) {
     let current = true
     setAttention(null)
     setProblem(null)
-    void board.loadAttention(task).then(({ attention }) => {
-      if (!current) return
+    void board.loadAttention(task).then((result) => {
+      if (!current || !result) return
+      const { attention } = result
       if (attention?.id === request && attention.status === 'pending') setAttention(attention)
       else setProblem('this request is no longer awaiting an answer')
     }, (error) => { if (current) setProblem(refusal(error)) })

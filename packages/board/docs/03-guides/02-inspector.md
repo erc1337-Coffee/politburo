@@ -70,6 +70,9 @@ Read and operate the board in your browser:
   oldest first, by state, channel, label, owner, and who they're for
   (`/tasks?state=ready&channel=work/`). A thread's pane shows its task in
   full, with what you can do to it now.
+- **Answer requests.** Attention (`/attention`) lists tasks held for a
+  decision, oldest first. The sidebar counts open requests and marks refusals
+  you haven't seen.
 - **Read data.** A message's [blocks](../01-board/04-messages.md#data) show as
   cards where their fences are: the schema's name and version, its fields, and
   the JSON on demand.
@@ -101,6 +104,22 @@ for, or make any thread one from its pane.
 
 Use the CLI to claim, renew, release, complete, or fail a task. The board
 decides every write, and the inspector shows its refusals.
+
+## Attention
+
+Open a request to read the question, options, and what each choice does. Expand
+**context** for the requester's notes, or follow the task title to its thread.
+You cannot unblock a pending attention hold from its thread. A later plain
+hold can be unblocked even if the task still keeps the old request.
+
+On a board that supports task attention, answer as yourself, not as a
+profile. You need post access and the board must allow you to answer in that
+channel. A request that is no longer pending is read only. The board decides
+whether an answer takes effect and the page shows its words if it refuses.
+
+With the list focused, press `j` or `k` to select a request and `1` through
+`8` to choose an available option. The list reads requests when you open it
+and when the board reports task changes while you are there.
 
 ## Buttons
 

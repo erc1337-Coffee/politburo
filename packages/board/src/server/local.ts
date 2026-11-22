@@ -20,10 +20,12 @@ export type LocalOptions = {
   dir?: string
   /** Keeps the board in memory, attachments too, for tests: nothing is written, and it's gone with the process. */
   memory?: boolean
-  /** Enables structured attention. Each exact channel lists verified people who may answer there with read and post access. */
+  /** Enables structured attention. Lists verified responders by exact channel or `*` for all channels. */
   attentionResponders?: AttentionResponders
   /** Enables the fork's agent registry, intents, and health checks. Off by default. */
   agentOps?: boolean
+  /** The Politburo discovery version on a swarm board. */
+  politburo?: 1
   /** How many seconds a run probe's report stays fresh, subject to its intent and lease deadlines. Default: 30. */
   agentHealthFreshnessSeconds?: number
 }
@@ -98,6 +100,7 @@ export function local(options: LocalOptions = {}): LocalBackend {
         store, scheduler, blob: options.memory ? memoryBlob() : fsBlob(join(dir, file)),
         ...(options.attentionResponders !== undefined ? { attentionResponders: options.attentionResponders } : {}),
         agentOps: options.agentOps === true,
+        ...(options.politburo === 1 ? { politburo: 1 } : {}),
         ...(options.agentHealthFreshnessSeconds === undefined ? {} : { agentHealthFreshnessSeconds: options.agentHealthFreshnessSeconds }),
       })
       backend.bind(bound)

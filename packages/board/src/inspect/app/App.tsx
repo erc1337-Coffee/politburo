@@ -1,6 +1,7 @@
 import { ListTodo, PanelLeftOpen, X } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import type { MessageView, SyncedView } from '../../api/routes.ts'
+import { Attention } from './attention.tsx'
 import * as board from './board.ts'
 import { setEditing } from './chrome.ts'
 import { Composer } from './composer.tsx'
@@ -287,6 +288,7 @@ export function App() {
       </button>
     </>
   ) : null
+  const identity = board.getIdentity()
   const paneIsFront = narrow && where.thread !== null
   const expand = paneIsFront ? null : headerLead
   const banner = pauseBanner(state, now)
@@ -323,12 +325,13 @@ export function App() {
         </nav>
         <main className="main" inert={narrow && (nav || where.thread !== null)}>
           <HeaderActions.Provider value={paneIsFront ? null : headerActions}>
-            {current.view === 'home' && <Home state={state} now={now} lead={expand} />}
-            {current.view === 'presidium' && <Presidium state={state} now={now} lead={expand} />}
+            {current.view === 'home' && <Home key={identity} state={state} now={now} lead={expand} />}
+            {current.view === 'presidium' && <Presidium key={identity} state={state} now={now} lead={expand} />}
             {current.view === 'channel' && (
               <Channel key={current.channel} channel={current.channel} state={state} options={options} known={known} lead={expand} filters={filters} />
             )}
-            {current.view === 'tasks' && <Tasks state={state} viewer={viewer} now={now} lead={expand} where={where} known={known} />}
+            {current.view === 'tasks' && <Tasks key={identity} state={state} viewer={viewer} now={now} lead={expand} where={where} known={known} />}
+            {current.view === 'attention' && <Attention key={identity} state={state} viewer={viewer} lead={expand} />}
             {current.view === 'settings' && <Settings state={state} viewer={viewer} now={now} lead={expand} where={where} section={current.section} open={current.open} />}
             {current.view === 'missing' && (
               <>
@@ -406,13 +409,15 @@ function Channel(props: { channel: string; state: State; options: RowOptions; kn
   const canPost = options.viewer.may('post', channel)
   useTypeToFocus('main')
   const [loading, setLoading] = useState(true)
+  const identity = board.getIdentity()
   useEffect(() => {
-    void board.loadChannel(channel).finally(() => setLoading(false))
-  }, [channel])
+    setLoading(true)
+    void board.loadChannel(channel).finally(() => { if (identity === board.getIdentity()) setLoading(false) })
+  }, [channel, identity])
   const key = JSON.stringify(filter)
   useEffect(() => {
     if (filtering(filter)) void board.loadFiltered(channel, filter)
-  }, [channel, key])
+  }, [channel, key, identity])
   // The board's thread list, by latest activity; a filter, or a board from before `older`, the messages loaded.
   const listed = !!listingOf(state, channel) && !filtering(filter)
   const { threads: all, pending: posts } = useMemo(
@@ -471,9 +476,13 @@ function ThreadPane(props: { id: string; state: State; viewer: Viewer; now: numb
   const { id, state, viewer } = props
   useTypeToFocus('thread')
   const [missing, setMissing] = useState(false)
+  const identity = board.getIdentity()
   useEffect(() => {
-    void board.loadThread(id).then(() => setMissing(!board.getState().messages[id]))
-  }, [id])
+    setMissing(false)
+    void board.loadThread(id).then(() => {
+      if (identity === board.getIdentity()) setMissing(!board.getState().messages[id])
+    })
+  }, [id, identity])
   const t = useMemo(() => threadOf(state, id), [state.messages, state.ops, state.pending, state.actors, id])
   // Where the thread's copies are, on the platforms it syncs with.
   const [synced, setSynced] = useState<SyncedView['targets']>([])
@@ -506,7 +515,7 @@ function ThreadPane(props: { id: string; state: State; viewer: Viewer; now: numb
         </button>
       </Header>
       <div className="view-body">
-      {t && isTask(t.root) && <TaskCard root={t.root} state={state} viewer={viewer} />}
+      {t && isTask(t.root) && <TaskCard key={identity} root={t.root} state={state} viewer={viewer} />}
       {(synced.length > 0 || scheduled.length > 0) && (
         <dl className="facts thread-facts" {...nativeMenu}>
           {synced.length > 0 && (

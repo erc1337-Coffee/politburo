@@ -607,7 +607,7 @@ brings credentials for Vercel's board (see [The handle](#the-handle)).
   the ID of the user the token was issued to. It exists only on development
   tokens, and that's exactly the case we use it for.
 - **Discovery:** `GET /` is unauthenticated and returns
-  `{ version, url, audience, team_id, project_id, sync, wake_by_path?, agent_ops?, agent_intents?, task_attention?, task_authority? }`,
+  `{ version, url, audience, team_id, project_id, sync, wake_by_path?, agent_ops?, agent_intents?, task_attention?, task_authority?, politburo? }`,
   so the client knows which project to mint for. `wake_by_path` is for a board
   that wakes registered projects, as Vercel's board does. A self-hosted
   `local()` board does not send it. The CLI can run from any directory.
@@ -4328,14 +4328,23 @@ A pending or stale structured hold cannot be lifted with legacy `unblock`
 
 To opt in, configure the authority with
 `local({ attentionResponders: { work: ['vercel:user:u_ada'] } })`. Keys match
-exact channels; there are no subtree or wildcard roles. All three routes need
-effective `read` (404 if the task can't be read). Answering additionally needs
-`post` and a verified person acting as themselves, without a profile, whose
-principal ID is in that channel's list (403 `forbidden` otherwise). The
+exact channels, with `*` for all channels. All three routes need effective
+`read` (404 if the task can't be read). Answering additionally needs `post`
+and a verified person acting as themselves, without a profile, whose
+principal ID is in the channel's list or `*` (403 `forbidden` otherwise). The
 board's in-process self caller, deployments, watchers, and synced authors
 can't answer. A person authenticated by a configured local issuer is distinct
 from the board's self caller. Replies and labels don't apply answers; only the
 answer route does. Don't give an agent a responder's credential.
+
+`vb serve --swarm` lists the local owner under `*`, turns on agent ops,
+and adds `politburo: 1` to discovery. Local boards already enforce task authority.
+The flag cannot be used with `--team-tokens`.
+
+`vb serve --responder <principal>` adds a principal to `*`. Repeat the flag to
+list more people. Without `--swarm`, only the listed principals can answer;
+`--responder` does not enable agent ops or grant channel access. With
+`--team-tokens`, a person's principal is `team:user:<handle>`.
 
 Configured local authorities advertise `Discovery.task_attention: true`;
 `http()` forwards requests to the authority. An unconfigured local authority,

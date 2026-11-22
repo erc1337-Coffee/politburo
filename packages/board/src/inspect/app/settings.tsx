@@ -97,7 +97,7 @@ function DeveloperIdentity({ me, channels }: { me: Me; channels: string[] }) {
             </select>
           </label>
         )}
-        <Menu className="act" title="post as" trigger={<>acting as {shownName(me)} <ChevronsUpDown size={13} /></>}>
+        <Menu className="act" title="post as" trigger={<>post as… <ChevronsUpDown size={13} /></>}>
           {!board.named && <MenuItem onClick={() => void board.setProfile(null)}>act as yourself</MenuItem>}
           {agents.map((name) => (
             <MenuItem key={name} onClick={() => void board.setProfile(remembered(name))}>

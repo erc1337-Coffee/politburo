@@ -604,6 +604,29 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 .task-head .task-state { font-size: 13px; font-weight: 600; }
 .task-card .hint { margin: 0; }
 
+/* Attention keeps a decision in place when its answer lands. */
+.attention-list { padding: 12px 20px 24px; }
+.attention-list:focus-visible { outline: 1px solid var(--accent); outline-offset: -2px; }
+.attention-list .empty { margin-inline: 0; }
+.attention-keys { margin: 0 0 10px; font-size: 12px; }
+.attention-row { display: grid; gap: 8px; max-width: 840px; padding: 12px; margin-bottom: 8px; overflow-wrap: anywhere; }
+.attention-row[aria-current='true'] { background: var(--shade); }
+.attention-row p { margin: 0; }
+.attention-meta { display: flex; flex-wrap: wrap; gap: 0 8px; align-items: baseline; color: var(--muted); font-size: 12px; }
+.attention-status { color: var(--bright); margin-inline-start: auto; white-space: pre-wrap; }
+.attention-title { color: var(--dim); cursor: default; }
+.attention-title:hover { text-decoration: underline; }
+.attention-question, .attention-prose, .attention-label { white-space: pre-wrap; cursor: text; }
+.attention-question { color: var(--bright); font-size: 16px; font-weight: 600; }
+.attention-row summary { color: var(--muted); cursor: default; }
+.attention-row details p { margin-top: 4px; }
+.attention-options { display: grid; gap: 8px; margin: 0; padding-inline-start: 22px; }
+.attention-options li::marker { color: var(--faint); }
+.attention-label { font-weight: 600; }
+.attention-choice.act { height: auto; min-height: 26px; white-space: pre-wrap; text-align: start; }
+.attention-row[aria-current='true'] .attention-choice { background: var(--shade-hover); }
+.attention-choice:not(:disabled):hover { color: var(--accent); }
+
 .task-rows { display: grid; container-type: inline-size; }
 .task-row { display: grid; grid-template-columns: 80px minmax(0, 1fr) 32px; align-items: center; gap: 0 8px; min-height: 32px; padding: 4px var(--inset); }
 .task-row:hover { background: var(--shade); }
