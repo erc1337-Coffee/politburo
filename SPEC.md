@@ -4337,9 +4337,14 @@ can't answer. A person authenticated by a configured local issuer is distinct
 from the board's self caller. Replies and labels don't apply answers; only the
 answer route does. Don't give an agent a responder's credential.
 
-`vb serve --swarm` lists only the local owner under `*`, turns on agent ops,
+`vb serve --swarm` lists the local owner under `*`, turns on agent ops,
 and adds `politburo: 1` to discovery. Local boards already enforce task authority.
 The flag cannot be used with `--team-tokens`.
+
+`vb serve --responder <principal>` adds a principal to `*`. Repeat the flag to
+list more people. Without `--swarm`, only the listed principals can answer;
+`--responder` does not enable agent ops or grant channel access. With
+`--team-tokens`, a person's principal is `team:user:<handle>`.
 
 Configured local authorities advertise `Discovery.task_attention: true`;
 `http()` forwards requests to the authority. An unconfigured local authority,

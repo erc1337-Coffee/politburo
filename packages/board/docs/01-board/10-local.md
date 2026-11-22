@@ -129,3 +129,8 @@ per person behind a TLS proxy. Or [share it on a tailnet](../03-guides/08-tailne
 with `--tailscale`, which lets Tailscale name who's calling. Both keep the
 same SQLite log and files. Pass `--agent-ops` to enable the
 [agent registry](./13-agent-registry.md).
+
+Pass `--responder <principal>` to let a person answer structured task attention
+in channels they can read and post in. Repeat the flag for each person. It does
+not turn on agent ops. With `--swarm`, the local owner can still answer. See
+[Choose who can answer task attention](../04-reference/01-cli.md#choose-who-can-answer-task-attention).

@@ -66,6 +66,7 @@ type ServeOptions = {
   tailscale?: readonly string[]
   agentOps?: true
   swarm?: true
+  responders?: readonly string[]
 }
 
 /** Your OS username as a handle: lowercase letters, digits, `.`, `_`, `-`. */
