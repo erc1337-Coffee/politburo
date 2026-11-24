@@ -1,10 +1,8 @@
 import { ListFilter, X } from 'lucide-react'
 import { Component, createRef, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { DEFAULT_TASK_PRIORITY, TaskPriority } from '../../contract/schemas.ts'
-import { compileAccess } from '../../server/access.ts'
 import * as board from './board.ts'
 import { claimFirst } from './claim-order.ts'
-import { Composer } from './composer.tsx'
 import { describe } from './filters.tsx'
 import { Pendings } from './message.tsx'
 import { Ago, here, Link, navigate, useTypeToFocus, type Where } from './nav.tsx'
@@ -20,8 +18,6 @@ const setFilter = (changes: Record<string, string | string[] | null>) => navigat
 
 export function Tasks(props: { state: State; viewer: Viewer; now: number; lead: ReactNode; where: Where; known: KnownLabels }) {
   const { state, viewer, where, now } = props
-  const mayPost = (channel: string) => viewer.may('post', channel)
-  const writable = Object.keys(state.channels).filter(mayPost).sort()
   useTypeToFocus('main')
   const query = where.params.toString()
   const filter = useMemo(() => readFilter(where.params), [query])
@@ -129,19 +125,6 @@ export function Tasks(props: { state: State; viewer: Viewer; now: number; lead: 
         </div>
         <Pendings posts={pending} me={state.me!} />
       </TaskPage>
-      {state.me && compileAccess(state.me.can).anywhere('post') && <Composer
-        scope="tasks"
-        role="main"
-        placeholder="start a task…"
-        known={props.known}
-        channels={writable}
-        syncConfigured={Boolean(state.discovery?.sync.length)}
-        mayPost={mayPost}
-        mayLabel={(channel) => viewer.may('label', channel)}
-        {...(filter.channel && !filter.channel.endsWith('/') && mayPost(filter.channel) ? { channel: filter.channel } : {})}
-        tasks={{ state, always: true }}
-        onSend={({ text, noSync, channel, labels, files, task }) => void board.send({ channel, re: null, text, noSync, labels, files, ...(task ? { task } : {}) })}
-      />}
       </div>
     </>
   )

@@ -38,7 +38,7 @@ import { compileWatcher, createWatchers, ID, registrantSession } from './watch.t
 import { ack, pull, pullInbox, type QueueSession } from './registered.ts'
 import { createRegistry, storedPrincipal, type SyncEntrySpec } from './registry.ts'
 import { METHODS } from './routing.ts'
-import { authorizeMessage, authorizeOwn, authorizePost, blindText, untilApplied, whileHeadMoves, trusted, writeAttach, writeChannel, writeDelete, writeEdit, writeLabels, writeLinks, writePost, writeReaction, writeRoots, landedBatch, deploymentIdentity, landedFor, type Identity, type WriteContext } from './writes.ts'
+import { authorizeMessage, authorizeOwn, authorizePost, blindText, untilApplied, whileHeadMoves, trusted, writeAttach, writeChannel, writeChannelSettings, writeDelete, writeEdit, writeLabels, writeLinks, writePost, writeReaction, writeRoots, landedBatch, deploymentIdentity, landedFor, type Identity, type WriteContext } from './writes.ts'
 import { SYNC_ACTOR, type WriteOrigin } from './origin.ts'
 import { derivedId, isKeyIdOf } from '../client/ids.ts'
 import { DroppedError, MIDDLEWARE_ACTOR } from './middleware.ts'
@@ -596,6 +596,19 @@ function build(options: A2Options, binding: BoardBinding) {
     },
     async createChannel(caller, { path }) {
       return writeChannel(writes, { identity: await identityOf(caller), path })
+    },
+    async configureChannel(caller, { path, settings }) {
+      return writeChannelSettings(writes, { identity: await identityOf(caller), path, settings })
+    },
+    async modelRoutes(caller) {
+      await identityOf(caller)
+      return { routes: [...(binding.modelRoutes?.() ?? [])] }
+    },
+    async repositories(caller, { query }, signal) {
+      const { principal } = await identityOf(caller)
+      if (!principal.access.anywhere('manage')) throw forbidden('finding repositories needs manage in a channel')
+      if (!binding.repositories) throw new HttpError(501, 'no_repositories', 'this board was given no Git account')
+      return { repositories: await binding.repositories(query, signal) }
     },
     async actors(caller, { id: only }) {
       const { principal, actor } = (await identityOf(caller))

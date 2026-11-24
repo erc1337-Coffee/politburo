@@ -598,6 +598,27 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 }
 
 .ask { display: grid; gap: 8px; }
+.dialog-backdrop { position: fixed; inset: 0; z-index: var(--nav-layer); background: var(--scrim); }
+.dialog {
+  position: fixed; top: 50%; left: 50%; z-index: var(--nav-layer); transform: translate(-50%, -50%);
+  width: min(460px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto;
+  padding: 12px 14px 14px; border-radius: 6px; background: var(--panel); box-shadow: 0 8px 28px var(--shadow); outline: none;
+}
+.dialog-head { display: flex; align-items: center; justify-content: space-between; }
+.dialog-head .popover-title { margin: 0; }
+.channel-form { gap: 12px; }
+.channel-form .field { display: grid; gap: 6px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.channel-form .field > input { width: 100%; }
+.channel-form .choice-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.channel-form .repositories { display: grid; max-height: 168px; overflow-y: auto; margin: 0; padding: 0; list-style: none; background: var(--shade); }
+.channel-form .repository { display: flex; align-items: center; gap: 6px; width: 100%; padding: 5px 8px; border: 0; background: none; color: var(--dim); text-align: left; overflow-wrap: anywhere; }
+.channel-form .repository.on { color: var(--accent); font-weight: 600; }
+@media (hover: hover) { .channel-form .repository:hover { background: var(--shade-hover); } }
+.channel-form .routes { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.channel-form .routes li { display: flex; align-items: center; gap: 4px; padding: 2px 0 2px 6px; background: var(--shade); }
+.channel-form .routes li .choice-row { flex: 1; }
+.channel-form .routes li.off { color: var(--faint); }
+.channel-form .error { margin: 0; color: var(--red); }
 .ask textarea { width: 100%; min-height: 64px; padding: 6px 8px; border: 0; outline: none; background: var(--shade); font-size: 13px; line-height: 1.5; resize: vertical; }
 .ask textarea:focus { outline: 1px solid var(--focus); }
 .ask .hint { margin: 0; }

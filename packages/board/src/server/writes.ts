@@ -27,6 +27,7 @@ import { expiredClaim } from './task-lease.ts'
 export { syncTarget, type SyncTarget }
 
 import type { Identity } from './backend.ts'
+import type { ChannelSettings } from '../contract/channel-settings.ts'
 export type { Identity }
 
 /** A piece of the board's own deployment, writing as `actor` with full access. */
@@ -984,6 +985,26 @@ export async function writeChannel(ctx: WriteContext, input: { identity: Identit
   if ('found' in made) return { channel: made.found, created: false }
   await untilApplied(ctx, made.rows)
   return { channel: { path: input.path, lastIndex: 0, messages: 0, threads: 0 }, created: true }
+}
+
+/** Replaces a channel's settings. Needs `manage`; 404 `no_channel` if it doesn't exist. */
+export async function writeChannelSettings(ctx: WriteContext, input: { identity: Identity; path: string; settings: ChannelSettings }): Promise<{ channel: Channel }> {
+  const { access } = input.identity.principal
+  authorize(access, 'read', input.path)
+  authorize(access, 'manage', input.path)
+  const seen = seenFor(input.identity, (await ctx.session.state(actorsReducer)).state)
+  const events: Events = [
+    ...(seen ? [seen] : []),
+    { type: 'channel.configured', payload: { channel: input.path, settings: input.settings, by: input.identity.author } },
+  ]
+  const made = await whileHeadMoves<{ missing: true } | { found: Channel; rows: Awaited<ReturnType<typeof appendIfLast>> }>(async () => {
+    const { state, index } = await ctx.session.state(channelsReducer, { through: 'latest' })
+    const found = own(state, input.path)
+    return found ? { found, rows: await appendIfLast(ctx.session, index, events) } : { missing: true }
+  })
+  if ('missing' in made) throw notFound(`no channel ${input.path}`, 'no_channel')
+  await untilApplied(ctx, made.rows)
+  return { channel: { ...made.found, settings: input.settings } }
 }
 
 /** The batch, only while `index` is still the session's last: A2's conditional append. */

@@ -47,6 +47,11 @@ Read and operate the board in your browser:
   while the board's clock moves forward. A claim fenced by a pause still shows
   as claimed until its lease ends because the API does not expose the fence.
   Select a task to open its thread.
+- **Make channels.** `+` beside "channels" opens one field: pick a repository
+  or paste a Git URL to name the channel after it, or type any other name for
+  local work. Order and toggle its models there too. The settings button in a
+  channel's header edits them. See
+  [channel settings](../04-reference/03-http.md#channel-settings).
 - **Read the Work board.** Work (`/work`) groups open tasks by who acts next:
   needs you, repair or reconcile, ready to review, running, ready to pull, and
   waiting or parked. Each row says why the task is in its group. The row you
@@ -131,8 +136,8 @@ What a task's pane offers depends on its state and on you:
 | A person acting as themselves with `manage` there | Park or unpark |
 | A configured responder acting as themselves with `post` there | Answer a pending attention request |
 
-Start a thread as a task from the composer, with what it needs and who it's
-for, or make any thread one from its pane.
+Start a task from a channel's composer, with what it needs and who it's for,
+or make any thread one from its pane. The Tasks view only lists them.
 
 Use the CLI to claim, renew, release, complete, or fail a task. The board
 decides every write, and the inspector shows its refusals.

@@ -4,7 +4,7 @@ import { reducer } from 'experimental-a2'
 import { boardContract } from './contract.ts'
 import type { BoardEvent } from './events.ts'
 import type { OperationalRecipient, OperationalStatus } from './operational-inbox.ts'
-import { foldActors, foldMessages, type ActorsState, type ChannelsState, type MessagesState } from './folds.ts'
+import { foldActors, foldMessages, type ActorsState, type Channel, type ChannelsState, type MessagesState } from './folds.ts'
 import { own, setOwn } from './own.ts'
 import type { AgentIntent, Author } from './schemas.ts'
 
@@ -27,16 +27,21 @@ export const postedReducer = reducer({
   return state
 })
 
-const emptyChannel = (path: string) => ({ path, lastIndex: 0, messages: 0, threads: 0 })
+const emptyChannel = (path: string): Channel => ({ path, lastIndex: 0, messages: 0, threads: 0 })
 
 export const channelsReducer = reducer({
   contract: boardContract,
-  // v2 folds `channel.created`: a v1 snapshot an older deployment made may have passed one by.
-  name: 'board.channels.v2',
+  // v3 folds `channel.configured`: a v2 snapshot may have passed one by.
+  name: 'board.channels.v3',
   initialState: {} as ChannelsState,
 }).fold((state, event) => {
   if (event.type === 'channel.created') {
     if (!own(state, event.payload.channel)) setOwn(state, event.payload.channel, emptyChannel(event.payload.channel))
+    return state
+  }
+  if (event.type === 'channel.configured') {
+    const entry = own(state, event.payload.channel) ?? setOwn(state, event.payload.channel, emptyChannel(event.payload.channel))
+    entry.settings = event.payload.settings
     return state
   }
   if (event.type !== 'message.posted') return state

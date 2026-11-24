@@ -27,6 +27,7 @@ import {
   WorkStageTarget,
   type Author,
 } from '../contract/schemas.ts'
+import { ConfigureChannelBody, RepositoriesQuery } from '../contract/channel-settings.ts'
 import { ExternalAuthor, ExternalEvent, ExternalTarget, Link as LinkSchema, LINKS_PER_MESSAGE_MAX, MENTIONED_PER_MESSAGE_MAX, Origin } from '../contract/external.ts'
 import type { PublicBoardEvent } from '../contract/events.ts'
 import { TaskBinding, TaskPacket } from '../contract/task-authority.ts'
@@ -1316,6 +1317,9 @@ export const routes = {
   channels: { method: 'GET', path: '/channels', query: ChannelsQuery },
   /** Makes a channel before anything posts to it: needs `read` and `post` there. One that's there already is left as it is. */
   createChannel: { method: 'POST', path: '/channels', body: CreateChannelBody },
+  configureChannel: { method: 'POST', path: '/channels/settings', body: ConfigureChannelBody },
+  modelRoutes: { method: 'GET', path: '/model-routes' },
+  repositories: { method: 'GET', path: '/repositories', query: RepositoriesQuery },
   actors: { method: 'GET', path: '/actors', query: ActorsQuery },
   /** One channel's messages across its threads: the newest, or those after one of its cursors. */
   channelMessages: { method: 'GET', path: '/messages', query: ChannelMessagesQuery },

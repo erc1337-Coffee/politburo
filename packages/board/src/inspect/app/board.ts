@@ -13,6 +13,7 @@ import { http } from '../../backend-http/index.default.ts'
 import { everyChannel } from '../../client/channels.ts'
 import type { TaskPriority } from '../../contract/schemas.ts'
 import * as attentionStore from './attention-store.ts'
+import type { ChannelSettings, ModelRoute, RepositoryView } from '../../contract/channel-settings.ts'
 import { toast } from './chrome.ts'
 import { listing } from './listing.ts'
 import { base, currentPath, route } from './nav.tsx'
@@ -1038,6 +1039,28 @@ export async function registerSchema(input: SchemaInput): Promise<string | null>
   try {
     const { schema } = await team.createSchema(input)
     if (as === identity) set((s) => store.addSchema(s, schema))
+    return null
+  } catch (error) {
+    return said(error)
+  }
+}
+
+// --- channels ----------------------------------------------------------------------------------
+
+export const loadModelRoutes = (): Promise<ModelRoute[]> => team.modelRoutes()
+
+export const findRepositories = (query: string): Promise<RepositoryView[]> => team.repositories(query || undefined)
+
+/** Creates or updates a channel with its settings. Returns the refusal, or null. */
+export async function saveChannel(path: string, settings: ChannelSettings, create: boolean): Promise<string | null> {
+  const as = identity
+  try {
+    if (create) {
+      const { channel, created } = await team.createChannel(path)
+      if (!created) return `#${channel.path} already exists`
+    }
+    const channel = await team.configureChannel(path, settings)
+    if (as === identity) set((s) => ({ ...s, channels: { ...s.channels, [channel.path]: { ...s.channels[channel.path], ...channel } } }))
     return null
   } catch (error) {
     return said(error)

@@ -5,6 +5,7 @@ import { canonicalEmoji } from './emoji.ts'
 import { own, setOwn } from './own.ts'
 import { actorKind, DEFAULT_TASK_PRIORITY, EDITED_HOLD, priorityRank, TASK_LABEL, type ActorKind, type Attachment, type Author, type Labels, type TaskPriority, type TaskState, type WorkStage } from './schemas.ts'
 import type { BoardEvent } from './events.ts'
+import type { ChannelSettings } from './channel-settings.ts'
 import { externalMessageKey, isThreadTarget, type Link, type Origin } from './external.ts'
 import type { Via } from './profiles.ts'
 import { foldEvidence, type TaskEvidence } from './evidence.ts'
@@ -458,6 +459,7 @@ export type Channel = {
   lastIndex: number
   messages: number
   threads: number
+  settings?: ChannelSettings
 }
 
 export type ChannelsState = Record<string, Channel>

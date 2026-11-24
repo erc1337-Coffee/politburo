@@ -1,4 +1,5 @@
-import { ListTodo, PanelLeftOpen, X } from 'lucide-react'
+import { ListTodo, PanelLeftOpen, SlidersHorizontal, X } from 'lucide-react'
+import { ChannelDialog } from './channel-dialog.tsx'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import type { MessageView, SyncedView } from '../../api/routes.ts'
 import { Attention } from './attention.tsx'
@@ -463,6 +464,7 @@ function Channel(props: { channel: string; state: State; options: RowOptions; kn
         lead={props.lead}
       >
         <FilterControls filters={props.filters} />
+        {options.viewer.may('manage', channel) && <ChannelDialog channel={channel} trigger={<SlidersHorizontal size={15} strokeWidth={1.75} />} triggerTitle="channel settings" />}
       </Header>
       <div className="view-body">
       <FilterChips filter={filter} onChange={props.filters.setFilter} />

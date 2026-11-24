@@ -60,6 +60,13 @@ const WALK: Record<RouteName, Walk> = {
     { method: 'POST', path: '/channels', body: { path: 'secret/never-posted' }, status: 403 },
     { method: 'POST', path: '/channels', body: { path: 'open' }, status: 403 },
   ],
+  // Settings need manage, which reading a channel doesn't give.
+  configureChannel: () => [
+    { method: 'POST', path: '/channels/settings', body: { path: 'secret', settings: { repository: null, routes: [] } }, status: 403 },
+    { method: 'POST', path: '/channels/settings', body: { path: 'open', settings: { repository: null, routes: [] } }, status: 403 },
+  ],
+  modelRoutes: () => [{ method: 'GET', path: '/model-routes', status: 200, check: (body) => expect(body).toEqual({ routes: [] }) }],
+  repositories: () => [{ method: 'GET', path: '/repositories', status: 403 }],
   actors: () => [
     { method: 'GET', path: '/actors', status: 200, check: (body) => expect(body.actors.map((a: any) => a.handle)).not.toContain('keeper') },
   ],

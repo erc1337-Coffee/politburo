@@ -64,8 +64,6 @@ test('a config that sets a removed key fails validation', () => {
     [{ tiers: { models: { core: 'inherit' } } }, 'tiers.models.core'],
     [{ tiers: { models: { spawner: 'inherit' } } }, 'tiers.models.spawner'],
     [{ tiers: { models: { mob: 'inherit' } } }, 'tiers.models.mob'],
-    [{ tiers: { models: { adviser: 'model' } } }, 'tiers.models.adviser'],
-    [{ tiers: { models: { classifier: 'model' } } }, 'tiers.models.classifier'],
     [{ mail: { urgency: { p0: 'forward_now' } } }, 'mail.urgency'],
     [{ secretary: { questions: { can_wait: { on_low_confidence: 'wake' } } } }, 'secretary.questions.can_wait.on_low_confidence'],
     [{ limits: { usage_stop_percent: 100 } }, 'limits'],
@@ -76,6 +74,12 @@ test('a config that sets a removed key fails validation', () => {
   for (const [party, field] of cases) {
     assert.throws(() => loadConfig({ party }), { name: 'ConfigError', field })
   }
+})
+
+test('a config may name adviser and classifier models before anything reads them', () => {
+  const tree = loadConfig({ party: { tiers: { models: { adviser: 'anthropic/claude-opus-5-5', classifier: 'typesafe/jev-1.14' } } } })
+  assert.equal((tree.tiers.models as Record<string, unknown>).adviser, 'anthropic/claude-opus-5-5')
+  assert.equal((tree.tiers.models as Record<string, unknown>).classifier, 'typesafe/jev-1.14')
 })
 
 test('duplicate config keys are accepted or not diagnosed', () => {
