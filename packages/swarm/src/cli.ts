@@ -100,6 +100,11 @@ const subcommands: Record<string, () => Promise<{ run(argv: string[]): Promise<n
   check: () => import('./checks/cli.ts'),
   watch: () => import('./watch/cli.ts'),
   trackers: () => import('./trackers/cli.ts'),
+  cutover: () => import('./cutover/cli.ts'),
+  mail: async () => {
+    const { run } = await import('./cutover/cli.ts')
+    return { run: (argv) => run(argv, 'mail') }
+  },
   capture: async () => ({ run: (await import('./capture/cli.ts')).captureMain }),
   mirror: async () => ({ run: async (argv) => (await import('./mirror/command.ts')).runMirrorCommand(['mirror', ...argv]) }),
   overlap: async () => ({ run: async (argv) => (await import('./mirror/command.ts')).runMirrorCommand(['overlap', ...argv]) }),
