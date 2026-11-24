@@ -106,10 +106,13 @@ const subcommands: Record<string, () => Promise<{ run(argv: string[]): Promise<n
   watch: () => import('./watch/cli.ts'),
   trackers: () => import('./trackers/cli.ts'),
   cutover: () => import('./cutover/cli.ts'),
-  mail: async () => {
-    const { run } = await import('./cutover/cli.ts')
-    return { run: (argv) => run(argv, 'mail') }
-  },
+  mail: async () => ({
+    run: async (argv: string[]) => {
+      if (argv[0] === 'bridge') return (await import('./mail/cli.ts')).runMail(argv)
+      const { run } = await import('./cutover/cli.ts')
+      return run(argv, 'mail')
+    },
+  }),
   capture: async () => ({ run: (await import('./capture/cli.ts')).captureMain }),
   secretary: async () => ({ run: (await import('./secretary/cli.ts')).secretaryMain }),
   mirror: async () => ({ run: async (argv) => (await import('./mirror/command.ts')).runMirrorCommand(['mirror', ...argv]) }),
