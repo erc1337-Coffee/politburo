@@ -244,6 +244,11 @@ test('reconciling an edited starting grant strips broad principals without dropp
   })
 })
 
+const grantShape = (grants: Awaited<ReturnType<Board['grants']>>) => grants.map(({ principals, can }) => ({
+  principals: principals.map((principal) => JSON.stringify(principal)).sort(),
+  can,
+})).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
+
 test('apply reports excess grants added after it read the initial grants', async (t) => {
   let inject = false
   const jockey = openBoard(t, async () => {
@@ -254,10 +259,127 @@ test('apply reports excess grants added after it read the initial grants', async
     }))
   })('jockey')
   await jockey((b) => applyGrants(b, registry, repo))
+  const before = await jockey((b) => b.grants())
   inject = true
   await jockey((b) => assert.rejects(applyGrants(b, registry, repo), {
     message: `cannot apply grants: everyone grants access at *; ${principalOf(people.stranger).userId} exceeds registry membership at *`,
   }))
+  assert.deepEqual(await jockey((b) => b.grants()), before)
+})
+
+test('adding a member grants the channels they were given and a second apply writes nothing', async (t) => {
+  const as = openBoard(t)
+  const joined = setMember(registry, 'default', people.stranger, 'member')
+  const posted = await as('jockey')(async (b) => {
+    await b.createChannel('intake')
+    const message = await b.post('intake', 'open')
+    await applyGrants(b, registry, repo)
+    await as('stranger')((board) => assert.rejects(board.thread(message.id), hidden))
+    assert.deepEqual(await applyGrants(b, joined, repo), { created: 0, updated: 1, revoked: 0 })
+    assert.deepEqual(await applyGrants(b, joined, repo), { created: 0, updated: 0, revoked: 0 })
+    return message.id
+  })
+  await as('stranger')((b) => b.post('intake', 'joined'))
+  await as('stranger')((b) => b.thread(posted))
+})
+
+test('an unrequested widening is refused and a retry still sees the previous grants', async (t) => {
+  let inject = false
+  const as = openBoard(t, async () => {
+    if (!inject) return
+    inject = false
+    await as('jockey')((b) => b.createGrant({
+      principals: [projectPrincipal], can: { 'party/secret': ['read'] },
+    }))
+  })
+  const joined = setMember(registry, 'default', people.stranger, 'member')
+  const posted = await as('jockey')(async (b) => {
+    await b.createChannel('intake')
+    await b.createChannel('party/secret')
+    const message = await b.post('intake', 'open')
+    await applyGrants(b, registry, repo)
+    const before = await b.grants()
+    inject = true
+    await assert.rejects(applyGrants(b, joined, repo), (error: Error) => {
+      assert.match(error.message, /gained read at party\/secret/)
+      assert.doesNotMatch(error.message, /gained post at intake/)
+      return true
+    })
+    assert.deepEqual(grantShape(await b.grants()), grantShape(before))
+    await as('stranger')((board) => assert.rejects(board.thread(message.id), hidden))
+    const retry = await applyGrants(b, joined, repo)
+    assert.notDeepEqual(retry, { created: 0, updated: 0, revoked: 0 })
+    assert.deepEqual(await applyGrants(b, joined, repo), { created: 0, updated: 0, revoked: 0 })
+    return message.id
+  })
+  await as('stranger')((b) => b.thread(posted))
+  await as('stranger')((b) => b.post('intake', 'joined after the refused pass'))
+})
+
+test('dropping a deny on a channel the member grants do not name is refused and a retry still sees it', async (t) => {
+  let inject = false
+  let denyId = ''
+  const as = openBoard(t, async () => {
+    if (!inject) return
+    inject = false
+    await as('jockey')((b) => b.revokeGrant(denyId))
+  })
+  const secret = 'work/secret'
+  await as('jockey')(async (b) => {
+    await b.createChannel(secret)
+    const message = await b.post(secret, 'sealed')
+    await applyGrants(b, registry, repo)
+    await as('red')((board) => board.thread(message.id))
+    // Same pattern as the deny, so the operator can still change it. The member grant names work/, not this channel.
+    await b.createGrant({ principals: [userPrincipal(people.jockey)], can: { [secret]: 'all' } })
+    denyId = (await b.createGrant({ principals: [{ kind: 'everyone' }], can: { [secret]: [] } })).grant.id
+    await as('red')((board) => assert.rejects(board.thread(message.id), hidden))
+    const before = await b.grants()
+    inject = true
+    await assert.rejects(applyGrants(b, registry, repo), (error: Error) => {
+      assert.match(error.message, new RegExp(`gained read at ${secret}`))
+      assert.doesNotMatch(error.message, /not restored/)
+      return true
+    })
+    assert.deepEqual(grantShape(await b.grants()), grantShape(before))
+    await as('red')((board) => assert.rejects(board.thread(message.id), hidden))
+    await applyGrants(b, registry, repo)
+    await as('red')((board) => assert.rejects(board.thread(message.id), hidden))
+    assert.equal((await b.grants()).some((grant) => grant.principals.some((principal) => principal.kind === 'everyone') && secret in grant.can), true)
+    assert.deepEqual(await applyGrants(b, registry, repo), { created: 0, updated: 0, revoked: 0 })
+  })
+})
+
+test('a refused apply restores an invitee principal and revokes a widening grant from that pass', async (t) => {
+  let inject = false
+  let inviteeGrant = ''
+  const as = openBoard(t, async () => {
+    if (!inject) return
+    inject = false
+    await as('jockey')(async (b) => {
+      await b.revokeGrant(inviteeGrant)
+      await b.createGrant({ principals: [projectPrincipal], can: { 'party/secret': ['read'] } })
+    })
+  })
+  await as('jockey')(async (b) => {
+    await applyGrants(b, registry, repo)
+    const { secret } = await b.createInvite({ name: 'guest', can: { intake: ['read'] } })
+    const { principal } = await b.join(secret)
+    inviteeGrant = (await b.grants()).find((grant) => grant.principals.some((one) => one.kind === 'invitee' && one.id === principal))!.id
+    const before = await b.grants()
+    inject = true
+    await assert.rejects(applyGrants(b, registry, repo), (error: Error) => {
+      assert.match(error.message, /gained read at party\/secret/)
+      assert.doesNotMatch(error.message, /not restored/)
+      return true
+    })
+    const after = await b.grants()
+    assert.deepEqual(grantShape(after), grantShape(before))
+    assert.equal(after.some((grant) => grant.principals.some((one) => one.kind === 'invitee' && one.id === principal)), true)
+    assert.equal(after.some((grant) => Object.hasOwn(grant.can, 'party/secret')), false)
+    assert.deepEqual(await applyGrants(b, registry, repo), { created: 0, updated: 0, revoked: 0 })
+    assert.deepEqual(grantShape(await b.grants()), grantShape(before))
+  })
 })
 
 test('reconciling a deleted party board revokes former members’ access', async (t) => {
