@@ -114,7 +114,7 @@ export const taskIds = (text: string): string[] => [...new Set(text.split(/[\s,]
 const HOLD_KINDS = ['needs_input', 'awaiting_approval']
 
 /** What a task's card asks about before it acts. */
-type Asked = 'park' | 'unpark' | 'block' | 'assign' | 'priority' | 'cancel'
+type Asked = 'complete' | 'fail' | 'park' | 'unpark' | 'block' | 'assign' | 'priority' | 'cancel'
 
 /** A task in full, at the top of its thread: its facts, and what you can do to it now. */
 export function TaskCard({ root, state, viewer }: { root: TaskRoot; state: State; viewer: Viewer }) {
@@ -138,6 +138,24 @@ export function TaskCard({ root, state, viewer }: { root: TaskRoot; state: State
   const [asking, setAsking] = useState<Asked | null>(null)
   const acts = useRef<HTMLDivElement>(null)
   const next: ReactNode[] = []
+  if (can.claim)
+    next.push(
+      <button key="claim" className="act primary" disabled={busy} onClick={() => run(board.claimTask(root.id))}>
+        claim
+      </button>,
+    )
+  if (can.settle)
+    next.push(
+      <button key="complete" className="act primary" disabled={busy} onClick={() => setAsking('complete')}>
+        complete…
+      </button>,
+    )
+  if (can.held)
+    next.push(
+      <button key="release" className="act" disabled={busy} title="give it back: it's ready again" onClick={() => run(board.releaseTask(root.id))}>
+        release
+      </button>,
+    )
   if (can.answer) next.push(<Answer key={task.attentionId} task={root.id} request={task.attentionId!} />)
   if (can.unpark) next.push(
     <button key="unpark" className="act primary" disabled={busy} onClick={() => setAsking('unpark')}>unpark…</button>,
@@ -155,9 +173,21 @@ export function TaskCard({ root, state, viewer }: { root: TaskRoot; state: State
       </button>,
     )
   const more: ReactNode[] = []
+  if (can.held)
+    more.push(
+      <MenuItem key="renew" onClick={() => run(board.renewTask(root.id))}>
+        renew the lease
+      </MenuItem>,
+    )
+  if (can.settle && !task.work)
+    more.push(
+      <MenuItem key="fail" onClick={() => setAsking('fail')}>
+        fail…
+      </MenuItem>,
+    )
   if (can.park) more.push(<MenuItem key="park" onClick={() => setAsking('park')}>park…</MenuItem>)
   if (can.priority) more.push(<MenuItem key="priority" onClick={() => setAsking('priority')}>change priority…</MenuItem>)
-  if (can.hold)
+  if (can.held || can.hold)
     more.push(
       <MenuItem key="block" onClick={() => setAsking('block')}>
         block for a person…
@@ -183,6 +213,18 @@ export function TaskCard({ root, state, viewer }: { root: TaskRoot; state: State
       </MenuItem>,
     )
   const asks: Record<Exclude<Asked, 'priority'>, { title: string } & AskProps> = {
+    complete: {
+      title: 'complete it',
+      submit: 'complete',
+      fields: [{ name: 'result', placeholder: 'what it came to, in a line or two (optional)', long: true }],
+      onSubmit: ({ result }) => run(board.completeTask(root.id, result || undefined)),
+    },
+    fail: {
+      title: 'say it failed',
+      submit: 'fail',
+      fields: [{ name: 'reason', placeholder: 'why it failed', required: true, long: true }],
+      onSubmit: ({ reason }) => run(board.failTask(root.id, reason!)),
+    },
     park: {
       title: 'park the task',
       submit: 'park',
@@ -199,6 +241,7 @@ export function TaskCard({ root, state, viewer }: { root: TaskRoot; state: State
     block: {
       title: 'hold it for a person',
       submit: 'block',
+      note: can.held ? 'Ends your claim.' : undefined,
       fields: [
         { name: 'kind', placeholder: 'kind, e.g. needs_input (optional)', items: HOLD_KINDS },
         { name: 'reason', placeholder: 'what a person has to answer', required: true, long: true },
@@ -220,6 +263,9 @@ export function TaskCard({ root, state, viewer }: { root: TaskRoot; state: State
       onSubmit: ({ reason }) => run(board.cancelTask(root.id, reason!)),
     },
   }
+
+  // A feed update can move staged work on while a form is still open.
+  const canAsk = !task.work || (asking === 'block' && (can.held || can.hold)) || (asking === 'complete' && can.settle)
 
   return (
     <section className="task-card">
@@ -289,7 +335,7 @@ export function TaskCard({ root, state, viewer }: { root: TaskRoot; state: State
           )}
         </div>
       )}
-      {asking && (
+      {asking && (asking === 'priority' || canAsk) && (
         <Panel title={asking === 'priority' ? 'change priority' : asks[asking].title} open onOpenChange={(open) => !open && setAsking(null)} anchor={acts}>
           {asking === 'priority' ? (
             <form className="ask" onSubmit={(event) => {

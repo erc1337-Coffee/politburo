@@ -1829,14 +1829,17 @@ it('shows just paused to a reader who joined after the transition', async () => 
   expect(document.querySelector('button[title="Resume"]')).toBeNull()
 })
 
-it('lets a person park and unpark an unheld ready task without offering to claim it', async () => {
+it('lets a person claim, park, and unpark an unheld ready task', async () => {
   const { api, open } = await workbench()
   const { task } = await api.tasks.create('work', { text: 'Check the release' })
   await open(`/?thread=${task.id}`)
   await vi.waitFor(() => expect(document.querySelector('.task-card .task-state')?.textContent).toBe('ready'))
   await vi.waitFor(() => button('more')).then((more) => more.click())
   const park = await vi.waitFor(() => menuItem('park…'))
-  expect([...document.querySelectorAll('.task-card button, [role="menuitem"]')].map((item) => item.textContent?.trim()).join(' ')).not.toMatch(/\b(renew|release|complete|claim)\b/i)
+  const actions = [...document.querySelectorAll('.task-card button, [role="menuitem"]')].map((item) => item.textContent?.trim()).join(' ')
+  expect(actions).toContain('claim')
+  expect(actions).toContain('park')
+  expect(actions).not.toMatch(/\b(renew|release|complete)\b/i)
   park.click()
   await submitReason('why it should wait', 'waiting for the release window')
   const unpark = await vi.waitFor(() => {

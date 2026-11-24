@@ -902,8 +902,42 @@ export async function answerAttention(id: string, requestId: string, optionId: s
   }
 }
 
+// #region guide inspector/claims.ts
+/**
+ * The claims this tab holds, by task: each claim's `epoch` and `token`, which its writes carry.
+ * The token is a secret, so it lives in memory and nowhere else: never in storage, where a script
+ * on the page or another tab could read it. A reload gives the claims up, and their leases run out.
+ */
+const claims = new Map<string, { epoch: number; token: string }>()
+
+/** Claims a task, and keeps the claim. A task that can't be claimed now throws a 409: `task_claimed`, `task_waiting`, `task_assigned`. */
+async function claim(id: string): Promise<MessageView> {
+  const claimed = await team.tasks.claim(id)
+  claims.set(id, { epoch: claimed.epoch, token: claimed.token })
+  return claimed.task
+}
+
+/** What this tab's claim on a task does: `renew`, `release`, `complete`, `fail`, and `block`. Once the claim is over, each throws a 409 `claim_lost` and changes nothing. */
+function held(id: string) {
+  const mine = claims.get(id)
+  if (!mine) throw new BoardError('claim_lost', 'this tab holds no claim on it', 409)
+  return team.tasks.held(id, mine)
+}
+// #endregion
+
+// The store knows which claims are live, from what the board shows; once it drops one it had,
+// its token goes too. One the store hasn't taken in yet is kept: a claim's token is here a
+// moment before the store hears of it, and anything that changes the store in between runs this.
+const recorded = new Set<string>()
+listeners.add(() => {
+  for (const id of claims.keys()) {
+    if (state.claims[id]) recorded.add(id)
+    else if (recorded.delete(id)) claims.delete(id)
+  }
+})
+
 /** A task write: the root it answers goes in the store, and a refusal is said in the page's words. */
-async function work(write: () => Promise<MessageView>): Promise<boolean> {
+async function work(id: string, write: () => Promise<MessageView>): Promise<boolean> {
   const as = identity
   try {
     const root = await write()
@@ -911,20 +945,50 @@ async function work(write: () => Promise<MessageView>): Promise<boolean> {
     set((s) => store.merge(s, [root]))
     return true
   } catch (error) {
-    if (as === identity) toast(refusal(error))
+    if (as !== identity) return false
+    if (error instanceof BoardError && error.code === 'claim_lost') set((s) => store.unclaimed(s, id))
+    toast(refusal(error))
     return false
   }
 }
 
-export const blockTask = (id: string, reason: string, kind?: string) => work(() => team.tasks.block(id, reason, kind ? { kind } : {}))
-export const unblockTask = (id: string) => work(() => team.tasks.unblock(id))
-export const reopenTask = (id: string) => work(() => team.tasks.reopen(id))
+/** Claims a task for the board's default lease, and tells the store which claim this tab now holds. */
+export async function claimTask(id: string): Promise<boolean> {
+  try {
+    const root = await claim(id)
+    set((s) => store.claimed(s, root, { epoch: claims.get(id)!.epoch }))
+    if (!state.claims[id]) claims.delete(id)
+    return true
+  } catch (error) {
+    toast(refusal(error))
+    return false
+  }
+}
+
+export const renewTask = (id: string) => work(id, async () => (await held(id).renew()).task)
+export const releaseTask = (id: string) => work(id, async () => held(id).release())
+export const completeTask = (id: string, result?: string) => work(id, async () => held(id).complete(result))
+export const failTask = (id: string, reason: string) => work(id, async () => held(id).fail(reason))
+/** Holds a task for a person: through this tab's claim while it has one, which ends the claim, or else as its owner. */
+export const blockTask = (id: string, reason: string, kind?: string) =>
+  work(id, async () => {
+    const root = state.messages[id]
+    const mine = store.isTask(root) && store.holding(state, root, Date.now()) !== undefined
+    return mine ? held(id).block(reason, kind ? { kind } : {}) : team.tasks.block(id, reason, kind ? { kind } : {})
+  })
+export const unblockTask = (id: string) => work(id, () => team.tasks.unblock(id))
+export async function reopenTask(id: string): Promise<boolean> {
+  const root = state.messages[id]
+  if (!store.isTask(root) || root.task.work) return false
+  return work(id, () => team.tasks.reopen(id))
+}
+
 /** `actor` is one of the owner's (`<owner>+<profile>`), or null for anyone who may claim it. */
-export const assignTask = (id: string, actor: string | null) => work(() => team.tasks.assign(id, actor))
-export const cancelTask = (id: string, reason: string) => work(() => team.tasks.cancel(id, reason))
-export const parkTask = (id: string, reason: string) => work(() => team.tasks.park(id, reason))
-export const unparkTask = (id: string, reason: string) => work(() => team.tasks.unpark(id, reason))
-export const prioritizeTask = (id: string, priority: TaskPriority) => work(() => team.tasks.priority(id, priority))
+export const assignTask = (id: string, actor: string | null) => work(id, () => team.tasks.assign(id, actor))
+export const cancelTask = (id: string, reason: string) => work(id, () => team.tasks.cancel(id, reason))
+export const parkTask = (id: string, reason: string) => work(id, () => team.tasks.park(id, reason))
+export const unparkTask = (id: string, reason: string) => work(id, () => team.tasks.unpark(id, reason))
+export const prioritizeTask = (id: string, priority: TaskPriority) => work(id, () => team.tasks.priority(id, priority))
 export async function loadAttention(id: string) {
   const as = identity
   const visit = pane
@@ -942,10 +1006,10 @@ export async function loadAttention(id: string) {
     throw error
   }
 }
-export const answerTask = (id: string, request: string, answer: AttentionAnswerBody) => work(async () => (await team.tasks.answer(id, request, answer)).task)
+export const answerTask = (id: string, request: string, answer: AttentionAnswerBody) => work(id, async () => (await team.tasks.answer(id, request, answer)).task)
 
 /** Makes the thread `re` roots a task, as it is. */
-export const makeTask = (re: string, options: { needs: string[]; for: string | null }) => work(async () => (await team.tasks.create({ re }, options)).task)
+export const makeTask = (re: string, options: { needs: string[]; for: string | null }) => work(re, async () => (await team.tasks.create({ re }, options)).task)
 
 // --- schemas: what a message's blocks hold -------------------------------------------------
 

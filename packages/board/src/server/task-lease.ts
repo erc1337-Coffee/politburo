@@ -7,13 +7,20 @@ export const lapsed = (task: Task, at: number, pauseEpoch: number) => task.state
 
 export const holdEndsLease = (claim: NonNullable<Task['claim']>) => claim.until === claim.holdUntil
 
-export function expiry(root: Pick<Message, 'id' | 'thread'>, task: Task, at: number) {
+export function expiry(root: Pick<Message, 'id' | 'thread'>, task: Task, at: number, waits = false) {
   const claim = task.claim!
   const hardEnd = holdEndsLease(claim) && Date.parse(claim.until) <= at
-  return { type: 'task.expired' as const, payload: { id: root.id, thread: root.thread, epoch: task.epoch, ...(hardEnd ? { reason: 'hold' as const } : {}) } }
+  return {
+    type: 'task.expired' as const,
+    payload: {
+      id: root.id, thread: root.thread, epoch: task.epoch,
+      ...(hardEnd ? { reason: 'hold' as const } : {}),
+      ...(waits ? { waiting: true } : {}),
+    },
+  }
 }
 
 /** Record an expiry before a write can hide it, even if the lease timer hasn't run. */
-export function expiredClaim(root: Message, at: number, pauseEpoch: number) {
-  return root.task && lapsed(root.task, at, pauseEpoch) ? [expiry(root, root.task, at)] : []
+export function expiredClaim(root: Message, at: number, pauseEpoch: number, waits = false) {
+  return root.task && lapsed(root.task, at, pauseEpoch) ? [expiry(root, root.task, at, waits)] : []
 }

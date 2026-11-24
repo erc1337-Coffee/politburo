@@ -23,6 +23,8 @@ import {
   SentTaskNote,
   TaskState,
   TaskPriority,
+  WorkStageTarget,
+  type Author,
 } from '../contract/schemas.ts'
 import { ExternalAuthor, ExternalEvent, ExternalTarget, Link as LinkSchema, LINKS_PER_MESSAGE_MAX, MENTIONED_PER_MESSAGE_MAX, Origin } from '../contract/external.ts'
 import type { PublicBoardEvent } from '../contract/events.ts'
@@ -435,6 +437,9 @@ export const CancelTaskBody = z.object({ reason: SentTaskNote })
 const { ParkTaskBody, HandoffTaskBody, taskAuthorityRoutes } = taskAuthority(Claimed)
 export { ParkTaskBody, HandoffTaskBody }
 export { ControlBody, BoardStatus } from './politburo-routes.ts'
+export const ScopeTaskBody = z.strictObject({ reason: SentTaskNote, ifVersion: Revision })
+export const StageTaskBody = z.strictObject({ stage: WorkStageTarget, reason: SentTaskNote, ifVersion: Revision })
+export const ReopenTaskBody = z.strictObject({ reason: SentTaskNote.optional(), ifVersion: Revision.optional() }).optional()
 
 const CanGrant = z.union([z.literal('all'), z.array(z.string().min(1).max(16)).max(8)])
 const ClaimValue = z.string().min(1).max(1000)
@@ -950,8 +955,10 @@ export type SchemaView = {
  */
 export type TaskView = Omit<Task, 'needs' | 'claim' | 'priority' | 'attention'> & {
   priority: TaskPriority
-  /** The current attention request, when the task has one. */
+  /** The latest attention request, when the task has one. */
   attentionId?: string
+  /** The request's recorded status. Read the attention route to check whether its evidence is still current. */
+  attentionStatus?: NonNullable<Task['attention']>['status']
   /** The tasks it waits for, by their IDs. */
   needs: string[]
   /** Who holds it. One whose `until` has passed is over: the task is claimable, and `ready` once the board says so. */
@@ -1061,35 +1068,32 @@ export async function readDiscovery(response: Response): Promise<Discovery> {
   return response.headers.get(TASK_CLAIM_HOLD_HEADER) === '1' ? { ...info, task_claim_hold: true } : info
 }
 
-export type Discovery = {
-  version: string
-  url: string
-  audience: string
-  team_id: string | null
-  project_id: string | null
+const DiscoveryResponse = z.object({
+  version: z.string(),
+  url: z.string(),
+  audience: z.string(),
+  team_id: z.string().nullable(),
+  project_id: z.string().nullable(),
+  sync: z.array(z.object({ key: z.string(), platform: z.string() })),
+  wake_by_path: z.boolean().optional(),
+  workLifecycle: z.literal(1).optional(),
+  accessFence: z.literal(1).optional(),
+  accessFenceScope: z.literal('process').optional(),
+  task_authority: z.boolean().optional(),
+  task_attention: z.literal(true).optional(),
+  agent_ops: z.literal(true).optional(),
+  agent_intents: z.literal(true).optional(),
+  politburo: z.literal(1).optional(),
+})
+
+export type Discovery = z.infer<typeof DiscoveryResponse> & {
   /**
    * The board's name, where boards have one: a team's board in Vercel's API (`General`, the default's).
    * A handle on one says it, for a UI to show which board it's on; `GET /` on a board never does.
    */
   name?: string
-  /** The board's sync entries: `key` names its webhook and inbox, `platform` is e.g. `slack`. */
-  sync: { key: string; platform: string }[]
-  /**
-   * Whether `POST /watchers` takes a `path`: the board wakes the caller's own Vercel project there,
-   * through its Deployment Protection. A board that can't find a project's deployments leaves it out.
-   */
-  wake_by_path?: boolean
-  /** True when the board enforces bound claims, parking, and handoffs. */
-  task_authority?: boolean
-  /** Whether this board is configured to keep structured task attention requests. */
-  task_attention?: true
+  /** Read from `X-Board-Task-Claim-Hold`, not the discovery JSON. */
   task_claim_hold?: true
-  /** This board opts into the fork's agent registry. */
-  agent_ops?: true
-  /** Advertises command intents and run health. `agent_ops` alone only advertises the registry. */
-  agent_intents?: true
-  /** Politburo discovery version, advertised by a swarm board. */
-  politburo?: 1
 }
 
 /**
@@ -1282,7 +1286,7 @@ export type InboxEntry = {
 /** The route table: method, path, and the schemas that validate input. */
 export const routes = {
   /** Where the board is, its project, and its sync entries. No token. */
-  discovery: { method: 'GET', path: '/' },
+  discovery: { method: 'GET', path: '/', response: DiscoveryResponse },
   me: { method: 'GET', path: '/me' },
   ...controlRoutes,
   channels: { method: 'GET', path: '/channels', query: ChannelsQuery },
@@ -1336,7 +1340,12 @@ export const routes = {
   /** What a task's owner does, or `manage` in its channel. */
   unblockTask: { method: 'POST', path: '/tasks/:id/unblock' },
   ...taskAuthorityRoutes,
-  reopenTask: { method: 'POST', path: '/tasks/:id/reopen' },
+  reopenTask: {
+    method: 'POST', path: '/tasks/:id/reopen', body: ReopenTaskBody,
+    bodyDescription: 'Staged work requires both reason and ifVersion. Legacy work needs no body.',
+  },
+  scopeTask: { method: 'POST', path: '/tasks/:id/scope', body: ScopeTaskBody, bodyRequired: true },
+  stageTask: { method: 'POST', path: '/tasks/:id/stage', body: StageTaskBody, bodyRequired: true },
   assignTask: { method: 'POST', path: '/tasks/:id/assign', body: AssignTaskBody },
   /** Replaces what a task waits for, while no one holds it and it isn't finished. */
   setTaskNeeds: { method: 'POST', path: '/tasks/:id/needs', body: TaskNeedsBody },

@@ -7,12 +7,13 @@ import type { Protocol } from '../api/protocol.ts'
 import type { AttentionAnswerBody, AttentionDraft, AttentionReceipt, AttentionResponders, AttentionView, RequestAttentionBody } from '../contract/attention.ts'
 import { LEASES_SESSION, leasesContract, type LeaseEvents } from '../contract/contract.ts'
 import { ALONG_MAX, type BoardEvent } from '../contract/events.ts'
-import { foldMessages, type Message, type MessagesState, type Task } from '../contract/folds.ts'
+import { foldMessages, workCanClaim, workTerminal, type Message, type MessagesState, type Task } from '../contract/folds.ts'
 import { actorsReducer, channelsReducer, type WorkState } from '../contract/reducers.ts'
-import { DEFAULT_TASK_PRIORITY, OPEN_TASK_STATES, priorityRank, TASK_BATCH_MAX, TASK_KEY_MAX, TASK_LABEL, TASK_NEEDS_MAX, TASK_NOTE_MAX, TaskHoldKind, TaskPriority, type TaskState } from '../contract/schemas.ts'
+import { DEFAULT_TASK_PRIORITY, OPEN_TASK_STATES, priorityRank, TASK_BATCH_MAX, TASK_KEY_MAX, TASK_LABEL, TASK_NEEDS_MAX, TASK_NOTE_MAX, TaskHoldKind, TaskPriority, type TaskState, type WorkStage, type WorkStageTarget } from '../contract/schemas.ts'
 import { batchPlan, type BatchNeed } from '../contract/task-batch.ts'
 import { authorize, type Access, type Permission } from './access.ts'
-import { badRequest, batchTooLarge, forbidden, HttpError, notFound } from './errors.ts'
+import type { BoardBinding } from './backend.ts'
+import { badRequest, batchTooLarge, forbidden, HttpError, noAccessFence, notFound } from './errors.ts'
 import { indexOf, ref, toMessageFilter, view, whoIs } from './feed.ts'
 import type { MessageFilter, ThreadSummary } from '../store/types.ts'
 import { appendFrom, authorizeMessage, movedOn, ownedBy, seenFor, untilApplied, type Along, type AlongEach, type Events, type Identity, type WriteContext } from './writes.ts'
@@ -24,6 +25,8 @@ export const LEASE_MIN_S = 30
 export const LEASE_CAP_S = 3600
 /** How many owners one claim takes tasks from on this board, beside its caller. */
 const FROM_MAX = 32
+/** The board's own author for derived task events that carry a `by`. */
+const TASKS_AUTHOR = { actor: 'board:tasks', principal: 'board:tasks', profile: null }
 
 /**
  * This board's own limits on a task. board() checks a request's shape and leaves how much a
@@ -64,6 +67,7 @@ const PAGE = 500
 
 /** A task's root: the message that carries it. */
 type Root = Message & { task: Task }
+type Change = Events | { events: Events; access?: number }
 
 type AttentionChange = { task: MessageView; attention: AttentionView }
 
@@ -73,6 +77,27 @@ type Start = Pick<Protocol['createTask']['input'], 'needs' | 'for' | 'priority' 
 
 const conflict = (code: string, message: string) => new HttpError(409, code, message)
 const notATask = (id: number) => notFound(`#${id} isn't a task`, 'not_a_task')
+const noLifecycle = () => new HttpError(501, 'no_work_lifecycle', 'this task does not use the work lifecycle')
+const invalidStage = (root: Root, action: string) => conflict('invalid_task_stage', `cannot ${action} #${root.id} while it is ${root.task.work!.stage}`)
+
+/** Non-rejection edges for the authority's stage route. Reject can leave any nonterminal stage. */
+const fromStages: Record<Exclude<WorkStageTarget, 'rejected'>, readonly WorkStage[]> = {
+  review: ['handoff'],
+  qa: ['review'],
+  repair: ['review', 'qa', 'approved'],
+  approved: ['review', 'qa'],
+  done: ['approved'],
+}
+
+export type WorkLifecycleOptions = {
+  /** Verified principal IDs allowed to scope and move tasks, with channel manage permission. */
+  scopers: readonly string[]
+}
+
+const beforeHandoff = (task: Task) => !task.work || task.work.stage === 'proposed' || workCanClaim(task.work.stage)
+const canReady = (task: Task) => !task.work || workCanClaim(task.work.stage)
+// Deleting a completed root does not undo completion for existing dependents.
+const completedNeed = (message: Message | undefined) => message?.task?.state === 'completed'
 const claimLost = (id: number) => conflict('claim_lost', `this claim on #${id} is over: claim it again`)
 const parked = (id: number) => conflict('task_blocked', `#${id} is parked: an operator must unpark it`)
 
@@ -148,9 +173,14 @@ function ownActor(owner: string, actor: string | null | undefined): string | nul
  * read is still the log's last word, so of writes that race, one lands and the rest look again.
  * A claim's lease is timed outside the board log, which holds only what came of it.
  */
-export function createTasks(options: { store?: A2Store | undefined; scheduler?: A2Scheduler | undefined; attentionResponders?: AttentionResponders | undefined }) {
+export function createTasks(options: { store?: A2Store | undefined; scheduler?: A2Scheduler | undefined; workLifecycle?: WorkLifecycleOptions | undefined; attentionResponders?: AttentionResponders | undefined }) {
+  const scopers = options.workLifecycle && new Set(options.workLifecycle.scopers)
+  const initialWork = scopers ? { work: 'proposed' as const } : {}
+  const requireScope = () => { throw conflict('work_lifecycle_required', 'new work must be scoped before it can be claimed') }
   const responders = new Map(Object.entries(options.attentionResponders ?? {}).map(([channel, ids]) => [channel, new Set(ids)]))
   let bound: WriteContext | null = null
+  let accessNow: BoardBinding['accessNow']
+  let accessPosition: () => Promise<number>
   const writes = (): WriteContext => {
     if (!bound) throw new Error('tasks used before the board bound them')
     return bound
@@ -178,7 +208,8 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
         if (until === at) read.early = task.claim!.until
         return { position, events: [] }
       }
-      return { position, events: [expiry(root, task, now)] }
+      const waits = !(await satisfied(task, position))
+      return { position, events: [expiry(root, task, now, waits)] }
     }))
     await untilApplied(ctx, rows)
     if (read.early !== null) await arm(id, epoch, read.early, `again-${context.event.index}`)
@@ -201,8 +232,8 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
 
   /**
    * Arms the timer for a claim's lease. Without a scheduler there's none: a claim still checks the
-   * clock, so a lease that ran out is claimable, and its label says so once someone claims it. One
-   * that can't be armed is the same, so the claim that landed still answers.
+   * clock and can take over an eligible task when its lease runs out. One whose timer can't be
+   * armed is the same, so the claim that landed still answers.
    */
   async function arm(id: number, epoch: number, until: string, again?: string) {
     if (!options.scheduler) return
@@ -263,7 +294,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
    * throws what refuses the write, and returns what to append. Answers the message as the write left
    * it: as it was, when there was nothing to append.
    */
-  async function change(identity: Identity, id: number, decide: (found: Message, position: number, now: number) => Events | Promise<Events>): Promise<Message> {
+  async function change(identity: Identity, id: number, decide: (found: Message, position: number, now: number) => Change | Promise<Change>): Promise<Message> {
     const ctx = writes()
     const seen = seenFor(identity, (await ctx.session.state(actorsReducer)).state)
     const read: { before?: Message } = {}
@@ -272,8 +303,9 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
       const found = (await ctx.reads.tables.messagesAt([id], position)).get(id)
       if (!found) throw notFound(`message not found: #${id}`, 'message_not_found')
       read.before = found
-      const events = await decide(found, position, now)
-      return { position, events: events.length > 0 && seen ? [seen, ...events] : events }
+      const decision = await decide(found, position, now)
+      const { events, access } = Array.isArray(decision) ? { events: decision } : decision
+      return { position, access, events: events.length > 0 && seen ? [seen, ...events] : events }
     })
     await untilApplied(ctx, rows)
     return after(read.before!, rows)
@@ -287,9 +319,10 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
   }
 
   /** `change`, for a write to a task: `decide` gets its root. */
-  const changeTask = (identity: Identity, id: number, decide: (root: Root, position: number, now: number) => Events | Promise<Events>) =>
+  const changeTask = (identity: Identity, id: number, decide: (root: Root, position: number, now: number) => Change | Promise<Change>) =>
     change(identity, id, (found, position, now) => {
       if (!found.task) throw notATask(id)
+      if (found.task.work && found.deleted) throw notFound(`message not found: #${id}`, 'message_not_found')
       return decide(found as Root, position, now)
     })
 
@@ -306,6 +339,47 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
     if (access.can('manage', root.channel)) return
     if (ownedBy(root.task, identity) && (access.can('post', root.channel) || access.can('label', root.channel))) return
     throw new HttpError(403, 'task_not_owned', `#${root.id} is someone else's task: its owner as itself, the profile that made it, or manage in ${root.channel}, changes it`)
+  }
+
+  /** Recheck effective grants on an append retry or after a claim-next poll wakes. */
+  const accessFor = async (identity: Identity) => identity.principal.id.startsWith('board:') ? identity.principal.access : accessNow(identity.principal)
+
+  async function scoper(identity: Identity, root: Root, decide: (access: Access) => Events | Promise<Events>) {
+    if (!scopers) throw noLifecycle()
+    const hidden = () => notFound(`message not found: #${root.id}`, 'message_not_found')
+    let epoch: number | undefined
+    if (!identity.principal.id.startsWith('board:')) {
+      if (!writes().fence) throw noAccessFence()
+      // Read the access head first: a grant change since then must move the append's guard.
+      epoch = await accessPosition().catch(() => undefined)
+      if (epoch === undefined) throw hidden()
+    }
+    const access = await accessFor(identity).catch(() => null)
+    if (!access?.readable(root.channel)) throw hidden()
+    if (!scopers.has(identity.principal.id) || !access.can('manage', root.channel))
+      throw forbidden(`only a work scoper with manage in ${root.channel} can move #${root.id}`)
+    return { events: await decide(access), access: epoch }
+  }
+
+  /** Scoper writes recheck access inside each append look. Legacy writes keep their own checks. */
+  const changeScoperTask = (identity: Identity, id: number, decide: (root: Root, position: number, access: Access, now: number) => Events | Promise<Events>) =>
+    changeTask(identity, id, (root, position, now) => root.task.work
+      ? scoper(identity, root, (access) => decide(root, position, access, now))
+      : decide(root, position, identity.principal.access, now))
+
+  function atVersion(root: Root, ifVersion: number) {
+    if ((root.version ?? root.id) !== ifVersion) throw conflict('task_version_conflict', `#${root.id} changed since version ${ifVersion}`)
+  }
+
+  function stageChanged(root: Root, identity: Identity, to: WorkStage, reason: string, result?: string | null): Events[number] {
+    return { type: 'task.stage_changed', payload: { id: root.id, thread: root.thread, from: root.task.work!.stage, to, reason, by: identity.author, ...(result === undefined ? {} : { result }) } }
+  }
+
+  /** A scoped or repair stage projects to waiting when it has needs, until they're checked at this append. */
+  async function enterWork(root: Root, identity: Identity, to: WorkStage, reason: string, position: number): Promise<Events> {
+    const ready = workCanClaim(to) && !root.task.blocked && !root.task.parked && root.task.needs.length > 0 && await satisfied(root.task, position)
+    const about = { id: root.id, thread: root.thread }
+    return [stageChanged(root, identity, to, reason), ...(ready ? [{ type: 'task.ready' as const, payload: about }] : [])]
   }
 
   /**
@@ -357,7 +431,9 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
   /** Refuses a claim of a task that can't be claimed now, by `identity`. */
   function claimable(root: Root, identity: Identity, pauseEpoch: number, now: number) {
     const { task } = root
-    if (task.state === 'waiting') throw conflict('task_waiting', `#${root.id} waits for ${task.needs.map((need) => `#${need}`).join(', ')}`)
+    if (task.work && !scopers) throw noLifecycle()
+    if (task.work && !workCanClaim(task.work.stage)) throw invalidStage(root, 'claim')
+    if (task.state === 'waiting') throw waiting(root)
     if (task.parked) throw parked(root.id)
     if (task.state === 'blocked') throw conflict('task_blocked', `#${root.id} is held for a person: ${task.blocked!.reason}`)
     if (finished(task)) throw conflict('task_finished', `#${root.id} is ${task.state}`)
@@ -365,11 +441,13 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
     if (task.state === 'claimed' && !lapsed(task, now, pauseEpoch)) throw conflict('task_claimed', `#${root.id} is claimed until ${task.claim!.until}`)
   }
 
+  const waiting = (root: Root) => conflict('task_waiting', `#${root.id} waits for ${root.task.needs.map((need) => `#${need}`).join(', ')}`)
+
   /**
-   * A claim of a task as it stands, by `identity`: the events, and what the claim answers. A claim
-   * whose lease ran out expires in the same append, so the log says what happened to it.
+   * A claim of an eligible task: the events and what the claim answers. A lapsed claim expires in
+   * the same append, using the prerequisite check the caller made at that position.
    */
-  function claiming(root: { id: number; thread: string }, task: Task | null, identity: Identity, lease: number | undefined, token: string, pauseEpoch: number, binding: TaskBinding | undefined, now: number, hold?: number): { events: Events; claim: TaskClaim } {
+  function claiming(root: { id: number; thread: string }, task: Task | null, identity: Identity, lease: number | undefined, token: string, pauseEpoch: number, binding: TaskBinding | undefined, now: number, hold?: number, waits = false): { events: Events; claim: TaskClaim } {
     const about = { id: root.id, thread: root.thread }
     const epoch = (task?.epoch ?? 0) + 1
     const hardEnd = hold === undefined ? Infinity : now + hold * 1000
@@ -377,25 +455,24 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
     const metadata = { ...(binding === undefined ? {} : { binding }), ...(hold === undefined ? {} : { holdUntil: new Date(hardEnd).toISOString() }) }
     return {
       events: [
-        ...(task?.state === 'claimed' ? [expiry(root, task, now)] : []),
+        ...(task?.state === 'claimed' ? [expiry(root, task, now, waits)] : []),
         { type: 'task.claimed', payload: { ...about, epoch, ...(pauseEpoch === 0 ? {} : { pauseEpoch }), until, token: hashOf(token), by: identity.author, ...metadata } },
       ],
       claim: { epoch, token, until, pauseEpoch, ...metadata },
     }
   }
 
-  /**
-   * The tasks `refs` name, as of `position`, and whether they've all completed. One that isn't a
-   * task, or that the caller can't read, is refused alike, so `needs` says nothing of what's out of
-   * sight. Needs never change, and nothing can need a thread before it's a task, so the only cycle
-   * there could be is a task that waits for itself: `self` isn't a task yet, so it's refused as any
-   * thread that isn't one, and named here only so the refusal says why. One that was canceled is
-   * refused too: it can never complete, so a task that waited for it would wait for good, and its
-   * maker hears now. A failed one may yet be reopened, so it's still something to wait for.
-   */
-  async function needsAt(access: Access, refs: readonly string[] | undefined, position: number, self: number | null): Promise<{ ids: number[]; completed: boolean }> {
+  /** The tasks `refs` name, as of `position`, and whether they've all completed. A task can't name `self` as a prerequisite. */
+  async function needsAt(
+    access: Access,
+    refs: readonly string[] | undefined,
+    position: number,
+    self: number | null,
+    kept?: readonly number[],
+  ): Promise<{ ids: number[]; completed: boolean }> {
     const named = namedNeeds(refs, self)
-    return needsAmong(access, named, named.size === 0 ? new Map<number, Message>() : await writes().reads.tables.messagesAt([...named.keys()], position))
+    const found = named.size === 0 ? new Map<number, Message>() : await writes().reads.tables.messagesAt([...named.keys()], position)
+    return needsAmong(access, named, found, kept)
   }
 
   const invalidNeed = (value: string, why: string) => badRequest(`needs: #${value} ${why}`, 'invalid_needs')
@@ -412,15 +489,25 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
     return named
   }
 
-  /** The tasks `named` names among `found`, the messages read for them, and whether they've all completed. */
-  function needsAmong(access: Access, named: ReadonlyMap<number, string>, found: ReadonlyMap<number, Message>): { ids: number[]; completed: boolean } {
+  /**
+   * Checks the named prerequisites and says whether they've all completed. Refuses unreadable
+   * tasks as if they weren't tasks. A canceled task can never complete, but a failed one may
+   * reopen. A deleted staged root can only be kept, and only if it already completed.
+   */
+  function needsAmong(
+    access: Access,
+    named: ReadonlyMap<number, string>,
+    found: ReadonlyMap<number, Message>,
+    kept?: readonly number[],
+  ): { ids: number[]; completed: boolean } {
     for (const [id, value] of named) {
       const need = found.get(id)
       if (!need?.task || !access.readable(need.channel)) throw invalidNeed(value, "isn't a task")
-      if (need.task.state === 'canceled') throw invalidNeed(value, 'was canceled: it can never complete')
+      if (need.task.state === 'canceled' || (need.task.work && need.deleted && !(kept?.includes(id) && completedNeed(need))))
+        throw invalidNeed(value, 'was canceled or deleted: it can never complete')
     }
     const ids = [...named.keys()]
-    return { ids, completed: ids.every((id) => found.get(id)!.task!.state === 'completed') }
+    return { ids, completed: ids.every((id) => completedNeed(found.get(id))) }
   }
 
   /**
@@ -432,14 +519,11 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
    * `NEEDS_WALK_MAX` tasks: a change it can't check is refused too. One that only drops some walks
    * nothing.
    *
-   * It follows no completed task's needs that `access` reads. A task completes by a claim, which
-   * it takes only once all it needs has completed, and neither it nor they change after: completed
-   * is for good, and a finished task's needs can't be changed. So everything behind a completed
-   * task has completed, and task `id`, which hasn't, isn't there. Finished work behind a
-   * prerequisite, however much, is never too much to check. One the caller can't read is followed
-   * all the same, completed or not: the walk reads tasks out of the caller's sight, as it must to
-   * find a cycle, so where it stops, and whether it gets past `NEEDS_WALK_MAX`, must depend on
-   * nothing the caller can't see. A canceled task is followed: it may have waited for anything.
+   * The walk stops at a readable, completed legacy task. Its completion is final, so no task
+   * can be made to wait on it again. Completed staged tasks can reopen and make their dependents
+   * wait again, so the walk follows their needs. It also follows unreadable tasks, completed or
+   * not: where it stops, and whether it gets past `NEEDS_WALK_MAX`, must depend on nothing the
+   * caller can't see. A canceled task is followed: it may have waited for anything.
    */
   async function acyclic(access: Access, id: number, added: readonly number[], position: number) {
     const invalid = (need: number, why: string) => badRequest(`needs: #${need} ${why}`, 'invalid_needs')
@@ -451,7 +535,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
       for (const at of level) {
         const message = found.get(at)
         const task = message?.task
-        if (!task || (task.state === 'completed' && access.readable(message.channel))) continue
+        if (!task || (!task.work && task.state === 'completed' && access.readable(message.channel))) continue
         for (const need of task.needs) {
           if (need === id) throw invalid(from.get(at)!, `waits for #${id} already: they would wait for each other`)
           if (from.has(need)) continue
@@ -469,7 +553,12 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
     const ids = task.needs.filter((id) => id !== but)
     if (ids.length === 0) return true
     const found = await writes().reads.tables.messagesAt(ids, position)
-    return ids.every((id) => found.get(id)?.task?.state === 'completed')
+    return ids.every((id) => completedNeed(found.get(id)))
+  }
+
+  /** Queue readiness, independent of who may read or claim the task. */
+  async function readyAt(task: Task, position: number, now: number, pauseEpoch: number): Promise<boolean> {
+    return !task.parked && stateNow(task, now, pauseEpoch) === 'ready' && canReady(task) && (!task.work || !!scopers) && (await satisfied(task, position))
   }
 
   /** Every root that wears `board.task` as one of `states` and matches `filter`, oldest first, all as of `position`. */
@@ -491,7 +580,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
   async function readied(id: number, position: number): Promise<Events> {
     const events: Events = []
     for await (const root of rootsAt({}, ['waiting'], position))
-      if (root.task.needs.includes(id) && (await satisfied(root.task, position, id))) events.push({ type: 'task.ready', payload: { id: root.id, thread: root.thread } })
+      if (canReady(root.task) && root.task.needs.includes(id) && (await satisfied(root.task, position, id))) events.push({ type: 'task.ready', payload: { id: root.id, thread: root.thread } })
     return events
   }
 
@@ -532,13 +621,15 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
   async function claimNext(identity: Identity, input: Protocol['claimReadyTask']['input'], signal: AbortSignal, pauseEpoch: number, binding: TaskBinding | undefined): Promise<{ root: Message; claim: TaskClaim } | null> {
     const ctx = writes()
     const { principal } = identity
+    const access = scopers ? await accessFor(identity) : principal.access
+    if (!access) throw forbidden('this token no longer has access to claim work')
     const subtree = input.channel.endsWith('/')
     const channel = { path: subtree ? input.channel.slice(0, -1) : input.channel, subtree }
     // A claim changes a task's state, which is what `label` gives: where the caller has none, there's nothing it claims.
-    if (!subtree) authorize(principal.access, 'label', channel.path)
-    else if (!principal.access.anywhere('label')) throw forbidden("this token can't label anywhere, so it can't claim a task")
+    if (!subtree) authorize(access, 'label', channel.path)
+    else if (!access.anywhere('label')) throw forbidden("this token can't label anywhere, so it can't claim a task")
     const base: MessageFilter = { channel, labels: Object.entries(input.label ?? {}).map(([key, value]) => ({ key, values: [value] })) }
-    const { filter } = await within(base, principal.access, 'label')
+    const { filter } = await within(base, access, 'label')
     if (filter.channels?.length === 0) return null
     // Whose tasks it takes: its own, and those of the owners it names.
     const owners = new Set([principal.id])
@@ -550,16 +641,18 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
       read.taken = null
       const position = await ctx.reads.tables.position()
       await openAt(position, pauseEpoch)
+      const current = scopers ? await accessFor(identity) : access
+      if (!current) throw forbidden('this token no longer has access to claim work')
       let root: Root | null = null
       let best = -1
       let bestAssigned = false
       for await (const candidate of rootsAt(filter, ['ready', 'claimed'], position, true)) {
         const { task } = candidate
-        if (task.parked || stateNow(task, now, pauseEpoch) !== 'ready') continue
+        if (scopers && (!current.readable(candidate.channel) || !current.can('label', candidate.channel))) continue
         const assigned = assignedTo(task, identity)
         if (!assigned && !(task.for === null && owners.has(task.owner))) continue
         const rank = priorityRank(task.priority)
-        if (rank < best || (rank === best && (bestAssigned || !assigned))) continue
+        if (rank < best || (rank === best && (bestAssigned || !assigned)) || !(await readyAt(task, position, now, pauseEpoch))) continue
         root = candidate
         best = rank
         bestAssigned = assigned
@@ -582,8 +675,10 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
 
   return {
     server,
-    bind: (binding: { writes: WriteContext }) => {
+    bind: (binding: { writes: WriteContext; accessNow: BoardBinding['accessNow']; accessPosition: () => Promise<number> }) => {
       bound = binding.writes
+      accessNow = binding.accessNow
+      accessPosition = binding.accessPosition
     },
 
     /**
@@ -607,6 +702,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
       let planned: TaskClaim | null = null
       let committed = false
       const along: Along = async (now) => {
+        if (scopers && input.claim) requireScope()
         const position = await writes().reads.tables.position()
         if (workEpoch !== undefined) await openAt(position, workEpoch)
         const needs = await needsAt(principal.access, input.needs, position, null)
@@ -617,8 +713,8 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
           position,
           events: (root) => {
             const about = { id: root.id, thread: root.thread }
-            const events: Events = [{ type: 'task.created', payload: { ...about, needs: needs.ids, for: assigned, priority: input.priority ?? DEFAULT_TASK_PRIORITY, by: author } }]
-            if (needs.ids.length > 0 && !waits) events.push({ type: 'task.ready', payload: about })
+            const events: Events = [{ type: 'task.created', payload: { ...about, needs: needs.ids, for: assigned, priority: input.priority ?? DEFAULT_TASK_PRIORITY, by: author, ...initialWork } }]
+            if (!scopers && needs.ids.length > 0 && !waits) events.push({ type: 'task.ready', payload: about })
             if (workEpoch !== undefined) {
               const taken = claiming(root, null, identity, input.lease, token, workEpoch, binding, now)
               planned = taken.claim
@@ -683,7 +779,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
         // What the batch waits for that was there, read once for all its tasks.
         const found = outside.length === 0 ? new Map<number, Message>() : await writes().reads.tables.messagesAt(outside, position)
         const needs = named.map((refs) => needsAmong(principal.access, refs, found))
-        const readied = needs.map(({ ids, completed }, at) => ids.length > 0 && completed && inside[at]!.length === 0)
+        const readied = needs.map(({ ids, completed }, at) => !scopers && ids.length > 0 && completed && inside[at]!.length === 0)
         return {
           position,
           counts: readied.map((ready) => (ready ? 2 : 1)),
@@ -691,7 +787,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
             roots.map((root, at): Events => {
               const about = { id: root.id, thread: root.thread }
               const waitsFor = [...needs[at]!.ids, ...inside[at]!.map((other) => roots[other]!.id)]
-              return [{ type: 'task.created', payload: { ...about, needs: waitsFor, for: assigned[at]!, priority: tasks[at]!.priority ?? DEFAULT_TASK_PRIORITY, by: author } }, ...(readied[at] ? [{ type: 'task.ready' as const, payload: about }] : [])]
+              return [{ type: 'task.created', payload: { ...about, needs: waitsFor, for: assigned[at]!, priority: tasks[at]!.priority ?? DEFAULT_TASK_PRIORITY, by: author, ...initialWork } }, ...(readied[at] ? [{ type: 'task.ready' as const, payload: about }] : [])]
             }),
         }
       }
@@ -706,6 +802,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
       const start = input.claim ? (await writes().work.at()).status : undefined
       await authorizeMessage(writes(), principal.access, 'label', id)
       const pauseEpoch = start === undefined ? undefined : workOpen(start, screenedEpoch)
+      if (scopers && input.claim) requireScope()
       const assigned = ownActor(principal.id, input.for)
       const binding = bindingOf(identity, input.binding)
       const token = input.token ?? newToken()
@@ -721,8 +818,8 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
         if (input.claim && waits) throw conflict('task_waiting', `#${id} would wait for ${needs.ids.map((need) => `#${need}`).join(', ')}: it wasn't made a task`)
         if (input.claim && assigned !== null && assigned !== actor.id) throw conflict('task_assigned', `#${id} would be assigned to ${assigned}: it wasn't made a task`)
         const about = { id, thread: found.thread }
-        const events: Events = [{ type: 'task.created', payload: { ...about, needs: needs.ids, for: assigned, priority: input.priority ?? DEFAULT_TASK_PRIORITY, by: author } }]
-        if (needs.ids.length > 0 && !waits) events.push({ type: 'task.ready', payload: about })
+        const events: Events = [{ type: 'task.created', payload: { ...about, needs: needs.ids, for: assigned, priority: input.priority ?? DEFAULT_TASK_PRIORITY, by: author, ...initialWork } }]
+        if (!scopers && needs.ids.length > 0 && !waits) events.push({ type: 'task.ready', payload: about })
         if (pauseEpoch !== undefined) {
           const claimed = claiming(found, null, identity, input.lease, token, pauseEpoch, binding, now)
           events.push(...claimed.events)
@@ -751,8 +848,8 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
       const needed = query.needs === undefined ? null : (indexOf(query.needs) ?? -1)
       const now = wallTime()
       const { status: { pauseEpoch } } = await ctx.work.at()
-      const matches = ({ task }: Root) =>
-        (wanted === 'all' || wanted === 'open' || stateNow(task, now, pauseEpoch) === wanted) &&
+      const matches = (task: Task) =>
+        (wanted === 'all' || wanted === 'open' || wanted === 'ready' || stateNow(task, now, pauseEpoch) === wanted) &&
         (owners === null || owners.has(task.owner)) &&
         (assignees === null || (task.for !== null && assignees.has(task.for))) &&
         (needed === null || task.needs.includes(needed))
@@ -772,7 +869,8 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
         more = page.threads.length === PAGE
         for (const thread of page.threads) {
           last = thread.root.id
-          if (thread.root.task && matches(thread.root as Root)) found.push(thread)
+          const { task } = thread.root
+          if (task && matches(task) && (wanted !== 'ready' || (await readyAt(task, position, now, pauseEpoch)))) found.push(thread)
           if (!query.latest && found.length === limit) break scan
         }
       }
@@ -805,6 +903,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
         made.replay = false
         await openAt(position, pauseEpoch)
         const { task } = found
+        if (task.work && !scopers) throw noLifecycle()
         const current = task.claim
         if (input.token !== undefined && current && hashes(token, current.token)) {
           if (stale(task, pauseEpoch)) throw claimLost(id)
@@ -816,6 +915,8 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
           }
         }
         claimable(found, identity, pauseEpoch, now)
+        const waits = !(await satisfied(task, position))
+        if (waits) throw waiting(found)
         const claimed = claiming(found, task, identity, input.lease, token, pauseEpoch, binding, now, input.hold)
         made.claim = claimed.claim
         return claimed.events
@@ -873,7 +974,19 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
       const root = await changeTask(identity, id, async (found, position, now) => {
         await fenced(found, identity, proof, position, now)
         const about = { id, thread: found.thread, epoch: proof.epoch, by: identity.author }
-        if (how.type === 'task.released') return [{ type: 'task.released', payload: about }]
+        if (how.type === 'task.released') {
+          const waits = !(await satisfied(found.task, position))
+          if (Date.parse(found.task.claim!.until) <= now) throw claimLost(id)
+          return [{ type: 'task.released', payload: { ...about, ...(waits ? { waiting: true } : {}) } }]
+        }
+        if (found.task.work) {
+          if (!scopers) throw noLifecycle()
+          if (how.type === 'task.failed') throw conflict('work_lifecycle_required', 'release the claim for another attempt, or ask a scoper to reject the task')
+          if (!workCanClaim(found.task.work.stage)) throw invalidStage(found, 'hand off')
+          if (!(await satisfied(found.task, position))) throw waiting(found)
+          if (Date.parse(found.task.claim!.until) <= now) throw claimLost(id)
+          return [stageChanged(found, identity, 'handoff', how.result ?? 'implementation complete', how.result)]
+        }
         if (how.type === 'task.failed') return [{ type: 'task.failed', payload: { ...about, reason: how.reason } }]
         const ready = await readied(id, position)
         return [{ type: 'task.completed', payload: { ...about, result: how.result } }, ...ready]
@@ -893,6 +1006,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
         let expired: Events = []
         if (proof) await fenced(found, identity, proof, position, now)
         else {
+          if (!beforeHandoff(found.task)) throw invalidStage(found, 'block')
           if (found.task.parked) throw parked(id)
           expired = expiredClaim(found, now, await epochAt(position))
           const state = expired.length ? 'ready' : found.task.state
@@ -920,9 +1034,12 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
           if (task.state === 'claimed' && !expired.length) throw conflict('task_claimed', `#${id} is claimed until ${task.claim!.until}: only its claim holds it`)
         }
         // A claimant may open a hold with its proof, but cannot delegate a failure it doesn't own.
-        if (claim && draft.options.some(({ next }) => next === 'fail')) owns(identity, found)
+        const canFail = draft.options.some(({ next }) => next === 'fail')
+        if (claim && canFail) owns(identity, found)
         if (finished(task) || found.deleted) throw conflict('task_finished', `#${id} is ${task.state}`)
         if (task.parked) throw parked(id)
+        if (!beforeHandoff(task)) throw invalidStage(found, 'request attention on')
+        if (task.work && canFail) throw conflict('work_lifecycle_required', 'only a scoper can reject staged work')
         if (task.attention?.status === 'pending' ? task.attention.id !== replaces : replaces !== undefined) throw staleAttention()
         if (task.state === 'blocked' && task.blocked?.kind !== 'needs_input' && task.blocked?.kind !== 'awaiting_approval') {
           throw conflict('task_blocked', `#${id} is held already: ${task.blocked!.reason}`)
@@ -968,7 +1085,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
             !(await matchesAttention(found, attention, position)) || attentionExpired(attention, now)) throw staleAttention()
         const option = attention.options.find(({ id }) => id === input.option)
         if (!option) throw badRequest('option is not available on this attention request')
-        const routedTo = option.next === 'fail' ? 'failed' : (await satisfied(task, position)) ? 'ready' : 'waiting'
+        const routedTo = option.next === 'fail' ? 'failed' : canReady(task) && (await satisfied(task, position)) ? 'ready' : 'waiting'
         writes().writer.beforeCommit((at) => { if (attentionExpired(attention, at)) throw staleAttention() })
         const receipt: AttentionReceipt = { option: option.id, by: author, at: new Date(now).toISOString(), routedTo }
         return [{ type: 'task.attention_answered', payload: { id, thread: found.thread, by: author, requestId, epoch: task.epoch, receipt } }]
@@ -986,7 +1103,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
         if (found.task.attention?.status === 'pending') throw conflict('attention_required', `#${id} is held by an attention request`)
         const about = { id, thread: found.thread }
         // The fold puts a task that needs any back to waiting: what it needs may have completed while it was held.
-        const ready = found.task.needs.length > 0 && (await satisfied(found.task, position))
+        const ready = canReady(found.task) && found.task.needs.length > 0 && (await satisfied(found.task, position))
         return [{ type: 'task.unblocked', payload: { ...about, by: identity.author } }, ...(ready ? [{ type: 'task.ready' as const, payload: about }] : [])]
       })
       return { task: await shown(identity, root) }
@@ -1011,7 +1128,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
           return [...expired, { type: 'task.parked', payload: { ...about, reason, by, previous: expired.length ? 'ready' : task.state } }]
         }
         if (!task.parked) return []
-        const ready = !task.blocked && task.needs.length > 0 && (await satisfied(task, position))
+        const ready = !task.blocked && canReady(task) && task.needs.length > 0 && (await satisfied(task, position))
         return [{ type: 'task.unparked', payload: { ...about, reason, by } }, ...(ready ? [{ type: 'task.ready' as const, payload: about }] : [])]
       })
       return { task: await shown(identity, root) }
@@ -1031,15 +1148,63 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
       return { task: await shown(identity, root) }
     },
 
-    /** Reopens a failed task in place. One that's open is left as it is. */
-    async reopen(identity: Identity, id: number): Promise<{ task: MessageView }> {
-      owns(identity, await taskOf(identity.principal.access, id))
-      const root = await changeTask(identity, id, async (found, position, now) => {
+    async scope(identity: Identity, id: number, reason: string, ifVersion: number): Promise<{ task: MessageView }> {
+      if (!scopers) throw noLifecycle()
+      taskLimits.note('reason', reason)
+      await taskOf(identity.principal.access, id)
+      const root = await changeScoperTask(identity, id, (found, position) => {
+        if (!found.task.work) throw noLifecycle()
+        if (found.task.work.stage !== 'proposed') throw invalidStage(found, 'scope')
+        atVersion(found, ifVersion)
+        return enterWork(found, identity, 'scoped', reason, position)
+      })
+      return { task: await shown(identity, root) }
+    },
+
+    async stage(identity: Identity, id: number, stage: WorkStageTarget, reason: string, ifVersion: number): Promise<{ task: MessageView }> {
+      if (!scopers) throw noLifecycle()
+      taskLimits.note('reason', reason)
+      await taskOf(identity.principal.access, id)
+      const root = await changeScoperTask(identity, id, async (found, position) => {
+        if (!found.task.work) throw noLifecycle()
+        const from = found.task.work.stage
+        if (stage === 'rejected' ? workTerminal(from) : !fromStages[stage].includes(from)) throw invalidStage(found, `move to ${stage}`)
+        atVersion(found, ifVersion)
+        if (stage === 'done' && !(await satisfied(found.task, position))) throw waiting(found)
+        const events = await enterWork(found, identity, stage, reason, position)
+        if (stage === 'done') events.push(...await readied(id, position))
+        return events
+      })
+      return { task: await shown(identity, root) }
+    },
+
+    /** Legacy failed work retries in place. Staged work must be scoped again. */
+    async reopen(identity: Identity, id: number, reason?: string, ifVersion?: number): Promise<{ task: MessageView }> {
+      const task = await taskOf(identity.principal.access, id)
+      if (!task.task.work) owns(identity, task)
+      const root = await changeScoperTask(identity, id, async (found, position) => {
+        if (found.task.work) {
+          const from = found.task.work.stage
+          if (from !== 'done' && from !== 'rejected') throw invalidStage(found, 'reopen')
+          if (reason === undefined || ifVersion === undefined) throw badRequest('reason and ifVersion are required to reopen staged work')
+          taskLimits.note('reason', reason)
+          atVersion(found, ifVersion)
+          const events: Events = [stageChanged(found, identity, 'proposed', reason)]
+          if (from === 'done') {
+            // Only ready dependents wait again here. A dependent that was claimed keeps its claim.
+            // The board authors the change because the dependent's readers may not see the stage move.
+            for await (const root of rootsAt({}, ['ready'], position)) {
+              if (root.task.needs.includes(id))
+                events.push({ type: 'task.needs_changed', payload: { id: root.id, thread: root.thread, needs: root.task.needs, by: TASKS_AUTHOR } })
+            }
+          }
+          return events
+        }
+
         const { task } = found
         if (task.state === 'completed' || task.state === 'canceled') throw conflict('task_finished', `#${id} is ${task.state}`)
         if (task.state !== 'failed') return []
-        const attention = task.attention
-        const waiting = attention?.status === 'answered' && attention.receipt.routedTo === 'failed' && !(await satisfied(task, position))
+        const waiting = !(await satisfied(task, position))
         return [{ type: 'task.reopened', payload: { id, thread: found.thread, by: identity.author, ...(waiting ? { waiting: true as const } : {}) } }]
       })
       return { task: await shown(identity, root) }
@@ -1048,9 +1213,14 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
     /** Assigns a task to one of its owner's actors, or with null to anyone who may claim it. A claim it has stays. */
     async assign(identity: Identity, id: number, actor: string | null): Promise<{ task: MessageView }> {
       const task = await taskOf(identity.principal.access, id)
-      owns(identity, task)
-      const assigned = ownActor(task.task.owner, actor)
-      const root = await changeTask(identity, id, (found) => {
+      if (!task.task.work) owns(identity, task)
+      const root = await changeScoperTask(identity, id, async (found, position, _access, now) => {
+        // Only a caller allowed to assign may see the owner's namespace in a validation error.
+        const assigned = ownActor(found.task.owner, actor)
+        if (found.task.work) {
+          if (!beforeHandoff(found.task)) throw invalidStage(found, 'assign')
+          if (stateNow(found.task, now, await epochAt(position)) === 'claimed') throw conflict('task_claimed', `#${id} is claimed: release the claim before reassigning it`)
+        }
         if (finished(found.task)) throw conflict('task_finished', `#${id} is ${found.task.state}`)
         return found.task.for === assigned ? [] : [{ type: 'task.assigned', payload: { id, thread: found.thread, for: assigned, by: identity.author } }]
       })
@@ -1059,27 +1229,29 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
 
     /**
      * Replaces what a task waits for, for its owner or `manage`, while no one holds it and it isn't
-     * finished. They're checked as a new task's are, and must leave it waiting for no task that
-     * waits for it. It waits for them from this write, and `task.ready` follows in it when they've
-     * all completed; with none it's ready. A held task stays held, and the same set changes nothing.
+     * finished. Added prerequisites are checked as a new task's are and must not close a cycle.
+     * It waits for its new list from this write, and `task.ready` follows in it when they've all
+     * completed; with none it's ready. A held task stays held, and the same set changes nothing.
      */
     async needs(identity: Identity, id: number, refs: readonly string[]): Promise<{ task: MessageView }> {
       const { principal } = identity
-      owns(identity, await taskOf(principal.access, id))
-      const root = await changeTask(identity, id, async (found, position, now) => {
+      const current = await taskOf(principal.access, id)
+      if (!current.task.work) owns(identity, current)
+      const root = await changeScoperTask(identity, id, async (found, position, access, now) => {
         const { task } = found
+        if (!beforeHandoff(task)) throw invalidStage(found, 'change prerequisites of')
         if (finished(task)) throw conflict('task_finished', `#${id} is ${task.state}`)
         // A claim whose lease ran out is over: its expiry goes first, in the same append.
-        const expired = expiredClaim(found, now, await epochAt(position))
+        const expired = expiredClaim(found, now, await epochAt(position), !(await satisfied(task, position)))
         if (task.state === 'claimed' && !expired.length) throw conflict('task_claimed', `#${id} is claimed until ${task.claim!.until}: what it needs changes once no one holds it`)
-        const needs = await needsAt(principal.access, refs, position, id)
+        const needs = await needsAt(access, refs, position, id, task.needs)
         if (needs.ids.length === task.needs.length && needs.ids.every((need) => task.needs.includes(need))) return []
-        await acyclic(principal.access, id, needs.ids.filter((need) => !task.needs.includes(need)), position)
+        await acyclic(access, id, needs.ids.filter((need) => !task.needs.includes(need)), position)
         const about = { id, thread: found.thread }
         return [
           ...expired,
           { type: 'task.needs_changed', payload: { ...about, needs: needs.ids, by: identity.author } },
-          ...(needs.ids.length > 0 && needs.completed && task.state !== 'blocked' ? [{ type: 'task.ready' as const, payload: about }] : []),
+          ...(needs.ids.length > 0 && needs.completed && task.state !== 'blocked' && canReady(task) ? [{ type: 'task.ready' as const, payload: about }] : []),
         ]
       })
       return { task: await shown(identity, root) }
@@ -1111,8 +1283,13 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
 
     /** Cancels a task that hasn't completed, ending any claim. What waits for it keeps waiting. */
     async cancel(identity: Identity, id: number, reason: string): Promise<{ task: MessageView }> {
-      owns(identity, await taskOf(identity.principal.access, id))
-      const root = await changeTask(identity, id, async (found, position, now) => {
+      const task = await taskOf(identity.principal.access, id)
+      if (!task.task.work) owns(identity, task)
+      const root = await changeScoperTask(identity, id, async (found, position, _access, now) => {
+        if (found.task.work) {
+          if (workTerminal(found.task.work.stage)) throw invalidStage(found, 'cancel')
+          return [stageChanged(found, identity, 'canceled', reason)]
+        }
         if (found.task.state === 'completed' || found.task.state === 'canceled') throw conflict('task_finished', `#${id} is ${found.task.state}`)
         const expired = found.task.claim ? expiredClaim(found, now, await epochAt(position)) : []
         return [...expired, { type: 'task.canceled', payload: { id, thread: found.thread, reason, by: identity.author } }]

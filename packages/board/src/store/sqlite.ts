@@ -1,4 +1,5 @@
 import { sqlite as a2Sqlite } from 'experimental-a2/store-sqlite'
+import { createAccessFence } from './fence.ts'
 import { guardedLog } from './single-writer.ts'
 import { sqliteDb } from './sqlite-db.ts'
 import { sqlTables } from './sql.ts'
@@ -24,6 +25,7 @@ export function sqlite(options: { path: string }): BoardStore {
   return {
     log,
     tables,
+    fence: createAccessFence(),
     async close() {
       await tables.close()
       log.close()

@@ -1,5 +1,6 @@
 import { memory as a2Memory } from 'experimental-a2/store-memory'
 import type { Clock } from 'experimental-a2/server'
+import { createAccessFence } from './fence.ts'
 import { guardedLog } from './single-writer.ts'
 import { sqliteDb } from './sqlite-db.ts'
 import { sqlTables } from './sql.ts'
@@ -12,5 +13,5 @@ import type { BoardStore } from './types.ts'
 export function memory(options: { clock?: Clock } = {}): BoardStore {
   const log = guardedLog((clock) => a2Memory({ clock }), options.clock)
   const tables = sqlTables(sqliteDb(':memory:'))
-  return { log, tables, close: () => tables.close() }
+  return { log, tables, fence: createAccessFence(), close: () => tables.close() }
 }
