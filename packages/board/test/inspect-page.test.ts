@@ -303,6 +303,23 @@ describe("the inspector's page, reading", () => {
     expect(page.getState().messages['64']?.text).toBe(message.text)
   })
 
+  it("keeps a finished task in its channel after its thread pane closes", async () => {
+    const root = { ...taskRoot({ channel: 'done', text: 'ship the osprey cam' }), id: '90', version: 90, revision: 90, thread: 't90', labels: { 'board.task': 'completed' } } as MessageView
+    root.task!.state = 'completed'
+    const reply = posted('91', 'done', 'shipped', '90')
+    usual['GET /threads'] = () => Response.json({ threads: [{ message: root, replies: 1, last: reply }], cursor: '91', older: null })
+    usual['GET /messages/90'] = () => Response.json({ message: root, replies: [reply], cursor: '91', schedules: [] })
+    await page.loadChannel('done')
+    const { channelRows } = await import('../src/inspect/app/store.ts')
+    const shown = () => channelRows(page.getState(), 'done').threads.map((t) => t.root.id)
+    expect(shown()).toEqual(['90'])
+
+    const close = page.openThreadPane('90')
+    await vi.waitFor(() => expect(page.getState().paneThread?.result).toBe('readable'))
+    close()
+    expect(shown()).toEqual(['90'])
+  })
+
   it("asks the board for the threads a filter finds and reads the longer ones whole, and asks a board that can't find them that way once", async () => {
     const root = posted('80', 'ops', 'falcon on the roof')
     const last = posted('83', 'ops', 'gone again', '80')

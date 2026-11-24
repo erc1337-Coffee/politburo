@@ -377,6 +377,8 @@ export const loadThread = (id: string) => once(`thread:${id}`, async () => {
 
 export function openThreadPane(id: string) {
   const visit = pane = { id, identity }
+  // A thread the page showed before the pane opened (a channel's row) stays when it closes.
+  const shownBefore = Object.hasOwn(state.messages, id)
   set((s) => ({ ...s, paneThread: { id, identity, result: 'loading', messages: {} } }))
   refreshThreadPane()
   return () => {
@@ -384,7 +386,7 @@ export function openThreadPane(id: string) {
     pane = undefined
     const taken = ++generation
     set((s) => {
-      const next = !Object.hasOwn(s.openTaskRoots, id) && store.isTask(s.messages[id])
+      const next = !shownBefore && !Object.hasOwn(s.openTaskRoots, id) && store.isTask(s.messages[id])
         ? store.evictThreads(s, new Set([id]), taken) : s
       return { ...next, paneThread: null }
     })
