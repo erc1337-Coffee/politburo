@@ -1,4 +1,4 @@
-import { CircleHelp, ClipboardList, House, ListTodo, LayoutGrid, PanelLeftClose, Plus, Settings } from 'lucide-react'
+import { CircleHelp, ClipboardList, Eye, EyeOff, House, ListTodo, LayoutGrid, PanelLeftClose, Plus, Settings } from 'lucide-react'
 import { compileAccess } from '../../server/access.ts'
 import { ChannelDialog } from './channel-dialog.tsx'
 import { useEffect, useMemo, useState } from 'react'
@@ -46,17 +46,41 @@ function useSeen(state: State, current: Route): Record<string, number> {
   return seen
 }
 
+/** A value kept in this browser, per board. */
+function useStored<T>(key: string, initial: T): [T, (next: T) => void] {
+  const [value, setValue] = useState<T>(() => {
+    try {
+      return (JSON.parse(localStorage.getItem(key) ?? 'null') as T | null) ?? initial
+    } catch {
+      return initial
+    }
+  })
+  const save = (next: T) => {
+    setValue(next)
+    try {
+      localStorage.setItem(key, JSON.stringify(next))
+    } catch {}
+  }
+  return [value, save]
+}
+
 export function Sidebar({ state, current, onHome, onCollapse }: { state: State; current: Route; onHome: () => void; onCollapse: () => void }) {
   const seen = useSeen(state, current)
+  const at = state.discovery?.url ?? location.host
+  const [hidden, setHidden] = useStored<string[]>(`board.hidden:${at}`, [])
+  const [showHidden, setShowHidden] = useStored(`board.showHidden:${at}`, false)
+  const isHidden = (path: string) => hidden.includes(path)
+  const toggleHidden = (path: string) => setHidden(isHidden(path) ? hidden.filter((p) => p !== path) : [...hidden, path])
   const groups = useMemo(() => {
     const out = new Map<string, ChannelView[]>()
     for (const channel of Object.values(state.channels).sort((a, b) => a.path.localeCompare(b.path))) {
+      if (!showHidden && hidden.includes(channel.path) && !(current.view === 'channel' && current.channel === channel.path)) continue
       const at = channel.path.lastIndexOf('/')
       const group = at === -1 ? 'channels' : channel.path.slice(0, at)
       out.set(group, [...(out.get(group) ?? []), channel])
     }
     return [...out]
-  }, [state.channels])
+  }, [state.channels, hidden, showHidden, current])
   const open = openTasks(state)
   const attention = useMemo(() => attentionTasks(state).length, [state.messages])
   const where = boardWords(state.discovery)
@@ -110,7 +134,10 @@ export function Sidebar({ state, current, onHome, onCollapse }: { state: State; 
           {hasUnshownRefusal(state) && <span className="faint">refused</span>}
         </Link>
         <h2>
-          channels
+          <span className="spacer">channels</span>
+          <button type="button" className="tool" aria-pressed={showHidden} title={showHidden ? 'hide hidden channels' : 'show hidden channels'} aria-label={showHidden ? 'hide hidden channels' : 'show hidden channels'} onClick={() => setShowHidden(!showHidden)}>
+            {showHidden ? <Eye size={13} strokeWidth={2} /> : <EyeOff size={13} strokeWidth={2} />}
+          </button>
           {compileAccess(state.me!.can).anywhere('post') && <ChannelDialog trigger={<Plus size={13} strokeWidth={2} />} triggerTitle="new channel" />}
         </h2>
         {groups.map(([group, channels]) => (
@@ -127,11 +154,22 @@ export function Sidebar({ state, current, onHome, onCollapse }: { state: State; 
                     <>
                       <MenuItem onClick={() => copy(channel.path)}>copy name</MenuItem>
                       <MenuItem onClick={() => copy(`vb read ${channel.path}`)}>copy vb read command</MenuItem>
+                      <MenuItem onClick={() => toggleHidden(channel.path)}>{isHidden(channel.path) ? 'unhide' : 'hide'}</MenuItem>
                     </>
                   }
                 >
-                  <Link to={`/c/${channel.path}`} className={`item${unread ? ' unread' : ''}`} current={active} title={channel.path}>
+                  <Link to={`/c/${channel.path}`} className={`item${unread ? ' unread' : ''}${isHidden(channel.path) ? ' hidden-channel' : ''}`} current={active} title={channel.path}>
                     <span className="name">#{channel.path.slice(channel.path.lastIndexOf('/') + 1)}</span>
+                    <span
+                      className="eye"
+                      role="button"
+                      aria-label={isHidden(channel.path) ? 'unhide' : 'hide'}
+                      title={isHidden(channel.path) ? 'unhide' : 'hide'}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={(event) => { event.preventDefault(); event.stopPropagation(); toggleHidden(channel.path) }}
+                    >
+                      {isHidden(channel.path) ? <EyeOff size={13} strokeWidth={2} /> : <Eye size={13} strokeWidth={2} />}
+                    </span>
                     {unread ? <i className="dot" /> : channel.threads !== undefined ? <span className="count">{channel.threads}</span> : null}
                   </Link>
                 </ContextMenuArea>

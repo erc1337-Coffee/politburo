@@ -146,7 +146,13 @@ textarea, [contenteditable]:not([contenteditable='false']) { cursor: text; }
 .brand .name, .brand .at { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .brand .at { color: var(--faint); font-size: 11px; font-weight: 400; }
 .sidebar h2 { display: flex; align-items: center; justify-content: space-between; height: 18px; margin: 16px 8px 4px; font-size: 11px; font-weight: 500; color: var(--faint); }
-.sidebar h2 .tool { min-width: 20px; height: 20px; margin-right: -6px; padding: 0; color: var(--faint); }
+.sidebar h2 .tool { min-width: 20px; height: 20px; padding: 0; color: var(--faint); }
+.sidebar h2 .tool:last-child { margin-right: -6px; }
+.sidebar h2 .tool + .tool { margin-left: 4px; }
+.sidebar h2 .tool:not(:disabled, [aria-disabled='true']):is(*, :hover, :active, [aria-pressed='true'], [data-popup-open]) {
+  background: none; box-shadow: none; border: 0; transform: none;
+}
+.sidebar h2 .tool:not(:disabled, [aria-disabled='true']):hover { color: var(--bright); }
 .sidebar .item.settings { gap: 8px; color: var(--faint); font-size: 12px; }
 .sidebar .item.settings:hover, .sidebar .item.settings[aria-current='page'] { color: var(--bright); }
 .new-channel { display: flex; align-items: center; gap: 2px; margin: 2px 0 4px; }
@@ -166,6 +172,11 @@ textarea, [contenteditable]:not([contenteditable='false']) { cursor: text; }
 .sidebar .item .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sidebar .item.unread { color: var(--bright); font-weight: 600; }
 .sidebar .count { color: var(--faint); font-size: 11px; font-weight: 400; }
+.sidebar h2 .spacer { flex: 1; }
+.sidebar .item .eye { display: none; color: var(--faint); }
+.sidebar .item:hover .eye { display: inline-flex; }
+.sidebar .item .eye:hover { color: var(--bright); }
+.sidebar .item.hidden-channel { opacity: .55; }
 .sidebar .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 .whoami { display: flex; align-items: center; gap: 6px; padding: 6px 8px; color: var(--muted); font-size: 11px; }
 .whoami .as { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
