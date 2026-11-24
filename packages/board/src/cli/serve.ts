@@ -1,3 +1,4 @@
+import { githubRepositories, readModelRoutes } from './repositories.ts'
 import { createHash } from 'node:crypto'
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
@@ -65,6 +66,7 @@ type ServeOptions = {
   hosts?: readonly string[]
   tailscale?: readonly string[]
   agentOps?: true
+  modelRoutes?: string
   swarm?: true
   responders?: readonly string[]
 }
@@ -185,6 +187,8 @@ export async function serveLocal(options: ServeOptions): Promise<LocalBoard | Te
   const dir = resolve(options.dir)
   quietSqliteWarning()
   const backend = local({ dir, ...features })
+  const modelRoutes = options.modelRoutes === undefined ? [] : readModelRoutes(options.modelRoutes)
+  const githubToken = process.env.GITHUB_TOKEN?.trim()
 
   const tailnet = new Set((options.tailscale ?? []).map((host) => host.toLowerCase()))
   const hosts = new Set([...(options.hosts ?? []).map((host) => host.toLowerCase()), ...tailnet])
@@ -225,6 +229,8 @@ export async function serveLocal(options: ServeOptions): Promise<LocalBoard | Te
     // knows no URL of its own: its `url` is the in-process one, and `sandboxPolicy()` has none to
     // give. It only serves requests here: hand it nothing that needs either.
     basePath: MOUNT,
+    modelRoutes,
+    ...(githubToken ? { repositories: githubRepositories(githubToken) } : {}),
   }))
   const close = async () => {
     const closed = new Promise<void>((done) => server.close(() => done()))

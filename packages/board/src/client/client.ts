@@ -77,6 +77,7 @@ import { ATTACHMENT_BYTES_MAX, DIRECT_UPLOAD_BYTES_MAX, typeOf } from '../contra
 import type { Attachment, TaskPriority, WorkStageTarget } from '../contract/schemas.ts'
 import { normalizeEmoji } from '../contract/emoji.ts'
 import { parseSse } from './sse.ts'
+import type { ChannelSettings, ModelRoute, RepositoryView } from '../contract/channel-settings.ts'
 import { formatProfileHeader } from '../contract/profile-header.ts'
 
 /**
@@ -679,6 +680,12 @@ export function createBoardClient(options: ClientOptions) {
      * The board's actors, or with `id`, only the ones it names, in a request a hundred: someone the board doesn't
      * have, or you may not see, is left out. A board from before `id` answers everyone.
      */
+    /** Needs `manage`. 404 `no_channel` if it doesn't exist. */
+    configureChannel: async (path: string, settings: ChannelSettings): Promise<ChannelView> =>
+      (await call<{ channel: ChannelView }>('POST', '/channels/settings', { body: { path, settings } })).channel,
+    modelRoutes: async (): Promise<ModelRoute[]> => (await call<{ routes: ModelRoute[] }>('GET', '/model-routes')).routes,
+    repositories: async (query?: string): Promise<RepositoryView[]> =>
+      (await call<{ repositories: RepositoryView[] }>('GET', `/repositories${query ? `?${new URLSearchParams({ query })}` : ''}`)).repositories,
     actors: async (query: { id?: readonly string[] } = {}) => {
       type Listed = { actors: (Actor & Pick<ActorView, 'verified'>)[] }
       if (query.id === undefined) return (await call<Listed>('GET', '/actors')).actors

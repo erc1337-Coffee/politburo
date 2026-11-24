@@ -372,6 +372,17 @@ On Vercel's board the latest are 100 at most, whatever `limit` asks for, and
 threads, or to read several channels, see [Listing threads](#listing-threads)
 and `GET /channels`.
 
+### Channel settings
+
+`POST /channels/settings` takes `{ path, settings: { repository, routes } }`
+and replaces them. `repository` is an `https` Git URL or null (local work);
+`routes` is `[{ key, enabled }]`, in order. It needs `manage`, answers
+`{ channel }`, and is 404 `no_channel` for a missing channel.
+
+`GET /model-routes` answers `{ routes }`. `GET /repositories?query=` answers
+`{ repositories }` and needs `manage` somewhere; without a Git account it is
+501 `no_repositories`.
+
 ### Listing threads
 
 `GET /threads` takes the [filters](#filters). A thread is in when any of

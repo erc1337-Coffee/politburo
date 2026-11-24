@@ -1,3 +1,4 @@
+import type { ModelRoute, RepositoryView } from '../contract/channel-settings.ts'
 import type { BoardEventView } from '../api/routes.ts'
 import { BoardError, createBoardClient, eventsState, type BoardClient, type EventsOptions, type NewTaskOptions, type ProfileOption, type TaskOptions } from '../client/client.ts'
 import { derivedId } from '../client/ids.ts'
@@ -50,6 +51,10 @@ export type BoardOptions = PolicyOptions & (BackendOptions | DefaultOptions) & {
     void | { refuse: { code: string; message: string } } | Promise<void | { refuse: { code: string; message: string } }>
   /** Operational inbox roles and their verified principal IDs (as `me().principal` reports them). */
   inboxRoles?: Readonly<Record<string, readonly string[]>>
+  /** Model routes channels pick from. */
+  modelRoutes?: readonly ModelRoute[]
+  /** Repository search for channel settings. Without it, 501 `no_repositories`. */
+  repositories?: (query: string | undefined, signal: AbortSignal) => Promise<RepositoryView[]>
   /** Tails the board runs for you, keyed by an id you choose: `{ triage: { tail: 'firehose', run } }`. */
   watch?: Record<string, Watcher>
   /**
@@ -468,6 +473,8 @@ export function createBoard(options: BoardOptions, runtime: Runtime): Board {
     typing: async (messages, status) => (await server()).typing(messages, status),
     accessNow: (principal, grants, now) => policy.accessNow(principal, grants, now),
     inboxRolesFor: (principal) => [...(inboxRolesByPrincipal.get(principal) ?? [])],
+    modelRoutes: () => options.modelRoutes ?? [],
+    ...(options.repositories ? { repositories: options.repositories } : {}),
     explain: (principal, channel) => policy.explain(principal, channel),
     project: () => policy.project(),
     logins: policy.logins,

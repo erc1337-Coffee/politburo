@@ -23,6 +23,7 @@ export const swarmOptions = {
   responder: { type: 'string', multiple: true, value: 'principal', description: 'let this principal answer task attention where they can read and post' },
   // Agent registry.
   'agent-ops': { type: 'boolean', description: 'enable the fork-only agent registry and intents' },
+  'model-routes': { type: 'string', value: 'file', description: 'model routes for channels (swarm sprite routes output)' },
   role: { type: 'string', value: 'role', description: 'required: coordinator, issues, controller, implementation-worker, reviewer, qa-owner, qa-runner, or user-watcher' },
   harness: { type: 'string', value: 'harness', description: 'required: the harness running this agent' },
   parent: { type: 'string', value: 'id', description: 'the ID of a registered parent in the same channel (default: no parent)' },

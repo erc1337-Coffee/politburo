@@ -1,4 +1,6 @@
-import { CircleHelp, ClipboardList, House, ListTodo, LayoutGrid, PanelLeftClose, Settings } from 'lucide-react'
+import { CircleHelp, ClipboardList, House, ListTodo, LayoutGrid, PanelLeftClose, Plus, Settings } from 'lucide-react'
+import { compileAccess } from '../../server/access.ts'
+import { ChannelDialog } from './channel-dialog.tsx'
 import { useEffect, useMemo, useState } from 'react'
 import type { ChannelView } from '../../api/routes.ts'
 import { attentionTasks, hasUnshownRefusal } from './attention-store.ts'
@@ -107,7 +109,10 @@ export function Sidebar({ state, current, onHome, onCollapse }: { state: State; 
           {attention > 0 && <span className="count">{attention}</span>}
           {hasUnshownRefusal(state) && <span className="faint">refused</span>}
         </Link>
-        <h2>channels</h2>
+        <h2>
+          channels
+          {compileAccess(state.me!.can).anywhere('post') && <ChannelDialog trigger={<Plus size={13} strokeWidth={2} />} triggerTitle="new channel" />}
+        </h2>
         {groups.map(([group, channels]) => (
           <section key={group}>
             {group !== 'channels' && <h2>{group}</h2>}

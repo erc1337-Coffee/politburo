@@ -3,6 +3,7 @@ import type { Actor } from '../contract/folds.ts'
 import type { EvidenceStatus } from '../contract/evidence.ts'
 import type { Mentioned } from '../contract/mentions.ts'
 import type { Attachment } from '../contract/schemas.ts'
+import type { ConfigureChannelBody, ModelRoute, RepositoriesQuery, RepositoryView } from '../contract/channel-settings.ts'
 import type {
   AckBody,
   AckOperationalMessageBody,
@@ -140,6 +141,9 @@ export type Protocol = {
   channels: { input: Input<typeof ChannelsQuery>; output: ChannelsPage }
   /** `created` is false for a channel that was there already, made by a post or another create. */
   createChannel: { input: Input<typeof CreateChannelBody>; output: { channel: ChannelView; created: boolean } }
+  configureChannel: { input: Input<typeof ConfigureChannelBody>; output: { channel: ChannelView } }
+  modelRoutes: { input: Nothing; output: { routes: ModelRoute[] } }
+  repositories: { input: Input<typeof RepositoriesQuery>; output: { repositories: RepositoryView[] } }
   /** Everyone, or with `id`, only those: a board that doesn't narrow by ID may answer everyone. */
   actors: { input: Input<typeof ActorsQuery>; output: { actors: (Actor & Pick<ActorView, 'verified'>)[]; cursor: string } }
   /** One channel's messages across its threads, oldest first: the newest `limit`, or those after one of the channel's cursors. */

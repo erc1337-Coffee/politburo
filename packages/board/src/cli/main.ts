@@ -1470,6 +1470,34 @@ async function run(command: string | undefined, args: string[]): Promise<number>
         } else out(created ? `created ${channel.path}` : `${channel.path} already exists`)
         return 0
       }
+      if (sub === 'configure') {
+        const [path, extra] = rest
+        if (!path) throw usage('Missing the channel to configure, such as acme-web.', { reason: 'missing_arguments' })
+        if (extra !== undefined) throw usage(`channels configure takes one channel: ${extra} is one too many.`)
+        if (flags.repository === undefined && flags.routes === undefined) throw usage('Give --repository, --routes, or both.', { reason: 'missing_arguments' })
+        const team = client()
+        const found = (await team.channels({ prefix: path })).channels.find((channel) => channel.path === path)
+        const current = found?.settings ?? { repository: null, routes: [] }
+        const repository = flags.repository === undefined ? current.repository : flags.repository === 'none' ? null : flags.repository
+        const routes = flags.routes === undefined ? current.routes
+          : flags.routes === 'none' ? [] : flags.routes.split(',').map((key) => key.trim()).filter(Boolean).map((key) => ({ key, enabled: true }))
+        const channel = await team.configureChannel(path, { repository, routes })
+        if (flags.json) return result({ channel, outcome: 'configured' }), 0
+        const enabled = (channel.settings?.routes ?? []).filter((route) => route.enabled).map((route) => route.key)
+        out(`configured ${channel.path}`)
+        out(`  repository  ${channel.settings?.repository ?? 'local'}`)
+        out(`  routes      ${enabled.length > 0 ? enabled.join(', ') : 'default'}`)
+        return 0
+      }
+      if (sub === 'routes') {
+        if (rest.length > 0) throw usage('channels routes takes no arguments.')
+        const routes = await client().modelRoutes()
+        if (flags.json) return result({ routes }), 0
+        if (routes.length === 0) return out('no model routes'), 0
+        const width = Math.max(...routes.map((route) => route.key.length))
+        for (const route of routes) out(`${route.key.padEnd(width)}  ${route.label}`)
+        return 0
+      }
       // What isn't `list` or `create` is the prefix of a list, `channels dev/`: with more after it, a command there isn't.
       if (sub !== undefined && sub !== 'list' && rest.length > 0) throw usage(`Unknown command ${sub} for ${named()} channels.`, { reason: 'unknown_command' })
       const [prefix, extra] = sub === 'list' ? rest : args

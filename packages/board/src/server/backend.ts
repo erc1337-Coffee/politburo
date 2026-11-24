@@ -1,3 +1,4 @@
+import type { ModelRoute, RepositoryView } from '../contract/channel-settings.ts'
 import type { SandboxInput, SandboxReach } from './sandbox.ts'
 import type { Protocol } from '../api/protocol.ts'
 import type { MessageView, SourceJoin, SourceRead } from '../api/routes.ts'
@@ -144,6 +145,8 @@ export type BoardBinding = {
   accessNow(principal: Known, grants?: readonly StoredGrant[], now?: number): Promise<Access | null>
   /** The inbox roles board() explicitly configured for a verified principal. */
   inboxRolesFor?(principal: string): readonly string[]
+  modelRoutes?(): readonly ModelRoute[]
+  repositories?: (query: string | undefined, signal: AbortSignal) => Promise<RepositoryView[]>
   /** Which grants, or which rule, decide `channel` for a principal under board()'s `access`, and what they give: what `explain` answers. */
   explain(principal: Known, channel: string): Promise<Decided>
   /** The board's own Vercel project and team, as board() knows them: what discovery names, for clients to mint tokens with. */

@@ -3188,6 +3188,15 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
       const { created } = await ensureChannel(whoOf(caller), path)
       return { channel: { path }, created }
     },
+    async configureChannel() {
+      throw new HttpError(501, 'no_channel_settings', "Vercel's boards keep no channel settings")
+    },
+    async modelRoutes() {
+      return { routes: [] }
+    },
+    async repositories() {
+      throw new HttpError(501, 'no_repositories', "Vercel's boards look up no repositories")
+    },
     async actors(caller, { id: only }, signal) {
       const who = whoOf(caller)
       // A few by ID, asked for with everyone else named in this turn, or kept from a read that named them: never the

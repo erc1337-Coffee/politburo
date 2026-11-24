@@ -35,6 +35,7 @@ import { ExternalEvent, ExternalTarget, Link, LINKS_PER_MESSAGE_MAX, Origin } fr
 import { AttentionDraft, AttentionReceipt } from './attention.ts'
 import { evidenceEvents } from './evidence.ts'
 import { operationalEvents } from './operational-inbox.ts'
+import { channelSettingsEvents } from './channel-settings.ts'
 import { TaskBinding, TaskHandoff, TaskPark } from './task-authority.ts'
 
 /** The sync key a write came from, or null when it was written on the board. */
@@ -58,6 +59,7 @@ const Until = z.string().datetime()
 /** The board's one log. Every board fact is an event in session `board`. */
 export const boardEvents = {
     ...operationalEvents,
+    ...channelSettingsEvents,
     'message.posted': z.object({
       channel: ChannelPath,
       /** Empty only when the message has attachments. */

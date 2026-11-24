@@ -99,6 +99,7 @@ import { avatarSvg } from './avatars.ts'
 import { badRequest, batchTooLarge, forbidden, HttpError, json, noAgentOps, noWorkEvidence, notFound, toErrorResponse, unauthorized } from './errors.ts'
 import { extractMentions, settleMentions, type Mentioned, type MentionedActor } from '../contract/mentions.ts'
 import { DroppedError, runMiddleware, type Write, type WriteSource } from './middleware.ts'
+import { ConfigureChannelBody, RepositoriesQuery } from '../contract/channel-settings.ts'
 import { ATTENTION_METHODS, createRouter, INVITE_METHODS, isAgentIntentMethod, isAgentOpsMethod, isOperationalInboxMethod, isWorkEvidenceMethod, METHODS, openapi, queryObject, readCapped, readJson, type BoardRoute } from './routing.ts'
 import { authorize, compileAccess, FULL_ACCESS, parseCan, type Access } from './access.ts'
 import { syncTarget, type SyncTarget } from './targets.ts'
@@ -160,6 +161,7 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
     case 'schemas':
     case 'status':
     case 'readOperationalInbox':
+    case 'modelRoutes':
       return {}
     case 'pause':
     case 'resume':
@@ -225,6 +227,10 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
       return PostBody.parse(await body())
     case 'createChannel':
       return CreateChannelBody.parse(await body())
+    case 'configureChannel':
+      return ConfigureChannelBody.parse(await body())
+    case 'repositories':
+      return RepositoriesQuery.parse(queryObject(url))
     case 'schedule':
       return ScheduleBody.parse(await body())
     case 'tasks':

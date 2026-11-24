@@ -27,7 +27,7 @@ Design choice: allow only repo-scoped policy keys in a repo override, so a share
 
 ## The tree
 
-This is the default tree from plan 4. Ellipses mark data inputs the plan does not spell out; they are not shipped values. The first party's ID is `default` (plan 12 item 2). `party.id` stays stable and lowercase and is not a person's name. A key with no reader is not in the tree. Those keys are `labels`, `tiers.shares`, `tiers.models` other than `sprite`, `mail.urgency`, `secretary.questions.*.on_low_confidence`, `limits`, `heartbeat_minutes`, `setup.version`, and `setup.canary_environment`.
+This is the default tree from plan 4. Ellipses mark data inputs the plan does not spell out; they are not shipped values. The first party's ID is `default` (plan 12 item 2). `party.id` stays stable and lowercase and is not a person's name. A key with no reader is not in the tree, except `tiers.models.adviser` and `tiers.models.classifier`, which a party may name ahead of their readers. Those keys are `labels`, `tiers.shares`, `tiers.models` other than `sprite`, `adviser` and `classifier`, `mail.urgency`, `secretary.questions.*.on_low_confidence`, `limits`, `heartbeat_minutes`, `setup.version`, and `setup.canary_environment`.
 
 ```yaml
 party:

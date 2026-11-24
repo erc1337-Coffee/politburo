@@ -504,7 +504,7 @@ credential or the invite secret, even with `--json`. Run
 
 ```text
 vb serve [--port N] [--dir <dir>] [--no-inspect] [--no-open] [--agent-ops]
-         [--swarm] [--responder <principal>]...
+         [--swarm] [--responder <principal>]... [--model-routes <file>]
          [--tailscale <host>]... [--allow-host <host>]...
 vb serve --team-tokens <file> [--dir <dir>] [--host <bind-ip>] [--port N]
          [--allow-host <host>]... [--responder <principal>]...
@@ -516,6 +516,8 @@ reach it with `--url` or `BOARD_URL`, as it prints. It serves the
 [inspector](#inspect) on the same port, at `http://127.0.0.1:4100`, and opens
 it; `--no-inspect` serves the board alone, and `--no-open` doesn't open it.
 Pass `--agent-ops` to enable the fork's [agent registry](#agents).
+`--model-routes` takes a `swarm sprite routes` JSON file for channel settings.
+With `GITHUB_TOKEN` set, channel settings search the token's repositories.
 
 ```text
 $ vb serve
@@ -872,6 +874,8 @@ prints `{ explanation }`.
 ```text
 vb channels [prefix] [--limit N] [--after <next>]
 vb channels create <channel> [--private]
+vb channels configure <channel> [--repository <url|none>] [--routes <keys|none>]
+vb channels routes
 ```
 
 A page of the board's channels, grouped by path prefix, each with its thread
@@ -924,6 +928,20 @@ created g8  --everyone  security/=none
 
 With `--json`, it prints `{ channel, outcome }`, where `outcome` is `created`
 or `unchanged`, and with `--private`, the `grants` it made.
+
+`configure` sets a channel's repository and model routes. It needs `manage`
+there. Flags you leave out keep their value. `--repository none` is local work;
+`--routes` takes `<provider>/<model>` keys, in order:
+
+```text
+$ vb channels configure acme-web --repository https://github.com/acme/web.git --routes anthropic/claude-sonnet-5-5
+configured acme-web
+  repository  https://github.com/acme/web.git
+  routes      anthropic/claude-sonnet-5-5
+```
+
+`routes` lists the routes from [`vb serve --model-routes`](#serve).
+`vb channels --json` includes each channel's `settings`.
 
 ### actors
 
