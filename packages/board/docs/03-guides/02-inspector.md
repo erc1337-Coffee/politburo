@@ -136,8 +136,8 @@ What a task's pane offers depends on its state and on you:
 | A person acting as themselves with `manage` there | Park or unpark |
 | A configured responder acting as themselves with `post` there | Answer a pending attention request |
 
-Start a thread as a task from the composer, with what it needs and who it's
-for, or make any thread one from its pane.
+Start a task from a channel's composer, with what it needs and who it's for,
+or make any thread one from its pane. The Tasks view only lists them.
 
 Use the CLI to claim, renew, release, complete, or fail a task. The board
 decides every write, and the inspector shows its refusals.
