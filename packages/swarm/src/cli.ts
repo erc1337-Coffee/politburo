@@ -7,7 +7,7 @@ import { rolloutMain } from './rollout/rollout-cli.ts'
 import { skillsMain } from './skills/cli.ts'
 import { runSetup } from './sprite/cli.ts'
 
-const usage = 'usage: swarm config <show|validate> [--json] [--party FILE] [--repo FILE]\n       swarm trackers scan <repo> [--party FILE] [--repo FILE] [--json]\n       swarm skills sync --dir DIR [--party FILE] [--repo FILE] [--dry-run] [--force] [--json]\n       swarm capture <run|collect>\n       swarm mirror sync --repo owner/name [--json]\n       swarm overlap <work-id> --work FILE [--max-age-minutes N] [--json]\n       swarm rollout <add|notify|ack|stale|show> [--dir D] [--json]'
+const usage = 'usage: swarm config <show|validate> [--json] [--party FILE] [--repo FILE]\n       swarm trackers scan <repo> [--party FILE] [--repo FILE] [--json]\n       swarm skills sync --dir DIR [--party FILE] [--repo FILE] [--dry-run] [--force] [--json]\n       swarm capture <run|collect>\n       swarm mirror sync --repo owner/name [--json]\n       swarm overlap <work-id> --work FILE [--max-age-minutes N] [--json]\n       swarm rollout <add|notify|ack|stale|show> [--dir D] [--json]\n       swarm serve --help'
 
 class ReadError extends Error {}
 
@@ -118,4 +118,6 @@ const subcommands: Record<string, () => Promise<{ run(argv: string[]): Promise<n
 }
 const [subcommand, ...subargs] = process.argv.slice(2)
 const area = subcommand !== undefined && Object.hasOwn(subcommands, subcommand) ? subcommands[subcommand] : undefined
-process.exitCode = area ? await (await area()).run(subargs) : main(process.argv.slice(2))
+process.exitCode = subcommand === 'serve'
+  ? await (await import('./identity/serve.ts')).serveCommand(subargs)
+  : area ? await (await area()).run(subargs) : main(process.argv.slice(2))
