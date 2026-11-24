@@ -101,6 +101,7 @@ function main(args: string[]): number {
 
 // One line per area: the loader returns run(argv): Promise<number>.
 const subcommands: Record<string, () => Promise<{ run(argv: string[]): Promise<number> }>> = {
+  claims: () => import('./claims/cli.ts'),
   check: () => import('./checks/cli.ts'),
   watch: () => import('./watch/cli.ts'),
   trackers: () => import('./trackers/cli.ts'),
