@@ -14,7 +14,8 @@
   },
   "exports": {
     ".": "./dist/index.js",
-    "./protocol": "./dist/protocol.js"
+    "./protocol": "./dist/protocol.js",
+    "./messages": "./dist/messages.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
