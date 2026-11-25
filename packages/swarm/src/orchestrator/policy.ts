@@ -1,5 +1,4 @@
-// The next step after a worker `result`. The policy is pluggable (user decision D-73);
-// the orchestrator applies hard limits around any policy.
+// The next step after a worker `result`. The orchestrator applies hard limits around any policy.
 import type { ResultData } from '@remilia/politburo-relay/messages'
 
 export type NextStep =

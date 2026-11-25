@@ -23,10 +23,10 @@ function partyRoutes(config: OrchestratorConfig): PartyRoute[] {
 async function serve(config: OrchestratorConfig): Promise<number> {
   mkdirSync(join(config.stateDirectory, 'journal'), { recursive: true, mode: 0o700 })
   const unlock = acquireLock(join(config.stateDirectory, 'orchestrator.lock'))
-  const token = process.env[config.github.tokenEnv]?.trim()
+  const token = process.env.GITHUB_TOKEN?.trim()
   if (!token) {
     unlock()
-    console.error(`error: ${config.github.tokenEnv} is not set`)
+    console.error('error: GITHUB_TOKEN is not set')
     return 1
   }
   const state = new StateStore(join(config.stateDirectory, 'state.sqlite'))

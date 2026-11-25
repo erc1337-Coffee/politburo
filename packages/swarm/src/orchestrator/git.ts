@@ -1,6 +1,4 @@
-// Git work of the orchestrator (decision D-75, option d): workers hold no GitHub credential.
-// A worker sends its commits as a git bundle through the relay; the orchestrator checks the
-// bundle against the base commit and is the only component that pushes.
+// Applies worker git bundles to bare mirrors and pushes the task branch.
 import { execFile } from 'node:child_process'
 import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'

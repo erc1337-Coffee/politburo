@@ -34,7 +34,7 @@ function createOrigin(root: string): string {
   return git(work, 'rev-parse', 'HEAD')
 }
 
-/** The worker side of option d: commit on the task branch, bundle base..branch, base64 parts. */
+/** Worker side: commit on the task branch, bundle base..branch, base64 parts. */
 function workerBundle(origin: string, scratch: string, branch: string, base: string, round: number) {
   const work = join(scratch, `${branch.replace('/', '_')}_${round}`)
   git(scratch, 'clone', '-q', origin, work)

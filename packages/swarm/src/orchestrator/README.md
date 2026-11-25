@@ -5,7 +5,7 @@ ready board tasks, starts one remote worker for each task attempt, exchanges
 commands and telemetry with that worker through `@remilia/politburo-relay`,
 chooses the next step and opens the draft pull request in the same repository.
 
-Workers hold no GitHub credential (decision D-75, option d). A worker commits on its task branch
+Workers hold no GitHub credential. A worker commits on its task branch
 and sends the commits as a git bundle in `bundle_part` messages before its `result`. When the
 next step is `publish`, the orchestrator checks the bundle digest, checks that the commits
 descend from the base commit, pushes the branch without force and opens the draft PR.
@@ -58,7 +58,7 @@ party_file: /party/party_configuration.yaml
 relay: { url: https://relay.example.net, signing_key_file: /orchestrator/keys/relay_signing_key.pem }
 channels: { include: [agents/] }
 repositories: { allow: [owner/name] }   # upstreams are denied by default
-github: { token_env: ORCHESTRATOR_GITHUB_TOKEN }
 ```
 
-Every other setting has a default in `config.ts`.
+Every other setting has a default in `config.ts`. Credentials come from the environment:
+`GITHUB_TOKEN` (reads, push, draft PR) and `CLAUDE_CODE_OAUTH_TOKEN` (`claude --cloud`).

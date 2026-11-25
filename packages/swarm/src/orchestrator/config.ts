@@ -33,7 +33,7 @@ export interface OrchestratorConfig {
     progressMode: 'summary' | 'events'
     checks: CheckConfig[]
   }
-  github: { apiUrl: string; tokenEnv: string }
+  github: { apiUrl: string }
 }
 
 export const DEFAULT_CONFIG: OrchestratorConfig = {
@@ -58,7 +58,7 @@ export const DEFAULT_CONFIG: OrchestratorConfig = {
     progressMode: 'summary',
     checks: [],
   },
-  github: { apiUrl: 'https://api.github.com', tokenEnv: 'ORCHESTRATOR_GITHUB_TOKEN' },
+  github: { apiUrl: 'https://api.github.com' },
 }
 
 export class OrchestratorConfigError extends Error {}

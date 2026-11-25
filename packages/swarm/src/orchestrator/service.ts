@@ -30,7 +30,6 @@ export interface OrchestratorDependencies {
   board: Board
   relay: RelayClient
   github: GitHubClient
-  /** Bare mirrors; the orchestrator is the only component that pushes (D-75, option d). */
   git: GitRepositories
   state: StateStore
   journal: Journal
