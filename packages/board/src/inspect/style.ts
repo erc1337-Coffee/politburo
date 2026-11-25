@@ -855,4 +855,133 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 .home-queue h2 { padding-bottom: 1px; }
 .handoff { padding-block: 2px; }
 .handoff-line { margin-bottom: 0; }
+
+/* operations: a live schematic beside the ledger and each component's details */
+.operations-view {
+  --ops-command: #f2c879; --ops-telemetry: #9fd0a4; --ops-result: #c9a9e6; --ops-external: #eba3a8; --ops-ok: #9fd0a4;
+  overflow: hidden; padding: 12px var(--inset) 14px;
+}
+@media (prefers-color-scheme: light) {
+  .operations-view { --ops-command: #8a5c0a; --ops-telemetry: #2f6b3d; --ops-result: #6a3d8f; --ops-external: #9a2f45; --ops-ok: #2f6b3d; }
+}
+.ops-layout { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(17rem, 21rem); gap: 12px; }
+.ops-main { display: flex; flex-direction: column; gap: 12px; min-width: 0; min-height: 0; }
+.ops-side { display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow: auto; padding-right: 2px; scrollbar-width: thin; }
+.ops-card { border: 1px solid var(--hairline); border-radius: 8px; background: var(--panel); min-width: 0; }
+.ops-card-head { display: flex; align-items: baseline; gap: 10px; padding: 9px 12px 8px; border-bottom: 1px solid var(--shade); }
+.ops-card-head h2 { margin: 0; font: 600 13px var(--display); letter-spacing: .02em; color: var(--bright); white-space: nowrap; }
+.ops-card-head .spacer { flex: 1; }
+.ops-card-head .act { height: 20px; padding: 0 6px; font-size: 11px; align-self: center; }
+.ops-head-meta { font: var(--metadata); color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ops-card h3 { margin: 10px 12px 2px; font: 600 11px var(--display); letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
+.ops-note { margin: 0; padding: 6px 12px 9px; color: var(--warning); font: var(--metadata); overflow-wrap: anywhere; }
+.ops-empty { margin: 0; padding: 14px 12px; color: var(--faint); font: var(--metadata); }
+.ops-legend { display: flex; flex-wrap: wrap; justify-content: flex-start; gap: 4px 12px; margin: 0; padding: 4px 12px 10px; list-style: none; font: var(--metadata); color: var(--faint); }
+.ops-legend li { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.ops-legend i { width: 6px; height: 6px; border-radius: 50%; }
+.ops-status { display: inline-flex; align-items: center; gap: 6px; font: var(--metadata); color: var(--muted); white-space: nowrap; }
+.ops-status i { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); opacity: .6; }
+.ops-status.ok i { background: var(--ops-ok); opacity: 1; box-shadow: 0 0 0 3px color-mix(in srgb, var(--ops-ok) 18%, transparent); }
+.ops-status.warn i { background: var(--warning); opacity: 1; }
+.ops-status.fault { color: var(--red); }
+.ops-status.fault i { background: var(--red); opacity: 1; }
+
+/* the schematic */
+.ops-stage { flex: none; overflow: hidden; }
+.ops-schematic { display: block; width: 100%; height: auto; user-select: none; font-family: var(--mono); }
+.ops-schematic .grid-dot { fill: var(--hairline); opacity: .35; }
+.ops-schematic .divider { stroke: var(--hairline); stroke-opacity: .45; }
+.ops-schematic .column-label { fill: var(--faint); font: 600 10.5px var(--display); letter-spacing: .16em; }
+.ops-schematic .link { fill: none; stroke: var(--hairline); stroke-width: 1.25; stroke-linecap: round; transition: stroke .9s ease-out, stroke-width .9s ease-out, stroke-opacity .9s ease-out; }
+.ops-schematic .link.used { stroke: var(--muted); stroke-opacity: .5; }
+.ops-schematic .link.launch { stroke-opacity: 0; }
+.ops-schematic .link.down { stroke-dasharray: 2 5; stroke-opacity: .6; }
+.ops-schematic .link.hot { stroke: var(--hot); stroke-opacity: .85; stroke-width: 1.75; transition-duration: .12s; }
+.ops-schematic .settled .link { stroke-opacity: .35; }
+.ops-schematic .frame { fill: var(--bg); stroke: var(--gold); stroke-opacity: .7; stroke-width: 1.1; transition: stroke .3s, stroke-opacity .3s; }
+.ops-schematic .node-title { fill: var(--bright); font: 600 14px var(--display); letter-spacing: .01em; }
+.ops-schematic .node-line { fill: var(--dim); font-size: 12px; }
+.ops-schematic .node-line.small { font-size: 10.5px; fill: var(--muted); }
+.ops-schematic .node-line.faint, .ops-schematic .node-detail { fill: var(--faint); font: 400 11px var(--mono); }
+.ops-schematic .node-figure { fill: var(--bright); font-size: 12px; font-variant-numeric: tabular-nums; }
+.ops-schematic .node.down .frame { stroke: var(--hairline); stroke-opacity: 1; stroke-dasharray: 3 4; }
+.ops-schematic .node.down .node-title { fill: var(--muted); }
+.ops-schematic .node.fault .frame { stroke: var(--red); stroke-opacity: 1; stroke-dasharray: none; }
+.ops-schematic .led { fill: var(--faint); opacity: .5; }
+.ops-schematic .led.ok { fill: var(--ops-ok); opacity: 1; }
+.ops-schematic .led.warn { fill: var(--warning); opacity: 1; }
+.ops-schematic .led.fault { fill: var(--red); opacity: 1; }
+.ops-schematic .heart .glow { opacity: .8; }
+.ops-schematic .heart .ripple { fill: none; stroke: var(--c); stroke-width: 1.5; transform-box: fill-box; transform-origin: center; animation: ops-ripple 1.1s cubic-bezier(.2, .6, .3, 1) forwards; pointer-events: none; }
+@keyframes ops-ripple { from { transform: scale(1); opacity: .75; } to { transform: scale(1.32); opacity: 0; } }
+.ops-schematic .relay .ring { fill: none; stroke: var(--gold); stroke-opacity: .45; stroke-width: 1; stroke-dasharray: 1 5; transform-box: fill-box; transform-origin: center; animation: ops-spin var(--spin, 20s) linear infinite; }
+@keyframes ops-spin { to { transform: rotate(360deg); } }
+.ops-schematic .worker { cursor: pointer; outline: none; }
+.ops-schematic .worker:hover .frame { stroke-opacity: 1; }
+.ops-schematic .worker:focus-visible .frame, .ops-schematic .worker.selected .frame { stroke: var(--accent); stroke-opacity: 1; stroke-width: 1.6; }
+.ops-schematic .worker.settled { opacity: .5; }
+.ops-schematic .worker.waiting .frame { stroke: var(--warning); stroke-opacity: 1; }
+.ops-schematic .worker .pulse { fill: none; stroke: var(--ops-ok); stroke-width: 1.2; transform-box: fill-box; transform-origin: center; animation: ops-pulse .9s ease-out forwards; pointer-events: none; }
+@keyframes ops-pulse { from { transform: scale(1); opacity: .9; } to { transform: scale(3.2); opacity: 0; } }
+.ops-schematic .worker .track { fill: var(--shade); }
+.ops-schematic .worker .sweep { fill: var(--ops-telemetry); transform-box: fill-box; transform-origin: left center; animation: ops-sweep 1.4s ease-out forwards; }
+@keyframes ops-sweep { 0% { transform: scaleX(0); opacity: .9; } 70% { transform: scaleX(1); opacity: .9; } 100% { transform: scaleX(1); opacity: 0; } }
+.ops-schematic .state { fill: var(--dim); }
+.ops-schematic .state-running { fill: var(--ops-ok); }
+.ops-schematic .state-waiting_answer { fill: var(--warning); }
+.ops-schematic .worker.fault .state { fill: var(--red); }
+.ops-schematic .packet { fill: var(--c); pointer-events: none; }
+.ops-schematic .packet.ring { fill: var(--bg); stroke: var(--c); stroke-width: 1.5; }
+.ops-schematic .packet-label { fill: var(--c); font-size: 10.5px; paint-order: stroke; stroke: var(--panel); stroke-width: 3px; stroke-linejoin: round; pointer-events: none; }
+
+/* label: value rows */
+.ops-facts { margin: 0; padding: 6px 12px 10px; font: var(--metadata); }
+.ops-facts > div { display: flex; align-items: baseline; gap: 12px; padding: 3px 0; border-bottom: 1px dotted var(--shade); }
+.ops-facts > div:last-child { border-bottom: none; }
+.ops-facts dt { flex: none; color: var(--faint); }
+.ops-facts dd { flex: 1; min-width: 0; margin: 0; text-align: right; color: var(--dim); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.ops-facts dd a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.ops-facts .faint, .ops-facts .state { color: var(--faint); }
+.ops-facts .state-running { color: var(--ops-ok); }
+.ops-facts .state-waiting_answer { color: var(--warning); }
+
+/* the ledger */
+.ops-figures { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 8px; padding: 12px 12px 4px; }
+.ops-figures > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ops-figure { font: 600 22px/1.1 var(--display); color: var(--bright); font-variant-numeric: tabular-nums; animation: ops-settle .8s ease-out; }
+.ops-figure.small { font-size: 15px; color: var(--dim); padding-top: 6px; animation: none; }
+.ops-figure-label { font: var(--metadata); color: var(--faint); }
+@keyframes ops-settle { from { color: var(--accent); } }
+.ops-hours { padding: 8px 12px 4px; }
+.ops-bars { display: flex; align-items: flex-end; gap: 2px; height: 38px; border-bottom: 1px solid var(--hairline); }
+.ops-bars i { flex: 1; min-width: 0; border-radius: 1px 1px 0 0; background: var(--shade-hover); transition: height .5s ease-out; }
+.ops-bars i.spent { background: var(--gold); opacity: .8; }
+.ops-bars i:hover { opacity: 1; background: var(--accent); }
+.ops-axis { display: flex; justify-content: space-between; padding-top: 3px; font: 10.5px/1.2 var(--mono); color: var(--faint); }
+
+/* the message log */
+.ops-messages { flex: 1; min-height: 9rem; display: flex; flex-direction: column; }
+.ops-log { flex: 1; min-height: 0; overflow: auto; list-style: none; margin: 0; padding: 4px 0; font: var(--metadata); scrollbar-width: thin; }
+.ops-log li { display: grid; grid-template-columns: auto 7px 5.5rem minmax(0, 1fr); align-items: center; gap: 10px; padding: 2px 12px; animation: ops-arrive .6s ease-out; }
+.ops-log li:hover { background: var(--shade); }
+.ops-log li.fault .ops-log-text { color: var(--red); }
+.ops-log i { width: 6px; height: 6px; border-radius: 50%; }
+.ops-log time { color: var(--faint); font-variant-numeric: tabular-nums; }
+.ops-log-kind { color: var(--faint); }
+.ops-log-text { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@keyframes ops-arrive { from { background: var(--shade-hover); } }
+
+@media (max-width: 64rem) {
+  .operations-view { overflow: auto; }
+  .ops-layout { flex: none; grid-template-columns: minmax(0, 1fr); }
+  .ops-side { overflow: visible; }
+  .ops-messages { flex: none; }
+  .ops-log { max-height: 18rem; }
+  .ops-legend { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ops-schematic .relay .ring, .ops-schematic .heart .ripple, .ops-schematic .worker .pulse, .ops-schematic .worker .sweep, .ops-figure, .ops-log li { animation: none; }
+  .ops-schematic .worker .pulse, .ops-schematic .heart .ripple { display: none; }
+  .ops-schematic .link { transition: none; }
+}
 `

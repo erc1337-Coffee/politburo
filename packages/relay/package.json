@@ -1,0 +1,29 @@
+{
+  "name": "@remilia/politburo-relay",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Store-and-forward relay between the orchestrator and its workers: signed per-attempt tokens, POST to send, SSE to receive.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "files": ["dist", "README.md"],
+  "bin": {
+    "politburo-relay": "./dist/cli.js"
+  },
+  "exports": {
+    ".": "./dist/index.js",
+    "./protocol": "./dist/protocol.js",
+    "./messages": "./dist/messages.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "typescript": "^7.0.2"
+  }
+}

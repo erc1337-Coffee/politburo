@@ -5,8 +5,8 @@ import {
   BUCKETS, fromBenchRun, ingest, LedgerError, openLedger, rollupBy, rollupLevel, unmatched,
   validateDispatch, type Dispatch, type EnvelopeField, type Ledger, type Level, type LevelScope,
   type SpendRecord, type Totals,
+  SCHEMA_VERSION,
 } from './index.ts'
-import { SCHEMA_VERSION } from './schema.ts'
 
 const usage = 'usage: swarm ledger <dispatch|append|rollup> --db FILE [options]'
 const levels = ['sprite', 'mob', 'work_item', 'spawner', 'repo', 'party'] satisfies Level[]

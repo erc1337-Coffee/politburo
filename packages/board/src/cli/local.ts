@@ -53,6 +53,7 @@ const serve: Command = {
       option('no-open'),
       option('agent-ops'),
       option('model-routes'),
+      option('operations-url'), option('ledger-file'),
       option('swarm'), option('responder'),
       option('allow-host', 'also answer requests for this host, from a proxy in front: the board is at its URL there, and whoever reaches the inspector there acts as you'),
       option('tailscale'),
@@ -107,7 +108,14 @@ const serve: Command = {
       if (!flags['no-inspect']) {
         // With this board's token, whatever BOARD_TOKEN says, and on the board's own server: one port to open, or to proxy.
         const { board } = connection(local.url, { token: local.token })
-        const page = (await createInspector({ client: board.as(null), hosts: [...hosts, ...tailscale], visitor: local.visitor })).at(local.port)
+        const operationsUrl = flags['operations-url']
+        if (operationsUrl !== undefined) {
+          const parsed = URL.parse(operationsUrl)
+          if (!parsed || parsed.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(parsed.hostname))
+            throw usage('--operations-url must be an http URL on this machine (127.0.0.1).')
+        }
+        const operations = { url: operationsUrl ?? null, ledgerFile: flags['ledger-file'] ?? null }
+        const page = (await createInspector({ client: board.as(null), hosts: [...hosts, ...tailscale], visitor: local.visitor, operations })).at(local.port)
         inspector = page
         local.page(page.handle)
         const at = new URL(local.url).origin
