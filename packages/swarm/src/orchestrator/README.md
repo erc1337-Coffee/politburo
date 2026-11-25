@@ -56,7 +56,6 @@ state_directory: /orchestrator
 board_profile: orchestrator
 party_file: /party/party_configuration.yaml
 relay: { signing_key_file: /orchestrator/keys/relay_signing_key.pem }
-channels: { include: [agents/] }
 repositories: { allow: [owner/name] }   # upstreams are denied by default
 ```
 

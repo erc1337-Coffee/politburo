@@ -11,7 +11,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { BoardError, type board as openBoard, type MessageView } from '@vercel/board'
 import { envelope, parseTelemetry, type BundlePartData, type Command, type ResultData, type StartData, type Telemetry } from '@remilia/politburo-relay/messages'
-import { channelIncluded, repositoryAllowed, type OrchestratorConfig } from './config.ts'
+import { repositoryAllowed, type OrchestratorConfig } from './config.ts'
 import type { GitRepositories } from './git.ts'
 import { repositoryName, type GitHubClient } from './github.ts'
 import { launch, launchKey, recover, type Binding, type Journal, type Provider } from './launch.ts'
@@ -280,11 +280,10 @@ export class Orchestrator {
   async #admit(now: number, pauseEpoch: number): Promise<void> {
     const { admission } = this.#d.config
     let live = this.#d.state.live()
-    if (live.length >= admission.liveAttempts || this.#d.config.channels.include.length === 0) return
+    if (live.length >= admission.liveAttempts) return
     const page = await this.#d.board.tasks.list({ state: 'ready' })
     const candidates = page.tasks
       .map((summary) => summary.message)
-      .filter((message) => channelIncluded(this.#d.config, message.channel))
       .filter((message) => !live.some((attempt) => attempt.taskId === message.id))
       .sort((a, b) => (PRIORITY[a.task?.priority ?? 'normal']! - PRIORITY[b.task?.priority ?? 'normal']!) || Number(a.id) - Number(b.id))
     for (const message of candidates) {

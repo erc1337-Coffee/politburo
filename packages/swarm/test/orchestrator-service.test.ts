@@ -169,7 +169,6 @@ describe('orchestrator', () => {
 state_directory: ${stateDirectory}
 sweep_seconds: 1
 relay: { signing_key_file: unused }
-channels: { include: [work/] }
 repositories: { allow: [${allow}] }
 watchdog: { heartbeat_seconds: 5, contact_timeout_seconds: 2, missed_heartbeats: 2, stop_grace_seconds: 1, question_wait_seconds: 30 }
 ${overrides}

@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import { describe, test } from 'node:test'
-import { channelIncluded, parseConfig, repositoryAllowed } from '../src/orchestrator/config.ts'
+import { parseConfig, repositoryAllowed } from '../src/orchestrator/config.ts'
 import { parseSessionId } from '../src/orchestrator/launcher.ts'
 import { fixedRulesPolicy, limitStep, type DecisionInput } from '../src/orchestrator/policy.ts'
 
@@ -10,12 +10,9 @@ const minimal = ''
 
 describe('orchestrator config', () => {
   test('merges snake_case settings over the defaults', () => {
-    const config = parse(`${minimal}channels: { include: [work/, ops] }\nrepositories: { allow: [Owner/Repo] }\nlimits: { rounds_per_attempt: 4 }\n`)
+    const config = parse(`${minimal}repositories: { allow: [Owner/Repo] }\nlimits: { rounds_per_attempt: 4 }\n`)
     assert.equal(config.limits.roundsPerAttempt, 4)
     assert.equal(config.limits.attemptsPerTask, 2)
-    assert.ok(channelIncluded(config, 'work/app'))
-    assert.ok(channelIncluded(config, 'ops'))
-    assert.ok(!channelIncluded(config, 'opsx'))
     assert.ok(repositoryAllowed(config, 'owner/repo'))
   })
 
