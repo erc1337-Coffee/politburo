@@ -49,7 +49,7 @@ export const DEFAULT_CONFIG: OrchestratorConfig = {
   watchdog: { heartbeatSeconds: 60, contactTimeoutSeconds: 900, missedHeartbeats: 5, stopGraceSeconds: 300, questionWaitSeconds: 3600 },
   worker: {
     launcher: ['claude', '--cloud'],
-    protocolPath: 'WORKER_RELAY_PROTOCOL.md',
+    protocolPath: '.politburo/packages/worker/WORKER_RELAY_PROTOCOL.md',
     piModel: 'fallback/codex-cursor',
     maxSeconds: 2400,
     idleSeconds: 180,

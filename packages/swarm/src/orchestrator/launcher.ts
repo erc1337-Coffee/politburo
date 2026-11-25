@@ -31,7 +31,7 @@ export function workerPrompt(input: WorkerPromptInput): string {
     '```',
     '',
     `1. Read ${input.protocolPath} in this repository and follow it exactly.`,
-    '2. Run the worker client it names with the values above. Pass the token on standard input, never as an argument or a file in the repository.',
+    '2. Start the worker client as it describes, with the values above. Pass the token on standard input, never as an argument or a file in the repository.',
     '3. The client receives "start", runs Pi, sends telemetry and obeys commands. Do not do the task yourself.',
     `4. You have no GitHub credential and must not push. Commit on the task branch; the client sends the commits as a git bundle.`,
     `5. If the client cannot reach the relay for ${input.contactTimeoutSeconds} seconds, stop.`,
@@ -46,25 +46,28 @@ export function parseSessionId(output: string): string | null {
   return bare ? bare[1]! : null
 }
 
-export type CommandRunner = (command: string, args: string[], options: { timeoutMs: number }) => Promise<{ code: number; output: string }>
+export interface CommandOptions { timeoutMs: number; cwd?: string; env?: NodeJS.ProcessEnv }
+export type CommandRunner = (command: string, args: string[], options: CommandOptions) => Promise<{ code: number; output: string }>
 
-export const runCommand: CommandRunner = (command, args, { timeoutMs }) => new Promise((resolve) => {
-  execFile(command, args, { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, windowsHide: true }, (error, stdout, stderr) => {
+export const runCommand: CommandRunner = (command, args, { timeoutMs, cwd, env }) => new Promise((resolve) => {
+  execFile(command, args, { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, windowsHide: true, ...(cwd ? { cwd } : {}), ...(env ? { env } : {}) }, (error, stdout, stderr) => {
     const code = error ? (typeof (error as NodeJS.ErrnoException & { code?: unknown }).code === 'number' ? Number((error as { code: number }).code) : 1) : 0
     resolve({ code, output: `${stdout}\n${stderr}` })
   })
 })
 
 /**
- * A launch `Provider` for one attempt: `send` runs the launcher with the prompt and reads the session id.
+ * A launch `Provider` for one attempt: `send` runs the launcher with the prompt in the attempt's
+ * launch directory and reads the session id. `CCR_FORCE_BUNDLE=1` makes `claude --cloud` upload
+ * that directory instead of cloning from GitHub.
  * `probe` cannot list cloud sessions by title yet, so it answers `unknown`: an unclear launch becomes
  * `uncertain` and waits for a person, and is never sent twice.
  */
-export function cloudProvider(launcher: readonly string[], prompt: string, run: CommandRunner = runCommand): Provider {
+export function cloudProvider(launcher: readonly string[], prompt: string, directory: string, run: CommandRunner = runCommand): Provider {
   return {
     async send() {
       const [command, ...args] = launcher
-      const { code, output } = await run(command!, [...args, prompt], { timeoutMs: 5 * 60_000 })
+      const { code, output } = await run(command!, [...args, prompt], { timeoutMs: 5 * 60_000, cwd: directory, env: { ...process.env, CCR_FORCE_BUNDLE: '1' } })
       const session = parseSessionId(output)
       if (code !== 0 || !session) throw new Error(`launcher exited ${code} without a session id`)
       return { session }

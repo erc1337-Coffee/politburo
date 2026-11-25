@@ -39,7 +39,7 @@ async function serve(config: OrchestratorConfig): Promise<number> {
     state,
     journal: openJournal(join(config.stateDirectory, 'journal')),
     routes: () => partyRoutes(config),
-    provider: (prompt) => cloudProvider(config.worker.launcher, prompt),
+    provider: (prompt, directory) => cloudProvider(config.worker.launcher, prompt, directory),
   })
   await orchestrator.start()
   await new Promise<void>((resolve) => {

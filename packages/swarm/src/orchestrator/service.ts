@@ -16,6 +16,7 @@ import type { GitRepositories } from './git.ts'
 import { repositoryName, type GitHubClient } from './github.ts'
 import { launch, launchKey, recover, type Binding, type Journal, type Provider } from './launch.ts'
 import { workerPrompt } from './launcher.ts'
+import { workerFiles } from './worker-files.ts'
 import { fixedRulesPolicy, limitStep, type NextStep, type NextStepPolicy } from './policy.ts'
 import type { RelayClient, Subscription } from './relay-client.ts'
 import { LIVE_STATES, type AttemptRecord, type StateStore } from './state.ts'
@@ -35,8 +36,10 @@ export interface OrchestratorDependencies {
   journal: Journal
   /** The party's sprite routes, in order. */
   routes: () => PartyRoute[]
-  /** A launch provider for one attempt's prompt. */
-  provider: (prompt: string) => Provider
+  /** A launch provider for one attempt's prompt, started in the attempt's launch directory. */
+  provider: (prompt: string, directory: string) => Provider
+  /** Files of the worker client that every launch directory receives. */
+  workerFiles?: () => Array<{ path: string; source: string }>
   policy?: NextStepPolicy
   now?: () => number
   log?: (entry: Record<string, unknown>) => void
@@ -75,7 +78,7 @@ export class Orchestrator {
     const log = (entry: Record<string, unknown>): void => {
       process.stdout.write(`${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`)
     }
-    this.#d = { policy: fixedRulesPolicy, now: Date.now, log, ...dependencies }
+    this.#d = { policy: fixedRulesPolicy, now: Date.now, log, workerFiles: () => workerFiles(), ...dependencies }
   }
 
   /** Recovers live attempts, then follows board events and starts the sweep. */
@@ -389,7 +392,17 @@ export class Orchestrator {
       protocolPath: config.worker.protocolPath, contactTimeoutSeconds: config.watchdog.contactTimeoutSeconds,
     })
     this.#transition(attempt, { state: 'launching' })
-    const result = await launch({ journal: this.#d.journal, provider: this.#d.provider(prompt), control: this.#control(), key, binding })
+    const launchDirectory = join(config.stateDirectory, 'launch', attempt.attemptId)
+    try {
+      await this.#d.git.prepareLaunchDirectory(plan.repository, baseCommit, launchDirectory, this.#d.workerFiles())
+    } catch (error) {
+      await this.#held(attempt).release().catch(() => undefined)
+      await this.#reply(message.id, `Orchestrator: attempt ${attemptNo} not started. The launch directory failed: ${(error as Error).message}`)
+      this.#transition(attempt, { state: 'settled', outcome: 'launch_preparation_failed' }, (error as Error).message)
+      return
+    }
+    const result = await launch({ journal: this.#d.journal, provider: this.#d.provider(prompt, launchDirectory), control: this.#control(), key, binding })
+      .finally(() => rmSync(launchDirectory, { recursive: true, force: true }))
     if ('ok' in result) {
       await this.#markUncertain(attempt, `launch journal unreadable (${result.reason})`)
       return

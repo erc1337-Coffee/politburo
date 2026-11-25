@@ -5,6 +5,11 @@ ready board tasks, starts one remote worker for each task attempt, exchanges
 commands and telemetry with that worker through `@remilia/politburo-relay`,
 chooses the next step and opens the draft pull request in the same repository.
 
+Each attempt starts from a launch directory: a clone of the repository at the base commit,
+without a remote, plus the worker client (`packages/worker`) committed in `.politburo/` on a local
+branch. `claude --cloud` runs there with `CCR_FORCE_BUNDLE=1` and uploads it, so the session needs
+no GitHub access. The session runs the client as `WORKER_RELAY_PROTOCOL.md` describes.
+
 Workers hold no GitHub credential. A worker commits on its task branch
 and sends the commits as a git bundle in `bundle_part` messages before its `result`. When the
 next step is `publish`, the orchestrator checks the bundle digest, checks that the commits
@@ -44,7 +49,8 @@ watchdog for each live attempt, then admission of new ready tasks.
 | `launcher.ts` | Worker prompt and the `claude --cloud` launch provider |
 | `policy.ts` | Next step after a result (pluggable) and the hard limits around it |
 | `github.ts` | Repository reads and the draft PR (head and base in one repository) |
-| `git.ts` | Bare mirrors; applies a worker's git bundle and pushes the task branch (never forced) |
+| `git.ts` | Bare mirrors; launch directories; applies a worker's git bundle and pushes the task branch (never forced) |
+| `worker-files.ts` | The worker client files each launch directory receives in `.politburo/` |
 | `launch.ts`, `journal.ts` | Launch a session once, record it, recover after a restart |
 | `stages/` | Review stages and the evidence gate (not connected yet) |
 | `cli.ts` | `serve`, `status`, `check` |

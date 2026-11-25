@@ -1,7 +1,7 @@
 // Applies worker git bundles to bare mirrors and pushes the task branch.
 import { execFile } from 'node:child_process'
-import { existsSync, mkdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { copyFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 
 export class GitError extends Error {}
 
@@ -67,5 +67,26 @@ export class GitRepositories {
       throw new GitError(`${input.head} does not descend from the base ${input.base}`)
     })
     await this.#git(['push', '--quiet', 'origin', `${input.head}:refs/heads/${input.branch}`], mirror)
+  }
+
+  /**
+   * Creates the directory a worker session starts from: a clone of the repository at `baseCommit`
+   * without a remote, plus `files` committed on a local launch branch. The session receives it as
+   * an upload, so it needs no GitHub access.
+   */
+  async prepareLaunchDirectory(repository: string, baseCommit: string, directory: string, files: Array<{ path: string; source: string }>): Promise<void> {
+    if (!SHA.test(baseCommit)) throw new GitError('the base must be a full commit id')
+    const mirror = await this.#mirror(repository)
+    rmSync(directory, { recursive: true, force: true })
+    await this.#git(['clone', '--quiet', '--no-checkout', mirror, directory])
+    await this.#git(['checkout', '--quiet', '-B', 'politburo-launch', baseCommit], directory)
+    await this.#git(['remote', 'remove', 'origin'], directory)
+    for (const file of files) {
+      mkdirSync(dirname(join(directory, file.path)), { recursive: true })
+      copyFileSync(file.source, join(directory, file.path))
+    }
+    await this.#git(['add', '--force', '--', ...files.map((file) => file.path)], directory)
+    await this.#git(['-c', 'user.name=politburo-orchestrator', '-c', 'user.email=politburo-orchestrator@localhost', '-c', 'commit.gpgsign=false',
+      'commit', '--quiet', '--no-verify', '-m', 'Politburo worker client'], directory)
   }
 }
