@@ -219,7 +219,7 @@ export function Operations(props: { lead?: ReactNode }) {
   }, [])
 
   const workers = useMemo(() => (snapshot?.attempts ?? []).slice(0, SHOWN_WORKERS), [snapshot])
-  const height = Math.max(340, TOP + workers.length * ROW + 10)
+  const height = Math.max(360, TOP + workers.length * ROW + 10)
   const relay = { x: AT.relay.x, y: Math.max(AT.orchestrator.y, TOP + (workers.length * ROW) / 2 - 7) }
   const workerAt = (index: number) => ({ x: WORKER.x, y: TOP + index * ROW })
 
@@ -356,7 +356,7 @@ export function Operations(props: { lead?: ReactNode }) {
             {box(AT.ledger.x, AT.ledger.y, 136, 62)}
             <text className="node-title" x={AT.ledger.x + 12} y={AT.ledger.y + 22}>Usage</text>
             <text className="node-line" x={AT.ledger.x + 124} y={AT.ledger.y + 22} textAnchor="end">{usage?.error ?? (usage ? usd(usage.today.cost_usd) : '—')}</text>
-            {usage?.hourly.map((slot, index) => {
+            {Number(usage?.total.cost_usd ?? 0) > 0 && usage?.hourly.map((slot, index) => {
               const h = Math.max(1, (Number(slot.cost_usd) / hourlyMax) * 22)
               return <rect key={slot.hour} className="spark" x={AT.ledger.x + 12 + index * 4.7} y={AT.ledger.y + 54 - h} width={3.4} height={h}><title>{`${new Date(slot.hour).getHours()}:00 ${usd(slot.cost_usd)}`}</title></rect>
             })}

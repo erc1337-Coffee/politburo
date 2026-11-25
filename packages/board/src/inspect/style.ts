@@ -860,8 +860,8 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 .operations-view { overflow: auto; padding: 10px var(--inset) 24px; gap: 10px; }
 .ops-note { color: var(--warning); margin: 0; font: var(--metadata); }
 .ops-schematic { width: 100%; max-width: 1180px; height: auto; flex: none; user-select: none; font-family: var(--mono); }
-.ops-schematic .zone { fill: none; stroke: var(--hairline); stroke-dasharray: 3 6; }
-.ops-schematic .zone-label { fill: var(--faint); font-size: 11px; letter-spacing: .08em; }
+.ops-schematic .zone { fill: none; stroke: var(--muted); stroke-opacity: .6; stroke-dasharray: 3 6; }
+.ops-schematic .zone-label { fill: var(--muted); font-size: 11px; letter-spacing: .08em; }
 .ops-schematic .arrowhead { fill: var(--muted); }
 .ops-schematic .link { fill: none; stroke: var(--muted); stroke-opacity: .55; stroke-width: var(--width, 1.5px); stroke-dasharray: 5 7;
   animation: ops-flow var(--flow, 12s) linear infinite; transition: stroke .25s, stroke-width .25s, stroke-opacity .25s; }
