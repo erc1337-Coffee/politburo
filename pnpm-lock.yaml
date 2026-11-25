@@ -148,6 +148,9 @@ importers:
 
   packages/swarm:
     dependencies:
+      '@remilia/politburo-relay':
+        specifier: workspace:^
+        version: link:../relay
       '@remilia/politburo-runtime':
         specifier: workspace:^
         version: link:../runtime
