@@ -10,7 +10,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { SpendRecord } from '@remilia/politburo-ledger'
 
 export type OperationsOptions = {
-  /** The orchestrator's status server, e.g. `http://127.0.0.1:4190`; null when there is none. */
+  /** The orchestrator's status server, e.g. `http://127.0.0.1:4780`; null when there is none. */
   url: string | null
   /** The spend ledger file; null when there is none. */
   ledgerFile: string | null

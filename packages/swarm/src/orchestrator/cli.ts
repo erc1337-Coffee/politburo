@@ -84,7 +84,7 @@ async function serve(config: OrchestratorConfig): Promise<number> {
 /** Serves only the status, saying why the orchestrator does not run, until it is stopped. */
 async function idle(argv: string[]): Promise<number> {
   const { values } = parseArgs({ args: argv, options: { reason: { type: 'string' }, port: { type: 'string' } } })
-  const port = Number(values.port ?? 4190)
+  const port = Number(values.port ?? 4780)
   if (!values.reason || !Number.isInteger(port) || port <= 0 || port > 65535) {
     console.error(usage)
     return 2

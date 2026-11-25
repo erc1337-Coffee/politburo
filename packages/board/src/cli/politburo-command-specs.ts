@@ -24,7 +24,7 @@ export const swarmOptions = {
   // Agent registry.
   'agent-ops': { type: 'boolean', description: 'enable the fork-only agent registry and intents' },
   'model-routes': { type: 'string', value: 'file', description: 'model routes for channels (swarm sprite routes output)' },
-  'operations-url': { type: 'string', value: 'url', description: "the orchestrator's status server for the operations view, on this machine (e.g. http://127.0.0.1:4190)" },
+  'operations-url': { type: 'string', value: 'url', description: "the orchestrator's status server for the operations view, on this machine (e.g. http://127.0.0.1:4780)" },
   'ledger-file': { type: 'string', value: 'file', description: 'the spend ledger the operations view reads usage from' },
   role: { type: 'string', value: 'role', description: 'required: coordinator, issues, controller, implementation-worker, reviewer, qa-owner, qa-runner, or user-watcher' },
   harness: { type: 'string', value: 'harness', description: 'required: the harness running this agent' },

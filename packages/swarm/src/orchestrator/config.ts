@@ -62,7 +62,7 @@ export const DEFAULT_CONFIG: OrchestratorConfig = {
   },
   github: { apiUrl: 'https://api.github.com' },
   ledger: { file: '/ledger/ledger.sqlite', party: 'default' },
-  operations: { port: 4190, relayStatisticsSeconds: 5 },
+  operations: { port: 4780, relayStatisticsSeconds: 5 },
 }
 
 export class OrchestratorConfigError extends Error {}
