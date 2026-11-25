@@ -18,6 +18,8 @@ import { openJournal, type Provider } from '../src/orchestrator/launch.ts'
 import { RelayClient } from '../src/orchestrator/relay-client.ts'
 import { Orchestrator } from '../src/orchestrator/service.ts'
 import { StateStore } from '../src/orchestrator/state.ts'
+import { UsageLedger } from '../src/orchestrator/usage-ledger.ts'
+import { readLedger, rollupBy } from '@remilia/politburo-ledger'
 
 const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' } }).trim()
 
@@ -197,6 +199,7 @@ ${overrides}
         }
         await script(command, send, deliver)
       }, launches),
+      usage: new UsageLedger({ file: join(stateDirectory, 'ledger', 'ledger.sqlite'), party: 'default', requestedRoute: 'openrouter/m' }),
       log: (entry) => logs.push(entry),
     })
     const done = async (id: string, states: string[]) => {
@@ -207,7 +210,7 @@ ${overrides}
       }
       throw new Error(`task ${id} did not reach ${states.join('/')}: ${JSON.stringify(logs.slice(-5))}`)
     }
-    return { team, orchestrator, state, github, launches, logs, done, base }
+    return { team, orchestrator, state, github, launches, logs, done, base, ledgerFile: join(stateDirectory, 'ledger', 'ledger.sqlite') }
   }
 
   test('runs a task to a draft PR in the same repository and completes it', async () => {
@@ -228,6 +231,15 @@ ${overrides}
       assert.match(String(message.task?.result), /github\.com\/owner\/repo\/pull\/1/)
       assert.equal(run.launches.length, 1)
       assert.equal(run.state.live().length, 0)
+      const ledger = readLedger(run.ledgerFile)
+      assert.equal(ledger.dispatches().length, 1)
+      assert.equal(ledger.dispatches()[0]!.envelope.work_id, `task-${task.id}`)
+      assert.equal(ledger.dispatches()[0]!.envelope.tier, 'mob')
+      const [row] = rollupBy(ledger, 'work_id')
+      assert.equal(row!.totals.records, 1)
+      assert.deepEqual(row!.totals.amounts, [{ basis: 'priced_estimate', unit: 'USD', known: '0.02', records: 1 }])
+      assert.equal(row!.totals.tokens.output.known, 50)
+      assert.equal(row!.totals.tokens.cache_read.unknown_records, 1)
     } finally {
       await run.orchestrator.stop()
       run.state.close()

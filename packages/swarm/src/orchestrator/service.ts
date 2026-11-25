@@ -13,6 +13,7 @@ import { BoardError, type board as openBoard, type MessageView } from '@vercel/b
 import { envelope, parseTelemetry, type BundlePartData, type Command, type ResultData, type StartData, type Telemetry } from '@remilia/politburo-relay/messages'
 import { repositoryAllowed, type OrchestratorConfig } from './config.ts'
 import type { GitRepositories } from './git.ts'
+import type { UsageLedger } from './usage-ledger.ts'
 import { repositoryName, type GitHubClient } from './github.ts'
 import { launch, launchKey, recover, type Binding, type Journal, type Provider } from './launch.ts'
 import { workerPrompt } from './launcher.ts'
@@ -38,6 +39,8 @@ export interface OrchestratorDependencies {
   routes: () => PartyRoute[]
   /** A launch provider for one attempt's prompt, started in the attempt's launch directory. */
   provider: (prompt: string, directory: string) => Provider
+  /** Spend ledger writer; without it, usage is not recorded. */
+  usage?: UsageLedger | null
   /** Files of the worker client that every launch directory receives. */
   workerFiles?: () => Array<{ path: string; source: string }>
   policy?: NextStepPolicy
@@ -78,7 +81,7 @@ export class Orchestrator {
     const log = (entry: Record<string, unknown>): void => {
       process.stdout.write(`${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`)
     }
-    this.#d = { policy: fixedRulesPolicy, now: Date.now, log, workerFiles: () => workerFiles(), ...dependencies }
+    this.#d = { policy: fixedRulesPolicy, now: Date.now, log, workerFiles: () => workerFiles(), usage: null, ...dependencies }
   }
 
   /** Recovers live attempts, then follows board events and starts the sweep. */
@@ -531,6 +534,11 @@ export class Orchestrator {
   async #onResult(attempt: AttemptRecord, result: ResultData): Promise<void> {
     const wasStopping = attempt.state === 'stopping'
     this.#transition(attempt, { state: 'deciding', costUsd: attempt.costUsd + result.cost_usd })
+    try {
+      this.#d.usage?.recordRound(attempt, result, this.#d.now())
+    } catch (error) {
+      this.#d.log({ event: 'ledger_write_failed', task: attempt.taskId, message: (error as Error).message })
+    }
     await this.#reply(attempt.taskId, `Worker report (round ${result.round}, ${result.exit_reason}): ${workerText(result.summary, 1_500)}\nFiles ${result.diff_stat.files}, +${result.diff_stat.insertions} -${result.diff_stat.deletions}. Checks: ${result.checks.map((check) => `${check.name} ${check.exit_code === 0 ? 'pass' : 'fail'}`).join(', ') || 'none'}.`)
     const bundleFile = this.#assembleBundle(attempt, result)
     const task = await this.#d.board.thread(attempt.taskId).then((thread) => thread.message).catch(() => null)

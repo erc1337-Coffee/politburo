@@ -20,6 +20,9 @@ importers:
 
   packages/board:
     dependencies:
+      '@remilia/politburo-ledger':
+        specifier: workspace:^
+        version: link:../ledger
       '@vercel/oidc':
         specifier: ^3.8.9
         version: 3.8.9
@@ -124,6 +127,15 @@ importers:
         specifier: ^2.9.1
         version: 2.9.1
 
+  packages/ledger:
+    devDependencies:
+      '@types/node':
+        specifier: ^26.6.3
+        version: 26.6.3
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
+
   packages/relay:
     devDependencies:
       '@types/node':
@@ -148,6 +160,9 @@ importers:
 
   packages/swarm:
     dependencies:
+      '@remilia/politburo-ledger':
+        specifier: workspace:^
+        version: link:../ledger
       '@remilia/politburo-relay':
         specifier: workspace:^
         version: link:../relay

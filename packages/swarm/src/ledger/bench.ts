@@ -1,8 +1,5 @@
 import { isBenchRun } from '@remilia/politburo-runtime'
-import { addDecimal } from './decimal.ts'
-import { LedgerError } from './errors.ts'
-import { BUCKETS, type Envelope, type SpendRecord, type Tokens } from './types.ts'
-import { validateRecord } from './validate.ts'
+import { addDecimal, BUCKETS, LedgerError, validateRecord, type Envelope, type SpendRecord, type Tokens } from '@remilia/politburo-ledger'
 
 export type BenchOptions = { envelope: Envelope | null; record_id?: string; received: string }
 

@@ -6,6 +6,7 @@ import { board as openBoard } from '@vercel/board'
 import { loadConfig, parseConfigText } from '../config/load.ts'
 import { loadOrchestratorConfig, type OrchestratorConfig } from './config.ts'
 import { GitRepositories } from './git.ts'
+import { UsageLedger } from './usage-ledger.ts'
 import { GitHubClient } from './github.ts'
 import { openJournal } from './launch.ts'
 import { cloudProvider } from './launcher.ts'
@@ -40,6 +41,7 @@ async function serve(config: OrchestratorConfig): Promise<number> {
     journal: openJournal(join(config.stateDirectory, 'journal')),
     routes: () => partyRoutes(config),
     provider: (prompt, directory) => cloudProvider(config.worker.launcher, prompt, directory),
+    usage: new UsageLedger({ file: config.ledger.file, party: config.ledger.party, requestedRoute: config.worker.piModel }),
   })
   await orchestrator.start()
   await new Promise<void>((resolve) => {

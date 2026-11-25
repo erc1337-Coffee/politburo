@@ -45,6 +45,7 @@ watchdog for each live attempt, then admission of new ready tasks.
 | `service.ts` | The loop, admission, attempt states, telemetry handling, settlement |
 | `config.ts` | YAML configuration (snake_case) over defaults; allow and deny lists |
 | `state.ts` | SQLite state: attempts, telemetry cursors, seen message ids, command outbox; instance lock |
+| `usage-ledger.ts` | Appends one dispatch per attempt (tier `mob`) and one usage record per model row of each round result to the party's spend ledger (`ledger.file`, default `/ledger/ledger.sqlite`). The file is open only during a write, so the board can read it. |
 | `relay-client.ts` | Token minting, command POST, telemetry SSE with resume and backoff |
 | `launcher.ts` | Worker prompt and the `claude --cloud` launch provider |
 | `policy.ts` | Next step after a result (pluggable) and the hard limits around it |

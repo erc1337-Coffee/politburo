@@ -33,6 +33,8 @@ export interface OrchestratorConfig {
     checks: CheckConfig[]
   }
   github: { apiUrl: string }
+  /** The party's spend ledger. The orchestrator appends the usage of every worker round. */
+  ledger: { file: string; party: string }
 }
 
 export const DEFAULT_CONFIG: OrchestratorConfig = {
@@ -57,6 +59,7 @@ export const DEFAULT_CONFIG: OrchestratorConfig = {
     checks: [],
   },
   github: { apiUrl: 'https://api.github.com' },
+  ledger: { file: '/ledger/ledger.sqlite', party: 'default' },
 }
 
 export class OrchestratorConfigError extends Error {}
@@ -110,6 +113,8 @@ export function validateConfig(config: OrchestratorConfig): OrchestratorConfig {
   if (config.tokens.workerTtlSeconds < 120) fail('tokens.worker_ttl_seconds: 120 or more')
   if (!(config.limits.taskBudgetUsd >= 0)) fail('limits.task_budget_usd: number >= 0 expected')
   if (config.worker.launcher.length === 0 || config.worker.launcher.some((part) => typeof part !== 'string' || part === '')) fail('worker.launcher: command expected')
+  if (!config.ledger.file.startsWith('/')) fail('ledger.file: absolute path expected')
+  if (!/^[a-z0-9][a-z0-9_.:-]{0,79}$/i.test(config.ledger.party)) fail('ledger.party: short code expected')
   if (config.worker.progressMode !== 'summary' && config.worker.progressMode !== 'events') fail('worker.progress_mode: summary or events')
   for (const check of config.worker.checks) {
     if (typeof check.name !== 'string' || typeof check.command !== 'string' || !Number.isInteger(check.timeoutSeconds)) fail('worker.checks: name, command and timeout_seconds expected')

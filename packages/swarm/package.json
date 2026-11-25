@@ -31,6 +31,7 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
+    "@remilia/politburo-ledger": "workspace:^",
     "@remilia/politburo-relay": "workspace:^",
     "@remilia/politburo-runtime": "workspace:^",
     "@vercel/board": "workspace:^",

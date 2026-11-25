@@ -67,7 +67,58 @@ function sqlFailure(error: unknown): never {
   throw error
 }
 
-export function openLedger(path: string): Ledger {
+function recordFromRow(row: RecordRow, envelopeOf: (executionId: string) => Envelope): SpendRecord {
+  const { seq: _seq, execution_id, amount_value, amount_unit, coverage_state, field_quality, actor, reason, exit_reason,
+    input_uncached, input_total, output, cache_read, cache_write, reasoning, ...fact } = row
+  return {
+    ...fact,
+    envelope: execution_id === null ? null : envelopeOf(execution_id),
+    tokens: { input_uncached, input_total, output, cache_read, cache_write, reasoning },
+    amount: amount_value === null ? null : { value: amount_value, unit: amount_unit! },
+    coverage: { state: coverage_state, field_quality: JSON.parse(field_quality) },
+    ...(actor === null ? {} : { actor }), ...(reason === null ? {} : { reason }),
+    ...(exit_reason === null ? {} : { exit_reason }),
+  }
+}
+
+/** A read-only snapshot of the ledger's dispatches and current record heads, for roll-ups. */
+export type LedgerSnapshot = { dispatches(): readonly Dispatch[]; heads(): readonly SpendRecord[] }
+
+/**
+ * Reads the ledger without writing to it: the file and its directory may be read-only. A writer
+ * holds the file only while it appends, so a reader waits up to `busyMs` for it.
+ */
+export function readLedger(path: string, busyMs = 2_000): LedgerSnapshot {
+  const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof import('node:sqlite')
+  const db = new DatabaseSync(path, { readOnly: true, timeout: busyMs })
+  try {
+    if ((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version !== SCHEMA_VERSION) {
+      fail('version', 'unsupported ledger schema version')
+    }
+    const dispatches = (db.prepare('SELECT * FROM dispatches ORDER BY rowid').all() as DispatchRow[]).map(readDispatch)
+    const envelopes = new Map(dispatches.map((d) => [d.envelope.trace.execution_id, d.envelope]))
+    const heads = (db.prepare('SELECT * FROM heads ORDER BY seq').all() as RecordRow[])
+      .map((row) => recordFromRow(row, (id) => envelopes.get(id) ?? fail('unknown_dispatch', 'a record names an unknown dispatch')))
+    return { dispatches: () => dispatches, heads: () => heads }
+  } catch (error) {
+    if (error instanceof LedgerError) throw error
+    return sqlFailure(error)
+  } finally {
+    db.close()
+  }
+}
+
+export interface OpenLedgerOptions {
+  /**
+   * `wal` (default) suits a single process. `rollback` lets other processes read the file from a
+   * read-only directory between writes: a WAL file needs its `-shm` file, which such a reader cannot create.
+   */
+  journal?: 'wal' | 'rollback'
+  /** How long to wait for a reader to release the file before the open fails. Default 0. */
+  busyMs?: number
+}
+
+export function openLedger(path: string, options: OpenLedgerOptions = {}): Ledger {
   // Loading SQLite on first use keeps an import of this module quiet.
   const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof import('node:sqlite')
   const db = new DatabaseSync(path)
@@ -96,8 +147,9 @@ export function openLedger(path: string): Ledger {
     }
   }
   try {
-    db.exec('PRAGMA busy_timeout=0; PRAGMA foreign_keys=ON; PRAGMA locking_mode=EXCLUSIVE')
-    if (path !== ':memory:') db.exec('PRAGMA journal_mode=WAL')
+    const busyMs = Math.max(0, Math.trunc(options.busyMs ?? 0))
+    db.exec(`PRAGMA busy_timeout=${busyMs}; PRAGMA foreign_keys=ON; PRAGMA locking_mode=EXCLUSIVE`)
+    if (path !== ':memory:') db.exec(`PRAGMA journal_mode=${options.journal === 'rollback' ? 'DELETE' : 'WAL'}`)
     db.exec('PRAGMA synchronous=FULL')
     write(() => {}) // Take the writer lock now, and retain it until close.
     const version = get<{ user_version: number }>('PRAGMA user_version')?.user_version
@@ -170,19 +222,7 @@ export function openLedger(path: string): Ledger {
     })
   }
 
-  function readRecord(row: RecordRow): SpendRecord {
-    const { seq, execution_id, amount_value, amount_unit, coverage_state, field_quality, actor, reason, exit_reason,
-      input_uncached, input_total, output, cache_read, cache_write, reasoning, ...fact } = row
-    return {
-      ...fact,
-      envelope: execution_id === null ? null : dispatch(execution_id)!.envelope,
-      tokens: { input_uncached, input_total, output, cache_read, cache_write, reasoning },
-      amount: amount_value === null ? null : { value: amount_value, unit: amount_unit! },
-      coverage: { state: coverage_state, field_quality: JSON.parse(field_quality) },
-      ...(actor === null ? {} : { actor }), ...(reason === null ? {} : { reason }),
-      ...(exit_reason === null ? {} : { exit_reason }),
-    }
-  }
+  const readRecord = (row: RecordRow): SpendRecord => recordFromRow(row, (id) => dispatch(id)!.envelope)
   const recordRow = (id: string) => get<RecordRow>('SELECT * FROM records WHERE record_id=?', id)
   const successor = (id: string) => get<RecordRow>('SELECT * FROM records WHERE revises=?', id)
   function checkLinks(r: SpendRecord): string | null {
