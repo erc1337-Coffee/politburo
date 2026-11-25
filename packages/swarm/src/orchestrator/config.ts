@@ -35,6 +35,8 @@ export interface OrchestratorConfig {
   github: { apiUrl: string }
   /** The party's spend ledger. The orchestrator appends the usage of every worker round. */
   ledger: { file: string; party: string }
+  /** The read-only status server of the operations view, on 127.0.0.1. Port 0 turns it off. */
+  operations: { port: number; relayStatisticsSeconds: number }
 }
 
 export const DEFAULT_CONFIG: OrchestratorConfig = {
@@ -60,6 +62,7 @@ export const DEFAULT_CONFIG: OrchestratorConfig = {
   },
   github: { apiUrl: 'https://api.github.com' },
   ledger: { file: '/ledger/ledger.sqlite', party: 'default' },
+  operations: { port: 4190, relayStatisticsSeconds: 5 },
 }
 
 export class OrchestratorConfigError extends Error {}
@@ -113,6 +116,8 @@ export function validateConfig(config: OrchestratorConfig): OrchestratorConfig {
   if (config.tokens.workerTtlSeconds < 120) fail('tokens.worker_ttl_seconds: 120 or more')
   if (!(config.limits.taskBudgetUsd >= 0)) fail('limits.task_budget_usd: number >= 0 expected')
   if (config.worker.launcher.length === 0 || config.worker.launcher.some((part) => typeof part !== 'string' || part === '')) fail('worker.launcher: command expected')
+  if (!Number.isInteger(config.operations.port) || config.operations.port < 0 || config.operations.port > 65535) fail('operations.port: 0 to 65535')
+  if (!Number.isInteger(config.operations.relayStatisticsSeconds) || config.operations.relayStatisticsSeconds < 2) fail('operations.relay_statistics_seconds: integer of 2 or more')
   if (!config.ledger.file.startsWith('/')) fail('ledger.file: absolute path expected')
   if (!/^[a-z0-9][a-z0-9_.:-]{0,79}$/i.test(config.ledger.party)) fail('ledger.party: short code expected')
   if (config.worker.progressMode !== 'summary' && config.worker.progressMode !== 'events') fail('worker.progress_mode: summary or events')

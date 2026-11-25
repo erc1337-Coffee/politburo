@@ -19,6 +19,8 @@ import { RelayClient } from '../src/orchestrator/relay-client.ts'
 import { Orchestrator } from '../src/orchestrator/service.ts'
 import { StateStore } from '../src/orchestrator/state.ts'
 import { UsageLedger } from '../src/orchestrator/usage-ledger.ts'
+import { OperationsMonitor } from '../src/orchestrator/operations.ts'
+import { startOperationsServer } from '../src/orchestrator/operations-server.ts'
 import { readLedger, rollupBy } from '@remilia/politburo-ledger'
 
 const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' } }).trim()
@@ -181,6 +183,7 @@ ${overrides}
     const launches: string[] = []
     const state = new StateStore(join(stateDirectory, 'state.sqlite'))
     const logs: Array<Record<string, unknown>> = []
+    const monitor = new OperationsMonitor({ relayUrl })
     const orchestrator = new Orchestrator({
       config,
       board: team.as('orchestrator'),
@@ -200,6 +203,7 @@ ${overrides}
         await script(command, send, deliver)
       }, launches),
       usage: new UsageLedger({ file: join(stateDirectory, 'ledger', 'ledger.sqlite'), party: 'default', requestedRoute: 'openrouter/m' }),
+      monitor,
       log: (entry) => logs.push(entry),
     })
     const done = async (id: string, states: string[]) => {
@@ -210,7 +214,7 @@ ${overrides}
       }
       throw new Error(`task ${id} did not reach ${states.join('/')}: ${JSON.stringify(logs.slice(-5))}`)
     }
-    return { team, orchestrator, state, github, launches, logs, done, base, ledgerFile: join(stateDirectory, 'ledger', 'ledger.sqlite') }
+    return { team, orchestrator, state, github, launches, logs, done, base, monitor, ledgerFile: join(stateDirectory, 'ledger', 'ledger.sqlite') }
   }
 
   test('runs a task to a draft PR in the same repository and completes it', async () => {
@@ -240,6 +244,39 @@ ${overrides}
       assert.deepEqual(row!.totals.amounts, [{ basis: 'priced_estimate', unit: 'USD', known: '0.02', records: 1 }])
       assert.equal(row!.totals.tokens.output.known, 50)
       assert.equal(row!.totals.tokens.cache_read.unknown_records, 1)
+
+      const events = run.monitor.since(0)!
+      const kinds = (kind: string) => events.filter((event) => event.kind === kind)
+      assert.ok(kinds('tick').length > 0)
+      assert.ok(kinds('command').some((event) => event.kind === 'command' && event.type === 'start' && event.outcome === 'sent'))
+      assert.deepEqual(kinds('telemetry').map((event) => event.kind === 'telemetry' && event.type), ['heartbeat', 'bundle_part', 'result'])
+      assert.deepEqual(kinds('github').map((event) => event.kind === 'github' && event.action), ['push', 'draft_pr'])
+      assert.ok(kinds('board').some((event) => event.kind === 'board' && event.action === 'claim'))
+      assert.ok(kinds('board').some((event) => event.kind === 'board' && event.action === 'complete'))
+      assert.ok(kinds('usage').some((event) => event.kind === 'usage' && event.output_tokens === 50))
+      assert.ok(!JSON.stringify(events).includes('Fix the parser'), 'no task text in events')
+      const snapshot = run.orchestrator.operations()!
+      assert.equal(snapshot.relay.reachable, true)
+      assert.equal(snapshot.attempts[0]!.state, 'settled')
+      assert.equal(snapshot.attempts[0]!.heartbeat?.pi_alive, true)
+      assert.ok(snapshot.relay.statistics !== null)
+
+      const server = await startOperationsServer({ monitor: run.monitor, port: 0, snapshot: () => run.orchestrator.operations()! })
+      try {
+        assert.equal((await fetch(`${server.url}/state`)).status, 200)
+        assert.equal((await fetch(`${server.url}/state`, { method: 'POST' })).status, 405)
+        const attemptEvents = await (await fetch(`${server.url}/attempts/${snapshot.attempts[0]!.attempt_id}/events`)).json() as { events: unknown[] }
+        assert.ok(attemptEvents.events.length > 3)
+        const controller = new AbortController()
+        const stream = await fetch(`${server.url}/events`, { headers: { 'last-event-id': String(events.at(-3)!.seq) }, signal: controller.signal })
+        const reader = stream.body!.getReader()
+        let text = ''
+        while ((text.match(/^id: /gm) ?? []).length < 2) text += new TextDecoder().decode((await reader.read()).value)
+        controller.abort()
+        assert.match(text, new RegExp(`id: ${events.at(-2)!.seq}\n`))
+      } finally {
+        await server.close()
+      }
     } finally {
       await run.orchestrator.stop()
       run.state.close()

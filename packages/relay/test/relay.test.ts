@@ -149,6 +149,32 @@ describe('relay', () => {
     assert.ok(!fresh.text.includes('"type":"start"'))
     fresh.close()
   })
+
+  test('statistics: counters only, statistics token only, at most one read a second per token', async () => {
+    const stats = (credential: string | null) =>
+      fetch(`${base}/stats`, { headers: credential ? { authorization: 'Bearer ' + credential } : {} })
+    await post('telemetry', 'worker', '{"type":"heartbeat","secret":"do-not-leak"}', 'task-9-r1')
+    const live = await open('task-9-r1', 'telemetry', 'orchestrator')
+    await live.readUntil('id: 1\n')
+    const reader = token('statistics', 'statistics')
+    const response = await stats(reader)
+    assert.equal(response.status, 200)
+    const text = await response.text()
+    assert.ok(!text.includes('do-not-leak'), 'no message content')
+    const body = JSON.parse(text)
+    assert.equal(body.channels['task-9-r1'].telemetry.messages, 1)
+    assert.equal(body.channels['task-9-r1'].telemetry.last_seq, 1)
+    assert.equal(body.channels['task-9-r1'].telemetry.streams, 1)
+    assert.ok(body.refused['403'] >= 1)
+    assert.equal((await stats(reader)).status, 429)
+    assert.equal((await stats(null)).status, 401)
+    assert.equal((await stats(token('orchestrator', 'statistics'))).status, 401)
+    assert.equal((await stats(token('worker', 'task-9-r1'))).status, 401)
+    assert.equal((await post('commands', 'statistics', '{"type":"x"}', 'statistics')).status, 403)
+    const channelRead = await fetch(`${base}/channels/task-9-r1/telemetry`, { headers: { authorization: 'Bearer ' + token('statistics', 'task-9-r1') } })
+    assert.equal(channelRead.status, 403)
+    live.close()
+  })
 })
 
 describe('store', () => {

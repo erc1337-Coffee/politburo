@@ -30,6 +30,7 @@ Every endpoint needs `Authorization: Bearer <token>`. Anything else answers 404.
 | `POST /channels/{channel}/{direction}` | the direction's sender | `201 {"seq": n}` |
 | `GET /channels/{channel}/{direction}` | the direction's receiver | SSE: `id: <seq>`, `data: {"seq","at","body"}`; resumes after `Last-Event-ID` |
 | `DELETE /channels/{channel}` | orchestrator | `204`; ends open streams |
+| `GET /stats` | statistics token | `200`: per channel and direction, message and byte counts, last sequence number and time, open streams; refused requests by status. Counters only, no content; at most one read a second per token (`429 too_many_requests`) |
 
 Errors are JSON `{"error": "<code>"}`:
 
@@ -46,9 +47,11 @@ client reconnects with a new token and `Last-Event-ID`.
 ## Tokens
 
 `base64url(claims).base64url(Ed25519 signature)`, where the claims are
-`{"v": 1, "channel", "role": "orchestrator" | "worker", "iat", "exp"}` in Unix
+`{"v": 1, "channel", "role": "orchestrator" | "worker" | "statistics", "iat", "exp"}` in Unix
 seconds. The orchestrator signs one worker token and one orchestrator token per
-attempt with `signToken()` from `@remilia/politburo-relay/protocol`.
+attempt with `signToken()` from `@remilia/politburo-relay/protocol`. For the
+operations view it signs a `statistics` token (channel `statistics`, 60 s), which
+reads `GET /stats` and nothing else: it cannot read, write or end a channel.
 
 ## Limits (defaults)
 

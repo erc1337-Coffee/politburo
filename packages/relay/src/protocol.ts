@@ -6,8 +6,12 @@ import { createPrivateKey, createPublicKey, generateKeyPairSync, sign, verify, t
 export const DIRECTIONS = ['commands', 'telemetry'] as const
 export type Direction = (typeof DIRECTIONS)[number]
 
-export const ROLES = ['orchestrator', 'worker'] as const
+/** `statistics` reads the relay's counters (`GET /stats`) and nothing else. */
+export const ROLES = ['orchestrator', 'worker', 'statistics'] as const
 export type Role = (typeof ROLES)[number]
+
+/** The channel claim of a statistics token. A channel token of this name cannot read statistics. */
+export const STATISTICS_CHANNEL = 'statistics'
 
 /** A channel is one task attempt. Its name is chosen by the orchestrator. */
 export const CHANNEL_PATTERN = /^[A-Za-z0-9_-]{1,100}$/
@@ -15,6 +19,17 @@ export const CHANNEL_PATTERN = /^[A-Za-z0-9_-]{1,100}$/
 /** Commands go from the orchestrator to the worker; telemetry goes back. */
 export const SENDER: Readonly<Record<Direction, Role>> = { commands: 'orchestrator', telemetry: 'worker' }
 export const RECEIVER: Readonly<Record<Direction, Role>> = { commands: 'worker', telemetry: 'orchestrator' }
+
+/** Counters of one direction of one channel. */
+export interface DirectionStatistics { messages: number; bytes: number; last_seq: number; last_at: number | null; streams: number }
+/** `GET /stats`: counters only. The relay keeps no request log and returns no message content. */
+export interface RelayStatistics {
+  started_at: number
+  at: number
+  channels: Record<string, Record<Direction, DirectionStatistics>>
+  /** Refused requests since start, by HTTP status. */
+  refused: Record<string, number>
+}
 
 export const TOKEN_VERSION = 1
 

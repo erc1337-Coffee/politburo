@@ -1,4 +1,4 @@
-import { CircleHelp, ClipboardList, Eye, EyeOff, House, ListTodo, LayoutGrid, PanelLeftClose, Plus, Settings } from 'lucide-react'
+import { Activity, CircleHelp, ClipboardList, Eye, EyeOff, House, ListTodo, LayoutGrid, PanelLeftClose, Plus, Settings } from 'lucide-react'
 import { compileAccess } from '../../server/access.ts'
 import { ChannelDialog } from './channel-dialog.tsx'
 import { useEffect, useMemo, useState } from 'react'
@@ -123,13 +123,14 @@ export function Sidebar({ state, current, onHome, onCollapse }: { state: State; 
         </Link>
         <Link to="/tasks" className="item" current={current.view === 'tasks'}>
           <ClipboardList size={14} aria-hidden="true" />
-          <span className="name">tasks</span>
+          <span className="name">Tasks</span>
           {open !== null && open > 0 && <span className="count">{open}</span>}
         </Link>
         <Link to="/work" className="item" current={current.view === 'work'}><ListTodo size={14} aria-hidden="true" /><span className="name">Work</span></Link>
+        <Link to="/operations" className="item" current={current.view === 'operations'}><Activity size={14} aria-hidden="true" /><span className="name">Operations</span></Link>
         <Link to="/attention" className="item" current={current.view === 'attention'}>
           <CircleHelp size={14} aria-hidden="true" />
-          <span className="name">attention</span>
+          <span className="name">Attention</span>
           {attention > 0 && <span className="count">{attention}</span>}
           {hasUnshownRefusal(state) && <span className="faint">refused</span>}
         </Link>
@@ -181,7 +182,7 @@ export function Sidebar({ state, current, onHome, onCollapse }: { state: State; 
       <div className="sidebar-foot">
         <Link to="/settings/access" className="item settings" current={current.view === 'settings'}>
           <Settings size={14} strokeWidth={1.75} />
-          <span>settings</span>
+          <span>Settings</span>
         </Link>
         <div className="whoami" title={state.me!.actor}>
           <Avatar name={shownName(state.me!)} size={24} />

@@ -1,7 +1,7 @@
 // Relay client for the orchestrator: mints tokens, posts commands, follows telemetry.
 // Every connection is outbound. Tokens are minted locally for each request or stream.
 import type { KeyObject } from 'node:crypto'
-import { loadSigningKey, signToken, type Direction, type Role } from '@remilia/politburo-relay/protocol'
+import { loadSigningKey, signToken, STATISTICS_CHANNEL, type Direction, type RelayStatistics, type Role } from '@remilia/politburo-relay/protocol'
 
 export class RelayError extends Error {
   readonly status: number
@@ -75,6 +75,18 @@ export class RelayClient {
       signal: AbortSignal.timeout(15_000),
     })
     if (response.status !== 204) throw new RelayError(response.status, 'delete_failed')
+  }
+
+  /** The relay's counters, read with a 60 s statistics token, and the time the answer took. */
+  async statistics(): Promise<{ statistics: RelayStatistics; latencyMs: number }> {
+    const started = performance.now()
+    const response = await this.#fetch(`${this.#base}/stats`, {
+      headers: { authorization: 'Bearer ' + this.token(STATISTICS_CHANNEL, 'statistics', 60).token },
+      signal: AbortSignal.timeout(10_000),
+    })
+    const answer = await response.json().catch(() => ({})) as RelayStatistics & { error?: string }
+    if (response.status !== 200) throw new RelayError(response.status, answer.error ?? 'unexpected_answer')
+    return { statistics: answer, latencyMs: Math.round(performance.now() - started) }
   }
 
   /**

@@ -22,6 +22,7 @@ import { Ask, AskForm, Header, HeaderActions, nativeMenu, Panel, ResizeHandle, t
 import { boardWords, cadence, firstLine, shownName, until } from './words.ts'
 import { cellHasThread, isWorkRoute, workScope } from './work-scope.ts'
 import { Work } from './work-view.tsx'
+import { Operations } from './operations-view.tsx'
 
 const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`
 
@@ -343,6 +344,7 @@ export function App() {
             )}
             {isWorkRoute(current) && <Work key={`${identity}:${where.path}`} route={current} state={state} now={now} lead={expand} />}
             {current.view === 'tasks' && <Tasks key={identity} state={state} viewer={viewer} now={now} lead={expand} where={where} known={known} />}
+            {current.view === 'operations' && <Operations lead={expand} />}
             {current.view === 'attention' && <Attention key={identity} state={state} viewer={viewer} lead={expand} now={now} />}
             {current.view === 'settings' && <Settings state={state} viewer={viewer} now={now} lead={expand} where={where} section={current.section} open={current.open} />}
             {current.view === 'missing' && (

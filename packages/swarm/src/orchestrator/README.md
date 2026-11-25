@@ -46,7 +46,9 @@ watchdog for each live attempt, then admission of new ready tasks.
 | `config.ts` | YAML configuration (snake_case) over defaults; allow and deny lists |
 | `state.ts` | SQLite state: attempts, telemetry cursors, seen message ids, command outbox; instance lock |
 | `usage-ledger.ts` | Appends one dispatch per attempt (tier `mob`) and one usage record per model row of each round result to the party's spend ledger (`ledger.file`, default `/ledger/ledger.sqlite`). The file is open only during a write, so the board can read it. |
-| `relay-client.ts` | Token minting, command POST, telemetry SSE with resume and backoff |
+| `relay-client.ts` | Token minting, command POST, telemetry SSE with resume and backoff, relay statistics |
+| `operations.ts` | Events and snapshot for the operations view: types, sizes, times, states; never message content |
+| `operations-server.ts` | Read-only status server on 127.0.0.1 (`operations.port`, default 4190): `GET /state`, `GET /events` (SSE), `GET /attempts/{id}/events` |
 | `launcher.ts` | Worker prompt and the `claude --cloud` launch provider |
 | `policy.ts` | Next step after a result (pluggable) and the hard limits around it |
 | `github.ts` | Repository reads and the draft PR (head and base in one repository) |

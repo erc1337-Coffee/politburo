@@ -5,6 +5,7 @@ import type { Me } from '../api/routes.ts'
 import type { BoardClient, ProfileOption } from '../client/client.ts'
 import { InvalidProfileHeader, parseProfileHeader } from '../contract/profile-header.ts'
 import { ATTACHMENT_BYTES_MAX } from '../contract/schemas.ts'
+import { OPERATIONS_PREFIX, operationsRoutes, type OperationsOptions } from './operations.ts'
 import { CSP, relative, shell } from './shell.ts'
 
 /** A browser UI for one board, on this machine, reading and writing as the client's identity. */
@@ -51,6 +52,8 @@ export async function createInspector(options: {
   page?: string
   hosts?: string[]
   visitor?: (request: IncomingMessage) => BoardClient | null | undefined
+  /** The orchestrator status and spend ledger the operations view reads. */
+  operations?: OperationsOptions
 }): Promise<InspectorPage> {
   const { client } = options
   const me = await client.me()
@@ -68,6 +71,23 @@ export async function createInspector(options: {
   let proxied = new Set<string>()
   let origins = new Set<string>()
   const streams = new Set<AbortController>()
+  const operations = operationsRoutes(options.operations ?? { url: null, ledgerFile: null })
+
+  /** The operations view's reads: only for the page (its token), never a write. */
+  async function operationsRead(request: IncomingMessage, response: ServerResponse, url: URL) {
+    if (!sameSecret(String(request.headers['x-inspect-token'] ?? ''), token))
+      return json(response, 403, { error: { code: 'forbidden', message: "the operations view is reachable only from the inspector's own page" } })
+    if (options.visitor?.(request) === null)
+      return json(response, 401, { error: { code: 'unauthorized', message: 'the proxy in front of this page names no one for this request' } })
+    const controller = new AbortController()
+    streams.add(controller)
+    response.on('close', () => controller.abort())
+    try {
+      await operations.handle(request, response, url.pathname.slice(OPERATIONS_PREFIX.length), controller.signal)
+    } finally {
+      streams.delete(controller)
+    }
+  }
 
   async function proxy(request: IncomingMessage, response: ServerResponse, url: URL) {
     const reading = request.method === 'GET' || request.method === 'HEAD'
@@ -140,6 +160,10 @@ export async function createInspector(options: {
     const named = String(request.headers.host).toLowerCase()
     const forwarded = FORWARDED.some((header) => request.headers[header] !== undefined)
     if (!(forwarded ? proxied : hosts).has(named)) return send(response, 421, 'text/plain; charset=utf-8', 'wrong host')
+    if (url.pathname.startsWith(OPERATIONS_PREFIX))
+      return void operationsRead(request, response, url).catch(() =>
+        response.headersSent ? response.end() : send(response, 500, 'text/plain; charset=utf-8', 'error'),
+      )
     if (url.pathname === '/board' || url.pathname.startsWith('/board/'))
       return void proxy(request, response, url).catch(() =>
         response.headersSent ? response.end() : send(response, 500, 'text/plain; charset=utf-8', 'error'),
@@ -172,7 +196,7 @@ export async function createInspector(options: {
 }
 
 /** The inspector on a server of its own, on 127.0.0.1: `port`, or 4747, or any free one when that's taken. */
-export async function startInspector(options: { client: BoardClient; port?: number; page?: string; hosts?: string[] }): Promise<Inspector> {
+export async function startInspector(options: { client: BoardClient; port?: number; page?: string; hosts?: string[]; operations?: OperationsOptions }): Promise<Inspector> {
   const inspector = await createInspector(options)
   let page: ReturnType<InspectorPage['at']> | null = null
   const server = createServer((request, response) => (page ? page.handle(request, response) : void response.writeHead(503).end()))

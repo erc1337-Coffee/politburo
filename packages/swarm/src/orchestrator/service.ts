@@ -14,6 +14,7 @@ import { envelope, parseTelemetry, type BundlePartData, type Command, type Resul
 import { repositoryAllowed, type OrchestratorConfig } from './config.ts'
 import type { GitRepositories } from './git.ts'
 import type { UsageLedger } from './usage-ledger.ts'
+import { errorCode, type OperationsEventBody, type OperationsMonitor, type OperationsSnapshot, type WakeSource } from './operations.ts'
 import { repositoryName, type GitHubClient } from './github.ts'
 import { launch, launchKey, recover, type Binding, type Journal, type Provider } from './launch.ts'
 import { workerPrompt } from './launcher.ts'
@@ -41,6 +42,8 @@ export interface OrchestratorDependencies {
   provider: (prompt: string, directory: string) => Provider
   /** Spend ledger writer; without it, usage is not recorded. */
   usage?: UsageLedger | null
+  /** Receives the events of the operations view; without it, none are kept. */
+  monitor?: OperationsMonitor | null
   /** Files of the worker client that every launch directory receives. */
   workerFiles?: () => Array<{ path: string; source: string }>
   policy?: NextStepPolicy
@@ -76,12 +79,14 @@ export class Orchestrator {
   #events: AbortController | undefined
   #actor = ''
   #stopped = false
+  readonly #wakeSources = new Set<WakeSource>()
+  #statistics: NodeJS.Timeout | undefined
 
   constructor(dependencies: OrchestratorDependencies) {
     const log = (entry: Record<string, unknown>): void => {
       process.stdout.write(`${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`)
     }
-    this.#d = { policy: fixedRulesPolicy, now: Date.now, log, workerFiles: () => workerFiles(), usage: null, ...dependencies }
+    this.#d = { policy: fixedRulesPolicy, now: Date.now, log, workerFiles: () => workerFiles(), usage: null, monitor: null, ...dependencies }
   }
 
   /** Recovers live attempts, then follows board events and starts the sweep. */
@@ -90,14 +95,47 @@ export class Orchestrator {
     await this.#serial(() => this.#recover())
     this.#events = new AbortController()
     void this.#followEvents(this.#events.signal)
-    this.#sweep = setInterval(() => this.wake(), this.#d.config.sweepSeconds * 1000)
-    this.wake()
+    this.#sweep = setInterval(() => this.wake('sweep'), this.#d.config.sweepSeconds * 1000)
+    if (this.#d.monitor) {
+      void this.#readRelayStatistics()
+      this.#statistics = setInterval(() => void this.#readRelayStatistics(), this.#d.config.operations.relayStatisticsSeconds * 1000)
+      this.#statistics.unref?.()
+    }
+    this.wake('start')
+  }
+
+  /** The operations view's snapshot. */
+  operations(): OperationsSnapshot | null {
+    return this.#d.monitor?.snapshot({
+      actor: this.#actor, live: this.#d.state.live(), liveLimit: this.#d.config.admission.liveAttempts,
+      outbox: this.#d.state.pending().length, sweepSeconds: this.#d.config.sweepSeconds,
+      watchdogDue: (attempt) => this.#watchdogDue(attempt),
+    }) ?? null
+  }
+
+  #emit(body: OperationsEventBody): void {
+    this.#d.monitor?.record(body)
+  }
+
+  async #readRelayStatistics(): Promise<void> {
+    const monitor = this.#d.monitor
+    if (!monitor || this.#stopped) return
+    const was = monitor.relayView.reachable
+    try {
+      const { statistics, latencyMs } = await this.#d.relay.statistics()
+      monitor.relay({ reachable: true, latency_ms: latencyMs, error: null, statistics })
+    } catch (error) {
+      const code = errorCode(error)
+      monitor.relay({ reachable: false, latency_ms: null, error: code })
+      if (was !== false) this.#emit({ kind: 'fault', component: 'relay', code })
+    }
   }
 
   async stop(): Promise<void> {
     this.#stopped = true
     this.#events?.abort()
     clearInterval(this.#sweep)
+    clearInterval(this.#statistics)
     clearTimeout(this.#timer)
     for (const subscription of this.#subscriptions.values()) subscription.close()
     this.#subscriptions.clear()
@@ -105,18 +143,22 @@ export class Orchestrator {
   }
 
   /** Requests one tick; several requests before it runs collapse into one. */
-  wake(): void {
-    if (this.#wakeQueued || this.#stopped) return
+  wake(source: WakeSource = 'request'): void {
+    if (this.#stopped) return
+    this.#wakeSources.add(source)
+    if (this.#wakeQueued) return
     this.#wakeQueued = true
     void this.#serial(async () => {
       this.#wakeQueued = false
-      await this.#tick()
+      const sources = [...this.#wakeSources]
+      this.#wakeSources.clear()
+      await this.#tick(sources)
     })
   }
 
   /** Runs one tick and waits for it; for tests and the status command. */
   async tick(): Promise<void> {
-    await this.#serial(() => this.#tick())
+    await this.#serial(() => this.#tick(['request']))
   }
 
   #serial(fn: () => Promise<void>): Promise<void> {
@@ -130,7 +172,7 @@ export class Orchestrator {
   async #followEvents(signal: AbortSignal): Promise<void> {
     while (!signal.aborted) {
       try {
-        for await (const _ of this.#d.board.events({ last: 1 }, { signal })) this.wake()
+        for await (const _ of this.#d.board.events({ last: 1 }, { signal })) this.wake('board')
       } catch {
         if (signal.aborted) return
         await new Promise((resolve) => setTimeout(resolve, 5_000))
@@ -140,9 +182,26 @@ export class Orchestrator {
 
   // --- one tick -------------------------------------------------------------
 
-  async #tick(): Promise<void> {
+  async #tick(sources: WakeSource[]): Promise<void> {
     const now = this.#d.now()
-    const status = await this.#d.board.status()
+    const started = performance.now()
+    let status: Awaited<ReturnType<Board['status']>>
+    try {
+      status = await this.#d.board.status()
+      this.#d.monitor?.board({ reachable: true, paused: status.paused, pause_epoch: status.pauseEpoch, error: null })
+    } catch (error) {
+      this.#d.monitor?.board({ reachable: false, error: errorCode(error) })
+      this.#emit({ kind: 'fault', component: 'board', code: errorCode(error) })
+      throw error
+    }
+    try {
+      await this.#tickWork(status, now)
+    } finally {
+      this.#emit({ kind: 'tick', sources, live: this.#d.state.live().length, duration_ms: Math.round(performance.now() - started) })
+    }
+  }
+
+  async #tickWork(status: Awaited<ReturnType<Board['status']>>, now: number): Promise<void> {
     await this.#flushOutbox()
     for (const attempt of this.#d.state.live()) {
       if (status.paused && attempt.state !== 'stopping') await this.#stopAttempt(attempt, 'the board is paused')
@@ -155,10 +214,13 @@ export class Orchestrator {
   async #flushOutbox(): Promise<void> {
     for (const command of this.#d.state.pending()) {
       try {
-        await this.#d.relay.post(command.channel, JSON.parse(command.body))
+        const body = JSON.parse(command.body) as { type?: unknown; task?: unknown }
+        await this.#d.relay.post(command.channel, body)
         this.#d.state.sent(command.id)
+        this.#emit({ kind: 'command', channel: command.channel, task: String(body.task ?? ''), type: String(body.type ?? ''), bytes: command.body.length, outcome: 'sent' })
       } catch (error) {
         this.#d.log({ event: 'relay_post_failed', channel: command.channel, message: (error as Error).message })
+        this.#emit({ kind: 'fault', component: 'relay', code: errorCode(error), channel: command.channel })
         return
       }
     }
@@ -180,15 +242,27 @@ export class Orchestrator {
   async #reply(taskId: string, text: string): Promise<void> {
     try {
       await this.#d.board.reply(taskId, text)
+      this.#emit({ kind: 'board', action: 'reply', task: taskId })
     } catch (error) {
       this.#d.log({ event: 'board_reply_failed', task: taskId, message: (error as Error).message })
+      this.#emit({ kind: 'fault', component: 'board', code: errorCode(error), task: taskId })
     }
   }
 
   #transition(attempt: AttemptRecord, change: Partial<AttemptRecord>, reason?: string): void {
     this.#d.state.update(attempt.attemptId, change)
     Object.assign(attempt, change)
-    if (change.state) this.#d.log({ event: 'attempt_state', attempt: attempt.attemptId, task: attempt.taskId, channel: attempt.channel, state: change.state, reason })
+    if (change.state) {
+      this.#d.log({ event: 'attempt_state', attempt: attempt.attemptId, task: attempt.taskId, channel: attempt.channel, state: change.state, reason })
+      this.#emit({ kind: 'attempt', attempt: attempt.attemptId, task: attempt.taskId, channel: attempt.channel, state: change.state })
+      if (change.state === 'settled') this.#d.monitor?.settled(attempt)
+    }
+  }
+
+  /** The board call of a held claim, recorded for the operations view. */
+  async #settle(attempt: AttemptRecord, action: 'complete' | 'fail' | 'release' | 'block', call: () => Promise<unknown>): Promise<void> {
+    await call()
+    this.#emit({ kind: 'board', action, task: attempt.taskId, channel: attempt.channel })
   }
 
   // --- live attempts: lease, token, watchdog --------------------------------
@@ -219,6 +293,7 @@ export class Orchestrator {
       try {
         await this.#held(attempt).renew(this.#d.config.board.leaseSeconds)
         this.#leaseRenewedAt.set(attempt.attemptId, now)
+        this.#emit({ kind: 'board', action: 'renew', task: attempt.taskId, channel: attempt.channel })
       } catch (error) {
         if (error instanceof BoardError && (error.code === 'claim_lost' || error.status === 409)) {
           await this.#stopAttempt(attempt, 'the board claim was lost')
@@ -251,7 +326,7 @@ export class Orchestrator {
       if (attempt.state === 'waiting_answer') next = Math.min(next, this.#d.now() + 30_000)
     }
     if (next === Infinity) return
-    this.#timer = setTimeout(() => this.wake(), Math.max(next - this.#d.now(), 100))
+    this.#timer = setTimeout(() => this.wake('timer'), Math.max(next - this.#d.now(), 100))
     this.#timer.unref?.()
   }
 
@@ -264,8 +339,8 @@ export class Orchestrator {
   async #lost(attempt: AttemptRecord, reason: string): Promise<void> {
     const retry = attempt.attemptNo < this.#d.config.limits.attemptsPerTask
     try {
-      if (retry) await this.#held(attempt).release()
-      else await this.#held(attempt).fail(`Attempt ${attempt.attemptNo} lost: ${reason}`)
+      if (retry) await this.#settle(attempt, 'release', () => this.#held(attempt).release())
+      else await this.#settle(attempt, 'fail', () => this.#held(attempt).fail(`Attempt ${attempt.attemptNo} lost: ${reason}`))
     } catch (error) {
       this.#d.log({ event: 'settle_failed', task: attempt.taskId, message: (error as Error).message })
     }
@@ -339,6 +414,7 @@ export class Orchestrator {
       baseCommit = await this.#d.github.branchHead(plan.repository, baseRef)
     } catch (error) {
       this.#d.log({ event: 'github_read_failed', task: message.id, message: (error as Error).message })
+      this.#emit({ kind: 'fault', component: 'github', code: errorCode(error), task: message.id })
       return
     }
     if (!baseCommit) return
@@ -362,6 +438,8 @@ export class Orchestrator {
     }
     this.#d.state.insert(attempt)
     this.#leaseRenewedAt.set(attempt.attemptId, now)
+    this.#emit({ kind: 'attempt', attempt: attempt.attemptId, task: attempt.taskId, channel, state: 'claimed' })
+    this.#emit({ kind: 'board', action: 'claim', task: attempt.taskId, channel })
     this.#d.log({ event: 'attempt_state', attempt: attempt.attemptId, task: attempt.taskId, channel, state: 'claimed' })
 
     const brief = message.text
@@ -406,6 +484,7 @@ export class Orchestrator {
     }
     const result = await launch({ journal: this.#d.journal, provider: this.#d.provider(prompt, launchDirectory), control: this.#control(), key, binding })
       .finally(() => rmSync(launchDirectory, { recursive: true, force: true }))
+    this.#emit({ kind: 'launch', task: attempt.taskId, channel, outcome: 'ok' in result ? 'journal_unreadable' : result.status })
     if ('ok' in result) {
       await this.#markUncertain(attempt, `launch journal unreadable (${result.reason})`)
       return
@@ -433,7 +512,7 @@ export class Orchestrator {
 
   async #markUncertain(attempt: AttemptRecord, reason: string): Promise<void> {
     this.#transition(attempt, { state: 'uncertain', outcome: reason }, reason)
-    await this.#held(attempt).block(`Orchestrator: ${reason}. Check the cloud sessions before the task is started again; it is never relaunched automatically.`, { kind: 'needs_input' }).catch(() => undefined)
+    await this.#settle(attempt, 'block', () => this.#held(attempt).block(`Orchestrator: ${reason}. Check the cloud sessions before the task is started again; it is never relaunched automatically.`, { kind: 'needs_input' })).catch(() => undefined)
   }
 
   // --- telemetry ------------------------------------------------------------
@@ -442,7 +521,10 @@ export class Orchestrator {
     if (this.#subscriptions.has(attempt.channel)) return
     const subscription = this.#d.relay.subscribe(attempt.channel, attempt.telemetrySeq, async (event) => {
       await this.#serial(() => this.#onTelemetry(attempt.attemptId, event.seq, event.body))
-    }, (status) => this.#d.log({ event: 'telemetry_refused', channel: attempt.channel, status }))
+    }, (status) => {
+      this.#d.log({ event: 'telemetry_refused', channel: attempt.channel, status })
+      this.#emit({ kind: 'fault', component: 'relay', code: `status_${status}`, task: attempt.taskId, channel: attempt.channel })
+    })
     this.#subscriptions.set(attempt.channel, subscription)
   }
 
@@ -457,15 +539,21 @@ export class Orchestrator {
       const faults = (this.#faults.get(attemptId) ?? 0) + 1
       this.#faults.set(attemptId, faults)
       this.#d.log({ event: 'protocol_fault', channel: attempt.channel, error: parsed.ok ? 'wrong task or channel' : parsed.error })
+      this.#emit({ kind: 'fault', component: 'worker', code: 'protocol_fault', task: attempt.taskId, channel: attempt.channel })
       if (faults >= MAX_FAULTS) await this.#stopAttempt(attempt, 'too many invalid telemetry messages')
       return
     }
     if (!fresh) return
     const message = parsed.message
     const now = this.#d.now()
+    this.#emit({ kind: 'telemetry', channel: attempt.channel, task: attempt.taskId, type: message.type, bytes: JSON.stringify(body).length, relay_seq: seq })
     this.#transition(attempt, { lastContactAt: now, ...(attempt.state === 'awaiting_contact' ? { state: 'running' } : {}) })
     switch (message.type) {
-      case 'heartbeat': return
+      case 'heartbeat': {
+        const { state, round, elapsed_seconds, pi_alive } = message.data
+        this.#d.monitor?.heartbeat(attempt.attemptId, { state, round, elapsed_seconds, pi_alive })
+        return
+      }
       case 'progress': return this.#onProgress(attempt, message, now)
       case 'question': return this.#onQuestion(attempt, message, now)
       case 'bundle_part': return this.#onBundlePart(attempt, message.data)
@@ -474,6 +562,7 @@ export class Orchestrator {
   }
 
   async #onProgress(attempt: AttemptRecord, message: Extract<Telemetry, { type: 'progress' }>, now: number): Promise<void> {
+    this.#d.monitor?.progress(attempt.attemptId, message.data.items.map((item) => item.kind))
     const last = this.#lastProgressReply.get(attempt.attemptId) ?? 0
     if (now - last < PROGRESS_REPLY_MS || message.data.items.length === 0) return
     this.#lastProgressReply.set(attempt.attemptId, now)
@@ -538,7 +627,14 @@ export class Orchestrator {
       this.#d.usage?.recordRound(attempt, result, this.#d.now())
     } catch (error) {
       this.#d.log({ event: 'ledger_write_failed', task: attempt.taskId, message: (error as Error).message })
+      this.#emit({ kind: 'fault', component: 'ledger', code: errorCode(error), task: attempt.taskId, channel: attempt.channel })
     }
+    this.#emit({
+      kind: 'usage', task: attempt.taskId, channel: attempt.channel, round: result.round, models: result.models.length,
+      input_tokens: result.models.reduce((sum, row) => sum + row.input_tokens, 0),
+      output_tokens: result.models.reduce((sum, row) => sum + row.output_tokens, 0),
+      cost_usd: result.cost_usd,
+    })
     await this.#reply(attempt.taskId, `Worker report (round ${result.round}, ${result.exit_reason}): ${workerText(result.summary, 1_500)}\nFiles ${result.diff_stat.files}, +${result.diff_stat.insertions} -${result.diff_stat.deletions}. Checks: ${result.checks.map((check) => `${check.name} ${check.exit_code === 0 ? 'pass' : 'fail'}`).join(', ') || 'none'}.`)
     const bundleFile = this.#assembleBundle(attempt, result)
     const task = await this.#d.board.thread(attempt.taskId).then((thread) => thread.message).catch(() => null)
@@ -576,7 +672,7 @@ export class Orchestrator {
       }
       case 'fail': {
         await this.#finishWorker(attempt, step.reason)
-        await this.#held(attempt).fail(step.reason).catch(() => undefined)
+        await this.#settle(attempt, 'fail', () => this.#held(attempt).fail(step.reason)).catch(() => undefined)
         await this.#reply(attempt.taskId, `Orchestrator: task failed. ${step.reason}`)
         this.#transition(attempt, { state: 'settled', outcome: 'failed' }, step.reason)
         this.#unsubscribe(attempt)
@@ -584,7 +680,7 @@ export class Orchestrator {
       }
       case 'hold': {
         await this.#finishWorker(attempt, 'held for a person')
-        await this.#held(attempt).block(`Orchestrator: ${step.question}`, { kind: 'needs_input' }).catch(() => undefined)
+        await this.#settle(attempt, 'block', () => this.#held(attempt).block(`Orchestrator: ${step.question}`, { kind: 'needs_input' })).catch(() => undefined)
         this.#transition(attempt, { state: 'settled', outcome: 'held' }, step.question)
         this.#unsubscribe(attempt)
       }
@@ -600,11 +696,11 @@ export class Orchestrator {
 
   async #lostOrRetry(attempt: AttemptRecord, reason: string): Promise<void> {
     if (attempt.attemptNo < this.#d.config.limits.attemptsPerTask) {
-      await this.#held(attempt).release().catch(() => undefined)
+      await this.#settle(attempt, 'release', () => this.#held(attempt).release()).catch(() => undefined)
       await this.#reply(attempt.taskId, `Orchestrator: attempt ${attempt.attemptNo} ends (${reason}). A new attempt will start.`)
       this.#transition(attempt, { state: 'settled', outcome: 'retry' }, reason)
     } else {
-      await this.#held(attempt).fail(reason).catch(() => undefined)
+      await this.#settle(attempt, 'fail', () => this.#held(attempt).fail(reason)).catch(() => undefined)
       await this.#reply(attempt.taskId, `Orchestrator: task failed. ${reason}`)
       this.#transition(attempt, { state: 'settled', outcome: 'failed' }, reason)
     }
@@ -622,6 +718,7 @@ export class Orchestrator {
     if (!bundleFile || !result.head_commit || !attempt.baseCommit) return this.#apply(attempt, { kind: 'retry', reason: 'no verified bundle to push' }, result)
     try {
       await this.#d.git.publishBundle(attempt.repository, { bundleFile, branch: attempt.branch, head: result.head_commit, base: attempt.baseCommit })
+      this.#emit({ kind: 'github', action: 'push', repository: attempt.repository, task: attempt.taskId, channel: attempt.channel })
       let url = attempt.prUrl
       if (!url) {
         const existing = await github.findPullRequest(attempt.repository, attempt.branch)
@@ -635,14 +732,16 @@ export class Orchestrator {
           body: `Board task #${attempt.taskId}, attempt ${attempt.attemptNo}, round ${result.round}.\n\nWorker report (untrusted text):\n\n${workerText(result.summary, 4_000)}`,
         })
         this.#transition(attempt, { prUrl: url })
+        this.#emit({ kind: 'github', action: 'draft_pr', repository: attempt.repository, task: attempt.taskId, channel: attempt.channel })
       }
       await this.#finishWorker(attempt, 'published')
-      await this.#held(attempt).complete(url)
+      await this.#settle(attempt, 'complete', () => this.#held(attempt).complete(url))
       await this.#reply(attempt.taskId, `Orchestrator: draft PR ${url}`)
       this.#transition(attempt, { state: 'settled', outcome: 'published' })
       this.#unsubscribe(attempt)
     } catch (error) {
       this.#d.log({ event: 'publish_failed', task: attempt.taskId, message: (error as Error).message })
+      this.#emit({ kind: 'fault', component: 'github', code: errorCode(error), task: attempt.taskId, channel: attempt.channel })
       this.#transition(attempt, { state: 'deciding' })
       await this.#apply(attempt, { kind: 'hold', question: `Publishing failed: ${(error as Error).message}` }, result)
     }

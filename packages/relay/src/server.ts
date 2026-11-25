@@ -3,6 +3,7 @@
 //   POST   /channels/{channel}/{direction}   send one JSON object
 //   GET    /channels/{channel}/{direction}   receive as SSE, after Last-Event-ID
 //   DELETE /channels/{channel}               end a channel (orchestrator only)
+//   GET    /stats                             counters (statistics token only)
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { KeyObject } from 'node:crypto'
 import {
@@ -13,6 +14,8 @@ import {
   loadVerificationKey,
   verifyToken,
   type Direction,
+  type DirectionStatistics,
+  type RelayStatistics,
   type TokenClaims,
 } from './protocol.ts'
 import type { MessageStore, StoredMessage } from './store.ts'
@@ -50,6 +53,10 @@ export interface Relay {
 }
 
 const PURGE_INTERVAL_MS = 60_000
+/** Smallest interval between two statistics reads with one token. */
+const STATISTICS_INTERVAL_MS = 1_000
+/** Channels kept in the counters; the oldest is dropped first. */
+const STATISTICS_CHANNELS = 1_000
 const ROUTE = /^\/channels\/([^/]+)(?:\/([^/]+))?$/
 
 class Signal {
@@ -77,12 +84,46 @@ export function createRelay(options: RelayOptions): Relay {
   const now = options.now ?? Date.now
   const signal = new Signal()
   const streams = new Map<string, Set<() => void>>()
+  const startedAt = now()
+  const counters = new Map<string, Record<Direction, DirectionStatistics>>()
+  const refused = new Map<number, number>()
+  const statisticsReads = new Map<string, number>()
+
+  const counter = (channel: string, direction: Direction): DirectionStatistics => {
+    let entry = counters.get(channel)
+    if (!entry) {
+      if (counters.size >= STATISTICS_CHANNELS) counters.delete(counters.keys().next().value!)
+      const empty = (): DirectionStatistics => ({ messages: 0, bytes: 0, last_seq: 0, last_at: null, streams: 0 })
+      counters.set(channel, (entry = { commands: empty(), telemetry: empty() }))
+    }
+    return entry[direction]
+  }
 
   const handler = (req: IncomingMessage, res: ServerResponse): void => {
+    res.on('finish', () => {
+      if (res.statusCode >= 400 && res.statusCode < 500) refused.set(res.statusCode, (refused.get(res.statusCode) ?? 0) + 1)
+    })
     handle(req, res).catch(() => {
       if (!res.headersSent) reply(res, 500, { error: 'internal_error' })
       else res.end()
     })
+  }
+
+  function statistics(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') return reply(res, 404, { error: 'not_found' })
+    const claims = authenticate(req)
+    if (!claims || claims.role !== 'statistics') return reply(res, 401, { error: 'unauthorized' })
+    const key = `${claims.iat}:${claims.exp}:${req.headers.authorization!.slice(-16)}`
+    const at = now()
+    if (at - (statisticsReads.get(key) ?? 0) < STATISTICS_INTERVAL_MS) return reply(res, 429, { error: 'too_many_requests' })
+    statisticsReads.set(key, at)
+    for (const [k, last] of statisticsReads) if (at - last > 120_000) statisticsReads.delete(k)
+    const body: RelayStatistics = {
+      started_at: startedAt, at,
+      channels: Object.fromEntries([...counters].map(([name, entry]) => [name, structuredClone(entry)])),
+      refused: Object.fromEntries([...refused].map(([status, count]) => [String(status), count])),
+    }
+    return reply(res, 200, body)
   }
 
   const server = createHttpServer(handler)
@@ -92,6 +133,7 @@ export function createRelay(options: RelayOptions): Relay {
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://relay')
+    if (url.pathname === '/stats') return statistics(req, res)
     const match = ROUTE.exec(url.pathname)
     const channel = match?.[1]
     const direction = match?.[2]
@@ -106,6 +148,7 @@ export function createRelay(options: RelayOptions): Relay {
       if (req.method !== 'DELETE') return reply(res, 404, { error: 'not_found' })
       if (claims.role !== 'orchestrator') return reply(res, 403, { error: 'forbidden' })
       store.deleteChannel(channel)
+      counters.delete(channel)
       for (const end of [...(streams.get(channel) ?? [])]) end()
       res.writeHead(204, { 'cache-control': 'no-store' }).end()
       return
@@ -134,6 +177,11 @@ export function createRelay(options: RelayOptions): Relay {
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return reply(res, 400, { error: 'invalid_json' })
     const at = now()
     const seq = store.append(channel, direction, JSON.stringify(parsed), at, claims.exp * 1000 + limits.retentionSeconds * 1000)
+    const count = counter(channel, direction)
+    count.messages++
+    count.bytes += raw.length
+    count.last_seq = seq
+    count.last_at = at
     signal.emit(`${channel}/${direction}`)
     return reply(res, 201, { seq })
   }
@@ -170,6 +218,7 @@ export function createRelay(options: RelayOptions): Relay {
     // The stream ends when the token does; the client reconnects with a new one.
     const expiry = setTimeout(() => end(), Math.min(Math.max(claims.exp * 1000 - now(), 0), 2 ** 31 - 1))
     const unsubscribe = signal.on(`${channel}/${direction}`, flush)
+    counter(channel, direction).streams++
     let set = streams.get(channel)
     if (!set) streams.set(channel, (set = new Set()))
     const channelStreams = set
@@ -179,6 +228,8 @@ export function createRelay(options: RelayOptions): Relay {
       clearInterval(keepalive)
       clearTimeout(expiry)
       unsubscribe()
+      const count = counters.get(channel)?.[direction]
+      if (count) count.streams = Math.max(0, count.streams - 1)
       channelStreams.delete(end)
       if (channelStreams.size === 0) streams.delete(channel)
       res.end()

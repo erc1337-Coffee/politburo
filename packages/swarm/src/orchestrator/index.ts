@@ -11,3 +11,6 @@ export { fixedRulesPolicy, limitStep, type NextStep, type NextStepPolicy } from 
 export { RelayClient, RelayError } from './relay-client.ts'
 export { Orchestrator, type OrchestratorDependencies, type PartyRoute } from './service.ts'
 export { StateStore, type AttemptRecord, type AttemptState } from './state.ts'
+export { OperationsMonitor, type OperationsEvent, type OperationsSnapshot } from './operations.ts'
+export { startOperationsServer, type OperationsServer } from './operations-server.ts'
+export { UsageLedger } from './usage-ledger.ts'

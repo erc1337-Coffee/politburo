@@ -7,6 +7,8 @@ import { loadConfig, parseConfigText } from '../config/load.ts'
 import { loadOrchestratorConfig, type OrchestratorConfig } from './config.ts'
 import { GitRepositories } from './git.ts'
 import { UsageLedger } from './usage-ledger.ts'
+import { OperationsMonitor } from './operations.ts'
+import { startOperationsServer, type OperationsServer } from './operations-server.ts'
 import { GitHubClient } from './github.ts'
 import { openJournal } from './launch.ts'
 import { cloudProvider } from './launcher.ts'
@@ -31,8 +33,10 @@ async function serve(config: OrchestratorConfig): Promise<number> {
     return 1
   }
   const state = new StateStore(join(config.stateDirectory, 'state.sqlite'))
+  const monitor = config.operations.port > 0 ? new OperationsMonitor({ relayUrl: config.relay.url }) : null
   const orchestrator = new Orchestrator({
     config,
+    monitor,
     board: openBoard().as(config.boardProfile),
     relay: new RelayClient({ url: config.relay.url, signingKey: readFileSync(config.relay.signingKeyFile, 'utf8'), orchestratorTtlSeconds: config.tokens.orchestratorTtlSeconds }),
     github: new GitHubClient({ apiUrl: config.github.apiUrl, token }),
@@ -44,10 +48,20 @@ async function serve(config: OrchestratorConfig): Promise<number> {
     usage: new UsageLedger({ file: config.ledger.file, party: config.ledger.party, requestedRoute: config.worker.piModel }),
   })
   await orchestrator.start()
+  let operations: OperationsServer | null = null
+  if (monitor) {
+    try {
+      operations = await startOperationsServer({ monitor, port: config.operations.port, snapshot: () => orchestrator.operations()! })
+      console.error(`orchestrator: operations status at ${operations.url}`)
+    } catch (error) {
+      console.error(`orchestrator: the operations status server did not start: ${(error as Error).message}`)
+    }
+  }
   await new Promise<void>((resolve) => {
     process.once('SIGTERM', resolve)
     process.once('SIGINT', resolve)
   })
+  await operations?.close()
   await orchestrator.stop()
   state.close()
   unlock()
