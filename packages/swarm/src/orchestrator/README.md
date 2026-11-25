@@ -5,7 +5,54 @@ ready board tasks, starts one remote worker for each task attempt, exchanges
 commands and telemetry with that worker through `@remilia/politburo-relay`,
 chooses the next step and opens the draft pull request in the same repository.
 
-| Path | Contents | State |
-| --- | --- | --- |
-| `launch.ts`, `journal.ts` | Launch a worker session once, record it, recover after a restart | Built; the cloud `Provider` adapter is not |
-| `stages/` | Review stages (proposed to done, repair rounds) and the evidence gate | Built; not connected |
+Run it with `swarm orchestrator serve --config FILE`. `check` validates the
+configuration and the party routes; `status` prints the live attempts.
+
+## Wake sources
+
+One tick runs at a time. These wake it:
+
+| Source | Kind |
+| --- | --- |
+| Board events (long-poll feed) | event |
+| Telemetry of a live attempt (relay SSE) | event, handled at once |
+| The next due time: lease renewal, worker token renewal, watchdog | timer, set after each tick |
+| Sweep every `sweep_seconds` (default 30) | interval, catches missed events |
+
+A tick: board pause check, pending relay commands, lease and token renewal and
+watchdog for each live attempt, then admission of new ready tasks.
+
+## Attempt states
+
+`claimed` → `launching` → `awaiting_contact` → `running` ⇄ `waiting_answer` →
+`deciding` → `publishing` → `settled`. `stopping` → `lost` on silence;
+`uncertain` when a launch result is unknown (never relaunched automatically).
+
+## Files
+
+| Path | Contents |
+| --- | --- |
+| `service.ts` | The loop, admission, attempt states, telemetry handling, settlement |
+| `config.ts` | YAML configuration (snake_case) over defaults; allow and deny lists |
+| `state.ts` | SQLite state: attempts, telemetry cursors, seen message ids, command outbox; instance lock |
+| `relay-client.ts` | Token minting, command POST, telemetry SSE with resume and backoff |
+| `launcher.ts` | Worker prompt and the `claude --cloud` launch provider |
+| `policy.ts` | Next step after a result (pluggable) and the hard limits around it |
+| `github.ts` | Repository reads and the draft PR (head and base in one repository) |
+| `launch.ts`, `journal.ts` | Launch a session once, record it, recover after a restart |
+| `stages/` | Review stages and the evidence gate (not connected yet) |
+| `cli.ts` | `serve`, `status`, `check` |
+
+## Configuration
+
+```yaml
+state_directory: /orchestrator
+board_profile: orchestrator
+party_file: /party/party_configuration.yaml
+relay: { url: https://relay.example.net, signing_key_file: /orchestrator/keys/relay_signing_key.pem }
+channels: { include: [agents/] }
+repositories: { allow: [owner/name] }   # upstreams are denied by default
+github: { token_env: ORCHESTRATOR_GITHUB_TOKEN }
+```
+
+Every other setting has a default in `config.ts`.
