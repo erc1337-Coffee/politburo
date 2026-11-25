@@ -93,8 +93,8 @@ const REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
 export function validateConfig(config: OrchestratorConfig): OrchestratorConfig {
   const fail = (message: string): never => { throw new OrchestratorConfigError(message) }
   let relay: URL | null = null
-  try { relay = new URL(config.relay.url) } catch { fail('relay.url: URL expected') }
-  if (relay!.protocol !== 'https:' && relay!.hostname !== '127.0.0.1' && relay!.hostname !== 'localhost') fail('relay.url: https expected')
+  try { relay = new URL(config.relay.url) } catch { fail('RELAY_URL: URL expected') }
+  if (relay!.protocol !== 'https:' && relay!.hostname !== '127.0.0.1' && relay!.hostname !== 'localhost') fail('RELAY_URL: https expected')
   for (const name of [...config.repositories.allow, ...config.repositories.deny]) if (!REPOSITORY.test(name)) fail(`repositories: ${name} is not owner/name`)
   for (const path of config.channels.include) if (!/^[a-z0-9_-]+(?:\/[a-z0-9_-]+)*\/?$/.test(path)) fail(`channels.include: invalid channel ${path}`)
   const positive: Array<[string, number]> = [
@@ -120,13 +120,17 @@ export function validateConfig(config: OrchestratorConfig): OrchestratorConfig {
   return config
 }
 
-export function parseConfig(text: string): OrchestratorConfig {
-  const raw = text.trim() === '' ? {} : camelKeys(parseYaml(text))
-  return validateConfig(merge(DEFAULT_CONFIG, raw, 'orchestrator') as OrchestratorConfig)
+/** The relay address comes from the environment (`RELAY_URL`), never from the file. */
+export function parseConfig(text: string, env: NodeJS.ProcessEnv = process.env): OrchestratorConfig {
+  const raw = text.trim() === '' ? {} : camelKeys(parseYaml(text)) as { relay?: { url?: unknown } }
+  if (raw.relay?.url !== undefined) throw new OrchestratorConfigError('orchestrator.relay.url: unknown setting; set RELAY_URL')
+  const config = merge(DEFAULT_CONFIG, raw, 'orchestrator') as OrchestratorConfig
+  config.relay = { ...config.relay, url: env.RELAY_URL?.trim() ?? '' }
+  return validateConfig(config)
 }
 
-export function loadOrchestratorConfig(file: string): OrchestratorConfig {
-  return parseConfig(readFileSync(file, 'utf8'))
+export function loadOrchestratorConfig(file: string, env: NodeJS.ProcessEnv = process.env): OrchestratorConfig {
+  return parseConfig(readFileSync(file, 'utf8'), env)
 }
 
 /** Whether `channel` is one the orchestrator takes tasks from. */

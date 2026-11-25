@@ -55,10 +55,10 @@ watchdog for each live attempt, then admission of new ready tasks.
 state_directory: /orchestrator
 board_profile: orchestrator
 party_file: /party/party_configuration.yaml
-relay: { url: https://relay.example.net, signing_key_file: /orchestrator/keys/relay_signing_key.pem }
+relay: { signing_key_file: /orchestrator/keys/relay_signing_key.pem }
 channels: { include: [agents/] }
 repositories: { allow: [owner/name] }   # upstreams are denied by default
 ```
 
-Every other setting has a default in `config.ts`. Credentials come from the environment:
+Every other setting has a default in `config.ts`. The relay address comes from `RELAY_URL`. Credentials come from the environment:
 `GITHUB_TOKEN` (reads, push, draft PR) and `CLAUDE_CODE_OAUTH_TOKEN` (`claude --cloud`).

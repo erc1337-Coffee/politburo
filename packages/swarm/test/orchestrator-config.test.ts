@@ -4,11 +4,13 @@ import { channelIncluded, parseConfig, repositoryAllowed } from '../src/orchestr
 import { parseSessionId } from '../src/orchestrator/launcher.ts'
 import { fixedRulesPolicy, limitStep, type DecisionInput } from '../src/orchestrator/policy.ts'
 
-const minimal = 'relay: { url: "https://relay.example.net" }\n'
+const env = { RELAY_URL: 'https://relay.example.net' }
+const parse = (text: string) => parseConfig(text, env)
+const minimal = ''
 
 describe('orchestrator config', () => {
   test('merges snake_case settings over the defaults', () => {
-    const config = parseConfig(`${minimal}channels: { include: [work/, ops] }\nrepositories: { allow: [Owner/Repo] }\nlimits: { rounds_per_attempt: 4 }\n`)
+    const config = parse(`${minimal}channels: { include: [work/, ops] }\nrepositories: { allow: [Owner/Repo] }\nlimits: { rounds_per_attempt: 4 }\n`)
     assert.equal(config.limits.roundsPerAttempt, 4)
     assert.equal(config.limits.attemptsPerTask, 2)
     assert.ok(channelIncluded(config, 'work/app'))
@@ -18,15 +20,17 @@ describe('orchestrator config', () => {
   })
 
   test('the deny list wins over the allow list', () => {
-    const config = parseConfig(`${minimal}repositories: { allow: [remiliacorporation/politburo] }\n`)
+    const config = parse(`${minimal}repositories: { allow: [remiliacorporation/politburo] }\n`)
     assert.ok(!repositoryAllowed(config, 'remiliacorporation/politburo'))
   })
 
   test('refuses unknown settings, plain HTTP relays and bad values', () => {
-    assert.throws(() => parseConfig(`${minimal}limits: { round_per_attempt: 4 }\n`), /round_per_attempt|roundPerAttempt/)
-    assert.throws(() => parseConfig('relay: { url: "http://relay.example.net" }\n'), /https/)
-    assert.throws(() => parseConfig(`${minimal}board: { lease_seconds: 5 }\n`), /lease_seconds/)
-    assert.throws(() => parseConfig(`${minimal}repositories: { allow: [nope] }\n`), /owner\/name/)
+    assert.throws(() => parse(`${minimal}limits: { round_per_attempt: 4 }\n`), /round_per_attempt|roundPerAttempt/)
+    assert.throws(() => parseConfig('', { RELAY_URL: 'http://relay.example.net' }), /https/)
+    assert.throws(() => parseConfig('', {}), /RELAY_URL/)
+    assert.throws(() => parse('relay: { url: "https://relay.example.net" }\n'), /RELAY_URL/)
+    assert.throws(() => parse(`${minimal}board: { lease_seconds: 5 }\n`), /lease_seconds/)
+    assert.throws(() => parse(`${minimal}repositories: { allow: [nope] }\n`), /owner\/name/)
   })
 })
 
