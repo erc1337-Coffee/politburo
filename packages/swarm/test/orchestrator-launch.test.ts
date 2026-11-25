@@ -5,7 +5,7 @@ import { appendFile, mkdtemp, readFile, rm, truncate, writeFile } from 'node:fs/
 import { join } from 'node:path'
 import { test, type TestContext } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { launch, launchKey, openJournal, recover, type Binding, type HookStep, type Provider } from '../src/lifecycle/launch.ts'
+import { launch, launchKey, openJournal, recover, type Binding, type HookStep, type Provider } from '../src/orchestrator/launch.ts'
 
 const crash = new Error('simulated crash')
 const crashAt = (target: HookStep) => (step: HookStep) => { if (step === target) throw crash }

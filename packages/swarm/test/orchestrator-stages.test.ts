@@ -4,7 +4,7 @@ import { block, board } from '@vercel/board'
 import { oidcTokens } from '@vercel/board/access'
 import { local } from '@vercel/board/backend-local'
 import { BOARD_URL, caller, localUserToken, testLocal } from '../../board/test/tokens.ts'
-import { createStageService, type Dispatcher, type Evidence, type Gate, type Role, type Stage } from '../src/lifecycle/index.ts'
+import { createStageService, type Dispatcher, type Evidence, type Gate, type Role, type Stage } from '../src/orchestrator/stages/index.ts'
 
 const A = 'a'.repeat(40), B = 'b'.repeat(40)
 const checks = { intake_missing: true, scope_missing: true, outcomes_invalid: true, dependency_unavailable: true,

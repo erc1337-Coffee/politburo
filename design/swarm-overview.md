@@ -92,7 +92,7 @@ a party's and a repo's values over `src/config/defaults.json`. `swarm check` and
 | `src/mail` | Message contract, inbox, relay between boards, send | Library only. Stricter than the file mail it replaces. |
 | `src/classifier` | The packet compiled for the adviser model, and its audit | Library only. No classifier call on main. |
 | `src/identity` | Cloudflare Access assertions mapped to board people | Library only. No domain configured. |
-| `src/lifecycle` | Stages, evidence gate, action journal, launch recovery | Shadow or off. |
+| `src/orchestrator` | Launch journal and recovery; review stages and evidence gate (`stages/`) | Not wired yet. |
 | `src/capture` | Spend record types and the ledger writer | Library only. |
 | `src/checks` | Check lock, check-and-push, retire check. `swarm check` | Works. Needs GitHub. |
 | `src/watch`, `src/watcher` | Stall, slowdown and PR alerts; the status loop | Shadow. Needs GitHub. |
