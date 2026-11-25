@@ -1,0 +1,19 @@
+{
+  "name": "@remilia/politburo-worker",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Worker client for a remote task session: reads relay commands, runs Pi on the task, sends telemetry and the commits as a git bundle.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "typescript": "^7.0.2"
+  }
+}
