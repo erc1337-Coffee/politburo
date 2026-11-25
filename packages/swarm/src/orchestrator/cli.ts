@@ -7,7 +7,7 @@ import { loadConfig, parseConfigText } from '../config/load.ts'
 import { loadOrchestratorConfig, type OrchestratorConfig } from './config.ts'
 import { GitRepositories } from './git.ts'
 import { UsageLedger } from './usage-ledger.ts'
-import { OperationsMonitor } from './operations.ts'
+import { idleSnapshot, OperationsMonitor } from './operations.ts'
 import { startOperationsServer, type OperationsServer } from './operations-server.ts'
 import { GitHubClient } from './github.ts'
 import { openJournal } from './launch.ts'
@@ -16,7 +16,7 @@ import { RelayClient } from './relay-client.ts'
 import { Orchestrator, type PartyRoute } from './service.ts'
 import { acquireLock, StateStore } from './state.ts'
 
-const usage = 'usage: swarm orchestrator <serve|status|check> --config FILE [--json]'
+const usage = 'usage: swarm orchestrator <serve|status|check> --config FILE [--json]\n       swarm orchestrator idle --reason TEXT [--port N]'
 
 function partyRoutes(config: OrchestratorConfig): PartyRoute[] {
   const party = config.partyFile ? parseConfigText(readFileSync(config.partyFile, 'utf8')) : undefined
@@ -34,6 +34,12 @@ async function serve(config: OrchestratorConfig): Promise<number> {
   }
   const state = new StateStore(join(config.stateDirectory, 'state.sqlite'))
   const monitor = config.operations.port > 0 ? new OperationsMonitor({ relayUrl: config.relay.url }) : null
+  const usageLedger = new UsageLedger({ file: config.ledger.file, party: config.ledger.party, requestedRoute: config.worker.piModel })
+  try {
+    usageLedger.initialize()
+  } catch (error) {
+    console.error(`orchestrator: the spend ledger cannot be opened: ${(error as Error).message}`)
+  }
   const orchestrator = new Orchestrator({
     config,
     monitor,
@@ -45,9 +51,8 @@ async function serve(config: OrchestratorConfig): Promise<number> {
     journal: openJournal(join(config.stateDirectory, 'journal')),
     routes: () => partyRoutes(config),
     provider: (prompt, directory) => cloudProvider(config.worker.launcher, prompt, directory),
-    usage: new UsageLedger({ file: config.ledger.file, party: config.ledger.party, requestedRoute: config.worker.piModel }),
+    usage: usageLedger,
   })
-  await orchestrator.start()
   let operations: OperationsServer | null = null
   if (monitor) {
     try {
@@ -57,6 +62,14 @@ async function serve(config: OrchestratorConfig): Promise<number> {
       console.error(`orchestrator: the operations status server did not start: ${(error as Error).message}`)
     }
   }
+  try {
+    await orchestrator.start()
+  } catch (error) {
+    await operations?.close()
+    state.close()
+    unlock()
+    throw error
+  }
   await new Promise<void>((resolve) => {
     process.once('SIGTERM', resolve)
     process.once('SIGINT', resolve)
@@ -65,6 +78,25 @@ async function serve(config: OrchestratorConfig): Promise<number> {
   await orchestrator.stop()
   state.close()
   unlock()
+  return 0
+}
+
+/** Serves only the status, saying why the orchestrator does not run, until it is stopped. */
+async function idle(argv: string[]): Promise<number> {
+  const { values } = parseArgs({ args: argv, options: { reason: { type: 'string' }, port: { type: 'string' } } })
+  const port = Number(values.port ?? 4190)
+  if (!values.reason || !Number.isInteger(port) || port <= 0 || port > 65535) {
+    console.error(usage)
+    return 2
+  }
+  const reason = values.reason
+  const monitor = new OperationsMonitor({ relayUrl: process.env.RELAY_URL ?? '' })
+  const server = await startOperationsServer({ monitor, port, snapshot: () => idleSnapshot(reason, process.env.RELAY_URL ?? '') })
+  await new Promise<void>((resolve) => {
+    process.once('SIGTERM', resolve)
+    process.once('SIGINT', resolve)
+  })
+  await server.close()
   return 0
 }
 
@@ -89,6 +121,7 @@ function status(config: OrchestratorConfig, json: boolean): number {
 
 export async function orchestratorCommand(argv: string[]): Promise<number> {
   const [action, ...rest] = argv
+  if (action === 'idle') return idle(rest)
   const { values } = parseArgs({ args: rest, options: { config: { type: 'string' }, json: { type: 'boolean' } } })
   if (!action || !['serve', 'status', 'check'].includes(action) || !values.config) {
     console.error(usage)

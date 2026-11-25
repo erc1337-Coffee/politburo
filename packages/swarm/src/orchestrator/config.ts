@@ -98,7 +98,8 @@ export function validateConfig(config: OrchestratorConfig): OrchestratorConfig {
   const fail = (message: string): never => { throw new OrchestratorConfigError(message) }
   let relay: URL | null = null
   try { relay = new URL(config.relay.url) } catch { fail('RELAY_URL: URL expected') }
-  if (relay!.protocol !== 'https:' && relay!.hostname !== '127.0.0.1' && relay!.hostname !== 'localhost') fail('RELAY_URL: https expected')
+  // Plain http only for a relay on this machine; from a container, the host is host.docker.internal.
+  if (relay!.protocol !== 'https:' && !['127.0.0.1', 'localhost', 'host.docker.internal'].includes(relay!.hostname)) fail('RELAY_URL: https expected')
   for (const name of [...config.repositories.allow, ...config.repositories.deny]) if (!REPOSITORY.test(name)) fail(`repositories: ${name} is not owner/name`)
   const positive: Array<[string, number]> = [
     ['sweep_seconds', config.sweepSeconds], ['board.lease_seconds', config.board.leaseSeconds],

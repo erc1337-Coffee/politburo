@@ -5,6 +5,7 @@
 //   GET /api/operations/events                      orchestrator events (SSE)
 //   GET /api/operations/attempts/{attempt}/events   last events of one attempt
 //   GET /api/operations/usage                       usage from the spend ledger
+import { existsSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { SpendRecord } from '@remilia/politburo-ledger'
 
@@ -116,13 +117,14 @@ export function operationsRoutes(options: OperationsOptions) {
     if (cached && now - cached.at < USAGE_CACHE_MS) return cached.summary
     let summary: UsageSummary
     if (!options.ledgerFile) {
-      summary = { ...emptySummary(now), error: 'no ledger file is configured' }
+      summary = { ...emptySummary(now), error: 'no ledger' }
+    } else if (!existsSync(options.ledgerFile)) {
+      summary = { ...emptySummary(now), available: true }
     } else {
       try {
         summary = await summarizeUsage(options.ledgerFile, now)
-      } catch (error) {
-        const code = (error as { code?: unknown }).code
-        summary = { ...emptySummary(now), error: code === 'ENOENT' || /unable to open/i.test(String((error as Error).message)) ? 'the ledger has no records yet' : 'the ledger could not be read' }
+      } catch {
+        summary = { ...emptySummary(now), error: 'ledger unreadable' }
       }
     }
     cached = { at: now, summary }

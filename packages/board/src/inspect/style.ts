@@ -857,61 +857,66 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 .handoff-line { margin-bottom: 0; }
 
 /* operations: a live schematic */
-.operations-view { overflow: auto; padding: 8px var(--inset) 24px; gap: 12px; }
-.ops-note { color: var(--warning); margin: 0; }
-.ops-schematic { width: 100%; max-width: 1400px; height: auto; flex: none; font: var(--metadata); user-select: none; }
-.ops-schematic .zone { fill: none; stroke: var(--hairline); stroke-dasharray: 4 6; }
-.ops-schematic .zone-label { fill: var(--faint); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+.operations-view { overflow: auto; padding: 10px var(--inset) 24px; gap: 10px; }
+.ops-note { color: var(--warning); margin: 0; font: var(--metadata); }
+.ops-schematic { width: 100%; max-width: 1180px; height: auto; flex: none; user-select: none; font-family: var(--mono); }
+.ops-schematic .zone { fill: none; stroke: var(--hairline); stroke-dasharray: 3 6; }
+.ops-schematic .zone-label { fill: var(--faint); font-size: 11px; letter-spacing: .08em; }
 .ops-schematic .arrowhead { fill: var(--muted); }
-.ops-schematic .link { fill: none; stroke: var(--hairline); stroke-width: var(--width, 1.4px); stroke-dasharray: 6 8;
-  animation: ops-flow var(--flow, 12s) linear infinite; transition: stroke .3s, stroke-width .3s, opacity .3s; }
-.ops-schematic .link.launch { stroke-dasharray: 2 7; opacity: .45; }
-.ops-schematic .link.hot { stroke: var(--hot); stroke-width: 4.5px; opacity: 1; }
-.ops-schematic .settled .link { opacity: .25; animation-play-state: paused; }
-@keyframes ops-flow { to { stroke-dashoffset: -140; } }
-.ops-schematic .node > rect, .ops-schematic .node > circle:not(.glow):not(.ring), .ops-schematic .beat circle { fill: var(--panel); stroke: var(--gold); stroke-width: 1.4; }
-.ops-schematic .node-title { fill: var(--bright); font: 600 13px var(--display); letter-spacing: .02em; }
-.ops-schematic .node-line { fill: var(--dim); font-size: 11px; }
-.ops-schematic .node-line.faint, .ops-schematic .faint { fill: var(--faint); }
-.ops-schematic .heart .beat { animation: ops-beat .55s ease-out; transform-box: fill-box; transform-origin: center; }
-.ops-schematic .heart .beat circle { stroke: var(--beat, var(--accent)); stroke-width: 2.2; }
+.ops-schematic .link { fill: none; stroke: var(--muted); stroke-opacity: .55; stroke-width: var(--width, 1.5px); stroke-dasharray: 5 7;
+  animation: ops-flow var(--flow, 12s) linear infinite; transition: stroke .25s, stroke-width .25s, stroke-opacity .25s; }
+.ops-schematic .link.launch { stroke-dasharray: 2 6; stroke-opacity: .25; }
+.ops-schematic .link.down { stroke-opacity: .2; animation: none; }
+.ops-schematic .link.hot { stroke: var(--hot); stroke-opacity: 1; stroke-width: 4px; }
+.ops-schematic .settled .link { stroke-opacity: .15; animation: none; }
+@keyframes ops-flow { to { stroke-dashoffset: -120; } }
+.ops-schematic .node > rect, .ops-schematic .node > circle:not(.glow):not(.ring), .ops-schematic .beat circle { fill: var(--panel); stroke: var(--gold); stroke-width: 1.5; }
+.ops-schematic .node-title { fill: var(--bright); font: 600 15px var(--display); }
+.ops-schematic .node-line { fill: var(--dim); font-size: 12.5px; }
+.ops-schematic .node-line.faint { fill: var(--faint); }
+.ops-schematic .node.down > rect, .ops-schematic .node.down > circle:not(.glow), .ops-schematic .node.down .beat circle { stroke: var(--hairline); stroke-dasharray: 4 4; }
+.ops-schematic .node.down .node-title { fill: var(--muted); }
+.ops-schematic .heart .beat { animation: ops-beat .5s ease-out; transform-box: fill-box; transform-origin: center; }
+.ops-schematic .heart .beat circle { stroke: var(--beat, var(--gold)); stroke-width: 2; }
+.ops-schematic .heart.down .beat { animation: none; }
 .ops-schematic .heart .glow { animation: ops-breathe 4s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
-.ops-schematic .heart.idle .glow { animation-duration: 7s; opacity: .5; }
-@keyframes ops-beat { 0% { transform: scale(1.12); filter: drop-shadow(0 0 10px var(--beat)); } 100% { transform: scale(1); filter: none; } }
-@keyframes ops-breathe { 0%, 100% { transform: scale(.92); opacity: .55; } 50% { transform: scale(1.05); opacity: 1; } }
-.ops-schematic .relay .ring { fill: none; stroke: var(--gold); stroke-width: 2; stroke-dasharray: 3 9; animation: ops-spin var(--spin, 20s) linear infinite; transform-box: fill-box; transform-origin: center; }
+.ops-schematic .heart.idle .glow { animation-duration: 8s; }
+@keyframes ops-beat { 0% { transform: scale(1.08); } 100% { transform: scale(1); } }
+@keyframes ops-breathe { 0%, 100% { opacity: .4; } 50% { opacity: 1; } }
+.ops-schematic .relay .ring { fill: none; stroke: var(--gold); stroke-opacity: .6; stroke-width: 1.5; stroke-dasharray: 2 8; animation: ops-spin var(--spin, 20s) linear infinite; transform-box: fill-box; transform-origin: center; }
 @keyframes ops-spin { to { transform: rotate(360deg); } }
-.ops-schematic .worker { cursor: pointer; }
-.ops-schematic .worker:focus-visible > rect, .ops-schematic .worker.selected > rect { stroke: var(--accent); stroke-width: 2.4; }
-.ops-schematic .worker.settled { opacity: .5; }
+.ops-schematic .worker { cursor: pointer; outline: none; }
+.ops-schematic .worker:focus-visible > rect:first-child, .ops-schematic .worker.selected > rect:first-child { stroke: var(--accent); stroke-width: 2.2; }
+.ops-schematic .worker.settled { opacity: .45; }
 .ops-schematic .worker .cylinder { fill: var(--shade); stroke: var(--hairline); }
-.ops-schematic .worker .piston { fill: var(--gold); animation: ops-piston .9s ease-in-out; transform-box: view-box; }
-@keyframes ops-piston { 0% { transform: translateY(0); } 45% { transform: translateY(20px); } 100% { transform: translateY(0); } }
+.ops-schematic .worker .piston { fill: var(--gold); animation: ops-piston .8s ease-in-out; }
+@keyframes ops-piston { 45% { transform: translateY(24px); } }
 .ops-schematic .gear path { fill: var(--chrome); stroke: var(--gold); stroke-width: 1; }
 .ops-schematic .gear .hub { fill: var(--gold); }
 .ops-schematic .gear.turning { animation: ops-spin 6s linear infinite; }
 .ops-schematic .gear.turning.fast { animation-duration: 1.2s; }
 .ops-schematic .gear.stopped { animation-play-state: paused; }
-.ops-schematic .worker.waiting > rect { stroke: var(--warning); animation: ops-blink 1.2s step-end infinite; }
+.ops-schematic .worker.waiting > rect:first-child { stroke: var(--warning); animation: ops-blink 1.2s step-end infinite; }
 @keyframes ops-blink { 50% { stroke-opacity: .2; } }
 .ops-schematic .state-waiting_answer { fill: var(--warning); }
-.ops-schematic .node.fault > rect, .ops-schematic .node.fault > circle:not(.glow):not(.ring), .ops-schematic .node.fault .beat circle { stroke: var(--red); stroke-width: 2.4; }
-.ops-schematic .node.fault { animation: ops-shake .45s ease-in-out 1; }
-@keyframes ops-shake { 20% { transform: translateX(-4px); } 40% { transform: translateX(4px); } 60% { transform: translateX(-2px); } 80% { transform: translateX(2px); } }
-.ops-schematic .ledger .spark { fill: #7fd6ff; opacity: .8; }
-.ops-schematic .packet { fill: var(--c); filter: drop-shadow(0 0 4px var(--c)); }
+.ops-schematic .node.fault > rect:first-child, .ops-schematic .node.fault > circle:first-of-type, .ops-schematic .node.fault .beat circle { stroke: var(--red); stroke-width: 2; stroke-dasharray: none; }
+.ops-schematic .node.fault { animation: ops-shake .4s ease-in-out 1; }
+@keyframes ops-shake { 25% { transform: translateX(-3px); } 75% { transform: translateX(3px); } }
+.ops-schematic .ledger .spark { fill: #7fd6ff; opacity: .75; }
+.ops-schematic .packet { fill: var(--c); filter: drop-shadow(0 0 3px var(--c)); }
 .ops-schematic .packet.ring { fill: none; stroke: var(--c); stroke-width: 2.5; }
-.ops-schematic .packet-label { fill: var(--c); font-size: 10.5px; font-weight: 600; paint-order: stroke; stroke: var(--bg); stroke-width: 3px; }
-.ops-panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 12px; }
-.ops-panel { border: 1px solid var(--hairline); border-radius: 10px; padding: 10px 12px; background: var(--panel); min-width: 0; }
-.ops-panel h2 { margin: 0 0 8px; font: 600 13px var(--display); color: var(--bright); }
-.ops-panel .small { font-size: 11px; margin-bottom: 0; }
+.ops-schematic .packet-label { fill: var(--c); font-size: 11px; font-weight: 600; paint-order: stroke; stroke: var(--bg); stroke-width: 3px; }
+.ops-panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 10px; max-width: 1180px; }
+.ops-panel { border: 1px solid var(--hairline); border-radius: 8px; padding: 8px 12px; min-width: 0; }
+.ops-panel h2 { margin: 0 0 6px; font: 600 13px var(--display); color: var(--bright); }
+.ops-panel p { margin: 0; font: var(--metadata); }
 .ops-table { width: 100%; border-collapse: collapse; font: var(--metadata); }
+.ops-table th { color: var(--faint); font-weight: normal; }
 .ops-table th, .ops-table td { text-align: left; padding: 2px 6px; border-bottom: 1px solid var(--shade); white-space: nowrap; }
 .ops-table tfoot td { color: var(--bright); border-bottom: none; }
-.ops-log { list-style: none; margin: 0; padding: 0; max-height: 320px; overflow: auto; font: var(--metadata); }
-.ops-log li { display: flex; gap: 8px; align-items: baseline; padding: 1px 0; }
-.ops-log i { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.ops-log { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow: auto; font: var(--metadata); }
+.ops-log li { display: flex; gap: 8px; align-items: baseline; }
+.ops-log i { width: 7px; height: 7px; border-radius: 50%; flex: none; }
 .ops-log time { color: var(--faint); flex: none; }
 @media (prefers-reduced-motion: reduce) {
   .ops-schematic .link, .ops-schematic .relay .ring, .ops-schematic .gear.turning, .ops-schematic .heart .glow { animation: none; }

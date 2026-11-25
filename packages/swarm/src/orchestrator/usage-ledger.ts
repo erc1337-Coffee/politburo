@@ -28,6 +28,11 @@ export class UsageLedger {
     mkdirSync(dirname(options.file), { recursive: true })
   }
 
+  /** Creates the ledger file when it is missing, so readers find it before the first round. */
+  initialize(): void {
+    openLedger(this.#o.file, { journal: 'rollback', busyMs: 5_000 }).close()
+  }
+
   envelope(attempt: AttemptRecord): Envelope {
     return {
       party: this.#o.party, repo: attempt.repository, work_id: `task-${attempt.taskId}`, attempt: attempt.attemptId,

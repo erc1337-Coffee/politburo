@@ -65,6 +65,9 @@ export interface OperationsSnapshot {
   started_at: number
   board: { reachable: boolean | null; paused: boolean | null; pause_epoch: number | null; checked_at: number | null; error: string | null }
   orchestrator: {
+    status: 'serving' | 'idle'
+    /** Why an idle orchestrator does not serve. */
+    reason: string | null
     actor: string
     live: number
     live_limit: number
@@ -90,6 +93,20 @@ export function errorCode(error: unknown): string {
   if (typeof named?.code === 'string' && /^[A-Za-z0-9_.-]{1,40}$/.test(named.code)) return named.code
   if (typeof named?.name === 'string' && /^[A-Za-z]{1,40}$/.test(named.name)) return named.name
   return 'error'
+}
+
+/** The snapshot of an orchestrator that does not run, and why. */
+export function idleSnapshot(reason: string, relayUrl: string, now = Date.now()): OperationsSnapshot {
+  let host = ''
+  try { host = new URL(relayUrl).host } catch { host = '' }
+  return {
+    at: now, started_at: now,
+    board: { reachable: null, paused: null, pause_epoch: null, checked_at: null, error: null },
+    orchestrator: { status: 'idle', reason: reason.slice(0, 300), actor: '', live: 0, live_limit: 0, outbox: 0, sweep_seconds: 0, last_tick: null, ticks_last_minute: 0 },
+    relay: { host, reachable: null, latency_ms: null, checked_at: null, error: null, statistics: null },
+    attempts: [],
+    last_seq: 0,
+  }
 }
 
 export class OperationsMonitor {
@@ -212,7 +229,7 @@ export class OperationsMonitor {
       started_at: this.startedAt,
       board: this.#board,
       orchestrator: {
-        actor: input.actor, live: input.live.length, live_limit: input.liveLimit, outbox: input.outbox,
+        status: 'serving', reason: null, actor: input.actor, live: input.live.length, live_limit: input.liveLimit, outbox: input.outbox,
         sweep_seconds: input.sweepSeconds, last_tick: this.#lastTick,
         ticks_last_minute: this.#events.filter((event) => event.kind === 'tick' && event.at > now - 60_000).length,
       },
