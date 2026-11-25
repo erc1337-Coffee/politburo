@@ -146,9 +146,11 @@ export function operationsRoutes(options: OperationsOptions) {
         signal,
         redirect: 'error',
       })
-    } catch {
+    } catch (error) {
       if (signal.aborted) return void response.end()
-      return json(response, 502, { error: { code: 'orchestrator_unreachable', message: 'the orchestrator status server did not answer' } })
+      const cause = (error as { cause?: { code?: unknown } }).cause?.code
+      const code = typeof cause === 'string' && /^[A-Z_]{1,40}$/.test(cause) ? cause : (error as Error).name
+      return json(response, 502, { error: { code: 'orchestrator_unreachable', message: `orchestrator unreachable (${code})` } })
     }
     response.writeHead(upstream.status, {
       'content-type': upstream.headers.get('content-type') ?? 'application/json',
