@@ -5,6 +5,7 @@ import { parseArgs } from 'node:util'
 import { board as openBoard } from '@vercel/board'
 import { loadConfig, parseConfigText } from '../config/load.ts'
 import { loadOrchestratorConfig, type OrchestratorConfig } from './config.ts'
+import { GitRepositories } from './git.ts'
 import { GitHubClient } from './github.ts'
 import { openJournal } from './launch.ts'
 import { cloudProvider } from './launcher.ts'
@@ -34,6 +35,7 @@ async function serve(config: OrchestratorConfig): Promise<number> {
     board: openBoard().as(config.boardProfile),
     relay: new RelayClient({ url: config.relay.url, signingKey: readFileSync(config.relay.signingKeyFile, 'utf8'), orchestratorTtlSeconds: config.tokens.orchestratorTtlSeconds }),
     github: new GitHubClient({ apiUrl: config.github.apiUrl, token }),
+    git: new GitRepositories({ directory: join(config.stateDirectory, 'repositories'), urlBase: 'https://github.com', token }),
     state,
     journal: openJournal(join(config.stateDirectory, 'journal')),
     routes: () => partyRoutes(config),

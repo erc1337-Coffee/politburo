@@ -13,8 +13,8 @@ export interface DecisionInput {
   task: { id: string; brief: string; channel: string }
   attempt: { no: number; round: number; costUsd: number; wallMs: number }
   result: ResultData
-  /** The branch head GitHub reports, or null when the branch is missing. */
-  branchHead: string | null
+  /** The bundle arrived whole and its sha256 matches the result. */
+  bundleReceived: boolean
 }
 
 export interface DecisionLimits { roundsPerAttempt: number; attemptsPerTask: number; attemptWallMs: number; taskBudgetUsd: number; taskCostUsd: number }
@@ -49,8 +49,7 @@ export const fixedRulesPolicy: NextStepPolicy = {
 /** Applies the hard limits and the publication precondition to a policy's answer. */
 export function limitStep(step: NextStep, input: DecisionInput, limits: DecisionLimits): NextStep {
   if (step.kind === 'publish') {
-    if (!input.result.pushed || !input.result.head_commit) return { kind: 'retry', reason: 'the worker did not push its branch' }
-    if (input.branchHead !== input.result.head_commit) return { kind: 'retry', reason: 'the branch head on GitHub differs from the worker report' }
+    if (!input.result.head_commit || !input.bundleReceived) return { kind: 'retry', reason: 'the worker sent no complete bundle of its commits' }
     return step
   }
   const overBudget = limits.taskCostUsd > limits.taskBudgetUsd

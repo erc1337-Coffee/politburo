@@ -5,6 +5,11 @@ ready board tasks, starts one remote worker for each task attempt, exchanges
 commands and telemetry with that worker through `@remilia/politburo-relay`,
 chooses the next step and opens the draft pull request in the same repository.
 
+Workers hold no GitHub credential (decision D-75, option d). A worker commits on its task branch
+and sends the commits as a git bundle in `bundle_part` messages before its `result`. When the
+next step is `publish`, the orchestrator checks the bundle digest, checks that the commits
+descend from the base commit, pushes the branch without force and opens the draft PR.
+
 Run it with `swarm orchestrator serve --config FILE`. `check` validates the
 configuration and the party routes; `status` prints the live attempts.
 
@@ -39,6 +44,7 @@ watchdog for each live attempt, then admission of new ready tasks.
 | `launcher.ts` | Worker prompt and the `claude --cloud` launch provider |
 | `policy.ts` | Next step after a result (pluggable) and the hard limits around it |
 | `github.ts` | Repository reads and the draft PR (head and base in one repository) |
+| `git.ts` | Bare mirrors; applies a worker's git bundle and pushes the task branch (never forced) |
 | `launch.ts`, `journal.ts` | Launch a session once, record it, recover after a restart |
 | `stages/` | Review stages and the evidence gate (not connected yet) |
 | `cli.ts` | `serve`, `status`, `check` |

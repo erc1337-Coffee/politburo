@@ -33,7 +33,8 @@ export function workerPrompt(input: WorkerPromptInput): string {
     `1. Read ${input.protocolPath} in this repository and follow it exactly.`,
     '2. Run the worker client it names with the values above. Pass the token on standard input, never as an argument or a file in the repository.',
     '3. The client receives "start", runs Pi, sends telemetry and obeys commands. Do not do the task yourself.',
-    `4. If the client cannot reach the relay for ${input.contactTimeoutSeconds} seconds, push what exists to your task branch and stop.`,
+    `4. You have no GitHub credential and must not push. Commit on the task branch; the client sends the commits as a git bundle.`,
+    `5. If the client cannot reach the relay for ${input.contactTimeoutSeconds} seconds, stop.`,
   ].join('\n')
 }
 

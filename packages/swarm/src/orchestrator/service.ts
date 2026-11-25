@@ -7,9 +7,12 @@
 //   - the next due timer (lease, token, watchdog)
 //   - a sweep every `sweepSeconds`              -> catches anything missed
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { BoardError, type board as openBoard, type MessageView } from '@vercel/board'
-import { envelope, parseTelemetry, type Command, type ResultData, type StartData, type Telemetry } from '@remilia/politburo-relay/messages'
+import { envelope, parseTelemetry, type BundlePartData, type Command, type ResultData, type StartData, type Telemetry } from '@remilia/politburo-relay/messages'
 import { channelIncluded, repositoryAllowed, type OrchestratorConfig } from './config.ts'
+import type { GitRepositories } from './git.ts'
 import { repositoryName, type GitHubClient } from './github.ts'
 import { launch, launchKey, recover, type Binding, type Journal, type Provider } from './launch.ts'
 import { workerPrompt } from './launcher.ts'
@@ -27,6 +30,8 @@ export interface OrchestratorDependencies {
   board: Board
   relay: RelayClient
   github: GitHubClient
+  /** Bare mirrors; the orchestrator is the only component that pushes (D-75, option d). */
+  git: GitRepositories
   state: StateStore
   journal: Journal
   /** The party's sprite routes, in order. */
@@ -40,6 +45,8 @@ export interface OrchestratorDependencies {
 
 const PROGRESS_REPLY_MS = 10 * 60_000
 const MAX_FAULTS = 3
+/** At most 64 bundle parts (about 2.3 MiB of bundle) for one round. */
+const MAX_BUNDLE_PARTS = 64
 const PRIORITY: Record<string, number> = { urgent: 0, high: 1, normal: 2, low: 3, lowest: 4 }
 
 const sha256 = (text: string) => createHash('sha256').update(text).digest('hex')
@@ -245,7 +252,7 @@ export class Orchestrator {
 
   async #stopAttempt(attempt: AttemptRecord, reason: string): Promise<void> {
     if (attempt.state === 'stopping') return
-    await this.#send(attempt, envelope('stop', attempt.taskId, attempt.channel, { reason, push: true }, this.#d.now()))
+    await this.#send(attempt, envelope('stop', attempt.taskId, attempt.channel, { reason, send_bundle: true }, this.#d.now()))
     this.#transition(attempt, { state: 'stopping', stopSentAt: this.#d.now() }, reason)
   }
 
@@ -266,6 +273,7 @@ export class Orchestrator {
     this.#subscriptions.get(attempt.channel)?.close()
     this.#subscriptions.delete(attempt.channel)
     this.#leaseRenewedAt.delete(attempt.attemptId)
+    rmSync(this.#bundleDirectory(attempt), { recursive: true, force: true })
   }
 
   // --- admission and start --------------------------------------------------
@@ -446,6 +454,7 @@ export class Orchestrator {
       case 'heartbeat': return
       case 'progress': return this.#onProgress(attempt, message, now)
       case 'question': return this.#onQuestion(attempt, message, now)
+      case 'bundle_part': return this.#onBundlePart(attempt, message.data)
       case 'result': return this.#onResult(attempt, message.data)
     }
   }
@@ -475,17 +484,49 @@ export class Orchestrator {
     this.#transition(attempt, { state: 'running', questionId: null, questionAt: null, lastContactAt: this.#d.now() })
   }
 
+  #bundleDirectory(attempt: AttemptRecord, round?: number): string {
+    const directory = join(this.#d.config.stateDirectory, 'bundles', attempt.attemptId)
+    return round === undefined ? directory : join(directory, `round_${round}`)
+  }
+
+  /** Stores one bundle part on disk, so parts survive a restart of the orchestrator. */
+  async #onBundlePart(attempt: AttemptRecord, part: BundlePartData): Promise<void> {
+    if (part.count > MAX_BUNDLE_PARTS || part.index >= part.count) {
+      this.#d.log({ event: 'protocol_fault', channel: attempt.channel, error: `bundle part ${part.index}/${part.count} refused` })
+      return
+    }
+    const directory = this.#bundleDirectory(attempt, part.round)
+    mkdirSync(directory, { recursive: true, mode: 0o700 })
+    writeFileSync(join(directory, `part_${part.index}`), part.data, { mode: 0o600 })
+  }
+
+  /** Joins the round's parts into one bundle file; null when a part is missing or the digest differs. */
+  #assembleBundle(attempt: AttemptRecord, result: ResultData): string | null {
+    if (!result.bundle) return null
+    const directory = this.#bundleDirectory(attempt, result.round)
+    try {
+      const parts: Buffer[] = []
+      for (let index = 0; index < result.bundle.parts; index++) parts.push(Buffer.from(readFileSync(join(directory, `part_${index}`), 'utf8'), 'base64'))
+      const bundle = Buffer.concat(parts)
+      if (bundle.length !== result.bundle.bytes || createHash('sha256').update(bundle).digest('hex') !== result.bundle.sha256) return null
+      const file = join(directory, 'commits.bundle')
+      writeFileSync(file, bundle, { mode: 0o600 })
+      return file
+    } catch {
+      return null
+    }
+  }
+
   async #onResult(attempt: AttemptRecord, result: ResultData): Promise<void> {
     const wasStopping = attempt.state === 'stopping'
     this.#transition(attempt, { state: 'deciding', costUsd: attempt.costUsd + result.cost_usd })
     await this.#reply(attempt.taskId, `Worker report (round ${result.round}, ${result.exit_reason}): ${workerText(result.summary, 1_500)}\nFiles ${result.diff_stat.files}, +${result.diff_stat.insertions} -${result.diff_stat.deletions}. Checks: ${result.checks.map((check) => `${check.name} ${check.exit_code === 0 ? 'pass' : 'fail'}`).join(', ') || 'none'}.`)
-    let branchHead: string | null = null
-    try { branchHead = await this.#d.github.branchHead(attempt.repository, attempt.branch) } catch { branchHead = null }
+    const bundleFile = this.#assembleBundle(attempt, result)
     const task = await this.#d.board.thread(attempt.taskId).then((thread) => thread.message).catch(() => null)
     const input = {
       task: { id: attempt.taskId, brief: task?.text ?? '', channel: attempt.boardChannel },
       attempt: { no: attempt.attemptNo, round: attempt.round, costUsd: attempt.costUsd, wallMs: this.#d.now() - attempt.createdAt },
-      result, branchHead,
+      result, bundleReceived: bundleFile !== null,
     }
     const taskCost = this.#d.state.forTask(attempt.taskId).reduce((sum, row) => sum + row.costUsd, 0)
     let step: NextStep = await this.#d.policy.decide(input).catch((error: unknown) => ({ kind: 'hold', question: `The next-step policy failed: ${(error as Error).message}` }) as NextStep)
@@ -495,10 +536,10 @@ export class Orchestrator {
     })
     if (wasStopping && step.kind === 'instruct') step = { kind: 'retry', reason: 'the attempt was stopping' }
     this.#d.log({ event: 'decision', task: attempt.taskId, attempt: attempt.attemptId, step: step.kind })
-    await this.#apply(attempt, step, result)
+    await this.#apply(attempt, step, result, bundleFile)
   }
 
-  async #apply(attempt: AttemptRecord, step: NextStep, result: ResultData): Promise<void> {
+  async #apply(attempt: AttemptRecord, step: NextStep, result: ResultData, bundleFile: string | null = null): Promise<void> {
     const now = this.#d.now()
     switch (step.kind) {
       case 'instruct': {
@@ -508,7 +549,7 @@ export class Orchestrator {
         await this.#reply(attempt.taskId, `Orchestrator: round ${round} sent to the worker.`)
         return
       }
-      case 'publish': return this.#publish(attempt, result)
+      case 'publish': return this.#publish(attempt, result, bundleFile)
       case 'retry': {
         await this.#finishWorker(attempt, step.reason)
         await this.#lostOrRetry(attempt, step.reason)
@@ -533,7 +574,7 @@ export class Orchestrator {
 
   async #finishWorker(attempt: AttemptRecord, reason: string): Promise<void> {
     if (attempt.stopSentAt === null) {
-      await this.#send(attempt, envelope('stop', attempt.taskId, attempt.channel, { reason, push: true }, this.#d.now()))
+      await this.#send(attempt, envelope('stop', attempt.taskId, attempt.channel, { reason, send_bundle: false }, this.#d.now()))
       this.#transition(attempt, { stopSentAt: this.#d.now() })
     }
   }
@@ -551,11 +592,17 @@ export class Orchestrator {
     this.#unsubscribe(attempt)
   }
 
-  async #publish(attempt: AttemptRecord, result: ResultData): Promise<void> {
+  /**
+   * The last step: push the worker's commits from the bundle, then open the draft PR. The allow list
+   * is checked here once more, because this is the only place that writes to GitHub.
+   */
+  async #publish(attempt: AttemptRecord, result: ResultData, bundleFile: string | null): Promise<void> {
     this.#transition(attempt, { state: 'publishing' })
     const { github } = this.#d
     if (!repositoryAllowed(this.#d.config, attempt.repository)) return this.#apply(attempt, { kind: 'fail', reason: `${attempt.repository} is not allowed` }, result)
+    if (!bundleFile || !result.head_commit || !attempt.baseCommit) return this.#apply(attempt, { kind: 'retry', reason: 'no verified bundle to push' }, result)
     try {
+      await this.#d.git.publishBundle(attempt.repository, { bundleFile, branch: attempt.branch, head: result.head_commit, base: attempt.baseCommit })
       let url = attempt.prUrl
       if (!url) {
         const existing = await github.findPullRequest(attempt.repository, attempt.branch)

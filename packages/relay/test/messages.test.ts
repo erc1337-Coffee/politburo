@@ -14,7 +14,7 @@ const start: StartData = {
 }
 const result: ResultData = {
   round: 1, exit_reason: 'completed', pi_exit_code: 0, summary: 'done', branch: 'claude/task-12', head_commit: sha1,
-  base_commit: sha1, pushed: true, push_error: null, diff_stat: { files: 1, insertions: 2, deletions: 0 },
+  base_commit: sha1, bundle: { sha256: 'a'.repeat(64), bytes: 100, parts: 1 }, diff_stat: { files: 1, insertions: 2, deletions: 0 },
   checks: [{ name: 'test', exit_code: 0, duration_seconds: 3.5, output_tail: 'ok' }],
   models: [{ provider: 'openrouter', model: 'm', input_tokens: 10, output_tokens: 5, cost_usd: 0.01 }],
   cost_usd: 0.01, duration_seconds: 60, truncated: [],
@@ -23,9 +23,15 @@ const result: ResultData = {
 describe('messages', () => {
   test('valid commands and telemetry parse', () => {
     assert.ok(parseCommand(envelope('start', '12', 'task-12-a1', start)).ok)
-    assert.ok(parseCommand(envelope('stop', '12', 'task-12-a1', { reason: 'pause', push: true })).ok)
+    assert.ok(parseCommand(envelope('stop', '12', 'task-12-a1', { reason: 'pause', send_bundle: true })).ok)
     assert.ok(parseTelemetry(envelope('result', '12', 'task-12-a1', result)).ok)
     assert.ok(parseTelemetry(envelope('question', '12', 'task-12-a1', { question_id: 'q1', round: 1, text: 'Which?' })).ok)
+    assert.ok(parseTelemetry(envelope('bundle_part', '12', 'task-12-a1', { round: 1, index: 0, count: 1, data: 'UEsDBA==' })).ok)
+  })
+
+  test('bundle parts must be base64 and fit one relay message', () => {
+    assert.equal(parseTelemetry(envelope('bundle_part', '12', 'c', { round: 1, index: 0, count: 1, data: 'not base64!' })).ok, false)
+    assert.equal(parseTelemetry(envelope('bundle_part', '12', 'c', { round: 1, index: 0, count: 1, data: 'A'.repeat(48_004) })).ok, false)
   })
 
   test('a telemetry type is not a command and the reverse', () => {
@@ -34,12 +40,12 @@ describe('messages', () => {
   })
 
   test('unknown fields, wrong types, bad formats and long texts are refused', () => {
-    const extra = parseCommand(envelope('stop', '12', 'c', { reason: 'x', push: true, force: true }))
+    const extra = parseCommand(envelope('stop', '12', 'c', { reason: 'x', send_bundle: true, force: true }))
     assert.deepEqual(extra, { ok: false, error: 'message.data.force: unknown field' })
     assert.equal(parseCommand(envelope('start', '12', 'c', { ...start, branch: 'main' })).ok, false)
     assert.equal(parseTelemetry(envelope('result', '12', 'c', { ...result, head_commit: 'xyz' })).ok, false)
     assert.equal(parseTelemetry(envelope('result', '12', 'c', { ...result, summary: 'x'.repeat(9_000) })).ok, false)
-    assert.equal(parseCommand({ ...envelope('stop', '12', 'c', { reason: 'x', push: true }), v: 2 }).ok, false)
+    assert.equal(parseCommand({ ...envelope('stop', '12', 'c', { reason: 'x', send_bundle: true }), v: 2 }).ok, false)
     assert.equal(parseCommand('stop').ok, false)
   })
 })

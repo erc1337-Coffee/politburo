@@ -47,11 +47,10 @@ export class GitHubClient {
     return { status: response.status, data }
   }
 
-  /** The repository's default branch, after checking that GitHub knows it by exactly this name. */
+  /** The repository's default branch. */
   async defaultBranch(repository: string): Promise<string> {
-    const { status, data } = await this.#call<{ full_name?: string; default_branch?: string }>('GET', `/repos/${repository}`)
+    const { status, data } = await this.#call<{ default_branch?: string }>('GET', `/repos/${repository}`)
     if (status !== 200 || !data?.default_branch) throw new GitHubError(status, `cannot read ${repository}`)
-    if (data.full_name?.toLowerCase() !== repository.toLowerCase()) throw new GitHubError(409, `${repository} is now ${data.full_name}`)
     return data.default_branch
   }
 

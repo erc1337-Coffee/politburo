@@ -6,7 +6,7 @@
 export const MESSAGE_VERSION = 1
 
 export type CommandType = 'start' | 'instruct' | 'answer' | 'stop' | 'renew'
-export type TelemetryType = 'heartbeat' | 'progress' | 'question' | 'result'
+export type TelemetryType = 'heartbeat' | 'progress' | 'question' | 'bundle_part' | 'result'
 
 export interface Envelope<T extends string, D> {
   v: typeof MESSAGE_VERSION
@@ -33,15 +33,14 @@ export interface StartData {
   model: { pi_model: string; fallback_tiers: unknown[] }
   checks: Array<{ name: string; command: string; timeout_seconds: number }>
   telemetry: { heartbeat_seconds: number; progress_mode: 'summary' | 'events' }
-  /** Repository push credential, only when the deployment sends one per attempt. */
-  git_credential?: string
 }
 export interface InstructData { round: number; text: string; mode: 'next_round' | 'interrupt' }
 export interface AnswerData { question_id: string; text: string }
-export interface StopData { reason: string; push: boolean }
+/** `send_bundle`: send the commits made so far as bundle parts and a final result before exiting. */
+export interface StopData { reason: string; send_bundle: boolean }
 export interface RenewData { token: string; exp: number }
 
-export type WorkerState = 'waiting_start' | 'running' | 'waiting_answer' | 'checking' | 'pushing' | 'stopping' | 'finished'
+export type WorkerState = 'waiting_start' | 'running' | 'waiting_answer' | 'checking' | 'bundling' | 'stopping' | 'finished'
 export interface HeartbeatData {
   state: WorkerState
   round: number
@@ -53,6 +52,10 @@ export interface HeartbeatData {
 export type ProgressKind = 'tool' | 'say' | 'error' | 'usage' | 'diff' | 'warning'
 export interface ProgressData { round: number; items: Array<{ at: number; kind: ProgressKind; text: string }> }
 export interface QuestionData { question_id: string; round: number; text: string; options?: string[] }
+/** One part of the round's git bundle (base64). Workers hold no GitHub credential: the orchestrator pushes. */
+export interface BundlePartData { round: number; index: number; count: number; data: string }
+/** Largest base64 text in one bundle part, so the whole message stays under the relay's 64 KiB. */
+export const BUNDLE_PART_MAX = 48_000
 export type ExitReason = 'completed' | 'failed' | 'timeout' | 'idle' | 'stopped' | 'lost_contact' | 'token_expired' | 'worker_error'
 export interface ResultData {
   round: number
@@ -62,8 +65,8 @@ export interface ResultData {
   branch: string
   head_commit: string | null
   base_commit: string
-  pushed: boolean
-  push_error: string | null
+  /** The round's commits as a git bundle of `branch`, sent before this result in `bundle_part` messages; null without commits. */
+  bundle: { sha256: string; bytes: number; parts: number } | null
   diff_stat: { files: number; insertions: number; deletions: number }
   checks: Array<{ name: string; exit_code: number | null; duration_seconds: number; output_tail: string }>
   models: Array<{ provider: string; model: string; input_tokens: number; output_tokens: number; cost_usd: number }>
@@ -82,6 +85,7 @@ export type Telemetry =
   | Envelope<'heartbeat', HeartbeatData>
   | Envelope<'progress', ProgressData>
   | Envelope<'question', QuestionData>
+  | Envelope<'bundle_part', BundlePartData>
   | Envelope<'result', ResultData>
 
 export type Parsed<T> = { ok: true; message: T } | { ok: false; error: string }
@@ -133,17 +137,16 @@ const commandData: Record<CommandType, Check> = {
     model: object({ pi_model: text(200), fallback_tiers: anyList(20) }),
     checks: list(object({ name: text(100), command: text(2_000), timeout_seconds: int(1) }), 20),
     telemetry: object({ heartbeat_seconds: int(5), progress_mode: oneOf('summary', 'events') }),
-    git_credential: text(2_000),
-  }, ['git_credential']),
+  }),
   instruct: object({ round: int(2), text: text(32_000), mode: oneOf('next_round', 'interrupt') }),
   answer: object({ question_id: str(100, ID), text: text(8_000) }),
-  stop: object({ reason: text(1_000), push: bool }),
+  stop: object({ reason: text(1_000), send_bundle: bool }),
   renew: object({ token: text(4_000), exp: int(1) }),
 }
 
 const telemetryData: Record<TelemetryType, Check> = {
   heartbeat: object({
-    state: oneOf('waiting_start', 'running', 'waiting_answer', 'checking', 'pushing', 'stopping', 'finished'),
+    state: oneOf('waiting_start', 'running', 'waiting_answer', 'checking', 'bundling', 'stopping', 'finished'),
     round: int(0), last_command_seq: int(0), elapsed_seconds: num, token_exp: int(0), pi_alive: bool,
   }),
   progress: object({
@@ -151,11 +154,13 @@ const telemetryData: Record<TelemetryType, Check> = {
     items: list(object({ at: int(0), kind: oneOf('tool', 'say', 'error', 'usage', 'diff', 'warning'), text: text(1_024) }), 50),
   }),
   question: object({ question_id: str(100, ID), round: int(1), text: text(4_096), options: list(text(200), 10) }, ['options']),
+  bundle_part: object({ round: int(1), index: int(0), count: int(1), data: str(BUNDLE_PART_MAX, /^[A-Za-z0-9+/]*={0,2}$/) }),
   result: object({
     round: int(1),
     exit_reason: oneOf('completed', 'failed', 'timeout', 'idle', 'stopped', 'lost_contact', 'token_expired', 'worker_error'),
     pi_exit_code: nullable(int(0)), summary: text(8_192), branch: str(120, BRANCH), head_commit: nullable(str(40, SHA1)),
-    base_commit: str(40, SHA1), pushed: bool, push_error: nullable(text(2_000)),
+    base_commit: str(40, SHA1),
+    bundle: nullable(object({ sha256: str(64, SHA256), bytes: int(1), parts: int(1) })),
     diff_stat: object({ files: int(0), insertions: int(0), deletions: int(0) }),
     checks: list(object({ name: text(100), exit_code: nullable(int(0)), duration_seconds: num, output_tail: text(2_048) }), 20),
     models: list(object({ provider: text(100), model: text(200), input_tokens: int(0), output_tokens: int(0), cost_usd: num }), 20),

@@ -43,10 +43,10 @@ describe('next step', () => {
   const input = (checkExit: number, round = 1, no = 1): DecisionInput => ({
     task: { id: '1', brief: 'b', channel: 'work' },
     attempt: { no, round, costUsd: 0, wallMs: 1000 },
-    branchHead: sha,
+    bundleReceived: true,
     result: {
       round, exit_reason: 'completed', pi_exit_code: 0, summary: 's', branch: 'claude/task-1', head_commit: sha, base_commit: sha,
-      pushed: true, push_error: null, diff_stat: { files: 1, insertions: 1, deletions: 0 },
+      bundle: { sha256: 'c'.repeat(64), bytes: 10, parts: 1 }, diff_stat: { files: 1, insertions: 1, deletions: 0 },
       checks: [{ name: 'test', exit_code: checkExit, duration_seconds: 1, output_tail: 'tail' }], models: [], cost_usd: 0, duration_seconds: 1, truncated: [],
     },
   })
@@ -63,7 +63,7 @@ describe('next step', () => {
     assert.equal(limitStep({ kind: 'retry', reason: 'x' }, input(0), { ...limits, taskCostUsd: 2 }).kind, 'fail')
   })
 
-  test('publish needs the pushed head that GitHub reports', () => {
-    assert.equal(limitStep({ kind: 'publish' }, { ...input(0), branchHead: 'b'.repeat(40) }, limits).kind, 'retry')
+  test('publish needs a complete bundle of the commits', () => {
+    assert.equal(limitStep({ kind: 'publish' }, { ...input(0), bundleReceived: false }, limits).kind, 'retry')
   })
 })
