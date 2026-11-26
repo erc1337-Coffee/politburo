@@ -2,6 +2,7 @@
 // address, the channel, a short worker token and the protocol file; the brief goes
 // through the relay in the `start` command, never through the prompt.
 import { execFile } from 'node:child_process'
+import { writeFileSync } from 'node:fs'
 import type { Provider } from './launch.ts'
 
 export interface WorkerPromptInput {
@@ -59,7 +60,7 @@ export const runCommand: CommandRunner = (command, args, { timeoutMs, cwd, env }
 /**
  * A launch `Provider` for one attempt: `send` runs the launcher with the prompt in the attempt's
  * launch directory and reads the session id. `CCR_FORCE_BUNDLE=1` makes `claude --cloud` upload
- * that directory instead of cloning from GitHub.
+ * that directory instead of cloning from GitHub. The launcher output goes to `<directory>.log`.
  * `probe` cannot list cloud sessions by title yet, so it answers `unknown`: an unclear launch becomes
  * `uncertain` and waits for a person, and is never sent twice.
  */
@@ -68,6 +69,7 @@ export function cloudProvider(launcher: readonly string[], prompt: string, direc
     async send() {
       const [command, ...args] = launcher
       const { code, output } = await run(command!, [...args, prompt], { timeoutMs: 5 * 60_000, cwd: directory, env: { ...process.env, CCR_FORCE_BUNDLE: '1' } })
+      writeFileSync(`${directory}.log`, `exit ${code}\n${output}`, { mode: 0o600 })
       const session = parseSessionId(output)
       if (code !== 0 || !session) throw new Error(`launcher exited ${code} without a session id`)
       return { session }
