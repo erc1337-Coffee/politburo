@@ -507,7 +507,7 @@ function ThreadPane(props: { id: string; state: State; viewer: Viewer; now: numb
   const scheduled = threadSchedules(state, id)
   const platforms = Object.fromEntries((state.discovery?.sync ?? []).map((entry) => [entry.key, entry.platform]))
   const names = namesOf(state)
-  const options: RowOptions = { me: state.me!.actor, viewer, now: props.now, known: props.known, platforms, syncConfigured: Boolean(state.discovery?.sync.length), schemas: state.schemas, names }
+  const options: RowOptions = { me: state.me!.actor, viewer, now: props.now, known: props.known, platforms, syncConfigured: Boolean(state.discovery?.sync.length), schemas: state.schemas, names, chat: true }
   return (
     <>
       <Header lead={props.lead} title={isTask(t?.root) ? 'task' : 'thread'} meta={t ? `in #${t.root.channel}` : undefined}>
@@ -576,7 +576,7 @@ function ThreadPane(props: { id: string; state: State; viewer: Viewer; now: numb
             <Messages messages={[t.root]} now={props.now} options={options} />
             <div className="divider">{t.replies.length === 1 ? '1 reply' : `${t.replies.length} replies`}</div>
             <Messages messages={t.replies} now={props.now} options={options} after={t.root} />
-            {!readOnly && <Pendings posts={t.pending} me={state.me!} after={t.replies.at(-1)} />}
+            {!readOnly && <Pendings posts={t.pending} me={state.me!} after={t.replies.at(-1)} chat />}
           </>
         )}
       </Feed>
