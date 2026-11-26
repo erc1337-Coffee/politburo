@@ -393,7 +393,7 @@ export class Orchestrator {
     if (!settings?.repository) return this.#skip(message, `Channel #${message.channel} links no repository.`)
     const repository = repositoryName(settings.repository)
     if (!repository) return this.#skip(message, `The repository of #${message.channel} is not a github.com repository.`)
-    if (!repositoryAllowed(this.#d.config, repository)) return this.#skip(message, `Repository ${repository} is not on the orchestrator allow list.`)
+    if (!repositoryAllowed(this.#d.config, repository)) return this.#skip(message, `Repository ${repository} is denied.`)
     const party = this.#d.routes()
     const byKey = new Map(party.map((route) => [`${route.provider}/${route.model}`, route]))
     const routes = settings.routes.length === 0

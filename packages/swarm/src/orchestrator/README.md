@@ -65,7 +65,7 @@ state_directory: /orchestrator
 board_profile: orchestrator
 party_file: /party/party_configuration.yaml
 relay: { signing_key_file: /orchestrator/keys/relay_signing_key.pem }
-repositories: { allow: [owner/name] }   # upstreams are denied by default
+repositories: { deny: [owner/name] }    # no branches or PRs; upstreams by default
 ```
 
 Every other setting has a default in `config.ts`. The relay address comes from `RELAY_URL`. Credentials come from the environment:

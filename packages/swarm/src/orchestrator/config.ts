@@ -16,7 +16,7 @@ export interface OrchestratorConfig {
   relay: { url: string; signingKeyFile: string }
   board: { leaseSeconds: number }
   /** Board channels the orchestrator takes tasks from: exact paths, or `prefix/` for a subtree. */
-  repositories: { allow: string[]; deny: string[] }
+  repositories: { deny: string[] }
   admission: { liveAttempts: number; perChannel: number; perRepository: number }
   limits: { roundsPerAttempt: number; attemptsPerTask: number; attemptWallMinutes: number; taskBudgetUsd: number }
   tokens: { workerTtlSeconds: number; orchestratorTtlSeconds: number }
@@ -46,7 +46,7 @@ export const DEFAULT_CONFIG: OrchestratorConfig = {
   sweepSeconds: 30,
   relay: { url: '', signingKeyFile: '/orchestrator/keys/relay_signing_key.pem' },
   board: { leaseSeconds: 900 },
-  repositories: { allow: [], deny: ['remiliacorporation/politburo', 'vercel/board'] },
+  repositories: { deny: ['remiliacorporation/politburo', 'vercel/board'] },
   admission: { liveAttempts: 2, perChannel: 1, perRepository: 1 },
   limits: { roundsPerAttempt: 3, attemptsPerTask: 2, attemptWallMinutes: 120, taskBudgetUsd: 10 },
   tokens: { workerTtlSeconds: 3600, orchestratorTtlSeconds: 900 },
@@ -100,7 +100,7 @@ export function validateConfig(config: OrchestratorConfig): OrchestratorConfig {
   try { relay = new URL(config.relay.url) } catch { fail('RELAY_URL: URL expected') }
   // Plain http only for a relay on this machine; from a container, the host is host.docker.internal.
   if (relay!.protocol !== 'https:' && !['127.0.0.1', 'localhost', 'host.docker.internal'].includes(relay!.hostname)) fail('RELAY_URL: https expected')
-  for (const name of [...config.repositories.allow, ...config.repositories.deny]) if (!REPOSITORY.test(name)) fail(`repositories: ${name} is not owner/name`)
+  for (const name of config.repositories.deny) if (!REPOSITORY.test(name)) fail(`repositories: ${name} is not owner/name`)
   const positive: Array<[string, number]> = [
     ['sweep_seconds', config.sweepSeconds], ['board.lease_seconds', config.board.leaseSeconds],
     ['admission.live_attempts', config.admission.liveAttempts], ['admission.per_channel', config.admission.perChannel],
@@ -144,6 +144,5 @@ export function loadOrchestratorConfig(file: string, env: NodeJS.ProcessEnv = pr
 /** Whether the orchestrator may push to and open PRs in `repository` (`owner/name`). The deny list wins. */
 export function repositoryAllowed(config: OrchestratorConfig, repository: string): boolean {
   const name = repository.toLowerCase()
-  if (config.repositories.deny.some((entry) => entry.toLowerCase() === name)) return false
-  return config.repositories.allow.some((entry) => entry.toLowerCase() === name)
+  return !config.repositories.deny.some((entry) => entry.toLowerCase() === name)
 }

@@ -122,7 +122,6 @@ describe('orchestrator with the real worker client', () => {
 state_directory: ${stateDirectory}
 sweep_seconds: 1
 relay: { signing_key_file: unused }
-repositories: { allow: [owner/repo] }
 watchdog: { heartbeat_seconds: 5, contact_timeout_seconds: 60, missed_heartbeats: 6, stop_grace_seconds: 5, question_wait_seconds: 60 }
 worker:
   checks:

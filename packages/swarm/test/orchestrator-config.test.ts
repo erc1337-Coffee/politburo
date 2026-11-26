@@ -10,14 +10,14 @@ const minimal = ''
 
 describe('orchestrator config', () => {
   test('merges snake_case settings over the defaults', () => {
-    const config = parse(`${minimal}repositories: { allow: [Owner/Repo] }\nlimits: { rounds_per_attempt: 4 }\n`)
+    const config = parse(`${minimal}limits: { rounds_per_attempt: 4 }\n`)
     assert.equal(config.limits.roundsPerAttempt, 4)
     assert.equal(config.limits.attemptsPerTask, 2)
     assert.ok(repositoryAllowed(config, 'owner/repo'))
   })
 
-  test('the deny list wins over the allow list', () => {
-    const config = parse(`${minimal}repositories: { allow: [remiliacorporation/politburo] }\n`)
+  test('upstreams are denied by default', () => {
+    const config = parse(minimal)
     assert.ok(!repositoryAllowed(config, 'remiliacorporation/politburo'))
   })
 
@@ -27,7 +27,7 @@ describe('orchestrator config', () => {
     assert.throws(() => parseConfig('', {}), /RELAY_URL/)
     assert.throws(() => parse('relay: { url: "https://relay.example.net" }\n'), /RELAY_URL/)
     assert.throws(() => parse(`${minimal}board: { lease_seconds: 5 }\n`), /lease_seconds/)
-    assert.throws(() => parse(`${minimal}repositories: { allow: [nope] }\n`), /owner\/name/)
+    assert.throws(() => parse(`${minimal}repositories: { deny: [nope] }\n`), /owner\/name/)
   })
 })
 
