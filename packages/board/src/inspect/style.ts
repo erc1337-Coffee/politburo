@@ -915,9 +915,6 @@ details.turn-action { display: block; }
 .ops-schematic .led.ok { fill: var(--ops-ok); opacity: 1; }
 .ops-schematic .led.warn { fill: var(--warning); opacity: 1; }
 .ops-schematic .led.fault { fill: var(--red); opacity: 1; }
-.ops-schematic .heart .glow { opacity: .8; }
-.ops-schematic .heart .ripple { fill: none; stroke: var(--c); stroke-width: 1.5; transform-box: fill-box; transform-origin: center; animation: ops-ripple 1.1s cubic-bezier(.2, .6, .3, 1) forwards; pointer-events: none; }
-@keyframes ops-ripple { from { transform: scale(1); opacity: .75; } to { transform: scale(1.12, 1.3); opacity: 0; } }
 .ops-schematic .relay .ring { fill: none; stroke: var(--gold); stroke-opacity: .45; stroke-width: 1; stroke-dasharray: 1 5; animation: ops-march var(--spin, 20s) linear infinite; }
 @keyframes ops-march { to { stroke-dashoffset: -120; } }
 /* A box's words are HTML in its frame: picture and name first, then a line per detail. */
@@ -1006,8 +1003,8 @@ details.turn-action { display: block; }
   .ops-legend { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .ops-schematic .relay .ring, .ops-schematic .heart .ripple, .ops-schematic .worker .pulse, .ops-schematic .worker .sweep, .ops-figure, .ops-log li { animation: none; }
-  .ops-schematic .worker .pulse, .ops-schematic .heart .ripple { display: none; }
+  .ops-schematic .relay .ring, .ops-schematic .worker .pulse, .ops-schematic .worker .sweep, .ops-figure, .ops-log li { animation: none; }
+  .ops-schematic .worker .pulse { display: none; }
   .ops-schematic .link { transition: none; }
 }
 `

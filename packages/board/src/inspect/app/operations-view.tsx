@@ -1,7 +1,7 @@
 // /operations: a live schematic of the board, the orchestrator, the relay and the cloud workers, with
 // the spend ledger and each component's details in a side panel. Each message travels its link as a
-// packet and tints the link while it travels; the orchestrator ripples on each tick; a worker's lamp
-// pulses on each heartbeat. At rest nothing moves.
+// packet and tints the link while it travels; a worker's lamp pulses on each heartbeat. No two links
+// cross. At rest nothing moves.
 import { nameFor, pictureFor, SERVICES, type Identities } from './identity.ts'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { base } from './nav.tsx'
@@ -137,9 +137,6 @@ const COLOR: Record<Kind, string> = {
   result: 'var(--ops-result)', external: 'var(--ops-external)', usage: 'var(--ops-command)',
 }
 const LEGEND: Array<[Kind, string]> = [['command', 'command'], ['telemetry', 'telemetry'], ['question', 'question'], ['result', 'result'], ['external', 'board / GitHub']]
-const BEAT: Record<WakeSource, string> = {
-  start: 'var(--bright)', board: 'var(--ops-external)', telemetry: 'var(--ops-telemetry)', timer: 'var(--ops-command)', sweep: 'var(--muted)', request: 'var(--muted)',
-}
 
 type Packet = { edge: string; kind: Kind; size: number; ring: boolean; started: number; duration: number; label: string; then?: Omit<Packet, 'started'> }
 type Point = { x: number; y: number }
@@ -164,12 +161,28 @@ const around = (c: Point, size: { w: number; h: number }): Box => ({ x: c.x - si
 /** Where a link meets a box's side, `dy` from its middle, just outside its frame. */
 const leftOf = (box: Box, dy: number): Point => ({ x: box.x - 3, y: box.y + box.h / 2 + dy })
 const rightOf = (box: Box, dy: number): Point => ({ x: box.x + box.w + 3, y: box.y + box.h / 2 + dy })
-/** A link of straight segments: across, then up or down at a right angle halfway, then across. */
-const curve = (a: Point, b: Point, bend = 0) => {
-  const mx = Math.round((a.x + b.x) / 2) + bend
-  return Math.abs(a.y - b.y) < 0.5
-    ? `M${a.x.toFixed(1)},${a.y.toFixed(1)} H${b.x.toFixed(1)}`
-    : `M${a.x.toFixed(1)},${a.y.toFixed(1)} H${mx} V${b.y.toFixed(1)} H${b.x.toFixed(1)}`
+const fixed = (n: number) => n.toFixed(1)
+/** A link of straight segments: across to `x`, up or down at a right angle, then across to `b`. */
+const wire = (a: Point, b: Point, x: number) =>
+  Math.abs(a.y - b.y) < 0.5 ? `M${fixed(a.x)},${fixed(a.y)} H${fixed(b.x)}` : `M${fixed(a.x)},${fixed(a.y)} H${fixed(x)} V${fixed(b.y)} H${fixed(b.x)}`
+
+/**
+ * The links between two columns of boxes, each with the x where it turns, so that no two cross. Their
+ * ends come in the same order down both sides; then a link that goes down turns sooner the lower it
+ * starts, and one that goes up turns sooner the higher it starts. A link that goes down and one that
+ * goes up never share a height, so each kind spreads over the whole gap.
+ */
+export function bundle(links: ReadonlyArray<{ a: Point; b: Point }>): number[] {
+  const ends = links.map(({ a, b }) => (a.x <= b.x ? { left: a, right: b } : { left: b, right: a }))
+  const x0 = Math.max(...ends.map(({ left }) => left.x))
+  const x1 = Math.min(...ends.map(({ right }) => right.x))
+  const turns = links.map(() => (x0 + x1) / 2)
+  const spread = (indexes: number[]) => indexes.forEach((index, k) => { turns[index] = x0 + ((k + 1) * (x1 - x0)) / (indexes.length + 1) })
+  const byTop = (a: number, b: number) => ends[a]!.left.y - ends[b]!.left.y
+  const all = links.map((_, index) => index)
+  spread(all.filter((i) => ends[i]!.right.y > ends[i]!.left.y + 0.5).sort(byTop).reverse())
+  spread(all.filter((i) => ends[i]!.right.y < ends[i]!.left.y - 0.5).sort(byTop))
+  return turns
 }
 /** How long a packet takes along one link, slow enough to read its label. */
 const PACKET_MS = 2_400
@@ -215,7 +228,6 @@ export function Operations(props: { lead?: ReactNode; identities?: Identities })
   const [usageError, setUsageError] = useState<string | null>(null)
   const [live, setLive] = useState(false)
   const [log, setLog] = useState<OpsEvent[]>([])
-  const [beat, setBeat] = useState<{ n: number; color: string }>({ n: 0, color: 'var(--ops-command)' })
   const [heartbeats, setHeartbeats] = useState<Record<string, number>>({})
   const [progress, setProgress] = useState<Record<string, number>>({})
   const [faults, setFaults] = useState<Record<string, number>>({})
@@ -260,7 +272,6 @@ export function Operations(props: { lead?: ReactNode; identities?: Identities })
         packets.current.push({ ...packet, started: at })
         for (let p: Omit<Packet, 'started'> | undefined = packet; p; p = p.then) recent.current.push({ edge: p.edge, at: Date.now() })
       }
-      if (event.kind === 'tick') setBeat((b) => ({ n: b.n + 1, color: BEAT[event.sources[0] ?? 'request'] }))
       if (event.kind === 'telemetry' && event.type === 'heartbeat') setHeartbeats((h) => ({ ...h, [event.channel]: (h[event.channel] ?? 0) + 1 }))
       if (event.kind === 'telemetry' && event.type === 'progress') setProgress((p) => ({ ...p, [event.channel]: (p[event.channel] ?? 0) + 1 }))
       if (event.kind === 'fault') setFaults((f) => ({ ...f, [event.channel ?? event.component]: (f[event.channel ?? event.component] ?? 0) + 1 }))
@@ -356,6 +367,23 @@ export function Operations(props: { lead?: ReactNode; identities?: Identities })
   const board = { x: BOX.x, y: mid - 104 }
   const github = { x: BOX.x, y: mid + 46 }
 
+  // The board's and GitHub's links on the left, then each worker's two through the relay, in order down both sides.
+  const left = [
+    { id: 'board>orchestrator', a: { x: board.x + BOX.w, y: board.y + 22 }, b: leftOf(o, -20) },
+    { id: 'orchestrator>board', a: leftOf(o, -8), b: { x: board.x + BOX.w, y: board.y + 40 } },
+    { id: 'orchestrator>github', a: leftOf(o, 16), b: { x: github.x + BOX.w, y: github.y + 29 } },
+  ]
+  const leftTurns = bundle(left)
+  const slot = Math.min(8, (r.h - 12) / Math.max(1, workers.length * 2 - 1))
+  const slotAt = (k: number) => r.y + r.h / 2 + (k - (workers.length * 2 - 1) / 2) * slot
+  const cloud = workers.flatMap((_, index) => {
+    const at = workerAt(index)
+    return [
+      { a: { x: r.x + r.w + 3, y: slotAt(index * 2) }, b: { x: at.x - 2, y: at.y + WORKER.h / 2 - 8 } },
+      { a: { x: at.x - 2, y: at.y + WORKER.h / 2 + 8 }, b: { x: r.x + r.w + 3, y: slotAt(index * 2 + 1) } },
+    ]
+  })
+  const cloudTurns = bundle(cloud)
   const used = (edge: string) => recent.current.some((row) => row.edge === edge)
   const edge = (id: string, d: string, extra = '') => <path key={id} data-edge={id} d={d} className={`link${used(id) ? ' used' : ''}${extra ? ` ${extra}` : ''}`} />
 
@@ -394,7 +422,6 @@ export function Operations(props: { lead?: ReactNode; identities?: Identities })
               <svg ref={svg} className="ops-schematic" viewBox={`0 0 ${WIDTH} ${height}`} role="img" aria-label="operations schematic">
                 <defs>
                   <pattern id="ops-grid" width="16" height="16" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="0.9" className="grid-dot" /></pattern>
-                  <radialGradient id="ops-heart"><stop offset="60%" stopColor="var(--gold)" stopOpacity="0.14" /><stop offset="100%" stopColor="var(--gold)" stopOpacity="0" /></radialGradient>
                 </defs>
                 <rect className="grid" x={0} y={0} width={WIDTH} height={height} fill="url(#ops-grid)" />
                 <line className="divider" x1={COLUMN.relay} y1={14} x2={COLUMN.relay} y2={height - 14} />
@@ -403,19 +430,19 @@ export function Operations(props: { lead?: ReactNode; identities?: Identities })
                 <text className="column-label" x={COLUMN.relay + 16} y={26}>RELAY</text>
                 <text className="column-label" x={COLUMN.cloud + 16} y={26}>CLOUD</text>
 
-                {edge('board>orchestrator', curve({ x: board.x + BOX.w, y: board.y + 22 }, leftOf(o, -20)))}
-                {edge('orchestrator>board', curve(leftOf(o, -8), { x: board.x + BOX.w, y: board.y + 40 }, 8))}
-                {edge('orchestrator>github', curve(leftOf(o, 16), { x: github.x + BOX.w, y: github.y + 29 }))}
-                {edge('orchestrator>relay', curve(rightOf(o, -8), leftOf(r, -8)), relayDown ? 'down' : '')}
-                {edge('relay>orchestrator', curve(leftOf(r, 8), rightOf(o, 8), 8), relayDown ? 'down' : '')}
+                {left.map((link, i) => edge(link.id, wire(link.a, link.b, leftTurns[i]!)))}
+                {edge('orchestrator>relay', wire(rightOf(o, -8), leftOf(r, -8), 0), relayDown ? 'down' : '')}
+                {edge('relay>orchestrator', wire(leftOf(r, 8), rightOf(o, 8), 0), relayDown ? 'down' : '')}
                 {workers.map((attempt, index) => {
-                  const at = workerAt(index)
                   const settled = !LIVE.has(attempt.state)
+                  const out = cloud[index * 2]!
+                  const back = cloud[index * 2 + 1]!
                   return (
                     <g key={`links-${attempt.attempt_id}`} className={settled ? 'settled' : ''}>
-                      {edge(`relay>${attempt.channel}`, curve(rightOf(r, -8), { x: at.x - 2, y: at.y + WORKER.h / 2 - 8 }))}
-                      {edge(`${attempt.channel}>relay`, curve({ x: at.x - 2, y: at.y + WORKER.h / 2 + 8 }, rightOf(r, 8), 8))}
-                      {edge(`launch>${attempt.channel}`, curve({ x: o.x + o.w - 24, y: o.y + o.h + 3 }, { x: at.x - 2, y: at.y + WORKER.h / 2 }), 'launch')}
+                      {edge(`relay>${attempt.channel}`, wire(out.a, out.b, cloudTurns[index * 2]!))}
+                      {edge(`${attempt.channel}>relay`, wire(back.a, back.b, cloudTurns[index * 2 + 1]!))}
+                      {/* A launch has no wire of its own: it follows the command's way, through the relay's box. */}
+                      {edge(`launch>${attempt.channel}`, `M${fixed(rightOf(o, -8).x)},${fixed(rightOf(o, -8).y)} H${fixed(r.x + r.w / 2)} V${fixed(out.a.y)} ${wire(out.a, out.b, cloudTurns[index * 2]!).replace(/^M/, 'L')}`, 'launch')}
                     </g>
                   )
                 })}
@@ -434,9 +461,7 @@ export function Operations(props: { lead?: ReactNode; identities?: Identities })
                 </g>
 
                 <g className={`node heart${offline ? ' down fault' : !serving ? ' down' : ''}`}>
-                  {serving && <circle className="glow" cx={ORCHESTRATOR_X} cy={mid} r={ORCHESTRATOR.w / 2 + 20} fill="url(#ops-heart)" />}
                   <rect className="frame" x={o.x} y={o.y} width={o.w} height={o.h} rx={7} />
-                  {serving && beat.n > 0 && <rect key={beat.n} className="ripple" x={o.x} y={o.y} width={o.w} height={o.h} rx={7} style={{ ['--c' as string]: beat.color }} />}
                   <Card box={o} name={orchestratorName} picture={orchestratorPicture} avatar
                     details={[offline ? 'unreachable' : serving ? `${snapshot.orchestrator.live}/${snapshot.orchestrator.live_limit} live` : 'idle']} />
                   <circle className={`led ${orchestratorLed}`} cx={o.x + o.w - 14} cy={o.y + 18} r={3.5} />

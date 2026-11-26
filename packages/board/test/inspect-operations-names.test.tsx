@@ -27,10 +27,14 @@ const snapshot = {
   }],
 }
 
-// Only the inspector's own operations reads are faked: the orchestrator's state, and nothing else yet.
-function orchestratorAnswers() {
-  vi.stubGlobal('fetch', async (input: string | URL) =>
-    String(input).endsWith('/api/operations/state') ? Response.json(snapshot) : new Response('{}', { status: 503 }))
+// Only the inspector's own operations reads are faked: the orchestrator's state and its event stream.
+function orchestratorAnswers(state: object = snapshot, events = '') {
+  vi.stubGlobal('fetch', async (input: string | URL) => {
+    const url = String(input)
+    if (url.endsWith('/api/operations/state')) return Response.json(state)
+    if (url.endsWith('/api/operations/events') && events) return new Response(events, { headers: { 'content-type': 'text/event-stream' } })
+    return new Response('{}', { status: 503 })
+  })
 }
 
 async function show(identities: Parameters<typeof Operations>[0]['identities']) {
@@ -73,4 +77,49 @@ it('keeps their own names and initials when the board gives none', async () => {
     { name: 'Relay', picture: 'R' },
     { name: 'Worker', picture: 'W' },
   ])
+})
+
+type Segment = { x1: number; y1: number; x2: number; y2: number }
+/** A link's straight pieces, from its path: only M, H, V and L, as the schematic draws them. */
+function segments(d: string): Segment[] {
+  const out: Segment[] = []
+  let x = 0
+  let y = 0
+  for (const [, op, args] of d.matchAll(/([MHVL])\s*([-\d.,\s]+)/g)) {
+    const n = args!.split(/[\s,]+/).filter(Boolean).map(Number)
+    const next = op === 'H' ? { x: n[0]!, y } : op === 'V' ? { x, y: n[0]! } : { x: n[0]!, y: n[1]! }
+    if (op !== 'M') out.push({ x1: x, y1: y, x2: next.x, y2: next.y })
+    ;({ x, y } = next)
+  }
+  return out
+}
+const between = (v: number, a: number, b: number) => v > Math.min(a, b) + 0.01 && v < Math.max(a, b) - 0.01
+/** Whether a horizontal and a vertical piece pass through each other, not just meet at an end. */
+const cross = (h: Segment, v: Segment) => h.y1 === h.y2 && v.x1 === v.x2 && between(v.x1, h.x1, h.x2) && between(h.y1, v.y1, v.y2)
+const overlap = (a1: number, a2: number, b1: number, b2: number) => Math.min(Math.max(a1, a2), Math.max(b1, b2)) - Math.max(Math.min(a1, a2), Math.min(b1, b2)) > 0.01
+/** Whether two pieces run along each other, so a reader can't tell the links apart. */
+const along = (p: Segment, q: Segment) =>
+  (p.x1 === p.x2 && q.x1 === q.x2 && p.x1 === q.x1 && overlap(p.y1, p.y2, q.y1, q.y2)) ||
+  (p.y1 === p.y2 && q.y1 === q.y2 && p.y1 === q.y1 && overlap(p.x1, p.x2, q.x1, q.x2))
+
+it('draws no two links across or along each other, however many workers there are', async () => {
+  const workers = [0, 1, 2, 3].map((n) => ({ ...snapshot.attempts[0]!, attempt_id: `a${n}`, task_id: String(105 + n), channel: `w${n}` }))
+  orchestratorAnswers({ ...snapshot, attempts: workers })
+  const page = await show({})
+  const links = [...page.querySelectorAll<SVGPathElement>('path.link:not(.launch)')].map((path) => ({ id: path.dataset.edge, pieces: segments(path.getAttribute('d')!) }))
+  expect(links).toHaveLength(5 + workers.length * 2)
+  const crossings: string[] = []
+  for (const one of links) for (const other of links) {
+    if (one === other) continue
+    for (const p of one.pieces) for (const q of other.pieces) if (cross(p, q) || along(p, q)) crossings.push(`${one.id} × ${other.id}`)
+  }
+  expect(crossings).toEqual([])
+})
+
+it('keeps the orchestrator still when it ticks: no glow and no wave', async () => {
+  orchestratorAnswers(snapshot, `data: ${JSON.stringify({ seq: 1, at: now, kind: 'tick', sources: ['timer'], live: 1, duration_ms: 3 })}\n\n`)
+  const page = await show({})
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  expect(page.querySelectorAll('.node.heart > :not(rect.frame, foreignObject, circle.led, title)')).toHaveLength(0)
+  expect(page.querySelector('radialGradient')).toBeNull()
 })
