@@ -21,6 +21,7 @@ import { workerPrompt } from './launcher.ts'
 import { workerFiles } from './worker-files.ts'
 import { workerEnvironment, workerRoutes } from './worker-credentials.ts'
 import { ACTIVITY_SCHEMA, RoundReport } from './round-report.ts'
+import { DECISION_LABEL, DECISION_SCHEMA, decisionText, FOLLOWUP_DEPTH_LABEL, FOLLOWUP_OF_LABEL, type FinalDecider, type FinalDecision } from './final-decision.ts'
 import { seal } from '@remilia/politburo-relay/sealed'
 import { fixedRulesPolicy, limitStep, type NextStep, type NextStepPolicy } from './policy.ts'
 import type { RelayClient, Subscription } from './relay-client.ts'
@@ -50,6 +51,8 @@ export interface OrchestratorDependencies {
   /** Files of the worker client that every launch directory receives. */
   workerFiles?: () => Array<{ path: string; source: string }>
   policy?: NextStepPolicy
+  /** The final decision after a finished round; without it, the fixed rules alone decide. */
+  decider?: FinalDecider | null
   now?: () => number
   log?: (entry: Record<string, unknown>) => void
 }
@@ -58,6 +61,14 @@ export interface OrchestratorDependencies {
 const REPORT_EDIT_MS = 5_000
 /** The label of the orchestrator's own status lines in a task thread. */
 export const STATUS_LABEL = 'politburo.status'
+
+class ClosedPullRequest extends Error {
+  readonly url: string
+  constructor(url: string) {
+    super(`a closed PR exists: ${url}`)
+    this.url = url
+  }
+}
 const MAX_FAULTS = 3
 /** At most 64 bundle parts (about 2.3 MiB of bundle) for one round. */
 const MAX_BUNDLE_PARTS = 64
@@ -80,6 +91,8 @@ export class Orchestrator {
   readonly #sealedFor = new Map<string, string>()
   /** Each live attempt's current round reply, and when it was last edited. */
   readonly #reports = new Map<string, { report: RoundReport; editedAt: number }>()
+  /** Attempts whose round a model decided: the steps it leads to record no decision of their own. */
+  readonly #modelDecided = new Set<string>()
   readonly #skipped = new Set<string>()
   #chain: Promise<void> = Promise.resolve()
   #wakeQueued = false
@@ -95,14 +108,16 @@ export class Orchestrator {
     const log = (entry: Record<string, unknown>): void => {
       process.stdout.write(`${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`)
     }
-    this.#d = { policy: fixedRulesPolicy, now: Date.now, log, workerFiles: () => workerFiles(), usage: null, monitor: null, ...dependencies }
+    this.#d = { policy: fixedRulesPolicy, now: Date.now, log, workerFiles: () => workerFiles(), usage: null, monitor: null, decider: null, ...dependencies }
   }
 
   /** Recovers live attempts, then follows board events and starts the sweep. */
   async start(): Promise<void> {
     this.#actor = (await this.#d.board.me()).actor
-    await this.#d.board.createSchema(ACTIVITY_SCHEMA as unknown as Parameters<Board['createSchema']>[0])
-      .catch((error: Error) => this.#d.log({ event: 'schema_create_failed', schema: ACTIVITY_SCHEMA.name, message: error.message }))
+    for (const schema of [ACTIVITY_SCHEMA, DECISION_SCHEMA]) {
+      await this.#d.board.createSchema(schema as unknown as Parameters<Board['createSchema']>[0])
+        .catch((error: Error) => this.#d.log({ event: 'schema_create_failed', schema: schema.name, message: error.message }))
+    }
     await this.#serial(() => this.#recover())
     this.#events = new AbortController()
     void this.#followEvents(this.#events.signal)
@@ -151,6 +166,9 @@ export class Orchestrator {
     for (const subscription of this.#subscriptions.values()) subscription.close()
     this.#subscriptions.clear()
     await this.#chain
+    // A tick that was running can have started an attempt and opened its subscription.
+    for (const subscription of this.#subscriptions.values()) subscription.close()
+    this.#subscriptions.clear()
   }
 
   /** Requests one tick; several requests before it runs collapse into one. */
@@ -360,6 +378,7 @@ export class Orchestrator {
       this.#d.log({ event: 'settle_failed', task: attempt.taskId, message: (error as Error).message })
     }
     await this.#reply(attempt.taskId, `Orchestrator: attempt ${attempt.attemptNo} lost (${reason}). ${retry ? 'The task is ready for a new attempt.' : 'No attempts remain; the task failed.'}`)
+    if (!retry) await this.#ruleReview(attempt, `No attempts remain: ${reason}.`)
     this.#transition(attempt, { state: 'settled', outcome: 'lost' }, reason)
     this.#unsubscribe(attempt)
   }
@@ -709,8 +728,109 @@ export class Orchestrator {
       attemptWallMs: this.#d.config.limits.attemptWallMinutes * 60_000, taskBudgetUsd: this.#d.config.limits.taskBudgetUsd, taskCostUsd: taskCost,
     })
     if (wasStopping && step.kind === 'instruct') step = { kind: 'retry', reason: 'the attempt was stopping' }
-    this.#d.log({ event: 'decision', task: attempt.taskId, attempt: attempt.attemptId, step: step.kind })
-    await this.#apply(attempt, step, result, bundleFile)
+    const limits = {
+      roundsPerAttempt: this.#d.config.limits.roundsPerAttempt, attemptsPerTask: this.#d.config.limits.attemptsPerTask,
+      attemptWallMs: this.#d.config.limits.attemptWallMinutes * 60_000, taskBudgetUsd: this.#d.config.limits.taskBudgetUsd, taskCost,
+    }
+    const failingChecks = result.checks.some((check) => check.exit_code !== 0)
+    const decidable = !wasStopping && this.#d.decider?.active === true && result.exit_reason === 'completed' &&
+      (step.kind === 'publish' || step.kind === 'complete' || (step.kind === 'instruct' && failingChecks))
+    if (!decidable) {
+      this.#d.log({ event: 'decision', task: attempt.taskId, attempt: attempt.attemptId, step: step.kind })
+      return this.#apply(attempt, step, result, bundleFile)
+    }
+    const depth = Number(task?.labels[FOLLOWUP_DEPTH_LABEL] ?? 0) || 0
+    let decision = await this.#d.decider!.decide({
+      task: { id: attempt.taskId, channel: attempt.boardChannel, brief: task?.text ?? '' },
+      depth, roundsLeft: Math.max(0, this.#d.config.limits.roundsPerAttempt - attempt.round),
+      result: {
+        exitReason: result.exit_reason, summary: result.summary, changes: result.diff_stat,
+        checks: result.checks.map((check) => ({ name: check.name, passed: check.exit_code === 0, outputTail: check.output_tail })),
+      },
+    })
+    this.#d.log({ event: 'final_decision', task: attempt.taskId, attempt: attempt.attemptId, label: decision.label, decided_by: decision.decidedBy, kev: decision.kev })
+    this.#modelDecided.add(attempt.attemptId)
+    try {
+      if (decision.label === 'RETRY') {
+        const next = limitStep({ kind: 'instruct', text: decision.correction! }, input, { ...limits, taskCostUsd: limits.taskCost })
+        if (next.kind === 'fail') decision = { ...decision, label: 'REVIEW', decidedBy: 'rules', reason: `${decision.reason} ${next.reason}.` }
+        else {
+          await this.#recordDecision(attempt, decision)
+          return await this.#apply(attempt, next, result, bundleFile)
+        }
+      }
+      if (decision.label === 'REVIEW') {
+        await this.#recordDecision(attempt, decision)
+        return await this.#review(attempt, result, bundleFile, decision.reason)
+      }
+      await this.#apply(attempt, step, result, bundleFile)
+      const done = this.#d.state.get(attempt.attemptId)
+      const created = decision.label === 'FOLLOWUP' && done?.outcome && ['published', 'completed', 'merged'].includes(done.outcome)
+        ? await this.#createFollowups(attempt, decision, depth) : []
+      await this.#recordDecision(attempt, decision, created)
+    } finally {
+      this.#modelDecided.delete(attempt.attemptId)
+    }
+  }
+
+  /** Puts the decision on the task: its label, an accent block in the thread, and an operations event. */
+  async #recordDecision(attempt: AttemptRecord, decision: FinalDecision, created: Array<{ id: string; title: string }> = []): Promise<void> {
+    await this.#d.board.label(attempt.taskId, { set: { [DECISION_LABEL]: decision.label } })
+      .catch((error: Error) => this.#d.log({ event: 'decision_label_failed', task: attempt.taskId, message: error.message }))
+    try {
+      await this.#d.board.reply(attempt.taskId, decisionText(attempt.taskId, decision, created))
+      this.#emit({ kind: 'board', action: 'reply', task: attempt.taskId })
+    } catch (error) {
+      this.#d.log({ event: 'board_reply_failed', task: attempt.taskId, message: (error as Error).message })
+    }
+    this.#emit({ kind: 'decision', task: attempt.taskId, channel: attempt.channel, label: decision.label, decided_by: decision.decidedBy })
+  }
+
+  /** A REVIEW the rules reach on their own: a failure or a hold no model decided. */
+  async #ruleReview(attempt: AttemptRecord, reason: string): Promise<void> {
+    if (this.#modelDecided.has(attempt.attemptId)) return
+    await this.#recordDecision(attempt, { label: 'REVIEW', decidedBy: 'rules', reason, kev: null })
+  }
+
+  /** The tasks a FOLLOWUP names, in the same channel, one generation deeper. */
+  async #createFollowups(attempt: AttemptRecord, decision: FinalDecision, depth: number): Promise<Array<{ id: string; title: string }>> {
+    const created: Array<{ id: string; title: string }> = []
+    for (const followup of decision.followups ?? []) {
+      try {
+        const { task } = await this.#d.board.tasks.create(attempt.boardChannel, {
+          text: `${followup.title}\n\n${followup.brief}\n\nFollow-up of #${attempt.taskId}.`,
+          labels: { [FOLLOWUP_OF_LABEL]: attempt.taskId, [FOLLOWUP_DEPTH_LABEL]: String(depth + 1) },
+        })
+        created.push({ id: task.id, title: followup.title })
+      } catch (error) {
+        this.#d.log({ event: 'followup_create_failed', task: attempt.taskId, message: (error as Error).message })
+      }
+    }
+    return created
+  }
+
+  /**
+   * Holds the task for the owner. Work with changes is kept first: as a draft PR, or as the task
+   * branch of the channel's local repository, which `main` does not take.
+   */
+  async #review(attempt: AttemptRecord, result: ResultData, bundleFile: string | null, reason: string): Promise<void> {
+    let kept = ''
+    if (result.diff_stat.files > 0 && bundleFile && result.head_commit && attempt.baseCommit) {
+      try {
+        if (isLocalRepository(attempt.repository)) {
+          await this.#d.git.keepBundle(attempt.repository, { bundleFile, branch: attempt.branch, head: result.head_commit, base: attempt.baseCommit })
+          kept = ` The work is on branch ${attempt.branch} of the channel repository.`
+        } else {
+          kept = ` Draft PR ${await this.#pushAndOpenPullRequest(attempt, result, bundleFile)}`
+        }
+      } catch (error) {
+        kept = ` Keeping the work failed: ${(error as Error).message}`
+      }
+    }
+    await this.#finishWorker(attempt, 'held for the owner')
+    await this.#settle(attempt, 'block', () => this.#held(attempt).block(`Orchestrator: ${reason}${kept}`, { kind: 'needs_input' })).catch(() => undefined)
+    this.#transition(attempt, { state: 'settled', outcome: 'held' }, reason)
+    this.#unsubscribe(attempt)
   }
 
   async #apply(attempt: AttemptRecord, step: NextStep, result: ResultData, bundleFile: string | null = null): Promise<void> {
@@ -741,6 +861,7 @@ export class Orchestrator {
         await this.#finishWorker(attempt, step.reason)
         await this.#settle(attempt, 'fail', () => this.#held(attempt).fail(step.reason)).catch(() => undefined)
         await this.#reply(attempt.taskId, `Orchestrator: task failed. ${step.reason}`)
+        await this.#ruleReview(attempt, `The task failed: ${step.reason}.`)
         this.#transition(attempt, { state: 'settled', outcome: 'failed' }, step.reason)
         this.#unsubscribe(attempt)
         return
@@ -748,6 +869,7 @@ export class Orchestrator {
       case 'hold': {
         await this.#finishWorker(attempt, 'held for a person')
         await this.#settle(attempt, 'block', () => this.#held(attempt).block(`Orchestrator: ${step.question}`, { kind: 'needs_input' })).catch(() => undefined)
+        await this.#ruleReview(attempt, step.question)
         this.#transition(attempt, { state: 'settled', outcome: 'held' }, step.question)
         this.#unsubscribe(attempt)
       }
@@ -769,44 +891,47 @@ export class Orchestrator {
     } else {
       await this.#settle(attempt, 'fail', () => this.#held(attempt).fail(reason)).catch(() => undefined)
       await this.#reply(attempt.taskId, `Orchestrator: task failed. ${reason}`)
+      await this.#ruleReview(attempt, `The task failed: ${reason}.`)
       this.#transition(attempt, { state: 'settled', outcome: 'failed' }, reason)
     }
     this.#unsubscribe(attempt)
   }
 
-  /**
-   * The last step: push the worker's commits from the bundle, then open the draft PR. The allow list
-   * is checked here once more, because this is the only place that writes to GitHub.
-   */
+  /** Pushes the task branch from the bundle and opens its draft PR, or finds the open one; answers its URL. */
+  async #pushAndOpenPullRequest(attempt: AttemptRecord, result: ResultData, bundleFile: string): Promise<string> {
+    const { github } = this.#d
+    await this.#d.git.publishBundle(attempt.repository, { bundleFile, branch: attempt.branch, head: result.head_commit!, base: attempt.baseCommit! })
+    this.#emit({ kind: 'github', action: 'push', repository: attempt.repository, task: attempt.taskId, channel: attempt.channel })
+    if (attempt.prUrl) return attempt.prUrl
+    const existing = await github.findPullRequest(attempt.repository, attempt.branch)
+    if (existing && existing.state === 'closed') throw new ClosedPullRequest(existing.url)
+    const url = existing?.url ?? await github.openDraftPullRequest(attempt.repository, {
+      branch: attempt.branch,
+      base: await github.defaultBranch(attempt.repository),
+      title: `Task ${attempt.taskId}: ${result.summary.split('\n')[0]?.slice(0, 80) ?? 'worker change'}`,
+      body: `Board task #${attempt.taskId}, attempt ${attempt.attemptNo}, round ${result.round}.\n\nWorker report (untrusted text):\n\n${workerText(result.summary, 4_000)}`,
+    })
+    this.#transition(attempt, { prUrl: url })
+    this.#emit({ kind: 'github', action: 'draft_pr', repository: attempt.repository, task: attempt.taskId, channel: attempt.channel })
+    return url
+  }
+
+  /** The last step: push the worker's commits from the bundle, then open the draft PR. */
   async #publish(attempt: AttemptRecord, result: ResultData, bundleFile: string | null): Promise<void> {
     this.#transition(attempt, { state: 'publishing' })
-    const { github } = this.#d
     if (!bundleFile || !result.head_commit || !attempt.baseCommit) return this.#apply(attempt, { kind: 'retry', reason: 'no verified bundle to push' }, result)
     if (isLocalRepository(attempt.repository)) return this.#mergeLocal(attempt, result, bundleFile)
     try {
-      await this.#d.git.publishBundle(attempt.repository, { bundleFile, branch: attempt.branch, head: result.head_commit, base: attempt.baseCommit })
-      this.#emit({ kind: 'github', action: 'push', repository: attempt.repository, task: attempt.taskId, channel: attempt.channel })
-      let url = attempt.prUrl
-      if (!url) {
-        const existing = await github.findPullRequest(attempt.repository, attempt.branch)
-        if (existing && existing.state === 'closed') {
-          return this.#apply(attempt, { kind: 'hold', question: `A closed PR exists for ${attempt.branch}: ${existing.url}. Decide whether to reopen it.` }, result)
-        }
-        url = existing?.url ?? await github.openDraftPullRequest(attempt.repository, {
-          branch: attempt.branch,
-          base: await github.defaultBranch(attempt.repository),
-          title: `Task ${attempt.taskId}: ${result.summary.split('\n')[0]?.slice(0, 80) ?? 'worker change'}`,
-          body: `Board task #${attempt.taskId}, attempt ${attempt.attemptNo}, round ${result.round}.\n\nWorker report (untrusted text):\n\n${workerText(result.summary, 4_000)}`,
-        })
-        this.#transition(attempt, { prUrl: url })
-        this.#emit({ kind: 'github', action: 'draft_pr', repository: attempt.repository, task: attempt.taskId, channel: attempt.channel })
-      }
+      const url = await this.#pushAndOpenPullRequest(attempt, result, bundleFile)
       await this.#finishWorker(attempt, 'published')
       await this.#settle(attempt, 'complete', () => this.#held(attempt).complete(url))
       await this.#reply(attempt.taskId, `Orchestrator: draft PR ${url}`)
       this.#transition(attempt, { state: 'settled', outcome: 'published' })
       this.#unsubscribe(attempt)
     } catch (error) {
+      if (error instanceof ClosedPullRequest) {
+        return this.#apply(attempt, { kind: 'hold', question: `A closed PR exists for ${attempt.branch}: ${error.url}. Decide whether to reopen it.` }, result)
+      }
       this.#d.log({ event: 'publish_failed', task: attempt.taskId, message: (error as Error).message })
       this.#emit({ kind: 'fault', component: 'github', code: errorCode(error), task: attempt.taskId, channel: attempt.channel })
       this.#transition(attempt, { state: 'deciding' })

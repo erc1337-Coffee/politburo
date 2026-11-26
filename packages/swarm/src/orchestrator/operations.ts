@@ -16,6 +16,7 @@ export type OperationsEventBody =
   | { kind: 'attempt'; attempt: string; task: string; channel: string; state: string }
   | { kind: 'fault'; component: 'board' | 'relay' | 'github' | 'worker' | 'launch' | 'ledger'; code: string; task?: string; channel?: string }
   | { kind: 'usage'; task: string; channel: string; round: number; models: number; input_tokens: number; output_tokens: number; cost_usd: number }
+  | { kind: 'decision'; task: string; channel: string; label: string; decided_by: string }
 
 export type OperationsEvent = OperationsEventBody & { seq: number; at: number }
 

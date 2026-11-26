@@ -36,6 +36,11 @@ export interface OrchestratorConfig {
   ledger: { file: string; party: string }
   /** The read-only status server of the operations view, on 127.0.0.1. Port 0 turns it off. */
   operations: { port: number; relayStatisticsSeconds: number }
+  /**
+   * The final decision after a finished round. `kevUrl` (KEV_URL) and `claudeModel`
+   * (ORCHESTRATOR_DECISION_MODEL) come from the environment; without both, the fixed rules decide.
+   */
+  decision: { kevUrl: string; claudeModel: string; kevConfidence: number; followupDepth: number; kevTimeoutSeconds: number; claudeTimeoutSeconds: number }
 }
 
 export const DEFAULT_CONFIG: OrchestratorConfig = {
@@ -61,6 +66,7 @@ export const DEFAULT_CONFIG: OrchestratorConfig = {
   github: { apiUrl: 'https://api.github.com' },
   ledger: { file: '/ledger/ledger.sqlite', party: 'default' },
   operations: { port: 4780, relayStatisticsSeconds: 5 },
+  decision: { kevUrl: '', claudeModel: '', kevConfidence: 0.75, followupDepth: 3, kevTimeoutSeconds: 120, claudeTimeoutSeconds: 300 },
 }
 
 export class OrchestratorConfigError extends Error {}
@@ -106,6 +112,7 @@ export function validateConfig(config: OrchestratorConfig): OrchestratorConfig {
     ['watchdog.missed_heartbeats', config.watchdog.missedHeartbeats], ['watchdog.stop_grace_seconds', config.watchdog.stopGraceSeconds],
     ['watchdog.question_wait_seconds', config.watchdog.questionWaitSeconds],
     ['worker.max_seconds', config.worker.maxSeconds], ['worker.idle_seconds', config.worker.idleSeconds],
+    ['decision.kev_timeout_seconds', config.decision.kevTimeoutSeconds], ['decision.claude_timeout_seconds', config.decision.claudeTimeoutSeconds],
   ]
   for (const [name, value] of positive) if (!Number.isInteger(value) || value <= 0) fail(`${name}: positive integer expected`)
   if (config.board.leaseSeconds < 30 || config.board.leaseSeconds > 3600) fail('board.lease_seconds: 30 to 3600')
@@ -116,6 +123,11 @@ export function validateConfig(config: OrchestratorConfig): OrchestratorConfig {
   if (!Number.isInteger(config.operations.relayStatisticsSeconds) || config.operations.relayStatisticsSeconds < 2) fail('operations.relay_statistics_seconds: integer of 2 or more')
   if (!config.ledger.file.startsWith('/')) fail('ledger.file: absolute path expected')
   if (!/^[a-z0-9][a-z0-9_.:-]{0,79}$/i.test(config.ledger.party)) fail('ledger.party: short code expected')
+  if (!(config.decision.kevConfidence > 0 && config.decision.kevConfidence <= 1)) fail('decision.kev_confidence: number above 0, at most 1')
+  if (!Number.isInteger(config.decision.followupDepth) || config.decision.followupDepth < 0) fail('decision.followup_depth: integer of 0 or more')
+  if (config.decision.kevUrl) {
+    try { new URL(config.decision.kevUrl) } catch { fail('KEV_URL: URL expected') }
+  }
   if (config.worker.progressMode !== 'summary' && config.worker.progressMode !== 'events') fail('worker.progress_mode: summary or events')
   for (const check of config.worker.checks) {
     if (typeof check.name !== 'string' || typeof check.command !== 'string' || !Number.isInteger(check.timeoutSeconds)) fail('worker.checks: name, command and timeout_seconds expected')
@@ -125,10 +137,13 @@ export function validateConfig(config: OrchestratorConfig): OrchestratorConfig {
 
 /** The relay address comes from the environment (`RELAY_URL`), never from the file. */
 export function parseConfig(text: string, env: NodeJS.ProcessEnv = process.env): OrchestratorConfig {
-  const raw = text.trim() === '' ? {} : camelKeys(parseYaml(text)) as { relay?: { url?: unknown } }
+  const raw = text.trim() === '' ? {} : camelKeys(parseYaml(text)) as { relay?: { url?: unknown }; decision?: { kevUrl?: unknown; claudeModel?: unknown } }
   if (raw.relay?.url !== undefined) throw new OrchestratorConfigError('orchestrator.relay.url: unknown setting; set RELAY_URL')
+  if (raw.decision?.kevUrl !== undefined) throw new OrchestratorConfigError('orchestrator.decision.kev_url: unknown setting; set KEV_URL')
+  if (raw.decision?.claudeModel !== undefined) throw new OrchestratorConfigError('orchestrator.decision.claude_model: unknown setting; set ORCHESTRATOR_DECISION_MODEL')
   const config = merge(DEFAULT_CONFIG, raw, 'orchestrator') as OrchestratorConfig
   config.relay = { ...config.relay, url: env.RELAY_URL?.trim() ?? '' }
+  config.decision = { ...config.decision, kevUrl: env.KEV_URL?.trim() ?? '', claudeModel: env.ORCHESTRATOR_DECISION_MODEL?.trim() ?? '' }
   return validateConfig(config)
 }
 

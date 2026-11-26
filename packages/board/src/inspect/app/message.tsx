@@ -7,7 +7,7 @@ import { LOGOS } from '../../contract/logos.ts'
 import type { MessageView, SchemaView } from '../../api/routes.ts'
 import { displayEmoji } from '../../contract/emoji.ts'
 import type { Attachment } from '../../server/index.default.ts'
-import { ActivityBlock, isActivity } from './activity.tsx'
+import { ActivityBlock, DecisionBlock, isActivity, isDecision } from './activity.tsx'
 import { BlockCard } from './blocks.tsx'
 import { nameFor, pictureFor, SERVICES, useIdentities, type Identities } from './identity.ts'
 import * as board from './board.ts'
@@ -133,6 +133,8 @@ function Body({ m, schemas, names, head }: { m: MessageView; schemas: SchemaView
           </Fragment>
         ) : isActivity(part.block) ? (
           <ActivityBlock key={i} block={part.block} />
+        ) : isDecision(part.block) ? (
+          <DecisionBlock key={i} block={part.block} />
         ) : (
           <BlockCard
             key={i}

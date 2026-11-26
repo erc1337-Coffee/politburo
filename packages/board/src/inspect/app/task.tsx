@@ -33,6 +33,16 @@ export function StateMark({ state }: { state: TaskState }) {
   )
 }
 
+/** The label of the orchestrator's final decision on a task. */
+export const DECISION_LABEL = 'politburo.decision'
+
+/** The orchestrator's final decision on a task, from its label; nothing when it has none. */
+export function DecisionMark({ root }: { root: TaskRoot }) {
+  const label = root.labels[DECISION_LABEL]
+  if (!label) return null
+  return <span className={`decision-mark ${label.toLowerCase()}`} title="The orchestrator's final decision">{label}</span>
+}
+
 /** The time now, read again the moment a lease ends, so a claim that lapses shows as over without a reload. */
 export function useLapse(until: string | undefined): number {
   const [, again] = useReducer((n: number) => n + 1, 0)
@@ -79,6 +89,7 @@ export function TaskLine({ root, state }: { root: TaskRoot; state: State }) {
   return (
     <div className="task-line" {...nativeMenu}>
       <StateMark state={current} />
+      <DecisionMark root={root} />
       {current === 'claimed' && task.claim && (
         <>
           <span>by {nameOf(state, task.claim.actor)}</span>
@@ -271,6 +282,7 @@ export function TaskCard({ root, state, viewer }: { root: TaskRoot; state: State
     <section className="task-card">
       <div className="task-head" {...nativeMenu}>
         <StateMark state={current} />
+        <DecisionMark root={root} />
         {current === 'claimed' && task.claim && (
           <>
             <span>by {nameOf(state, task.claim.actor)}</span>
