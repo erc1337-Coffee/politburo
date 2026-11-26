@@ -3194,6 +3194,12 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     async modelRoutes() {
       return { routes: [] }
     },
+    async identities() {
+      return { identities: [] }
+    },
+    async setIdentity() {
+      throw new HttpError(501, 'no_identities', "Vercel's boards keep no names or pictures of their own")
+    },
     async repositories() {
       throw new HttpError(501, 'no_repositories', "Vercel's boards look up no repositories")
     },

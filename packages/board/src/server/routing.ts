@@ -53,7 +53,7 @@ export const isWorkEvidenceMethod = (name: Method): name is WorkEvidenceMethod =
 
 /** Every protocol method, by the route it's served at. */
 export const METHODS: readonly Method[] = [
-  'discovery', 'me', 'channels', 'createChannel', 'configureChannel', 'modelRoutes', 'repositories', 'actors', 'channelMessages', 'threads', 'message', 'post', 'posted', 'edit', 'delete', 'react', 'label',
+  'discovery', 'me', 'channels', 'createChannel', 'configureChannel', 'identities', 'setIdentity', 'modelRoutes', 'repositories', 'actors', 'channelMessages', 'threads', 'message', 'post', 'posted', 'edit', 'delete', 'react', 'label',
   'status', 'pause', 'resume',
   'schedule', 'schedules', 'cancelSchedule',
   ...AGENT_OPS_METHODS,

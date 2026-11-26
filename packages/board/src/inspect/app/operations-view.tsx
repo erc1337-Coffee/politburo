@@ -2,6 +2,7 @@
 // the spend ledger and each component's details in a side panel. Each message travels its link as a
 // packet and tints the link while it travels; the orchestrator ripples on each tick; a worker's lamp
 // pulses on each heartbeat. At rest nothing moves.
+import { nameFor, SERVICES, type Identities } from './identity.ts'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { base } from './nav.tsx'
 import { Header } from './ui.tsx'
@@ -192,7 +193,17 @@ function packetsOf(event: OpsEvent): Array<Omit<Packet, 'started'>> {
 
 // --- the view -------------------------------------------------------------------------------
 
-export function Operations(props: { lead?: ReactNode }) {
+/** The orchestrator's actor, as its status says, or null when the inspector has no orchestrator to ask. */
+export async function orchestratorActor(): Promise<string | null> {
+  try {
+    return (await read<Snapshot>('state')).orchestrator.actor || null
+  } catch {
+    return null
+  }
+}
+
+export function Operations(props: { lead?: ReactNode; identities?: Identities }) {
+  const identities = props.identities ?? {}
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
   const [stateError, setStateError] = useState<string | null>(null)
   const [usage, setUsage] = useState<Usage | null>(null)
@@ -356,6 +367,10 @@ export function Operations(props: { lead?: ReactNode }) {
 
   const led = (state: 'ok' | 'warn' | 'fault' | 'off') => state
   const boardLed = offline ? led('off') : boardDown ? led('fault') : snapshot.board.paused ? led('warn') : led('ok')
+  // Names as the board shows them; the schematic's boxes are a fixed size, so long ones are clipped there.
+  const orchestratorName = nameFor(identities, snapshot?.orchestrator.actor || undefined, 'Orchestrator')
+  const relayName = nameFor(identities, 'relay', SERVICES.relay)
+  const workerName = nameFor(identities, 'worker', SERVICES.worker)
   const relayLed = offline || !serving ? led('off') : snapshot.relay.reachable === false ? led('fault') : led('ok')
   const orchestratorLed = offline ? led('fault') : serving ? led('ok') : led('warn')
 
@@ -418,7 +433,7 @@ export function Operations(props: { lead?: ReactNode }) {
                   <circle className="frame" cx={o.x} cy={o.y} r={HEART_R} />
                   {serving && beat.n > 0 && <circle key={beat.n} className="ripple" cx={o.x} cy={o.y} r={HEART_R} style={{ ['--c' as string]: beat.color }} />}
                   <circle className={`led ${orchestratorLed}`} cx={o.x} cy={o.y - 26} r={3.5} />
-                  <text className="node-title" x={o.x} y={o.y + 2} textAnchor="middle">Orchestrator</text>
+                  <text className="node-title" x={o.x} y={o.y + 2} textAnchor="middle">{clip(orchestratorName, 14)}</text>
                   <text className="node-line small" x={o.x} y={o.y + 18} textAnchor="middle">{offline ? 'unreachable' : serving ? `${snapshot.orchestrator.live}/${snapshot.orchestrator.live_limit} live` : 'idle'}</text>
                   {(snapshot?.orchestrator.reason || stateError) && <title>{snapshot?.orchestrator.reason ?? stateError}</title>}
                 </g>
@@ -427,7 +442,7 @@ export function Operations(props: { lead?: ReactNode }) {
                   <circle className="frame" cx={r.x} cy={r.y} r={RELAY_R} />
                   {!relayDown && streams > 0 && <circle className="ring" cx={r.x} cy={r.y} r={RELAY_R + 6} style={{ ['--spin' as string]: `${Math.max(4, 24 / streams).toFixed(1)}s` }} />}
                   <circle className={`led ${relayLed}`} cx={r.x} cy={r.y - 17} r={3} />
-                  <text className="node-title" x={r.x} y={r.y + 5} textAnchor="middle">Relay</text>
+                  <text className="node-title" x={r.x} y={r.y + 5} textAnchor="middle">{clip(relayName, 9)}</text>
                   <text className="node-line small" x={r.x} y={r.y + 19} textAnchor="middle">{snapshot?.relay.reachable === false ? 'down' : snapshot?.relay.latency_ms != null ? `${snapshot.relay.latency_ms} ms` : '—'}</text>
                   {snapshot?.relay.error && <title>{snapshot.relay.error}</title>}
                 </g>
@@ -441,7 +456,7 @@ export function Operations(props: { lead?: ReactNode }) {
                   </g>
                 )}
                 {workers.map((attempt, index) => (
-                  <Worker key={attempt.attempt_id} attempt={attempt} at={workerAt(index)} now={now}
+                  <Worker key={attempt.attempt_id} name={workerName} attempt={attempt} at={workerAt(index)} now={now}
                     figures={usage?.by_attempt.find((row) => row.attempt === attempt.attempt_id)?.figures}
                     heartbeat={heartbeats[attempt.channel] ?? 0} progress={progress[attempt.channel] ?? 0} fault={(faults[attempt.channel] ?? 0) > 0}
                     selected={selected === attempt.attempt_id} onSelect={() => setSelected(selected === attempt.attempt_id ? null : attempt.attempt_id)} />
@@ -468,9 +483,9 @@ export function Operations(props: { lead?: ReactNode }) {
 
           <aside className="ops-side" aria-label="details">
             <UsagePanel usage={usage} error={usageError} now={now} />
-            {chosen && <AttemptPanel attempt={chosen} now={now} figures={usage?.by_attempt.find((row) => row.attempt === chosen.attempt_id)?.figures} onClose={() => setSelected(null)} />}
+            {chosen && <AttemptPanel name={workerName} attempt={chosen} now={now} figures={usage?.by_attempt.find((row) => row.attempt === chosen.attempt_id)?.figures} onClose={() => setSelected(null)} />}
             <section className="ops-card">
-              <header className="ops-card-head"><h2>Orchestrator</h2><span className="spacer" /><Status state={orchestratorLed} text={offline ? 'unreachable' : snapshot.orchestrator.status} /></header>
+              <header className="ops-card-head"><h2>{orchestratorName}</h2><span className="spacer" /><Status state={orchestratorLed} text={offline ? 'unreachable' : snapshot.orchestrator.status} /></header>
               <Facts rows={[
                 ['Live attempts', snapshot && `${snapshot.orchestrator.live} of ${snapshot.orchestrator.live_limit}`],
                 ['Outbox', snapshot?.orchestrator.outbox],
@@ -481,7 +496,7 @@ export function Operations(props: { lead?: ReactNode }) {
               ]} />
             </section>
             <section className="ops-card">
-              <header className="ops-card-head"><h2>Relay</h2><span className="spacer" /><Status state={relayLed} text={snapshot?.relay.reachable === false ? 'unreachable' : snapshot?.relay.reachable ? 'reachable' : 'unknown'} /></header>
+              <header className="ops-card-head"><h2>{relayName}</h2><span className="spacer" /><Status state={relayLed} text={snapshot?.relay.reachable === false ? 'unreachable' : snapshot?.relay.reachable ? 'reachable' : 'unknown'} /></header>
               <Facts rows={[
                 ['Host', snapshot?.relay.host],
                 ['Latency', snapshot?.relay.latency_ms != null ? `${snapshot.relay.latency_ms} ms` : null],
@@ -529,7 +544,7 @@ function Facts(props: { rows: Array<[string, ReactNode | null | undefined]> }) {
 }
 
 function Worker(props: {
-  attempt: AttemptView; at: Point; now: number; figures: Figures | undefined; heartbeat: number; progress: number
+  name: string; attempt: AttemptView; at: Point; now: number; figures: Figures | undefined; heartbeat: number; progress: number
   fault: boolean; selected: boolean; onSelect: () => void
 }) {
   const { attempt, at, now } = props
@@ -548,7 +563,7 @@ function Worker(props: {
       <circle className={`led ${state}`} cx={at.x + 16} cy={at.y + 20} r={3.5} />
       {props.heartbeat > 0 && !settled && <circle key={props.heartbeat} className="pulse" cx={at.x + 16} cy={at.y + 20} r={3.5} />}
       <text className="node-title" x={at.x + 30} y={at.y + 25}>
-        #{attempt.task_id}<tspan className="node-detail" dx={8}>round {attempt.round} · attempt {attempt.attempt_no}</tspan>
+        #{attempt.task_id}<tspan className="node-detail" dx={8}>{clip(props.name, 14)} · round {attempt.round} · attempt {attempt.attempt_no}</tspan>
       </text>
       <text className="node-line" x={at.x + 30} y={at.y + 43}>
         <tspan className={`state state-${attempt.state}`}>{shown}</tspan>
@@ -609,13 +624,13 @@ function UsagePanel(props: { usage: Usage | null; error: string | null; now: num
   )
 }
 
-function AttemptPanel(props: { attempt: AttemptView; now: number; figures: Figures | undefined; onClose: () => void }) {
+function AttemptPanel(props: { name: string; attempt: AttemptView; now: number; figures: Figures | undefined; onClose: () => void }) {
   const { attempt, now } = props
   const beat = attempt.heartbeat
   return (
     <section className="ops-card ops-attempt">
       <header className="ops-card-head">
-        <h2>#{attempt.task_id} · attempt {attempt.attempt_no}</h2>
+        <h2>{props.name} · #{attempt.task_id} · attempt {attempt.attempt_no}</h2>
         <span className="spacer" />
         <button type="button" className="act" onClick={props.onClose} aria-label="close attempt details">close</button>
       </header>

@@ -165,6 +165,7 @@ per section at `/settings/<section>`:
 | Section | Shows |
 | --- | --- |
 | access | What you may do, the board's [grants](../01-board/09-access.md#grants), a form that makes one, and revoke. Explain asks the board which grants decide a channel, for you or for a principal you name, and shows its answer |
+| identities | The name and picture the board shows for you, the orchestrator, the relay, and the worker. Messages, reactions, and Operations show them in place of their own. A worker's round shows as the worker. Setting one needs `manage` at `*` |
 | schemas | The registry: each schema's versions, fields, and JSON Schema. Registers a version where you may |
 | schedules | [Scheduled messages](../01-board/07-schedules.md) visible to the selected profile, pending or all. Switch profiles to reload the list. Cancel as the creator or with `manage` in the channel |
 | watchers | The [watchers](../01-board/06-watchers.md#woken-by-the-board) boards elsewhere registered here, and what each tails |

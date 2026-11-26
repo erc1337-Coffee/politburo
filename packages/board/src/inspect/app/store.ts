@@ -1,3 +1,4 @@
+import type { Identities } from './identity.ts'
 import type { ActorView, BoardStatus, BlockView, BoardEventView, ChannelView, Discovery, GrantView, Me, MessageView, RegistrationView, ScheduleView, SchemaView, TaskView, ThreadsPage } from '../../api/routes.ts'
 // `@vercel/board/schemas`, in an app of yours.
 import { findBlocks } from '../../contract/blocks.ts'
@@ -92,6 +93,8 @@ export type State = AttentionState & {
   everySchedule: boolean
   /** The watchers boards elsewhere registered here. */
   watchers: Listed<RegistrationView>
+  /** How the board shows people, agents and services, by key: names and pictures in place of their own. */
+  identities: Identities
 }
 
 export const initialState: State = {
@@ -125,6 +128,7 @@ export const initialState: State = {
   schedules: { is: 'unasked' },
   everySchedule: false,
   watchers: { is: 'unasked' },
+  identities: {},
 }
 
 /** Whether a message as the board shows it already reflects a change you made. */

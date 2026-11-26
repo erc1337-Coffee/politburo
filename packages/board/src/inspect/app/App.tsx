@@ -19,6 +19,7 @@ import { Ask, AskForm, Header, HeaderActions, nativeMenu, Panel, ResizeHandle, t
 import { boardWords, cadence, firstLine, shownName, until } from './words.ts'
 import { cellHasThread, isWorkRoute, workTitle } from './work-scope.ts'
 import { Work } from './work-view.tsx'
+import { IdentitiesContext, nameFor } from './identity.ts'
 import { Operations } from './operations-view.tsx'
 
 const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`
@@ -303,11 +304,12 @@ export function App() {
   const control = current.view !== 'cell' && viewer.manages && viewer.person && viewer.profile === null && state.status
     ? <PauseControl key={viewer.actor} paused={state.status.paused} /> : null
   const headerActions = <>
-    {(narrow ? !nav : sidebar.collapsed) && <span className="meta" title={state.me.actor}>acting as {shownName(state.me)}</span>}
+    {(narrow ? !nav : sidebar.collapsed) && <span className="meta" title={state.me.actor}>acting as {nameFor(state.identities, state.me.actor, shownName(state.me))}</span>}
     {state.statusRefused && <span className="meta" title={state.statusRefused}>{state.statusRefused}</span>}
     {control}
   </>
   return (
+    <IdentitiesContext.Provider value={state.identities}>
     <div
       ref={shell}
       className={`shell${nav ? ' nav' : ''}`}
@@ -338,7 +340,7 @@ export function App() {
               <Channel key={current.channel} channel={current.channel} state={state} options={options} known={known} lead={expand} filters={filters} />
             )}
             {isWorkRoute(current) && <Work key={`${identity}:${where.path}`} route={current} state={state} now={now} lead={expand} />}
-            {current.view === 'operations' && <Operations lead={expand} />}
+            {current.view === 'operations' && <Operations lead={expand} identities={state.identities} />}
             {current.view === 'settings' && <Settings state={state} viewer={viewer} now={now} lead={expand} where={where} section={current.section} open={current.open} />}
             {current.view === 'missing' && (
               <>
@@ -368,6 +370,7 @@ export function App() {
       </div>
       <Toasts />
     </div>
+    </IdentitiesContext.Provider>
   )
 }
 
@@ -407,15 +410,17 @@ function FilterControls({ filters }: { filters: Filters }) {
   return <FilterButton filter={filters.filter} onChange={filters.setFilter} sources={filters.sources} known={filters.known} />
 }
 
-const NAMES = new WeakMap<State['actors'], Record<string, string>>()
+const NAMES = new WeakMap<State['actors'], WeakMap<State['identities'], Record<string, string>>>()
 /**
  * Every actor the page knows, by ID, by their own name, which a mention of them reads as: the same
  * record until one of them changes, so a row's text renders once. Not a hook: it's read after the
  * views' early returns.
  */
 function namesOf(state: State): Record<string, string> {
-  let names = NAMES.get(state.actors)
-  if (!names) NAMES.set(state.actors, (names = Object.fromEntries(Object.entries(state.actors).map(([id, actor]) => [id, actor.name]))))
+  let byIdentities = NAMES.get(state.actors)
+  if (!byIdentities) NAMES.set(state.actors, (byIdentities = new WeakMap()))
+  let names = byIdentities.get(state.identities)
+  if (!names) byIdentities.set(state.identities, (names = Object.fromEntries(Object.entries(state.actors).map(([id, actor]) => [id, nameFor(state.identities, id, actor.name)]))))
   return names
 }
 

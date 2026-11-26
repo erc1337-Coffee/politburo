@@ -5,6 +5,7 @@ import type { InboxEntry, Me } from '../../api/routes.ts'
 import * as board from './board.ts'
 import { buttonSoundsEnabled, setButtonSounds } from './button-feedback.ts'
 import { Access } from './grants.tsx'
+import { IdentitiesSection } from './identities-section.tsx'
 import { Ago, here, Link, SECTIONS, type Section, type Where } from './nav.tsx'
 import { Schemas } from './schemas.tsx'
 import { mayCancelSchedule, nameOf, type State, type Viewer } from './store.ts'
@@ -52,6 +53,7 @@ export function Settings(props: { state: State; viewer: Viewer; now: number; lea
         <div className="page">
           <DeveloperIdentity me={state.me!} channels={Object.keys(state.channels).sort()} />
           {section === 'access' && <Access state={state} viewer={viewer} where={props.where} />}
+          {section === 'identities' && <IdentitiesSection state={state} viewer={viewer} />}
           {section === 'schemas' && <Schemas state={state} viewer={viewer} selected={props.open} />}
           {section === 'schedules' && <Schedules state={state} viewer={viewer} now={props.now} all={props.where.params.get('show') === 'all'} />}
           {section === 'watchers' && <Watchers state={state} />}

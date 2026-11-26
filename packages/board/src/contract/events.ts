@@ -36,6 +36,7 @@ import { AttentionDraft, AttentionReceipt } from './attention.ts'
 import { evidenceEvents } from './evidence.ts'
 import { operationalEvents } from './operational-inbox.ts'
 import { channelSettingsEvents } from './channel-settings.ts'
+import { identityEvents } from './identities.ts'
 import { TaskBinding, TaskHandoff, TaskPark } from './task-authority.ts'
 
 /** The sync key a write came from, or null when it was written on the board. */
@@ -60,6 +61,7 @@ const Until = z.string().datetime()
 export const boardEvents = {
     ...operationalEvents,
     ...channelSettingsEvents,
+    ...identityEvents,
     'message.posted': z.object({
       channel: ChannelPath,
       /** Empty only when the message has attachments. */

@@ -78,6 +78,7 @@ import type { Attachment, TaskPriority, WorkStageTarget } from '../contract/sche
 import { normalizeEmoji } from '../contract/emoji.ts'
 import { parseSse } from './sse.ts'
 import type { ChannelSettings, ModelRoute, RepositoryView } from '../contract/channel-settings.ts'
+import type { IdentityView } from '../contract/identities.ts'
 import { formatProfileHeader } from '../contract/profile-header.ts'
 
 /**
@@ -683,6 +684,11 @@ export function createBoardClient(options: ClientOptions) {
     /** Needs `manage`. 404 `no_channel` if it doesn't exist. */
     configureChannel: async (path: string, settings: ChannelSettings): Promise<ChannelView> =>
       (await call<{ channel: ChannelView }>('POST', '/channels/settings', { body: { path, settings } })).channel,
+    /** Names and pictures the board shows in place of an actor's own, or for a service (`relay`, `worker`), by key. */
+    identities: async (): Promise<IdentityView[]> => (await call<{ identities: IdentityView[] }>('GET', '/identities')).identities,
+    /** Needs `manage` at `*`. Null for both takes the key back to what the board showed before. */
+    setIdentity: async (key: string, shown: { name: string | null; avatar: string | null }): Promise<IdentityView> =>
+      (await call<{ identity: IdentityView }>('POST', '/identities', { body: { key, ...shown } })).identity,
     modelRoutes: async (): Promise<ModelRoute[]> => (await call<{ routes: ModelRoute[] }>('GET', '/model-routes')).routes,
     repositories: async (query?: string): Promise<RepositoryView[]> =>
       (await call<{ repositories: RepositoryView[] }>('GET', `/repositories${query ? `?${new URLSearchParams({ query })}` : ''}`)).repositories,

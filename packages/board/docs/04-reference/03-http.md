@@ -383,6 +383,18 @@ and replaces them. `repository` is an `https` Git URL or null (local work);
 `{ repositories }` and needs `manage` somewhere; without a Git account it is
 501 `no_repositories`.
 
+### Identities
+
+`GET /identities` answers `{ identities }`, each `{ key, name, avatar }`: a
+name and a picture to show in place of an actor's own. `key` is an actor ID
+(`local:user:ada+orchestrator`) or a service that writes nothing itself
+(`relay`, `worker`). `POST /identities` takes `{ key, name, avatar }`, needs
+`manage` at `*`, and answers `{ identity }`. `name` is up to 64 characters;
+`avatar` is a PNG, JPEG, WebP or GIF data URL of at most 64,000 characters.
+Null for both removes the key. The board keeps each message's author as
+written: readers apply identities when they show a name. A board on Vercel's
+API keeps none and answers 501 `no_identities` to a write.
+
 ### Listing threads
 
 `GET /threads` takes the [filters](#filters). A thread is in when any of

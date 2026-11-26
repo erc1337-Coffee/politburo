@@ -182,6 +182,17 @@ textarea, [contenteditable]:not([contenteditable='false']) { cursor: text; }
 .whoami { display: flex; align-items: center; gap: 6px; padding: 6px 8px; color: var(--muted); font-size: 11px; }
 .whoami .as { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .developer-identity { margin-bottom: 12px; color: var(--muted); }
+.identities { display: grid; gap: 14px; max-width: 760px; padding: 6px 0; }
+.identity { display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: 12px; align-items: start; }
+.identity-body { display: grid; gap: 6px; min-width: 0; }
+.identity-label { color: var(--bright); font-weight: 600; font-size: 13px; }
+.identity-label .faint { font-weight: 400; font-size: 12px; }
+.identity-fields { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.identity-fields input:not([type]) { width: 220px; height: 26px; padding: 0 8px; border: 0; background: var(--shade); font-size: 12px; }
+.avatar > img { width: 100%; height: 100%; object-fit: cover; }
+.chip .faces { display: inline-flex; vertical-align: middle; }
+.chip .faces .avatar + .avatar { margin-left: -4px; }
+.message.turn-user .meta-line, .message.turn-agent .meta-line { align-items: center; }
 .profile-options { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 0; }
 .choice { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .choice svg { color: var(--accent); }
