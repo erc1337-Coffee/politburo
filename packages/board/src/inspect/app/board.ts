@@ -17,6 +17,7 @@ import type { ChannelSettings, ModelRoute, RepositoryView } from '../../contract
 import { toast } from './chrome.ts'
 import { listing } from './listing.ts'
 import { base, currentPath, route } from './nav.tsx'
+import { identitiesOf, type Shown } from './identity.ts'
 import { groupingOf } from './routes.ts'
 import * as store from './store.ts'
 import { refusal, said } from './words.ts'
@@ -130,7 +131,7 @@ export async function setProfile(next: Profile | null | undefined): Promise<bool
       set((s) => ({ ...s, me, schedules: { is: 'loading' }, live: bootStarted ? 'reconnecting' : s.live,
         tasksCounted: false, openTaskRoots: {}, openTaskMe: null, openTaskAttentionRefusals: {}, paneThread: null,
         taskScope: null, tasksLoading: null, threadDenials: new Map(), messages: {},
-        tasksRefused: null, attention: {}, attentionUnsupported: false }))
+        tasksRefused: null, attention: {}, attentionUnsupported: false, replyFaces: {} }))
     })
     if (bootStarted) void boot().catch((error) => toast(said(error)))
     else void loadSchedules()
@@ -223,6 +224,7 @@ export async function boot(): Promise<void> {
   if (!snapshot || !current()) return
   const [me, discovery, channels] = snapshot
   set((s) => ({ ...s, me, discovery, channels: Object.fromEntries(channels.map((c) => [c.path, c])) }))
+  void loadIdentities()
   const controller = feedFollow = new AbortController()
   // A burst of events is one render: they're folded in a frame at a time.
   let queue: { event: BoardEventView; taken: number }[] = []
@@ -775,7 +777,11 @@ function refreshOpenTasks(revalidate = false) {
 }
 
 export function watchTaskReads() {
-  const revalidate = () => { if (state.me && !opensTaskRead(route(currentPath()).view)) refreshOpenTasks(true) }
+  const revalidate = () => {
+    // Another page may have renamed someone since.
+    void loadIdentities()
+    if (state.me && !opensTaskRead(route(currentPath()).view)) refreshOpenTasks(true)
+  }
   const visible = () => { if (document.visibilityState === 'visible') revalidate() }
   let previous = currentPath() + location.search
   const navigateRead = () => {
@@ -1043,6 +1049,65 @@ export async function registerSchema(input: SchemaInput): Promise<string | null>
 // --- channels ----------------------------------------------------------------------------------
 
 export const loadModelRoutes = (): Promise<ModelRoute[]> => team.modelRoutes()
+
+// --- who answered a listed thread ----------------------------------------------------------------
+
+/** The most thread reads for faces at once, so a channel page never sends one per thread together. */
+const FACE_READS_MAX = 3
+const faceReads: { root: string; last: string | null }[] = []
+const facesAsked = new Set<string>()
+let facesReading = 0
+
+/**
+ * Reads a listed thread for who answered it, when the page holds fewer of its replies than it has:
+ * once for each newest reply. What it reads stays in `replyFaces`, apart from the page's messages.
+ */
+export function loadReplyFaces(root: string, last: string | null): void {
+  const asked = `${identity}:${root}:${last}`
+  if (facesAsked.has(asked)) return
+  facesAsked.add(asked)
+  faceReads.push({ root, last })
+  pumpFaceReads()
+}
+
+function pumpFaceReads(): void {
+  while (facesReading < FACE_READS_MAX && faceReads.length > 0) {
+    const { root, last } = faceReads.shift()!
+    const handle = team
+    facesReading++
+    void handle.thread(root, { limit: 500 }).then(
+      (thread) => {
+        if (handle === team) set((s) => ({ ...s, replyFaces: { ...s.replyFaces, [root]: { last, faces: store.facesOf(thread.replies) } } }))
+      },
+      () => {},
+    ).finally(() => {
+      facesReading--
+      pumpFaceReads()
+    })
+  }
+}
+
+// --- identities: how the board shows people, agents and services --------------------------------
+
+/** Reads them again. A board that keeps none, or refuses, leaves the names the page shows as they are. */
+export async function loadIdentities(): Promise<void> {
+  const handle = team
+  try {
+    const list = await handle.identities()
+    if (handle === team) set((s) => ({ ...s, identities: identitiesOf(list) }))
+  } catch {}
+}
+
+/** Sets how the board shows `key`, or with both null, takes it back. Returns the refusal, or null. */
+export async function saveIdentity(key: string, shown: Shown): Promise<string | null> {
+  try {
+    await team.setIdentity(key, shown)
+  } catch (error) {
+    return said(error)
+  }
+  await loadIdentities()
+  return null
+}
 
 export const findRepositories = (query: string): Promise<RepositoryView[]> => team.repositories(query || undefined)
 

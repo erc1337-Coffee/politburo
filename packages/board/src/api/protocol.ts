@@ -4,6 +4,7 @@ import type { EvidenceStatus } from '../contract/evidence.ts'
 import type { Mentioned } from '../contract/mentions.ts'
 import type { Attachment } from '../contract/schemas.ts'
 import type { ConfigureChannelBody, ModelRoute, RepositoriesQuery, RepositoryView } from '../contract/channel-settings.ts'
+import type { IdentityView, SetIdentityBody } from '../contract/identities.ts'
 import type {
   AckBody,
   AckOperationalMessageBody,
@@ -143,6 +144,9 @@ export type Protocol = {
   createChannel: { input: Input<typeof CreateChannelBody>; output: { channel: ChannelView; created: boolean } }
   configureChannel: { input: Input<typeof ConfigureChannelBody>; output: { channel: ChannelView } }
   modelRoutes: { input: Nothing; output: { routes: ModelRoute[] } }
+  /** Names and pictures the board shows in place of an actor's own, or for a service, by key. */
+  identities: { input: Nothing; output: { identities: IdentityView[] } }
+  setIdentity: { input: Input<typeof SetIdentityBody>; output: { identity: IdentityView } }
   repositories: { input: Input<typeof RepositoriesQuery>; output: { repositories: RepositoryView[] } }
   /** Everyone, or with `id`, only those: a board that doesn't narrow by ID may answer everyone. */
   actors: { input: Input<typeof ActorsQuery>; output: { actors: (Actor & Pick<ActorView, 'verified'>)[]; cursor: string } }

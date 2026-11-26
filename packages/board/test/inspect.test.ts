@@ -57,6 +57,10 @@ describe('inspector navigation', () => {
     expect(route(path)).toEqual({ view: 'missing' })
   })
 
+  it('opens the identities settings at their own URL', () => {
+    expect(route('/settings/identities')).toEqual({ view: 'settings', section: 'identities', open: null })
+  })
+
   it('reads the Work grouping from the URL, swarm groups by default', () => {
     expect(groupingOf(new URLSearchParams(''))).toBe('swarm')
     expect(groupingOf(new URLSearchParams('by=state'))).toBe('state')
@@ -71,7 +75,7 @@ describe('inspector navigation', () => {
 
 describe('inspect', () => {
   it('serves the page for every route, and its bundle', async () => {
-    for (const path of ['/', '/work?by=state', '/?thread=12', '/c/errors-www', '/settings/schemas/test-run@1']) {
+    for (const path of ['/', '/work?by=state', '/?thread=12', '/c/errors-www', '/settings/schemas/test-run@1', '/settings/identities']) {
       const response = await fetch(`${inspector.url}${path}`)
       expect(response.status).toBe(200)
       expect(response.headers.get('content-security-policy')).toContain("script-src 'self'")

@@ -11,7 +11,7 @@ import { createAgents } from './agents.ts'
 import { createAgentIntents } from './agent-intents.ts'
 import { createSchemas } from './schemas.ts'
 import type { ExternalAuthor, Link, Origin } from '../contract/external.ts'
-import { actorsReducer, channelsReducer } from '../contract/reducers.ts'
+import { actorsReducer, channelsReducer, identitiesReducer } from '../contract/reducers.ts'
 import { type Actor, type ExternalCopy, type Message } from '../contract/folds.ts'
 import { importedHandle, shownName, userIdOf } from '../contract/profiles.ts'
 import { extractMentions, isEmail, replaceMentions } from '../contract/mentions.ts'
@@ -38,7 +38,7 @@ import { compileWatcher, createWatchers, ID, registrantSession } from './watch.t
 import { ack, pull, pullInbox, type QueueSession } from './registered.ts'
 import { createRegistry, storedPrincipal, type SyncEntrySpec } from './registry.ts'
 import { METHODS } from './routing.ts'
-import { authorizeMessage, authorizeOwn, authorizePost, blindText, untilApplied, whileHeadMoves, trusted, writeAttach, writeChannel, writeChannelSettings, writeDelete, writeEdit, writeLabels, writeLinks, writePost, writeReaction, writeRoots, landedBatch, deploymentIdentity, landedFor, type Identity, type WriteContext } from './writes.ts'
+import { authorizeMessage, authorizeOwn, authorizePost, blindText, untilApplied, whileHeadMoves, trusted, writeAttach, writeChannel, writeChannelSettings, writeIdentity, writeDelete, writeEdit, writeLabels, writeLinks, writePost, writeReaction, writeRoots, landedBatch, deploymentIdentity, landedFor, type Identity, type WriteContext } from './writes.ts'
 import { SYNC_ACTOR, type WriteOrigin } from './origin.ts'
 import { derivedId, isKeyIdOf } from '../client/ids.ts'
 import { DroppedError, MIDDLEWARE_ACTOR } from './middleware.ts'
@@ -599,6 +599,14 @@ function build(options: A2Options, binding: BoardBinding) {
     },
     async configureChannel(caller, { path, settings }) {
       return writeChannelSettings(writes, { identity: await identityOf(caller), path, settings })
+    },
+    async identities(caller) {
+      await identityOf(caller)
+      const { state } = await session.state(identitiesReducer)
+      return { identities: Object.entries(state).map(([key, shown]) => ({ key, ...shown })).sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)) }
+    },
+    async setIdentity(caller, { key, name, avatar }) {
+      return writeIdentity(writes, { identity: await identityOf(caller), key, name, avatar })
     },
     async modelRoutes(caller) {
       await identityOf(caller)

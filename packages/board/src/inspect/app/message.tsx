@@ -9,11 +9,12 @@ import { displayEmoji } from '../../contract/emoji.ts'
 import type { Attachment } from '../../server/index.default.ts'
 import { ActivityBlock, isActivity } from './activity.tsx'
 import { BlockCard } from './blocks.tsx'
+import { nameFor, pictureFor, SERVICES, useIdentities, type Identities } from './identity.ts'
 import * as board from './board.ts'
 import { setEditing, toast, useEditing } from './chrome.ts'
 import { Ago } from './nav.tsx'
 import { LabelValue } from './sha.tsx'
-import { bodyParts, continues, isTask, schemaOf, sourcePlatform, type Groupable, type Pending, type ReplySummary, type State, type Viewer } from './store.ts'
+import { bodyParts, continues, faceKey, isTask, schemaOf, sourcePlatform, type Groupable, type Pending, type ReplySummary, type State, type Viewer } from './store.ts'
 import { TaskLine } from './task.tsx'
 import { absoluteTime, authorName, fileSize, shownName, timingWords } from './words.ts'
 import { ContextMenuArea, EmojiPicker, fieldMenu, LabelEditor, Panel, Menu, MenuEmojiRow, MenuItem, MenuSeparator, nativeMenu, type KnownLabels } from './ui.tsx'
@@ -245,11 +246,33 @@ export function SourceLogo({ platform }: { platform: string }) {
   )
 }
 
-// Author avatars are metadata, not images fetched through the inspector's token-bearing proxy.
-export function Avatar({ name, size = 28 }: { name: string; size?: number }) {
+// Author avatars are metadata, not images fetched through the inspector's token-bearing proxy: a
+// picture is one the board keeps inline (`GET /identities`), else the name's initial.
+export function Avatar({ name, src, size = 28 }: { name: string; src?: string | undefined; size?: number }) {
   return (
-    <span className="avatar" style={{ width: size, height: size, fontSize: size * 0.43 }}>
-      {name.slice(0, 1).toUpperCase()}
+    <span className="avatar" title={name} style={{ width: size, height: size, fontSize: size * 0.43 }}>
+      {src ? <img src={src} alt="" /> : name.slice(0, 1).toUpperCase()}
+    </span>
+  )
+}
+
+/**
+ * Who a message shows as: the board's name and picture for its author, or their own. A worker's
+ * round is the orchestrator's message, written for the worker, so it shows as the worker: the
+ * board's name and picture for `worker`, else "Worker".
+ */
+export function shownAuthor(identities: Identities, m: Pick<MessageView, 'author' | 'by' | 'blocks'>): { name: string; picture: string | undefined } {
+  const key = faceKey(m)
+  return { name: nameFor(identities, key, key === 'worker' ? SERVICES.worker : authorName(m)), picture: pictureFor(identities, key) }
+}
+
+/** Who reacted, as the board shows them: at most three faces, every name in the title. */
+function Reactors({ actors, names, identities }: { actors: string[]; names: Record<string, string> | undefined; identities: Identities }) {
+  return (
+    <span className="faces">
+      {actors.slice(0, 3).map((actor) => (
+        <Avatar key={actor} name={nameFor(identities, actor, names?.[actor] ?? actor)} src={pictureFor(identities, actor)} size={14} />
+      ))}
     </span>
   )
 }
@@ -332,10 +355,13 @@ const copy = (text: string, what: string) =>
     () => toast(`couldn't copy ${what}`),
   )
 
-/** A status line the orchestrator writes in a task thread: one quiet line, apart from the conversation. */
+/** A status line the orchestrator writes in a task thread: one quiet line under its face, apart from the conversation. */
 function StatusLine({ m, now }: { m: MessageView; now: number }) {
+  const { name, picture } = shownAuthor(useIdentities(), m)
   return (
     <div id={`m${m.id}`} className="status-line" {...nativeMenu}>
+      <Avatar name={name} src={picture} size={16} />
+      <span className="status-line-author">{name}</span>
       <span className="status-line-text">{m.text}</span>
       <Ago iso={m.createdAt} now={now} className="faint" />
     </div>
@@ -348,8 +374,9 @@ export function MessageRow({ m, options, continued = false }: { m: MessageView; 
   const [labelsOpen, setLabelsOpen] = useState(false)
   const row = useRef<HTMLDivElement>(null)
   const editingId = useEditing()
+  const identities = useIdentities()
   if (m.labels['politburo.status'] && !m.deleted) return <StatusLine m={m} now={options.now} />
-  const name = authorName(m)
+  const { name, picture } = shownAuthor(identities, m)
   const canEdit = m.by.actor === options.me && options.viewer.may('post', m.channel)
   const editing = canEdit && editingId === m.id
   const canLabel = !m.deleted && options.viewer.may('label', m.channel)
@@ -399,7 +426,7 @@ export function MessageRow({ m, options, continued = false }: { m: MessageView; 
             <span {...nativeMenu}><Ago iso={m.createdAt} now={options.now} className="gutter-time" /></span>
           ) : (
             <span className="avatar-wrap">
-              <Avatar name={name} />
+              <Avatar name={name} src={picture} />
               {m.from && <SourceLogo platform={sourcePlatform(m, options.platforms) ?? m.from} />}
             </span>
           )}
@@ -407,9 +434,10 @@ export function MessageRow({ m, options, continued = false }: { m: MessageView; 
         <div className="body">
           {!continued && (
             <div className="meta-line">
-              {turn !== 'user' && <span className="author" {...nativeMenu}>
+              {turn && <Avatar name={name} src={picture} size={20} />}
+              <span className="author" {...nativeMenu}>
                 {name}
-              </span>}
+              </span>
               <Ago iso={m.createdAt} />
               {m.noSync && options.syncConfigured && <span className="badge">board only</span>}
               {m.schedule && (
@@ -441,8 +469,9 @@ export function MessageRow({ m, options, continued = false }: { m: MessageView; 
                 </button>
               ) : <span key={key} className="label">{key}=<LabelValue name={key} value={value} /></span>)}
               {Object.entries(m.reactions).map(([emoji, actors]) => {
-                const chip = { className: `chip${reacted(emoji) ? ' mine' : ''}`, title: `:${emoji}: ${actors.join(', ')}` }
-                const count = <>{displayEmoji(emoji)} {actors.length}</>
+                const who = actors.map((actor) => nameFor(identities, actor, options.names?.[actor] ?? actor))
+                const chip = { className: `chip${reacted(emoji) ? ' mine' : ''}`, title: `:${emoji}: ${who.join(', ')}` }
+                const count = <>{displayEmoji(emoji)} <Reactors actors={actors} names={options.names} identities={identities} /> {actors.length}</>
                 return canReact ? <button key={emoji} {...chip} onClick={() => toggle(emoji)}>{count}</button> : <span key={emoji} {...chip}>{count}</span>
               })}
             </div>
@@ -455,9 +484,10 @@ export function MessageRow({ m, options, continued = false }: { m: MessageView; 
           {replies && replies.count > 0 && options.openThread && (
             <button className="replies" onClick={() => options.openThread!(m.id)}>
               <span className="faces">
-                {replies.faces.map((r) => (
-                  <Avatar key={r.by.actor} name={authorName(r)} size={16} />
-                ))}
+                {replies.faces.map((r) => {
+                  const face = shownAuthor(identities, r)
+                  return <Avatar key={r.by.actor} name={face.name} src={face.picture} size={16} />
+                })}
               </span>
               {replies.count} {replies.count === 1 ? 'reply' : 'replies'}
               {replies.last && <Ago iso={replies.last.createdAt} prefix=" · last " />}
@@ -523,6 +553,9 @@ export function Pendings(props: { posts: Pending[]; me: Me; after?: MessageView;
 
 /** A post on its way, or one that didn't make it. */
 export function PendingRow({ post, me, continued = false, chat = false }: { post: Pending; me: Me; continued?: boolean; chat?: boolean }) {
+  const identities = useIdentities()
+  const name = nameFor(identities, me.actor, shownName(me))
+  const picture = pictureFor(identities, me.actor)
   const status = post.later ? (post.error ? "didn't schedule" : 'scheduling…') : post.error ? "didn't send" : 'sending…'
   return (
     <div className={`message pending${chat ? ' turn-user' : ''}${continued ? ' continued' : ''}${post.error ? ' failed' : ''}`}>
@@ -532,13 +565,14 @@ export function PendingRow({ post, me, continued = false, chat = false }: { post
             …
           </span>
         ) : (
-          <Avatar name={shownName(me)} />
+          <Avatar name={name} src={picture} />
         )}
       </div>}
       <div className="body">
         {!continued && (
           <div className="meta-line">
-            {!chat && <span className="author">{shownName(me)}</span>}
+            {chat && <Avatar name={name} src={picture} size={20} />}
+            <span className="author">{name}</span>
             <span className="time">{status}</span>
             {post.later && (
               <span className="badge">

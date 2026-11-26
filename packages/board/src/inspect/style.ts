@@ -182,6 +182,17 @@ textarea, [contenteditable]:not([contenteditable='false']) { cursor: text; }
 .whoami { display: flex; align-items: center; gap: 6px; padding: 6px 8px; color: var(--muted); font-size: 11px; }
 .whoami .as { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .developer-identity { margin-bottom: 12px; color: var(--muted); }
+.identities { display: grid; gap: 14px; max-width: 760px; padding: 6px 0; }
+.identity { display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: 12px; align-items: start; }
+.identity-body { display: grid; gap: 6px; min-width: 0; }
+.identity-label { color: var(--bright); font-weight: 600; font-size: 13px; }
+.identity-label .faint { font-weight: 400; font-size: 12px; }
+.identity-fields { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.identity-fields input:not([type]) { width: 220px; height: 26px; padding: 0 8px; border: 0; background: var(--shade); font-size: 12px; }
+.avatar > img { width: 100%; height: 100%; object-fit: cover; }
+.chip .faces { display: inline-flex; vertical-align: middle; }
+.chip .faces .avatar + .avatar { margin-left: -4px; }
+.message.turn-user .meta-line, .message.turn-agent .meta-line { align-items: center; }
 .profile-options { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 0; }
 .choice { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .choice svg { color: var(--accent); }
@@ -682,8 +693,9 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 
 /* --- blocks: the data a message carries, as a card where its fence was --- */
 .block { max-width: 640px; margin: 6px 0; font-size: 12px; }
-.status-line { display: flex; align-items: baseline; gap: 8px; padding: 2px var(--inset) 2px 56px; font-size: 12px; color: var(--muted); }
-.status-line-text { overflow-wrap: anywhere; }
+.status-line { display: flex; align-items: center; gap: 6px; padding: 3px var(--inset) 3px 16px; font-size: 12px; color: var(--muted); }
+.status-line-author { flex-shrink: 0; color: var(--dim); font-weight: 600; }
+.status-line-text { min-width: 0; overflow-wrap: anywhere; }
 /* A chat, as the thread pane shows one: your messages as bubbles, an agent's turn as plain text with
    its thoughts and actions muted, one line each, folded. No avatars. */
 .message.turn-user, .message.turn-agent { grid-template-columns: minmax(0, 1fr); padding: 6px var(--inset) 6px 16px; }
@@ -903,11 +915,19 @@ details.turn-action { display: block; }
 .ops-schematic .led.ok { fill: var(--ops-ok); opacity: 1; }
 .ops-schematic .led.warn { fill: var(--warning); opacity: 1; }
 .ops-schematic .led.fault { fill: var(--red); opacity: 1; }
-.ops-schematic .heart .glow { opacity: .8; }
-.ops-schematic .heart .ripple { fill: none; stroke: var(--c); stroke-width: 1.5; transform-box: fill-box; transform-origin: center; animation: ops-ripple 1.1s cubic-bezier(.2, .6, .3, 1) forwards; pointer-events: none; }
-@keyframes ops-ripple { from { transform: scale(1); opacity: .75; } to { transform: scale(1.32); opacity: 0; } }
-.ops-schematic .relay .ring { fill: none; stroke: var(--gold); stroke-opacity: .45; stroke-width: 1; stroke-dasharray: 1 5; transform-box: fill-box; transform-origin: center; animation: ops-spin var(--spin, 20s) linear infinite; }
-@keyframes ops-spin { to { transform: rotate(360deg); } }
+.ops-schematic .relay .ring { fill: none; stroke: var(--gold); stroke-opacity: .45; stroke-width: 1; stroke-dasharray: 1 5; animation: ops-march var(--spin, 20s) linear infinite; }
+@keyframes ops-march { to { stroke-dashoffset: -120; } }
+/* A box's words are HTML in its frame: picture and name first, then a line per detail. */
+.ops-schematic foreignObject { overflow: visible; pointer-events: none; }
+.ops-node { box-sizing: border-box; height: 100%; padding: 9px 26px 8px 12px; display: flex; flex-direction: column; justify-content: center; gap: 3px; font-family: var(--mono); }
+.ops-node-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.ops-node-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--bright); font: 600 14px var(--display); letter-spacing: .01em; }
+.ops-node-figure { margin-left: auto; padding-left: 8px; color: var(--bright); font-size: 12px; font-variant-numeric: tabular-nums; }
+.ops-node-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); font-size: 11px; }
+.ops-node-detail .state { color: var(--dim); }
+.ops-node-detail .state-running { color: var(--ops-ok); }
+.ops-node-detail .state-waiting_answer { color: var(--warning); }
+.ops-schematic .node.down .ops-node-name { color: var(--muted); }
 .ops-schematic .worker { cursor: pointer; outline: none; }
 .ops-schematic .worker:hover .frame { stroke-opacity: 1; }
 .ops-schematic .worker:focus-visible .frame, .ops-schematic .worker.selected .frame { stroke: var(--accent); stroke-opacity: 1; stroke-width: 1.6; }
@@ -983,8 +1003,8 @@ details.turn-action { display: block; }
   .ops-legend { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .ops-schematic .relay .ring, .ops-schematic .heart .ripple, .ops-schematic .worker .pulse, .ops-schematic .worker .sweep, .ops-figure, .ops-log li { animation: none; }
-  .ops-schematic .worker .pulse, .ops-schematic .heart .ripple { display: none; }
+  .ops-schematic .relay .ring, .ops-schematic .worker .pulse, .ops-schematic .worker .sweep, .ops-figure, .ops-log li { animation: none; }
+  .ops-schematic .worker .pulse { display: none; }
   .ops-schematic .link { transition: none; }
 }
 `

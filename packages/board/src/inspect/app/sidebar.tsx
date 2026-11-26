@@ -11,6 +11,7 @@ import { Avatar } from './message.tsx'
 import { Link, useLocation, type Route } from './nav.tsx'
 import type { State } from './store.ts'
 import { ContextMenuArea, MenuItem } from './ui.tsx'
+import { nameFor, pictureFor } from './identity.ts'
 import { boardWords, shownName } from './words.ts'
 import { workScopeUrl } from './work-scope.ts'
 
@@ -170,8 +171,8 @@ export function Sidebar({ state, current, onHome, onCollapse }: { state: State; 
           <span>Settings</span>
         </Link>
         <div className="whoami" title={state.me!.actor}>
-          <Avatar name={shownName(state.me!)} size={24} />
-          <span className="as">acting as {shownName(state.me!)}</span>
+          <Avatar name={nameFor(state.identities, state.me!.actor, shownName(state.me!))} src={pictureFor(state.identities, state.me!.actor)} size={24} />
+          <span className="as">acting as {nameFor(state.identities, state.me!.actor, shownName(state.me!))}</span>
         </div>
       </div>
       </div>

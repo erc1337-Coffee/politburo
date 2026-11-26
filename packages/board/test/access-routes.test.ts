@@ -65,6 +65,9 @@ const WALK: Record<RouteName, Walk> = {
     { method: 'POST', path: '/channels/settings', body: { path: 'secret', settings: { repository: null, routes: [] } }, status: 403 },
     { method: 'POST', path: '/channels/settings', body: { path: 'open', settings: { repository: null, routes: [] } }, status: 403 },
   ],
+  // Anyone the board admits reads how it shows people; naming someone needs manage at *.
+  identities: () => [{ method: 'GET', path: '/identities', status: 200, check: (body) => expect(body).toEqual({ identities: [] }) }],
+  setIdentity: () => [{ method: 'POST', path: '/identities', body: { key: 'relay', name: 'Courier', avatar: null }, status: 403 }],
   modelRoutes: () => [{ method: 'GET', path: '/model-routes', status: 200, check: (body) => expect(body).toEqual({ routes: [] }) }],
   repositories: () => [{ method: 'GET', path: '/repositories', status: 403 }],
   actors: () => [

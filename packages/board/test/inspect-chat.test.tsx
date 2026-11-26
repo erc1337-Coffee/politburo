@@ -4,6 +4,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, expect, it } from 'vitest'
 import type { BlockView, MessageView } from '../src/api/routes.ts'
 import { ActivityBlock } from '../src/inspect/app/activity.tsx'
+import { IdentitiesContext, type Identities } from '../src/inspect/app/identity.ts'
 import { MessageRow, type RowOptions } from '../src/inspect/app/message.tsx'
 
 let root: Root | undefined
@@ -97,23 +98,54 @@ const options = (chat: boolean): RowOptions => ({
   viewer: { actor: me, principal: me, profile: null, may: () => false, manages: false, person: true } as unknown as RowOptions['viewer'],
 })
 
-it('shows a thread as a chat: what you wrote without your name or avatar, and an agent turn under its name', () => {
+// A 1×1 PNG.
+const PIXEL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+const ORCHESTRATOR = 'local:user:ada+orchestrator'
+const face = (el: Element) => ({ name: el.querySelector('.author')?.textContent, picture: el.querySelector('.avatar img')?.getAttribute('src') ?? el.querySelector('.avatar')?.textContent })
+
+it('shows a thread as a chat: what you wrote and each agent turn under the name and picture the board gives them', () => {
   const block = activity({ state: 'completed', items: ITEMS.slice(0, 1) })
   const fence = `\`\`\`json#worker_activity@1\n${JSON.stringify(block.data)}\n\`\`\`\n\nDone: PORT is read now.`
-  const page = show(
-    <>
+  const rows = (identities: Identities) => (
+    <IdentitiesContext.Provider value={identities}>
       <MessageRow m={message('1', me, 'Ada', 'Read the port from PORT.')} options={options(true)} />
-      <MessageRow m={message('2', 'local:user:ada+orchestrator', 'orchestrator', fence, [block])} options={options(true)} />
-    </>,
+      <MessageRow m={message('2', ORCHESTRATOR, 'orchestrator', fence, [block])} options={options(true)} />
+      <MessageRow m={message('3', ORCHESTRATOR, 'orchestrator', 'Merged.')} options={options(true)} />
+      <MessageRow m={{ ...message('4', ORCHESTRATOR, 'orchestrator', 'attempt 1 started.'), labels: { 'politburo.status': 'orchestrator' } } as MessageView} options={options(true)} />
+    </IdentitiesContext.Provider>
   )
-  const [mine, agent] = [...page.querySelectorAll('.message')]
-  expect(mine!.textContent).not.toContain('Ada')
-  expect(mine!.querySelector('.avatar')).toBeNull()
-  expect(mine!.textContent).toContain('Read the port from PORT.')
-  expect(agent!.querySelector('.author')?.textContent).toBe('orchestrator')
-  expect(agent!.querySelector('.avatar')).toBeNull()
-  expect(agent!.textContent).toContain('Reading the config first.')
-  expect(agent!.textContent).toContain('Done: PORT is read now.')
+  const page = show(rows({}))
+  // A worker's round is the orchestrator's message, written for the worker: it shows as the worker.
+  expect([...page.querySelectorAll('.message')].map(face)).toEqual([
+    { name: 'Ada', picture: 'A' },
+    { name: 'Worker', picture: 'W' },
+    { name: 'orchestrator', picture: 'O' },
+  ])
+  const status = () => page.querySelector('.status-line')!
+  expect([status().querySelector('.status-line-author')?.textContent, status().querySelector('.avatar')?.textContent]).toEqual(['orchestrator', 'O'])
+  flushSync(() => root!.render(rows({ [me]: { name: 'Ada L.', avatar: PIXEL }, [ORCHESTRATOR]: { name: 'Conductor', avatar: null }, worker: { name: 'Builder', avatar: PIXEL } })))
+  const [mine, round, said] = [...page.querySelectorAll('.message')]
+  expect([mine, round, said].map((el) => face(el!))).toEqual([
+    { name: 'Ada L.', picture: PIXEL },
+    { name: 'Builder', picture: PIXEL },
+    { name: 'Conductor', picture: 'C' },
+  ])
+  expect([status().querySelector('.status-line-author')?.textContent, status().querySelector('.avatar img')?.getAttribute('src') ?? null]).toEqual(['Conductor', null])
+  expect(round!.textContent).toContain('Reading the config first.')
+  expect(round!.textContent).toContain('Done: PORT is read now.')
+})
+
+it('shows who reacted by the names and pictures the board gives them', () => {
+  const reacted = { ...message('1', me, 'Ada', 'Ship it?'), reactions: { thumbs_up: [me, ORCHESTRATOR] } } as MessageView
+  const page = show(
+    <IdentitiesContext.Provider value={{ [me]: { name: 'Ada L.', avatar: PIXEL }, [ORCHESTRATOR]: { name: 'Conductor', avatar: null } }}>
+      <MessageRow m={reacted} options={{ ...options(false), names: { [me]: 'Ada', [ORCHESTRATOR]: 'orchestrator' } }} />
+    </IdentitiesContext.Provider>,
+  )
+  const chip = page.querySelector('.chip')!
+  expect(chip.getAttribute('title')).toBe(':thumbs_up: Ada L., Conductor')
+  expect([...chip.querySelectorAll('.avatar')].map((el) => el.querySelector('img')?.getAttribute('src') ?? el.textContent)).toEqual([PIXEL, 'C'])
+  expect(chip.textContent).toContain('2')
 })
 
 it('keeps names and avatars outside a chat', () => {

@@ -1,7 +1,7 @@
 import { derivedId } from '../client/ids.ts'
 import { ALONG_MAX, type BoardEvent } from '../contract/events.ts'
 import type { Link, Origin } from '../contract/external.ts'
-import { actorsReducer, channelsReducer } from '../contract/reducers.ts'
+import { actorsReducer, channelsReducer, identitiesReducer } from '../contract/reducers.ts'
 import { foldMessages, workTerminal, type Actor, type ActorsState, type Channel, type Message, type MessagesState, type Task } from '../contract/folds.ts'
 import { own } from '../contract/own.ts'
 import { channelOf, isThreadTarget } from '../contract/external.ts'
@@ -28,6 +28,7 @@ export { syncTarget, type SyncTarget }
 
 import type { Identity } from './backend.ts'
 import type { ChannelSettings } from '../contract/channel-settings.ts'
+import type { IdentityView } from '../contract/identities.ts'
 export type { Identity }
 
 /** A piece of the board's own deployment, writing as `actor` with full access. */
@@ -1005,6 +1006,22 @@ export async function writeChannelSettings(ctx: WriteContext, input: { identity:
   if ('missing' in made) throw notFound(`no channel ${input.path}`, 'no_channel')
   await untilApplied(ctx, made.rows)
   return { channel: { ...made.found, settings: input.settings } }
+}
+
+/** How the board shows one key from now on. It is the board's to say, so it takes `manage` at `*`. */
+export async function writeIdentity(ctx: WriteContext, input: { identity: Identity; key: string; name: string | null; avatar: string | null }): Promise<{ identity: IdentityView }> {
+  if (!input.identity.principal.access.at('manage', '*')) throw forbidden("this token can't name anyone: that needs manage at *")
+  const seen = seenFor(input.identity, (await ctx.session.state(actorsReducer)).state)
+  const events: Events = [
+    ...(seen ? [seen] : []),
+    { type: 'identity.set', payload: { key: input.key, name: input.name, avatar: input.avatar, by: input.identity.author } },
+  ]
+  const rows = await whileHeadMoves(async () => {
+    const { index } = await ctx.session.state(identitiesReducer, { through: 'latest' })
+    return appendIfLast(ctx.session, index, events)
+  })
+  await untilApplied(ctx, rows)
+  return { identity: { key: input.key, name: input.name, avatar: input.avatar } }
 }
 
 /** The batch, only while `index` is still the session's last: A2's conditional append. */

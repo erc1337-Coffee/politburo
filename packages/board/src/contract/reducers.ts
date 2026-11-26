@@ -53,6 +53,22 @@ export const channelsReducer = reducer({
   return state
 })
 
+export type IdentitiesState = Record<string, { name: string | null; avatar: string | null }>
+
+/** How the board shows each key it was told about: a key set to no name and no picture is gone. */
+export const identitiesReducer = reducer({
+  contract: boardContract,
+  name: 'board.identities.v1',
+  initialState: {} as IdentitiesState,
+}).fold((state, event) => {
+  if (event.type !== 'identity.set') return state
+  const { key, name, avatar } = event.payload
+  if (name === null && avatar === null) {
+    if (own(state, key)) delete state[key]
+  } else setOwn(state, key, { name, avatar })
+  return state
+})
+
 export type WorkState = { paused: boolean; pauseEpoch: number; resumedAt: number | null }
 
 export const workReducer = reducer({
