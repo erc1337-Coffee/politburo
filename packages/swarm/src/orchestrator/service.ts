@@ -707,6 +707,7 @@ export class Orchestrator {
     }
     this.#emit({
       kind: 'usage', task: attempt.taskId, channel: attempt.channel, round: result.round, models: result.models.length,
+      providers: [...new Set(result.models.map((row) => row.provider))],
       input_tokens: result.models.reduce((sum, row) => sum + row.input_tokens, 0),
       output_tokens: result.models.reduce((sum, row) => sum + row.output_tokens, 0),
       cost_usd: result.cost_usd,
@@ -740,6 +741,10 @@ export class Orchestrator {
       return this.#apply(attempt, step, result, bundleFile)
     }
     const depth = Number(task?.labels[FOLLOWUP_DEPTH_LABEL] ?? 0) || 0
+    const decisionStep = (model: 'kev' | 'claude') => {
+      this.#d.monitor?.deciding(attempt.attemptId, model)
+      this.#emit({ kind: 'decision_step', task: attempt.taskId, channel: attempt.channel, model })
+    }
     let decision = await this.#d.decider!.decide({
       task: { id: attempt.taskId, channel: attempt.boardChannel, brief: task?.text ?? '' },
       depth, roundsLeft: Math.max(0, this.#d.config.limits.roundsPerAttempt - attempt.round),
@@ -747,7 +752,7 @@ export class Orchestrator {
         exitReason: result.exit_reason, summary: result.summary, changes: result.diff_stat,
         checks: result.checks.map((check) => ({ name: check.name, passed: check.exit_code === 0, outputTail: check.output_tail })),
       },
-    })
+    }, decisionStep).finally(() => this.#d.monitor?.deciding(attempt.attemptId, null))
     this.#d.log({ event: 'final_decision', task: attempt.taskId, attempt: attempt.attemptId, label: decision.label, decided_by: decision.decidedBy, kev: decision.kev })
     this.#modelDecided.add(attempt.attemptId)
     try {

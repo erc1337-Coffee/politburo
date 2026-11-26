@@ -174,13 +174,15 @@ export class FinalDecider {
     return this.#o.kev !== null || this.#o.claude !== null
   }
 
-  async decide(round: FinishedRound): Promise<FinalDecision> {
+  /** `onStep` hears each model the decision asks, as it asks it. */
+  async decide(round: FinishedRound, onStep: (model: 'kev' | 'claude') => void = () => {}): Promise<FinalDecision> {
     const failing = round.result.checks.filter((check) => !check.passed)
-    if (failing.length > 0) return this.#afterFailingChecks(round, failing)
+    if (failing.length > 0) return this.#afterFailingChecks(round, failing, onStep)
     const allowed = FINAL_LABELS.filter((label) =>
       (label !== 'FOLLOWUP' || round.depth < this.#o.followupDepth) && (label !== 'RETRY' || round.roundsLeft > 0))
     let kev: KevAnswer | null = null
     if (this.#o.kev) {
+      onStep('kev')
       const criteria = Object.fromEntries(allowed.map((label) => [label, DESCRIPTIONS[label]]))
       kev = await this.#o.kev.choose(this.#kevState(round), 'The worker finished the task round. What should the orchestrator do next?', criteria)
         .catch((error: Error) => { this.#o.log?.({ event: 'kev_failed', task: round.task.id, message: error.message }); return null })
@@ -193,13 +195,14 @@ export class FinalDecider {
       if (kev) return { label: 'REVIEW', decidedBy: 'rules', reason: `Kev was unsure (${kev.label} at ${kev.confidence.toFixed(2)}) and no Claude model is set.`, kev: kevSeen }
       return { label: 'PASS', decidedBy: 'rules', reason: 'No decision model is set.', kev: null }
     }
+    onStep('claude')
     const answer = await this.#askClaude(round, allowed, kev)
     if (!answer) return { label: 'REVIEW', decidedBy: 'rules', reason: 'The decision model did not answer.', kev: kevSeen }
     return { ...answer, decidedBy: 'claude', kev: kevSeen }
   }
 
   /** Failing checks: Claude chooses between a correction and the owner; the rules send the check output without Claude. */
-  async #afterFailingChecks(round: FinishedRound, failing: FinishedRound['result']['checks']): Promise<FinalDecision> {
+  async #afterFailingChecks(round: FinishedRound, failing: FinishedRound['result']['checks'], onStep: (model: 'kev' | 'claude') => void): Promise<FinalDecision> {
     const report = failing.map((check) => `Check ${check.name} failed:\n${check.outputTail.slice(-1_500)}`).join('\n\n')
     const rules: FinalDecision = {
       label: 'RETRY', decidedBy: 'rules', reason: `Checks failed: ${failing.map((check) => check.name).join(', ')}.`, kev: null,
@@ -207,6 +210,7 @@ export class FinalDecider {
     }
     if (round.roundsLeft === 0) return { label: 'REVIEW', decidedBy: 'rules', reason: `${rules.reason} No rounds remain.`, kev: null }
     if (!this.#o.claude) return rules
+    onStep('claude')
     const answer = await this.#askClaude(round, ['RETRY', 'REVIEW'], null)
     return answer ? { ...answer, decidedBy: 'claude', kev: null } : rules
   }

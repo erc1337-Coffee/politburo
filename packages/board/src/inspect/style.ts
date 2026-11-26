@@ -731,6 +731,10 @@ details.turn-action { display: block; }
 .turn-foot.running { color: var(--muted); animation: activity-pulse 1.6s ease-in-out infinite; }
 .turn .added { color: var(--accent); }
 .turn .removed-lines { color: var(--red); }
+.turn-dots { display: inline-flex; gap: 5px; padding: 6px 0 2px; }
+.turn-dots i { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); opacity: .3; animation: turn-dot 1.2s ease-in-out infinite; }
+.turn-dots i:nth-child(2) { animation-delay: .2s; }
+.turn-dots i:nth-child(3) { animation-delay: .4s; }
 .decision-mark { display: inline-flex; align-items: center; padding: 0 5px; border: 1px solid var(--accent); border-radius: 3px; color: var(--accent); font-size: 10.5px; font-weight: 600; letter-spacing: .04em; line-height: 16px; white-space: nowrap; }
 .decision-mark.review { border-color: var(--warning); color: var(--warning); }
 .turn-decision > summary { color: var(--accent); }
@@ -988,6 +992,10 @@ details.turn-action { display: block; }
 .ops-log time { color: var(--faint); font-variant-numeric: tabular-nums; }
 .ops-log-kind { color: var(--faint); }
 .ops-log-text { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ops-log li:has(.ops-sources) { grid-template-columns: auto 7px minmax(0, 1fr) auto; }
+.ops-sources { display: inline-flex; align-items: center; gap: 3px; vertical-align: middle; }
+.ops-sources img { width: 13px; height: 13px; border-radius: 3px; object-fit: contain; }
+.ops-sources.spin img { animation: ops-spin 1.6s linear infinite; }
 .ops-tasks { flex: 1; min-height: 0; overflow: auto; padding: 4px 0; font: var(--metadata); scrollbar-width: thin; }
 .ops-task > summary { list-style: none; cursor: pointer; display: grid; grid-template-columns: 4rem minmax(0, 1fr) auto auto auto auto; align-items: center; gap: 12px; padding: 4px 12px; }
 .ops-task > summary::-webkit-details-marker { display: none; }
@@ -1000,6 +1008,7 @@ details.turn-action { display: block; }
 
 @keyframes ops-arrive { from { background: var(--shade-hover); } }
 @keyframes activity-pulse { 50% { opacity: .45; } }
+@keyframes turn-dot { 0%, 80%, 100% { opacity: .3; } 40% { opacity: 1; } }
 
 @media (max-width: 64rem) {
   .operations-view { overflow: auto; }
@@ -1010,7 +1019,7 @@ details.turn-action { display: block; }
   .ops-legend { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .ops-schematic .relay .ring, .ops-schematic .worker .pulse, .ops-schematic .worker .sweep, .ops-figure, .ops-log li { animation: none; }
+  .ops-schematic .relay .ring, .ops-schematic .worker .pulse, .ops-schematic .worker .sweep, .ops-figure, .ops-log li, .ops-sources.spin img, .turn-dots i { animation: none; }
   .ops-schematic .worker .pulse { display: none; }
   .ops-schematic .link { transition: none; }
 }

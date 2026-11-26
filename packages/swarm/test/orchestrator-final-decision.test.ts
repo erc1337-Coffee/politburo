@@ -40,8 +40,10 @@ describe('the final decision', () => {
   test('a sure PASS from Kev is final; Claude is not asked', async () => {
     const kev = fakeKev('PASS', 0.9)
     const claude = fakeClaude(() => ({ label: 'REVIEW', reason: 'x' }))
-    const decision = await new FinalDecider({ kev: kev.kev, claude: claude.run, kevConfidence: 0.75, followupDepth: 3 }).decide(round())
+    const steps: string[] = []
+    const decision = await new FinalDecider({ kev: kev.kev, claude: claude.run, kevConfidence: 0.75, followupDepth: 3 }).decide(round(), (model) => steps.push(model))
     assert.deepEqual([decision.label, decision.decidedBy, decision.kev?.confidence], ['PASS', 'kev', 0.9])
+    assert.deepEqual(steps, ['kev'])
     assert.equal(claude.calls.length, 0)
     assert.equal(kev.requests[0]!.url, 'http://kev.test:8009/v1/systemone')
     assert.deepEqual(Object.keys(kev.requests[0]!.body.questions.next.criteria), ['PASS', 'FOLLOWUP', 'RETRY', 'REVIEW'])
@@ -51,7 +53,9 @@ describe('the final decision', () => {
   test('an unsure Kev, or a FOLLOWUP, goes to Claude with Kev as the first opinion', async () => {
     for (const [label, confidence] of [['PASS', 0.5], ['FOLLOWUP', 0.95]] as const) {
       const claude = fakeClaude(() => ({ label: 'FOLLOWUP', reason: 'Docs are missing.', followups: [{ title: 'Document parse', brief: 'Write the parse docs.' }] }))
-      const decision = await new FinalDecider({ kev: fakeKev(label, confidence).kev, claude: claude.run, kevConfidence: 0.75, followupDepth: 3 }).decide(round())
+      const steps: string[] = []
+      const decision = await new FinalDecider({ kev: fakeKev(label, confidence).kev, claude: claude.run, kevConfidence: 0.75, followupDepth: 3 }).decide(round(), (model) => steps.push(model))
+      assert.deepEqual(steps, ['kev', 'claude'], 'each model as it is asked')
       assert.deepEqual([decision.label, decision.decidedBy], ['FOLLOWUP', 'claude'])
       assert.deepEqual(decision.followups, [{ title: 'Document parse', brief: 'Write the parse docs.' }])
       assert.deepEqual(claude.calls[0]!.prompt.first_opinion, { label, confidence })

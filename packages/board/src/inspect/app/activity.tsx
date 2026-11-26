@@ -161,7 +161,7 @@ export function ActivityBlock({ block }: { block: BlockView }) {
     <div className="turn">
       {steps.map((step) => <StepView key={step.key} step={step} />)}
       {running ? (
-        <div className="turn-foot running">Working…</div>
+        <div className="turn-dots" role="status" aria-label="working"><i /><i /><i /></div>
       ) : (
         <div className="turn-foot">
           {data.state !== 'completed' && <span className="turn-ended">round {data.round} ended: {data.state.replaceAll('_', ' ')}</span>}
