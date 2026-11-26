@@ -158,16 +158,21 @@ const clock = (at: number | null) => at === null ? '—' : new Date(at).toLocale
 const clip = (text: string, length: number) => text.length > length ? `${text.slice(0, length - 1)}…` : text
 const words = (state: string) => state.replaceAll('_', ' ')
 const onCircle = (c: Point, r: number, degrees: number): Point => ({ x: c.x + r * Math.cos((degrees * Math.PI) / 180), y: c.y + r * Math.sin((degrees * Math.PI) / 180) })
-const curve = (a: Point, b: Point) => {
-  const mx = (a.x + b.x) / 2
-  return `M${a.x.toFixed(1)},${a.y.toFixed(1)} C${mx.toFixed(1)},${a.y.toFixed(1)} ${mx.toFixed(1)},${b.y.toFixed(1)} ${b.x.toFixed(1)},${b.y.toFixed(1)}`
+/** A link of straight segments: across, then up or down at a right angle halfway, then across. */
+const curve = (a: Point, b: Point, bend = 0) => {
+  const mx = Math.round((a.x + b.x) / 2) + bend
+  return Math.abs(a.y - b.y) < 0.5
+    ? `M${a.x.toFixed(1)},${a.y.toFixed(1)} H${b.x.toFixed(1)}`
+    : `M${a.x.toFixed(1)},${a.y.toFixed(1)} H${mx} V${b.y.toFixed(1)} H${b.x.toFixed(1)}`
 }
+/** How long a packet takes along one link, slow enough to read its label. */
+const PACKET_MS = 2_400
 const LIVE = new Set(['claimed', 'launching', 'awaiting_contact', 'running', 'waiting_answer', 'deciding', 'publishing', 'stopping'])
 
 function packetsOf(event: OpsEvent): Array<Omit<Packet, 'started'>> {
   const chain = (edges: string[], kind: Kind, label: string, size = 3, ring = false): Array<Omit<Packet, 'started'>> => {
     let next: Omit<Packet, 'started'> | undefined
-    for (const edge of [...edges].reverse()) next = { edge, kind, size, ring, duration: 720, label, ...(next ? { then: next } : {}) }
+    for (const edge of [...edges].reverse()) next = { edge, kind, size, ring, duration: PACKET_MS, label, ...(next ? { then: next } : {}) }
     return next ? [next] : []
   }
   switch (event.kind) {
@@ -377,17 +382,17 @@ export function Operations(props: { lead?: ReactNode }) {
                 <text className="column-label" x={COLUMN.cloud + 16} y={26}>CLOUD</text>
 
                 {edge('board>orchestrator', curve({ x: board.x + BOX.w, y: board.y + 22 }, onCircle(o, HEART_R + 3, 206)))}
-                {edge('orchestrator>board', curve(onCircle(o, HEART_R + 3, 222), { x: board.x + BOX.w, y: board.y + 40 }))}
+                {edge('orchestrator>board', curve(onCircle(o, HEART_R + 3, 222), { x: board.x + BOX.w, y: board.y + 40 }, 8))}
                 {edge('orchestrator>github', curve(onCircle(o, HEART_R + 3, 148), { x: github.x + BOX.w, y: github.y + 29 }))}
                 {edge('orchestrator>relay', curve(onCircle(o, HEART_R + 3, -12), onCircle(r, RELAY_R + 3, 192)), relayDown ? 'down' : '')}
-                {edge('relay>orchestrator', curve(onCircle(r, RELAY_R + 3, 168), onCircle(o, HEART_R + 3, 12)), relayDown ? 'down' : '')}
+                {edge('relay>orchestrator', curve(onCircle(r, RELAY_R + 3, 168), onCircle(o, HEART_R + 3, 12), 8), relayDown ? 'down' : '')}
                 {workers.map((attempt, index) => {
                   const at = workerAt(index)
                   const settled = !LIVE.has(attempt.state)
                   return (
                     <g key={`links-${attempt.attempt_id}`} className={settled ? 'settled' : ''}>
                       {edge(`relay>${attempt.channel}`, curve(onCircle(r, RELAY_R + 3, -10), { x: at.x - 2, y: at.y + 21 }))}
-                      {edge(`${attempt.channel}>relay`, curve({ x: at.x - 2, y: at.y + 37 }, onCircle(r, RELAY_R + 3, 10)))}
+                      {edge(`${attempt.channel}>relay`, curve({ x: at.x - 2, y: at.y + 37 }, onCircle(r, RELAY_R + 3, 10), 8))}
                       {edge(`launch>${attempt.channel}`, curve(onCircle(o, HEART_R + 3, 58), { x: at.x - 2, y: at.y + WORKER.h / 2 }), 'launch')}
                     </g>
                   )
@@ -639,6 +644,49 @@ function AttemptPanel(props: { attempt: AttemptView; now: number; figures: Figur
   )
 }
 
+/** Events worth a line: no heartbeats, ticks or thread replies, which only repeat what the state says. */
+const worthShowing = (event: OpsEvent) =>
+  event.kind !== 'tick' && !(event.kind === 'telemetry' && event.type === 'heartbeat') && !(event.kind === 'board' && event.action === 'reply')
+
+function EventRows({ events }: { events: OpsEvent[] }) {
+  return (
+    <ol className="ops-log">
+      {events.map((event) => (
+        <li key={event.seq} className={event.kind === 'fault' ? 'fault' : ''}>
+          <time>{clock(event.at)}</time>
+          <i style={{ background: event.kind === 'fault' ? 'var(--red)' : COLOR[kindOf(event)] }} />
+          <span className="ops-log-text">{describe(event)}</span>
+        </li>
+      ))}
+    </ol>
+  )
+}
+
+type TaskRow = { task: string; state: string; first: number; last: number; cost: number; faults: number; events: OpsEvent[] }
+
+/** One row per task, newest first: its latest attempt state, how long it has run, and its cost; it opens into its events. */
+function taskRows(log: OpsEvent[]): { rows: TaskRow[]; other: OpsEvent[] } {
+  const rows = new Map<string, TaskRow>()
+  const other: OpsEvent[] = []
+  for (const event of log) {
+    if (!worthShowing(event)) continue
+    const task = 'task' in event && event.task ? event.task : null
+    if (!task) {
+      other.push(event)
+      continue
+    }
+    const row = rows.get(task) ?? { task, state: '', first: event.at, last: event.at, cost: 0, faults: 0, events: [] }
+    row.events.push(event)
+    row.first = Math.min(row.first, event.at)
+    row.last = Math.max(row.last, event.at)
+    if (event.kind === 'attempt' && !row.state) row.state = event.state
+    if (event.kind === 'usage') row.cost += event.cost_usd
+    if (event.kind === 'fault') row.faults += 1
+    rows.set(task, row)
+  }
+  return { rows: [...rows.values()].sort((a, b) => b.last - a.last), other }
+}
+
 function AttemptLog(props: { selected: string | null; log: OpsEvent[]; snapshot: Snapshot | null }) {
   const [history, setHistory] = useState<OpsEvent[] | null>(null)
   useEffect(() => {
@@ -649,21 +697,30 @@ function AttemptLog(props: { selected: string | null; log: OpsEvent[]; snapshot:
     return () => { stopped = true }
   }, [props.selected])
   const channel = props.snapshot?.attempts.find((a) => a.attempt_id === props.selected)?.channel
-  const rows = props.selected
-    ? [...props.log.filter((event) => 'channel' in event && event.channel === channel), ...(history ?? [])].filter((event, index, all) => all.findIndex((other) => other.seq === event.seq) === index).slice(0, 120)
-    : props.log.filter((event) => event.kind !== 'tick').slice(0, 120)
-  if (rows.length === 0) return <p className="ops-empty">No messages since this page opened.</p>
+  if (props.selected) {
+    const events = [...props.log.filter((event) => 'channel' in event && event.channel === channel), ...(history ?? [])]
+      .filter((event, index, all) => worthShowing(event) && all.findIndex((other) => other.seq === event.seq) === index).slice(0, 120)
+    return events.length === 0 ? <p className="ops-empty">No messages since this page opened.</p> : <EventRows events={events} />
+  }
+  const { rows, other } = taskRows(props.log)
+  if (rows.length === 0 && other.length === 0) return <p className="ops-empty">No messages since this page opened.</p>
   return (
-    <ol className="ops-log">
-      {rows.map((event) => (
-        <li key={event.seq} className={event.kind === 'fault' ? 'fault' : ''}>
-          <time>{clock(event.at)}</time>
-          <i style={{ background: event.kind === 'fault' ? 'var(--red)' : COLOR[kindOf(event)] }} />
-          <span className="ops-log-kind">{event.kind}</span>
-          <span className="ops-log-text">{describe(event)}</span>
-        </li>
+    <div className="ops-tasks">
+      {rows.slice(0, 40).map((row) => (
+        <details key={row.task} className={`ops-task${row.faults ? ' fault' : ''}`}>
+          <summary>
+            <span className="ops-task-id">#{row.task}</span>
+            <span className="ops-task-state">{words(row.state || 'active')}</span>
+            <span className="ops-task-figure">{span(row.last - row.first)}</span>
+            <span className="ops-task-figure">{usd(row.cost)}</span>
+            {row.faults > 0 && <span className="ops-task-fault">{row.faults} fault{row.faults === 1 ? '' : 's'}</span>}
+            <time>{clock(row.last)}</time>
+          </summary>
+          <EventRows events={row.events} />
+        </details>
       ))}
-    </ol>
+      {other.length > 0 && <EventRows events={other.slice(0, 20)} />}
+    </div>
   )
 }
 
@@ -680,13 +737,13 @@ function kindOf(event: OpsEvent): Kind {
 function describe(event: OpsEvent): string {
   switch (event.kind) {
     case 'tick': return `${event.sources.join(' + ')} · ${event.duration_ms} ms`
-    case 'command': return `#${event.task} ← ${words(event.type)} · ${bytes(event.bytes)}${event.outcome === 'failed' ? ' · failed' : ''}`
-    case 'telemetry': return `#${event.task} → ${words(event.type)} · ${bytes(event.bytes)}`
-    case 'board': return `${words(event.action)} #${event.task}`
-    case 'github': return `${event.action === 'draft_pr' ? 'draft PR' : 'push'} #${event.task} · ${event.repository}`
-    case 'launch': return `#${event.task} · ${words(event.outcome)}`
-    case 'attempt': return `#${event.task} · ${words(event.state)}`
+    case 'command': return `← ${words(event.type)}${event.outcome === 'failed' ? ' · failed' : ''}`
+    case 'telemetry': return `→ ${words(event.type)}`
+    case 'board': return `board ${words(event.action)}`
+    case 'github': return `${event.action === 'draft_pr' ? 'draft PR' : 'push'} · ${event.repository}`
+    case 'launch': return `launch ${words(event.outcome)}`
+    case 'attempt': return words(event.state)
     case 'fault': return `${event.component} · ${words(event.code)}${event.task ? ` · #${event.task}` : ''}`
-    case 'usage': return `#${event.task} round ${event.round} · ${usd(event.cost_usd)} · ${tokens(event.input_tokens)} in · ${tokens(event.output_tokens)} out`
+    case 'usage': return `round ${event.round} · ${usd(event.cost_usd)} · ${tokens(event.input_tokens)} in · ${tokens(event.output_tokens)} out`
   }
 }

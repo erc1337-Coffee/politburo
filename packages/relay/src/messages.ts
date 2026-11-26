@@ -55,7 +55,7 @@ export interface HeartbeatData {
   /** The worker's X25519 public key, base64url, until it has received its credentials. */
   public_key?: string
 }
-export type ProgressKind = 'tool' | 'say' | 'error' | 'usage' | 'diff' | 'warning'
+export type ProgressKind = 'thinking' | 'tool' | 'output' | 'say' | 'error' | 'usage' | 'diff' | 'warning'
 export interface ProgressData { round: number; items: Array<{ at: number; kind: ProgressKind; text: string }> }
 export interface QuestionData { question_id: string; round: number; text: string; options?: string[] }
 /** One part of the round's git bundle (base64). Workers hold no GitHub credential: the orchestrator pushes. */
@@ -162,7 +162,7 @@ const telemetryData: Record<TelemetryType, Check> = {
   }, ['public_key']),
   progress: object({
     round: int(0),
-    items: list(object({ at: int(0), kind: oneOf('tool', 'say', 'error', 'usage', 'diff', 'warning'), text: text(1_024) }), 50),
+    items: list(object({ at: int(0), kind: oneOf('thinking', 'tool', 'output', 'say', 'error', 'usage', 'diff', 'warning'), text: text(1_024) }), 50),
   }),
   question: object({ question_id: str(100, ID), round: int(1), text: text(4_096), options: list(text(200), 10) }, ['options']),
   bundle_part: object({ round: int(1), index: int(0), count: int(1), data: str(BUNDLE_PART_MAX, /^[A-Za-z0-9+/]*={0,2}$/) }),

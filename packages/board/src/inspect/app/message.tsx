@@ -7,6 +7,7 @@ import { LOGOS } from '../../contract/logos.ts'
 import type { MessageView, SchemaView } from '../../api/routes.ts'
 import { displayEmoji } from '../../contract/emoji.ts'
 import type { Attachment } from '../../server/index.default.ts'
+import { ActivityBlock, isActivity } from './activity.tsx'
 import { BlockCard } from './blocks.tsx'
 import * as board from './board.ts'
 import { setEditing, toast, useEditing } from './chrome.ts'
@@ -121,6 +122,8 @@ function Body({ m, schemas, names }: { m: MessageView; schemas: SchemaView[] | n
       {parts.map((part, i) =>
         'text' in part ? (
           <Text key={i} text={part.text} edited={edited && i === lastText} {...(names ? { names } : {})} />
+        ) : isActivity(part.block) ? (
+          <ActivityBlock key={i} block={part.block} />
         ) : (
           <BlockCard
             key={i}
@@ -327,12 +330,23 @@ const copy = (text: string, what: string) =>
     () => toast(`couldn't copy ${what}`),
   )
 
+/** A status line the orchestrator writes in a task thread: one quiet line, apart from the conversation. */
+function StatusLine({ m, now }: { m: MessageView; now: number }) {
+  return (
+    <div id={`m${m.id}`} className="status-line" {...nativeMenu}>
+      <span className="status-line-text">{m.text}</span>
+      <Ago iso={m.createdAt} now={now} className="faint" />
+    </div>
+  )
+}
+
 export function MessageRow({ m, options, continued = false }: { m: MessageView; options: RowOptions; continued?: boolean }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [hovered, setHovered] = useState(false)
   const [labelsOpen, setLabelsOpen] = useState(false)
   const row = useRef<HTMLDivElement>(null)
   const editingId = useEditing()
+  if (m.labels['politburo.status'] && !m.deleted) return <StatusLine m={m} now={options.now} />
   const name = authorName(m)
   const canEdit = m.by.actor === options.me && options.viewer.may('post', m.channel)
   const editing = canEdit && editingId === m.id

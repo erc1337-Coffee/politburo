@@ -20,6 +20,7 @@ import { launch, launchKey, recover, type Binding, type Journal, type Provider }
 import { workerPrompt } from './launcher.ts'
 import { workerFiles } from './worker-files.ts'
 import { workerEnvironment, workerRoutes } from './worker-credentials.ts'
+import { ACTIVITY_SCHEMA, RoundReport } from './round-report.ts'
 import { seal } from '@remilia/politburo-relay/sealed'
 import { fixedRulesPolicy, limitStep, type NextStep, type NextStepPolicy } from './policy.ts'
 import type { RelayClient, Subscription } from './relay-client.ts'
@@ -53,7 +54,10 @@ export interface OrchestratorDependencies {
   log?: (entry: Record<string, unknown>) => void
 }
 
-const PROGRESS_REPLY_MS = 10 * 60_000
+/** Least time between two edits of a round's thread reply while the round runs. */
+const REPORT_EDIT_MS = 5_000
+/** The label of the orchestrator's own status lines in a task thread. */
+export const STATUS_LABEL = 'politburo.status'
 const MAX_FAULTS = 3
 /** At most 64 bundle parts (about 2.3 MiB of bundle) for one round. */
 const MAX_BUNDLE_PARTS = 64
@@ -74,7 +78,8 @@ export class Orchestrator {
   readonly #faults = new Map<string, number>()
   /** The worker public key each attempt's credentials were last sealed for. */
   readonly #sealedFor = new Map<string, string>()
-  readonly #lastProgressReply = new Map<string, number>()
+  /** Each live attempt's current round reply, and when it was last edited. */
+  readonly #reports = new Map<string, { report: RoundReport; editedAt: number }>()
   readonly #skipped = new Set<string>()
   #chain: Promise<void> = Promise.resolve()
   #wakeQueued = false
@@ -96,6 +101,8 @@ export class Orchestrator {
   /** Recovers live attempts, then follows board events and starts the sweep. */
   async start(): Promise<void> {
     this.#actor = (await this.#d.board.me()).actor
+    await this.#d.board.createSchema(ACTIVITY_SCHEMA as unknown as Parameters<Board['createSchema']>[0])
+      .catch((error: Error) => this.#d.log({ event: 'schema_create_failed', schema: ACTIVITY_SCHEMA.name, message: error.message }))
     await this.#serial(() => this.#recover())
     this.#events = new AbortController()
     void this.#followEvents(this.#events.signal)
@@ -243,9 +250,10 @@ export class Orchestrator {
     return this.#d.board.tasks.held(attempt.taskId, { epoch: attempt.claimEpoch, token: attempt.claimToken })
   }
 
+  /** A status line of the orchestrator in the task thread; the board shows it apart from the conversation. */
   async #reply(taskId: string, text: string): Promise<void> {
     try {
-      await this.#d.board.reply(taskId, text)
+      await this.#d.board.reply(taskId, { text: text.replace(/^Orchestrator: /, ''), labels: { [STATUS_LABEL]: 'orchestrator' } })
       this.#emit({ kind: 'board', action: 'reply', task: taskId })
     } catch (error) {
       this.#d.log({ event: 'board_reply_failed', task: taskId, message: (error as Error).message })
@@ -259,7 +267,10 @@ export class Orchestrator {
     if (change.state) {
       this.#d.log({ event: 'attempt_state', attempt: attempt.attemptId, task: attempt.taskId, channel: attempt.channel, state: change.state, reason })
       this.#emit({ kind: 'attempt', attempt: attempt.attemptId, task: attempt.taskId, channel: attempt.channel, state: change.state })
-      if (change.state === 'settled') this.#d.monitor?.settled(attempt)
+      if (change.state === 'settled') {
+        this.#d.monitor?.settled(attempt)
+        this.#reports.delete(attempt.attemptId)
+      }
     }
   }
 
@@ -579,11 +590,36 @@ export class Orchestrator {
 
   async #onProgress(attempt: AttemptRecord, message: Extract<Telemetry, { type: 'progress' }>, now: number): Promise<void> {
     this.#d.monitor?.progress(attempt.attemptId, message.data.items.map((item) => item.kind))
-    const last = this.#lastProgressReply.get(attempt.attemptId) ?? 0
-    if (now - last < PROGRESS_REPLY_MS || message.data.items.length === 0) return
-    this.#lastProgressReply.set(attempt.attemptId, now)
-    const lines = message.data.items.slice(-5).map((item) => `- ${item.kind}: ${workerText(item.text, 300)}`)
-    await this.#reply(attempt.taskId, `Worker report (round ${message.data.round}):\n${lines.join('\n')}`)
+    const entry = this.#report(attempt, message.data.round)
+    if (!entry.report.add(message.data.items.map((item) => ({ ...item, text: workerText(item.text, 1_000) })))) return
+    if (entry.report.messageId && now - entry.editedAt < REPORT_EDIT_MS) return
+    await this.#publishReport(attempt, entry, now)
+  }
+
+  /** The reply of the attempt's round `round`; a new round starts a new reply. */
+  #report(attempt: AttemptRecord, round: number): { report: RoundReport; editedAt: number } {
+    const current = this.#reports.get(attempt.attemptId)
+    if (current && current.report.round === round) return current
+    const entry = { report: new RoundReport(attempt.taskId, attempt.attemptNo, round), editedAt: 0 }
+    this.#reports.set(attempt.attemptId, entry)
+    return entry
+  }
+
+  /** Posts the round's reply, or edits it with what came since. */
+  async #publishReport(attempt: AttemptRecord, entry: { report: RoundReport; editedAt: number }, now: number): Promise<void> {
+    const { report } = entry
+    entry.editedAt = now
+    try {
+      if (report.messageId) {
+        await this.#d.board.edit(report.messageId, report.text())
+      } else {
+        report.messageId = (await this.#d.board.reply(attempt.taskId, report.text())).id
+      }
+      this.#emit({ kind: 'board', action: 'reply', task: attempt.taskId })
+    } catch (error) {
+      this.#d.log({ event: 'board_reply_failed', task: attempt.taskId, message: (error as Error).message })
+      this.#emit({ kind: 'fault', component: 'board', code: errorCode(error), task: attempt.taskId })
+    }
   }
 
   async #onQuestion(attempt: AttemptRecord, message: Extract<Telemetry, { type: 'question' }>, now: number): Promise<void> {
@@ -651,7 +687,9 @@ export class Orchestrator {
       output_tokens: result.models.reduce((sum, row) => sum + row.output_tokens, 0),
       cost_usd: result.cost_usd,
     })
-    await this.#reply(attempt.taskId, `Worker report (round ${result.round}, ${result.exit_reason}): ${workerText(result.summary, 1_500)}\nFiles ${result.diff_stat.files}, +${result.diff_stat.insertions} -${result.diff_stat.deletions}. Checks: ${result.checks.map((check) => `${check.name} ${check.exit_code === 0 ? 'pass' : 'fail'}`).join(', ') || 'none'}.`)
+    const entry = this.#report(attempt, result.round)
+    entry.report.finish(result, workerText)
+    await this.#publishReport(attempt, entry, this.#d.now())
     const bundleFile = this.#assembleBundle(attempt, result)
     const task = await this.#d.board.thread(attempt.taskId).then((thread) => thread.message).catch(() => null)
     const input = {

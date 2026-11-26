@@ -43,7 +43,7 @@ interface PiEvent {
   result?: unknown
   message?: {
     role?: string; provider?: string; model?: string; stopReason?: string; errorMessage?: string
-    content?: Array<{ type?: string; text?: string }>
+    content?: Array<{ type?: string; text?: string; thinking?: string }>
     usage?: { input?: number; output?: number; cost?: { total?: number } }
   }
 }
@@ -104,10 +104,14 @@ export class PiRound {
     if (event.type === 'tool_execution_start') {
       const target = event.args?.command ?? event.args?.path ?? ''
       onItem({ at, kind: 'tool', text: clip(`${event.toolName ?? 'tool'} ${typeof target === 'string' ? target : JSON.stringify(target)}`, 300) })
-    } else if (event.type === 'tool_execution_end' && event.isError) {
-      onItem({ at, kind: 'error', text: clip(textOf(event.result), 240) })
+    } else if (event.type === 'tool_execution_end') {
+      const output = textOf(event.result).trim()
+      if (event.isError) onItem({ at, kind: 'error', text: clip(output, 600) })
+      else if (output) onItem({ at, kind: 'output', text: clip(output, 1_000) })
     } else if (event.type === 'message_end' && event.message?.role === 'assistant') {
       const message = event.message
+      const thinking = (message.content ?? []).filter((part) => part.type === 'thinking').map((part) => part.thinking ?? '').join('\n').trim()
+      if (thinking) onItem({ at, kind: 'thinking', text: clip(thinking, 1_000) })
       const text = (message.content ?? []).filter((part) => part.type === 'text').map((part) => part.text ?? '').join('\n').trim()
       if (text) {
         this.#summary = text

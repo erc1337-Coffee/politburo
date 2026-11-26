@@ -55,7 +55,7 @@ export const DEFAULT_CONFIG: OrchestratorConfig = {
     piModel: 'fallback/codex-cursor',
     maxSeconds: 2400,
     idleSeconds: 180,
-    progressMode: 'summary',
+    progressMode: 'events',
     checks: [],
   },
   github: { apiUrl: 'https://api.github.com' },

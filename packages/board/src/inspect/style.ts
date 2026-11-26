@@ -682,6 +682,28 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 
 /* --- blocks: the data a message carries, as a card where its fence was --- */
 .block { max-width: 640px; margin: 6px 0; font-size: 12px; }
+.status-line { display: flex; align-items: baseline; gap: 8px; padding: 2px var(--inset) 2px 56px; font-size: 12px; color: var(--muted); }
+.status-line-text { overflow-wrap: anywhere; }
+.activity { max-width: 720px; margin: 2px 0 6px; }
+.activity details > summary { list-style: none; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 12px; }
+.activity details > summary::-webkit-details-marker { display: none; }
+.activity details > summary svg { transition: transform .12s; }
+.activity details[open] > summary svg { transform: rotate(90deg); }
+.activity-steps { margin: 2px 0; }
+.activity-step-list { margin: 4px 0 4px 6px; padding-left: 10px; border-left: 1px solid var(--hairline); display: grid; gap: 3px; }
+.activity-step { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.activity-step code { font-size: 11.5px; }
+.activity-step pre { margin: 4px 0 2px; padding: 6px 8px; max-height: 240px; overflow: auto; white-space: pre-wrap; font-size: 11.5px; background: var(--shade); color: var(--dim); }
+.activity-step.thinking pre { font-style: italic; background: none; padding: 0 0 0 4px; color: var(--muted); }
+.activity-step.error { color: var(--red); }
+.activity-step.warning { color: var(--gold); }
+.activity-say { margin: 4px 0; white-space: pre-wrap; }
+.activity-running, .activity-end { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.activity-running { animation: activity-pulse 1.6s ease-in-out infinite; }
+@keyframes activity-pulse { 50% { opacity: .45; } }
+.activity .added { color: var(--accent); }
+.activity .removed-lines { color: var(--red); }
+
 .block-head { display: flex; align-items: center; gap: 10px; height: 26px; padding: 0 0 0 10px; background: var(--shade); }
 .block-head .spacer { flex: 1; }
 .block-head .tool { height: 26px; }
@@ -917,13 +939,23 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 /* the message log */
 .ops-messages { flex: 1; min-height: 9rem; display: flex; flex-direction: column; }
 .ops-log { flex: 1; min-height: 0; overflow: auto; list-style: none; margin: 0; padding: 4px 0; font: var(--metadata); scrollbar-width: thin; }
-.ops-log li { display: grid; grid-template-columns: auto 7px 5.5rem minmax(0, 1fr); align-items: center; gap: 10px; padding: 2px 12px; animation: ops-arrive .6s ease-out; }
+.ops-log li { display: grid; grid-template-columns: auto 7px minmax(0, 1fr); align-items: center; gap: 10px; padding: 2px 12px; animation: ops-arrive .6s ease-out; }
 .ops-log li:hover { background: var(--shade); }
 .ops-log li.fault .ops-log-text { color: var(--red); }
 .ops-log i { width: 6px; height: 6px; border-radius: 50%; }
 .ops-log time { color: var(--faint); font-variant-numeric: tabular-nums; }
 .ops-log-kind { color: var(--faint); }
 .ops-log-text { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ops-tasks { flex: 1; min-height: 0; overflow: auto; padding: 4px 0; font: var(--metadata); scrollbar-width: thin; }
+.ops-task > summary { list-style: none; cursor: pointer; display: grid; grid-template-columns: 4rem minmax(0, 1fr) auto auto auto auto; align-items: center; gap: 12px; padding: 4px 12px; }
+.ops-task > summary::-webkit-details-marker { display: none; }
+.ops-task > summary:hover, .ops-task[open] > summary { background: var(--shade); }
+.ops-task-id { color: var(--bright); font-variant-numeric: tabular-nums; }
+.ops-task-state { color: var(--dim); }
+.ops-task-figure, .ops-task > summary time { color: var(--faint); font-variant-numeric: tabular-nums; }
+.ops-task-fault { color: var(--red); }
+.ops-task .ops-log { padding: 0 0 6px 16px; overflow: visible; }
+
 @keyframes ops-arrive { from { background: var(--shade-hover); } }
 
 @media (max-width: 64rem) {
