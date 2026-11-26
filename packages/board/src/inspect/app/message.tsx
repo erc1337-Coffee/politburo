@@ -360,10 +360,12 @@ function StatusLine({ m, now }: { m: MessageView; now: number }) {
   const { name, picture } = shownAuthor(useIdentities(), m)
   return (
     <div id={`m${m.id}`} className="status-line" {...nativeMenu}>
-      <Avatar name={name} src={picture} size={16} />
-      <span className="status-line-author">{name}</span>
-      <span className="status-line-text">{m.text}</span>
-      <Ago iso={m.createdAt} now={now} className="faint" />
+      <div className="status-line-head">
+        <Avatar name={name} src={picture} size={16} />
+        <span className="status-line-author">{name}</span>
+        <Ago iso={m.createdAt} now={now} className="faint" />
+      </div>
+      <div className="status-line-text">{m.text}</div>
     </div>
   )
 }

@@ -123,6 +123,8 @@ it('shows a thread as a chat: what you wrote and each agent turn under the name 
   ])
   const status = () => page.querySelector('.status-line')!
   expect([status().querySelector('.status-line-author')?.textContent, status().querySelector('.avatar')?.textContent]).toEqual(['orchestrator', 'O'])
+  // The status line reads as a message: who wrote it on one row, what they wrote on the row under it.
+  expect([...status().children].map((row) => row.textContent)).toEqual([expect.stringMatching(/^Oorchestrator/), 'attempt 1 started.'])
   flushSync(() => root!.render(rows({ [me]: { name: 'Ada L.', avatar: PIXEL }, [ORCHESTRATOR]: { name: 'Conductor', avatar: null }, worker: { name: 'Builder', avatar: PIXEL } })))
   const [mine, round, said] = [...page.querySelectorAll('.message')]
   expect([mine, round, said].map((el) => face(el!))).toEqual([

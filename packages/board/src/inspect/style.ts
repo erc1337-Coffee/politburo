@@ -693,9 +693,10 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 
 /* --- blocks: the data a message carries, as a card where its fence was --- */
 .block { max-width: 640px; margin: 6px 0; font-size: 12px; }
-.status-line { display: flex; align-items: center; gap: 6px; padding: 3px var(--inset) 3px 16px; font-size: 12px; color: var(--muted); }
+.status-line { display: grid; gap: 2px; padding: 3px var(--inset) 3px 16px; font-size: 12px; color: var(--muted); }
+.status-line-head { display: flex; align-items: center; gap: 6px; }
 .status-line-author { flex-shrink: 0; color: var(--dim); font-weight: 600; }
-.status-line-text { min-width: 0; overflow-wrap: anywhere; }
+.status-line-text { min-width: 0; padding-left: 22px; overflow-wrap: anywhere; }
 /* A chat, as the thread pane shows one: your messages as bubbles, an agent's turn as plain text with
    its thoughts and actions muted, one line each, folded. No avatars. */
 .message.turn-user, .message.turn-agent { grid-template-columns: minmax(0, 1fr); padding: 6px var(--inset) 6px 16px; }
