@@ -172,3 +172,19 @@ it('starts a worker round under its own name and picture when it follows the orc
   )
   expect([...page.querySelectorAll('.message')].map((el) => el.querySelector('.author')?.textContent ?? null)).toEqual(['orchestrator', 'Worker', 'orchestrator', null])
 })
+
+it("heads a worker round's answer with the worker's name and picture, and not its thoughts and actions", () => {
+  const round = (state: string, answer: string) => {
+    const block = activity({ state, items: ITEMS.slice(0, 2) })
+    return message('2', ORCHESTRATOR, 'orchestrator', `\`\`\`json#worker_activity@1\n${JSON.stringify(block.data)}\n\`\`\`${answer}`, [block])
+  }
+  const page = show(<MessageRow m={round('completed', '\n\nDone: PORT is read now.')} options={options(true)} />)
+  // What the row reads, top to bottom: the turn, then who answered, then the answer.
+  const body = page.querySelector('.message .body')!
+  expect([...body.children].map((el) => el.className.split(' ')[0])).toEqual(['turn', 'meta-line', 'text'])
+  expect(body.querySelector('.meta-line .author')?.textContent).toBe('Worker')
+  // A round still running has said nothing back yet: nothing heads it.
+  flushSync(() => root!.render(<MessageRow m={round('running', '')} options={options(true)} />))
+  expect(page.querySelector('.message .turn')).not.toBeNull()
+  expect(page.querySelector('.message .meta-line')).toBeNull()
+})
