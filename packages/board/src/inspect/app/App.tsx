@@ -477,7 +477,7 @@ function Channel(props: { channel: string; state: State; options: RowOptions; kn
         known={props.known}
         syncConfigured={options.syncConfigured}
         mayLabel={() => options.viewer.may('label', channel)}
-        tasks={{ state }}
+        tasks={{ state, always: true }}
         onSend={({ text, noSync, labels, files, task, later }) => void board.send({ channel, re: null, text, noSync, labels, files, ...(task ? { task } : {}), ...(later ? { later } : {}) })}
         onEditLast={() => {
           const mine = lastOwn(roots, state.me!.actor)
