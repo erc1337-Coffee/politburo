@@ -1,5 +1,5 @@
 import { Clock, Ellipsis, FileText, MessageSquare, SmilePlus, Tag } from 'lucide-react'
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import Markdown from 'react-markdown'
 import remarkBreaks from 'remark-breaks'
 import remarkGfm from 'remark-gfm'
@@ -14,7 +14,7 @@ import * as board from './board.ts'
 import { setEditing, toast, useEditing } from './chrome.ts'
 import { Ago } from './nav.tsx'
 import { LabelValue } from './sha.tsx'
-import { bodyParts, continues, faceKey, isTask, schemaOf, sourcePlatform, type Groupable, type Pending, type ReplySummary, type State, type Viewer } from './store.ts'
+import { bodyParts, continues, faceKey, isStatusLine, isTask, schemaOf, sourcePlatform, type BodyPart, type Groupable, type Pending, type ReplySummary, type State, type Viewer } from './store.ts'
 import { TaskLine } from './task.tsx'
 import { absoluteTime, authorName, fileSize, shownName, timingWords } from './words.ts'
 import { ContextMenuArea, EmojiPicker, fieldMenu, LabelEditor, Panel, Menu, MenuEmojiRow, MenuItem, MenuSeparator, nativeMenu, type KnownLabels } from './ui.tsx'
@@ -116,7 +116,10 @@ export const Text = memo(function Text({ text, edited = false, names = NO_NAMES 
 })
 
 /** A message's body: its prose as markdown, and each block it carries as a card, where its fence was. */
-function Body({ m, schemas, names }: { m: MessageView; schemas: SchemaView[] | null | undefined; names: Record<string, string> | undefined }) {
+const answered = (part: BodyPart | undefined) => part !== undefined && 'block' in part && isActivity(part.block)
+
+/** `head`, when given, goes above each text that follows an activity block: what the worker answered. */
+function Body({ m, schemas, names, head }: { m: MessageView; schemas: SchemaView[] | null | undefined; names: Record<string, string> | undefined; head?: ReactNode }) {
   const parts = useMemo(() => bodyParts(m.text, m.blocks ?? []), [m.text, m.blocks])
   const edited = m.editedAt !== null
   const lastText = parts.findLastIndex((part) => 'text' in part)
@@ -124,7 +127,10 @@ function Body({ m, schemas, names }: { m: MessageView; schemas: SchemaView[] | n
     <>
       {parts.map((part, i) =>
         'text' in part ? (
-          <Text key={i} text={part.text} edited={edited && i === lastText} {...(names ? { names } : {})} />
+          <Fragment key={i}>
+            {head && answered(parts[i - 1]) && head}
+            <Text text={part.text} edited={edited && i === lastText} {...(names ? { names } : {})} />
+          </Fragment>
         ) : isActivity(part.block) ? (
           <ActivityBlock key={i} block={part.block} />
         ) : (
@@ -360,10 +366,12 @@ function StatusLine({ m, now }: { m: MessageView; now: number }) {
   const { name, picture } = shownAuthor(useIdentities(), m)
   return (
     <div id={`m${m.id}`} className="status-line" {...nativeMenu}>
-      <Avatar name={name} src={picture} size={16} />
-      <span className="status-line-author">{name}</span>
-      <span className="status-line-text">{m.text}</span>
-      <Ago iso={m.createdAt} now={now} className="faint" />
+      <div className="status-line-head">
+        <Avatar name={name} src={picture} size={16} />
+        <span className="status-line-author">{name}</span>
+        <Ago iso={m.createdAt} now={now} className="faint" />
+      </div>
+      <div className="status-line-text">{m.text}</div>
     </div>
   )
 }
@@ -375,7 +383,7 @@ export function MessageRow({ m, options, continued = false }: { m: MessageView; 
   const row = useRef<HTMLDivElement>(null)
   const editingId = useEditing()
   const identities = useIdentities()
-  if (m.labels['politburo.status'] && !m.deleted) return <StatusLine m={m} now={options.now} />
+  if (isStatusLine(m)) return <StatusLine m={m} now={options.now} />
   const { name, picture } = shownAuthor(identities, m)
   const canEdit = m.by.actor === options.me && options.viewer.may('post', m.channel)
   const editing = canEdit && editingId === m.id
@@ -413,6 +421,24 @@ export function MessageRow({ m, options, continued = false }: { m: MessageView; 
   )
 
   const active = (hovered || menuOpen || labelsOpen) && !editing
+  // In a chat, a worker's round shows its thoughts and actions without a header: the worker's name
+  // and picture head what it answered, under them.
+  const answers = turn !== null && (m.blocks ?? []).some(isActivity) && !m.deleted && !editing
+  const meta = (
+    <div className="meta-line">
+      {turn && <Avatar name={name} src={picture} size={20} />}
+      <span className="author" {...nativeMenu}>
+        {name}
+      </span>
+      <Ago iso={m.createdAt} />
+      {m.noSync && options.syncConfigured && <span className="badge">board only</span>}
+      {m.schedule && (
+        <span className="badge" title={`sent by schedule ${m.schedule.id}: send ${m.schedule.n + 1}`}>
+          <Clock size={10} /> scheduled
+        </span>
+      )}
+    </div>
+  )
   const element = (
       <div
         ref={row}
@@ -432,21 +458,7 @@ export function MessageRow({ m, options, continued = false }: { m: MessageView; 
           )}
         </div>}
         <div className="body">
-          {!continued && (
-            <div className="meta-line">
-              {turn && <Avatar name={name} src={picture} size={20} />}
-              <span className="author" {...nativeMenu}>
-                {name}
-              </span>
-              <Ago iso={m.createdAt} />
-              {m.noSync && options.syncConfigured && <span className="badge">board only</span>}
-              {m.schedule && (
-                <span className="badge" title={`sent by schedule ${m.schedule.id}: send ${m.schedule.n + 1}`}>
-                  <Clock size={10} /> scheduled
-                </span>
-              )}
-            </div>
-          )}
+          {!continued && !answers && meta}
           {m.deleted ? (
             <div className="removed" {...nativeMenu}>
               message removed
@@ -455,7 +467,7 @@ export function MessageRow({ m, options, continued = false }: { m: MessageView; 
             <Editor m={m} />
           ) : (
             <>
-              <Body m={m} schemas={options.schemas} names={options.names} />
+              <Body m={m} schemas={options.schemas} names={options.names} head={answers ? meta : undefined} />
               <Attachments items={m.attachments ?? []} />
               <Links items={m.links} />
             </>

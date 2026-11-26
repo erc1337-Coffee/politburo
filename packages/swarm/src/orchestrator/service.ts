@@ -12,7 +12,7 @@ import { join } from 'node:path'
 import { BoardError, type board as openBoard, type MessageView } from '@vercel/board'
 import { envelope, parseTelemetry, type BundlePartData, type Command, type ResultData, type StartData, type Telemetry } from '@remilia/politburo-relay/messages'
 import type { OrchestratorConfig } from './config.ts'
-import type { GitRepositories } from './git.ts'
+import { isLocalRepository, LOCAL_BRANCH, localRepository, type GitRepositories } from './git.ts'
 import type { UsageLedger } from './usage-ledger.ts'
 import { errorCode, type OperationsEventBody, type OperationsMonitor, type OperationsSnapshot, type WakeSource } from './operations.ts'
 import { repositoryName, type GitHubClient } from './github.ts'
@@ -405,18 +405,18 @@ export class Orchestrator {
   async #plan(message: MessageView): Promise<{ repository: string; url: string; routes: PartyRoute[] } | null> {
     const page = await this.#d.board.channels({ prefix: message.channel, limit: 100 })
     const settings = page.channels.find((channel) => channel.path === message.channel)?.settings ?? null
-    if (!settings?.repository) return this.#skip(message, `Channel #${message.channel} links no repository.`)
-    const repository = repositoryName(settings.repository)
+    // A channel that links no repository works in its own local repository on this host.
+    const repository = settings?.repository ? repositoryName(settings.repository) : localRepository(message.channel)
     if (!repository) return this.#skip(message, `The repository of #${message.channel} is not a github.com repository.`)
     const party = this.#d.routes()
     const byKey = new Map(party.map((route) => [`${route.provider}/${route.model}`, route]))
-    const routes = settings.routes.length === 0
+    const routes = !settings || settings.routes.length === 0
       ? party
       : settings.routes.filter((route) => route.enabled && byKey.has(route.key)).map((route) => byKey.get(route.key)!)
     if (routes.length === 0) return this.#skip(message, `Channel #${message.channel} enables no model route of the party.`)
     const attempts = this.#d.state.forTask(message.id).length
     if (attempts >= this.#d.config.limits.attemptsPerTask) return this.#skip(message, `All ${attempts} attempts are used.`)
-    return { repository, url: settings.repository, routes }
+    return { repository, url: settings?.repository || repository, routes }
   }
 
   async #startAttempt(message: MessageView, plan: { repository: string; url: string; routes: PartyRoute[] }, now: number, pauseEpoch: number): Promise<void> {
@@ -424,8 +424,13 @@ export class Orchestrator {
     let baseRef: string
     let baseCommit: string | null
     try {
-      baseRef = await this.#d.github.defaultBranch(plan.repository)
-      baseCommit = await this.#d.github.branchHead(plan.repository, baseRef)
+      if (isLocalRepository(plan.repository)) {
+        baseRef = LOCAL_BRANCH
+        baseCommit = await this.#d.git.localHead(plan.repository)
+      } else {
+        baseRef = await this.#d.github.defaultBranch(plan.repository)
+        baseCommit = await this.#d.github.branchHead(plan.repository, baseRef)
+      }
     } catch (error) {
       this.#d.log({ event: 'github_read_failed', task: message.id, message: (error as Error).message })
       this.#emit({ kind: 'fault', component: 'github', code: errorCode(error), task: message.id })
@@ -777,6 +782,7 @@ export class Orchestrator {
     this.#transition(attempt, { state: 'publishing' })
     const { github } = this.#d
     if (!bundleFile || !result.head_commit || !attempt.baseCommit) return this.#apply(attempt, { kind: 'retry', reason: 'no verified bundle to push' }, result)
+    if (isLocalRepository(attempt.repository)) return this.#mergeLocal(attempt, result, bundleFile)
     try {
       await this.#d.git.publishBundle(attempt.repository, { bundleFile, branch: attempt.branch, head: result.head_commit, base: attempt.baseCommit })
       this.#emit({ kind: 'github', action: 'push', repository: attempt.repository, task: attempt.taskId, channel: attempt.channel })
@@ -805,6 +811,26 @@ export class Orchestrator {
       this.#emit({ kind: 'fault', component: 'github', code: errorCode(error), task: attempt.taskId, channel: attempt.channel })
       this.#transition(attempt, { state: 'deciding' })
       await this.#apply(attempt, { kind: 'hold', question: `Publishing failed: ${(error as Error).message}` }, result)
+    }
+  }
+
+  /** Merges the work into the channel's local repository and closes the task. */
+  async #mergeLocal(attempt: AttemptRecord, result: ResultData, bundleFile: string): Promise<void> {
+    try {
+      const main = await this.#d.git.mergeBundle(attempt.repository, {
+        bundleFile, branch: attempt.branch, head: result.head_commit!, base: attempt.baseCommit!,
+        message: `Merge task ${attempt.taskId}: ${result.summary.split('\n')[0]?.slice(0, 80) ?? 'worker change'}`,
+      })
+      await this.#finishWorker(attempt, 'merged')
+      await this.#settle(attempt, 'complete', () => this.#held(attempt).complete(`${workerText(result.summary, 2_000)}\n\n${LOCAL_BRANCH} ${main}`))
+      await this.#reply(attempt.taskId, `Orchestrator: merged into ${LOCAL_BRANCH} of the channel repository at ${main.slice(0, 12)}.`)
+      this.#transition(attempt, { state: 'settled', outcome: 'merged' })
+      this.#unsubscribe(attempt)
+    } catch (error) {
+      this.#d.log({ event: 'merge_failed', task: attempt.taskId, message: (error as Error).message })
+      this.#emit({ kind: 'fault', component: 'github', code: errorCode(error), task: attempt.taskId, channel: attempt.channel })
+      this.#transition(attempt, { state: 'deciding' })
+      await this.#apply(attempt, { kind: 'hold', question: `Merging failed: ${(error as Error).message}` }, result)
     }
   }
 

@@ -5,7 +5,7 @@ import { afterEach, expect, it } from 'vitest'
 import type { BlockView, MessageView } from '../src/api/routes.ts'
 import { ActivityBlock } from '../src/inspect/app/activity.tsx'
 import { IdentitiesContext, type Identities } from '../src/inspect/app/identity.ts'
-import { MessageRow, type RowOptions } from '../src/inspect/app/message.tsx'
+import { MessageRow, Messages, type RowOptions } from '../src/inspect/app/message.tsx'
 
 let root: Root | undefined
 
@@ -123,6 +123,8 @@ it('shows a thread as a chat: what you wrote and each agent turn under the name 
   ])
   const status = () => page.querySelector('.status-line')!
   expect([status().querySelector('.status-line-author')?.textContent, status().querySelector('.avatar')?.textContent]).toEqual(['orchestrator', 'O'])
+  // The status line reads as a message: who wrote it on one row, what they wrote on the row under it.
+  expect([...status().children].map((row) => row.textContent)).toEqual([expect.stringMatching(/^Oorchestrator/), 'attempt 1 started.'])
   flushSync(() => root!.render(rows({ [me]: { name: 'Ada L.', avatar: PIXEL }, [ORCHESTRATOR]: { name: 'Conductor', avatar: null }, worker: { name: 'Builder', avatar: PIXEL } })))
   const [mine, round, said] = [...page.querySelectorAll('.message')]
   expect([mine, round, said].map((el) => face(el!))).toEqual([
@@ -152,4 +154,37 @@ it('keeps names and avatars outside a chat', () => {
   const page = show(<MessageRow m={message('1', me, 'Ada', 'Read the port from PORT.')} options={options(false)} />)
   expect(page.querySelector('.author')?.textContent).toBe('Ada')
   expect(page.querySelector('.avatar')?.textContent).toBe('A')
+})
+
+it('starts a worker round under its own name and picture when it follows the orchestrator in a thread', () => {
+  const block = activity({ state: 'completed', items: ITEMS.slice(0, 1) })
+  const fence = `\`\`\`json#worker_activity@1\n${JSON.stringify(block.data)}\n\`\`\`\n\nDone.`
+  // The orchestrator's actor writes all of them, a few seconds apart. A status line is a row of its own,
+  // so the message after it starts under its name again.
+  const status = { ...message('2', ORCHESTRATOR, 'orchestrator', 'attempt 1 started.'), labels: { 'politburo.status': 'orchestrator' } } as MessageView
+  const page = show(
+    <Messages
+      now={at}
+      options={options(true)}
+      after={message('1', me, 'Ada', 'Say hello.')}
+      messages={[status, message('7', ORCHESTRATOR, 'orchestrator', 'Round 1 sent.'), message('3', ORCHESTRATOR, 'orchestrator', fence, [block]), { ...status, id: '4', text: 'merged.' } as MessageView, message('5', ORCHESTRATOR, 'orchestrator', 'Branch kept.'), message('6', ORCHESTRATOR, 'orchestrator', 'Draft closed.')]}
+    />,
+  )
+  expect([...page.querySelectorAll('.message')].map((el) => el.querySelector('.author')?.textContent ?? null)).toEqual(['orchestrator', 'Worker', 'orchestrator', null])
+})
+
+it("heads a worker round's answer with the worker's name and picture, and not its thoughts and actions", () => {
+  const round = (state: string, answer: string) => {
+    const block = activity({ state, items: ITEMS.slice(0, 2) })
+    return message('2', ORCHESTRATOR, 'orchestrator', `\`\`\`json#worker_activity@1\n${JSON.stringify(block.data)}\n\`\`\`${answer}`, [block])
+  }
+  const page = show(<MessageRow m={round('completed', '\n\nDone: PORT is read now.')} options={options(true)} />)
+  // What the row reads, top to bottom: the turn, then who answered, then the answer.
+  const body = page.querySelector('.message .body')!
+  expect([...body.children].map((el) => el.className.split(' ')[0])).toEqual(['turn', 'meta-line', 'text'])
+  expect(body.querySelector('.meta-line .author')?.textContent).toBe('Worker')
+  // A round still running has said nothing back yet: nothing heads it.
+  flushSync(() => root!.render(<MessageRow m={round('running', '')} options={options(true)} />))
+  expect(page.querySelector('.message .turn')).not.toBeNull()
+  expect(page.querySelector('.message .meta-line')).toBeNull()
 })

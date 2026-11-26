@@ -12,7 +12,7 @@ import { board as openBoard } from '@vercel/board'
 import { local } from '@vercel/board/backend-local'
 import { createRelay, generateSigningKeys, MessageStore, type Relay } from '@remilia/politburo-relay'
 import { parseConfig } from '../src/orchestrator/config.ts'
-import { GitRepositories } from '../src/orchestrator/git.ts'
+import { GitRepositories, localRepository } from '../src/orchestrator/git.ts'
 import { GitHubClient } from '../src/orchestrator/github.ts'
 import { openJournal, type Provider } from '../src/orchestrator/launch.ts'
 import { RelayClient } from '../src/orchestrator/relay-client.ts'
@@ -245,5 +245,36 @@ worker:
     assert.equal(git(launch, 'status', '--porcelain'), '')
     assert.ok(existsSync(join(launch, '.politburo/packages/worker/src/cli.ts')))
     assert.ok(existsSync(join(launch, '.politburo/packages/relay/src/messages.ts')))
+  })
+
+  test('a channel without a repository works in its local repository: tasks start from main and merge into it', async () => {
+    const root = join(directory, 'local')
+    const repositories = new GitRepositories({ directory: join(root, 'mirrors'), localDirectory: join(root, 'channels'), urlBase: root, token: null })
+    const repository = localRepository('hello/world')
+    const base = await repositories.localHead(repository)
+    assert.equal(await repositories.localHead(repository), base, 'the repository is created once')
+    const { workerFiles } = await import('../src/orchestrator/worker-files.ts')
+    const work = async (task: string, file: string, content: string, from: string) => {
+      const launch = join(root, `launch-${task}`)
+      await repositories.prepareLaunchDirectory(repository, from, launch, workerFiles(PACKAGES_DIRECTORY))
+      git(launch, 'checkout', '--quiet', '-B', `claude/task-${task}`, from)
+      writeFileSync(join(launch, file), content)
+      git(launch, 'add', file)
+      git(launch, '-c', 'user.name=w', '-c', 'user.email=w@localhost', 'commit', '--quiet', '-m', `task ${task}`)
+      const bundleFile = join(root, `${task}.bundle`)
+      git(launch, 'bundle', 'create', '--quiet', bundleFile, `claude/task-${task}`, `^${from}`)
+      return { bundleFile, branch: `claude/task-${task}`, head: git(launch, 'rev-parse', 'HEAD'), base: from, message: `Merge task ${task}` }
+    }
+    const first = await work('1', 'a.txt', 'a', base)
+    const second = await work('2', 'b.txt', 'b', base)
+    const conflict = await work('3', 'a.txt', 'other', base)
+    assert.equal(await repositories.mergeBundle(repository, first), first.head, 'main moves forward')
+    const merged = await repositories.mergeBundle(repository, second)
+    const bare = join(root, 'channels', 'hello_world.git')
+    assert.equal(git(bare, 'rev-list', '--parents', '-n', '1', merged), `${merged} ${first.head} ${second.head}`, 'a merge commit joins parallel work')
+    assert.equal(git(bare, 'show', 'main:b.txt'), 'b')
+    await assert.rejects(repositories.mergeBundle(repository, conflict), /conflicts with main/)
+    assert.equal(git(bare, 'rev-parse', 'main'), merged, 'a conflict leaves main as it is')
+    assert.equal(git(bare, 'rev-parse', 'claude/task-3'), conflict.head, 'the work stays on its branch')
   })
 })

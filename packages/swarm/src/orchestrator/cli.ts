@@ -46,7 +46,7 @@ async function serve(config: OrchestratorConfig): Promise<number> {
     board: openBoard().as(config.boardProfile),
     relay: new RelayClient({ url: config.relay.url, signingKey: readFileSync(config.relay.signingKeyFile, 'utf8'), orchestratorTtlSeconds: config.tokens.orchestratorTtlSeconds }),
     github: new GitHubClient({ apiUrl: config.github.apiUrl, token }),
-    git: new GitRepositories({ directory: join(config.stateDirectory, 'repositories'), urlBase: 'https://github.com', token }),
+    git: new GitRepositories({ directory: join(config.stateDirectory, 'repositories'), localDirectory: join(config.stateDirectory, 'channel_repositories'), urlBase: 'https://github.com', token }),
     state,
     journal: openJournal(join(config.stateDirectory, 'journal')),
     routes: () => partyRoutes(config),
