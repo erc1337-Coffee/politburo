@@ -684,23 +684,23 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 .block { max-width: 640px; margin: 6px 0; font-size: 12px; }
 .status-line { display: flex; align-items: baseline; gap: 8px; padding: 2px var(--inset) 2px 56px; font-size: 12px; color: var(--muted); }
 .status-line-text { overflow-wrap: anywhere; }
-.activity { max-width: 720px; margin: 2px 0 6px; }
-.activity details > summary { list-style: none; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 12px; }
-.activity details > summary::-webkit-details-marker { display: none; }
-.activity details > summary svg { transition: transform .12s; }
+.activity { max-width: 720px; margin: 2px 0 6px; color: var(--muted); font-size: 12.5px; }
+.activity summary { list-style: none; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
+.activity summary::-webkit-details-marker { display: none; }
+.activity summary:hover { color: var(--dim); }
+.activity summary svg { opacity: .7; transition: transform .12s; }
 .activity details[open] > summary svg { transform: rotate(90deg); }
-.activity-steps { margin: 2px 0; }
-.activity-step-list { margin: 4px 0 4px 6px; padding-left: 10px; border-left: 1px solid var(--hairline); display: grid; gap: 3px; }
-.activity-step { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
-.activity-step code { font-size: 11.5px; }
-.activity-step pre { margin: 4px 0 2px; padding: 6px 8px; max-height: 240px; overflow: auto; white-space: pre-wrap; font-size: 11.5px; background: var(--shade); color: var(--dim); }
-.activity-step.thinking pre { font-style: italic; background: none; padding: 0 0 0 4px; color: var(--muted); }
-.activity-step.error { color: var(--red); }
-.activity-step.warning { color: var(--gold); }
-.activity-say { margin: 4px 0; white-space: pre-wrap; }
-.activity-running, .activity-end { font-size: 12px; color: var(--muted); margin-top: 2px; }
-.activity-running { animation: activity-pulse 1.6s ease-in-out infinite; }
-@keyframes activity-pulse { 50% { opacity: .45; } }
+.activity-group { margin: 2px 0 6px; }
+.activity-group > summary { font-weight: 500; }
+.activity-steps { display: grid; gap: 6px; margin-top: 6px; }
+.activity-thought > p { margin: 4px 0 0; color: var(--faint); white-space: pre-wrap; line-height: 1.5; }
+.activity-say { margin: 0; color: var(--dim); white-space: pre-wrap; line-height: 1.5; }
+.activity-tool { color: var(--muted); overflow-wrap: anywhere; }
+.activity-tool > pre { margin: 4px 0 0; padding: 6px 8px; max-height: 240px; overflow: auto; white-space: pre-wrap; font-size: 11.5px; background: var(--shade); color: var(--faint); }
+.activity-note { color: var(--muted); }
+.activity-note.error { color: var(--red); }
+.activity-note.warning { color: var(--gold); }
+.activity .running { color: var(--muted); animation: activity-pulse 1.6s ease-in-out infinite; }
 .activity .added { color: var(--accent); }
 .activity .removed-lines { color: var(--red); }
 
@@ -957,6 +957,7 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 .ops-task .ops-log { padding: 0 0 6px 16px; overflow: visible; }
 
 @keyframes ops-arrive { from { background: var(--shade-hover); } }
+@keyframes activity-pulse { 50% { opacity: .45; } }
 
 @media (max-width: 64rem) {
   .operations-view { overflow: auto; }

@@ -1,8 +1,9 @@
 import { ChevronRight } from 'lucide-react'
 import type { BlockView } from '../../api/routes.ts'
 
-// A worker round as Claude shows a turn: what the worker thought and did, folded away, then what it
-// said. The block's data comes from the orchestrator, which edits the reply while the round runs.
+// A worker round as Claude or Cursor shows a turn: one muted, foldable "Worked" group with the
+// worker's thinking, narration and actions, then its answer as the message text. The block's data
+// comes from the orchestrator, which edits the reply while the round runs.
 
 type Item = { at: number; kind: string; text: string }
 type Activity = {
@@ -13,65 +14,34 @@ type Activity = {
   checks?: Array<{ name: string; passed: boolean }>
 }
 
-/** Consecutive thinking, actions and their output form one step group; a message stands alone. */
-function groups(items: Item[]): Array<{ kind: 'steps'; items: Item[] } | { kind: 'say'; item: Item }> {
-  const out: Array<{ kind: 'steps'; items: Item[] } | { kind: 'say'; item: Item }> = []
-  for (const item of items) {
-    if (item.kind === 'say') {
-      out.push({ kind: 'say', item })
-      continue
-    }
-    const last = out.at(-1)
-    if (last?.kind === 'steps') last.items.push(item)
-    else out.push({ kind: 'steps', items: [item] })
-  }
-  return out
-}
-
-function summary(items: Item[]): string {
-  const tools = items.filter((item) => item.kind === 'tool').length
-  const thoughts = items.filter((item) => item.kind === 'thinking').length
-  const errors = items.filter((item) => item.kind === 'error').length
-  return [thoughts && 'thought', tools && `${tools} action${tools === 1 ? '' : 's'}`, errors && `${errors} error${errors === 1 ? '' : 's'}`]
-    .filter(Boolean).join(' · ') || `${items.length} note${items.length === 1 ? '' : 's'}`
+const span = (ms: number) => {
+  const s = Math.max(1, Math.round(ms / 1000))
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`
 }
 
 function Step({ item, output }: { item: Item; output: Item | undefined }) {
-  if (item.kind === 'thinking')
-    return (
-      <details className="activity-step thinking">
-        <summary><ChevronRight size={12} /> thinking</summary>
-        <pre>{item.text}</pre>
-      </details>
-    )
-  if (item.kind === 'tool')
-    return output ? (
-      <details className="activity-step">
-        <summary><ChevronRight size={12} /> <code>{item.text}</code></summary>
-        <pre>{output.text}</pre>
-      </details>
-    ) : (
-      <div className="activity-step"><code>{item.text}</code></div>
-    )
-  return <div className={`activity-step ${item.kind}`}>{item.text}</div>
-}
-
-function Steps({ items, open }: { items: Item[]; open: boolean }) {
-  const rows: Array<{ item: Item; output: Item | undefined }> = []
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i]!
-    if (item.kind === 'output') continue
-    const next = items[i + 1]
-    rows.push({ item, output: item.kind === 'tool' && next?.kind === 'output' ? next : undefined })
+  switch (item.kind) {
+    case 'thinking':
+      return (
+        <details className="activity-thought">
+          <summary>Thought <ChevronRight size={11} /></summary>
+          <p>{item.text}</p>
+        </details>
+      )
+    case 'say':
+      return <p className="activity-say">{item.text}</p>
+    case 'tool':
+      return output ? (
+        <details className="activity-tool">
+          <summary>{item.text} <ChevronRight size={11} /></summary>
+          <pre>{output.text}</pre>
+        </details>
+      ) : (
+        <div className="activity-tool">{item.text}</div>
+      )
+    default:
+      return <div className={`activity-note ${item.kind}`}>{item.text}</div>
   }
-  return (
-    <details className="activity-steps" open={open}>
-      <summary><ChevronRight size={12} /> {summary(items)}</summary>
-      <div className="activity-step-list">
-        {rows.map((row, i) => <Step key={i} item={row.item} output={row.output} />)}
-      </div>
-    </details>
-  )
 }
 
 export function isActivity(block: BlockView): boolean {
@@ -81,20 +51,31 @@ export function isActivity(block: BlockView): boolean {
 export function ActivityBlock({ block }: { block: BlockView }) {
   const data = block.data as unknown as Activity
   const running = data.state === 'running'
-  const parts = groups(data.items)
+  const rows: Array<{ item: Item; output: Item | undefined }> = []
+  for (let i = 0; i < data.items.length; i++) {
+    const item = data.items[i]!
+    if (item.kind === 'output') continue
+    const next = data.items[i + 1]
+    rows.push({ item, output: item.kind === 'tool' && next?.kind === 'output' ? next : undefined })
+  }
+  const first = data.items[0]?.at
+  const last = data.items.at(-1)?.at
+  const title = running ? 'Working…' : first !== undefined && last !== undefined && last > first ? `Worked for ${span(last - first)}` : 'Worked'
   return (
     <div className="activity">
-      {parts.map((part, i) =>
-        part.kind === 'say' ? (
-          <p key={i} className="activity-say">{part.item.text}</p>
-        ) : (
-          <Steps key={i} items={part.items} open={running && i === parts.length - 1} />
-        ),
-      )}
-      {running && <div className="activity-running">working…</div>}
-      {!running && data.state !== 'completed' && <div className="activity-end">round {data.round} ended: {data.state.replace('_', ' ')}</div>}
+      {rows.length > 0 ? (
+        <details className="activity-group" open={running}>
+          <summary className={running ? 'running' : ''}>{title} <ChevronRight size={12} /></summary>
+          <div className="activity-steps">
+            {rows.map((row, i) => <Step key={i} item={row.item} output={row.output} />)}
+          </div>
+        </details>
+      ) : running ? (
+        <div className="activity-group"><span className="running">Working…</span></div>
+      ) : null}
+      {!running && data.state !== 'completed' && <div className="activity-note">round {data.round} ended: {data.state.replace('_', ' ')}</div>}
       {data.changes && (
-        <div className="activity-end">
+        <div className="activity-note">
           {data.changes.files} file{data.changes.files === 1 ? '' : 's'} · <span className="added">+{data.changes.insertions}</span> <span className="removed-lines">−{data.changes.deletions}</span>
           {data.checks?.map((check) => <span key={check.name} className={check.passed ? 'added' : 'removed-lines'}> · {check.name}</span>)}
         </div>
