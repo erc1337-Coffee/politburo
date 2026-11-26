@@ -480,9 +480,6 @@ export function Operations(props: { lead?: ReactNode; identities?: Identities })
                 {workers.length === 0 && (
                   <g className="empty">
                     <text className="node-line" x={(COLUMN.cloud + WIDTH) / 2} y={mid - 4} textAnchor="middle">No workers</text>
-                    <text className="node-line faint" x={(COLUMN.cloud + WIDTH) / 2} y={mid + 14} textAnchor="middle">
-                      {snapshot ? `${snapshot.orchestrator.live} of ${snapshot.orchestrator.live_limit} slots in use` : ''}
-                    </text>
                   </g>
                 )}
                 {workers.map((attempt, index) => (
