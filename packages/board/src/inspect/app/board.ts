@@ -131,7 +131,7 @@ export async function setProfile(next: Profile | null | undefined): Promise<bool
       set((s) => ({ ...s, me, schedules: { is: 'loading' }, live: bootStarted ? 'reconnecting' : s.live,
         tasksCounted: false, openTaskRoots: {}, openTaskMe: null, openTaskAttentionRefusals: {}, paneThread: null,
         taskScope: null, tasksLoading: null, threadDenials: new Map(), messages: {},
-        tasksRefused: null, attention: {}, attentionUnsupported: false }))
+        tasksRefused: null, attention: {}, attentionUnsupported: false, replyFaces: {} }))
     })
     if (bootStarted) void boot().catch((error) => toast(said(error)))
     else void loadSchedules()
@@ -1049,6 +1049,43 @@ export async function registerSchema(input: SchemaInput): Promise<string | null>
 // --- channels ----------------------------------------------------------------------------------
 
 export const loadModelRoutes = (): Promise<ModelRoute[]> => team.modelRoutes()
+
+// --- who answered a listed thread ----------------------------------------------------------------
+
+/** The most thread reads for faces at once, so a channel page never sends one per thread together. */
+const FACE_READS_MAX = 3
+const faceReads: { root: string; last: string | null }[] = []
+const facesAsked = new Set<string>()
+let facesReading = 0
+
+/**
+ * Reads a listed thread for who answered it, when the page holds fewer of its replies than it has:
+ * once for each newest reply. What it reads stays in `replyFaces`, apart from the page's messages.
+ */
+export function loadReplyFaces(root: string, last: string | null): void {
+  const asked = `${identity}:${root}:${last}`
+  if (facesAsked.has(asked)) return
+  facesAsked.add(asked)
+  faceReads.push({ root, last })
+  pumpFaceReads()
+}
+
+function pumpFaceReads(): void {
+  while (facesReading < FACE_READS_MAX && faceReads.length > 0) {
+    const { root, last } = faceReads.shift()!
+    const handle = team
+    facesReading++
+    void handle.thread(root, { limit: 500 }).then(
+      (thread) => {
+        if (handle === team) set((s) => ({ ...s, replyFaces: { ...s.replyFaces, [root]: { last, faces: store.facesOf(thread.replies) } } }))
+      },
+      () => {},
+    ).finally(() => {
+      facesReading--
+      pumpFaceReads()
+    })
+  }
+}
 
 // --- identities: how the board shows people, agents and services --------------------------------
 

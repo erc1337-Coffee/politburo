@@ -14,7 +14,7 @@ import { Settings } from './settings.tsx'
 import { Sidebar } from './sidebar.tsx'
 import { actorFor, TaskCard, taskIds } from './task.tsx'
 import { FilterButton, FilterChips } from './filters.tsx'
-import { byWritten, channelRows, channelThreads, filtering, isTask, knownLabels, listingOf, matches, mayCancelSchedule, pauseBanner, profilesOf, thread as threadOf, threadSchedules, type Filter, type State, type Viewer } from './store.ts'
+import { byWritten, channelRows, channelThreads, facesOf, filtering, isTask, knownLabels, listingOf, matches, mayCancelSchedule, pauseBanner, profilesOf, thread as threadOf, threadSchedules, type Filter, type State, type Viewer } from './store.ts'
 import { Ask, AskForm, Header, HeaderActions, nativeMenu, Panel, ResizeHandle, type KnownLabels } from './ui.tsx'
 import { boardWords, cadence, firstLine, shownName, until } from './words.ts'
 import { cellHasThread, isWorkRoute, workTitle } from './work-scope.ts'
@@ -449,7 +449,15 @@ function Channel(props: { channel: string; state: State; options: RowOptions; kn
   const threads = filtering(filter) ? all.filter((t) => matches(state, t.root, filter) || t.replies.some((r) => matches(state, r, filter))) : all
   const pending = filtering(filter) ? [] : posts
   const roots = threads.map((t) => t.root)
-  const summaries = new Map(threads.map((t) => [t.root.id, t.summary]))
+  // A listed thread holds only its newest reply: who else answered comes from a read of it for its faces.
+  const summaries = new Map(threads.map((t) => {
+    const read = Object.hasOwn(state.replyFaces, t.root.id) ? state.replyFaces[t.root.id]! : null
+    return [t.root.id, read ? { ...t.summary, faces: facesOf([...read.faces, ...t.summary.faces]) } : t.summary] as const
+  }))
+  useEffect(() => {
+    for (const t of threads)
+      if (t.summary.count > t.replies.filter((reply) => !reply.deleted).length) board.loadReplyFaces(t.root.id, t.summary.last?.id ?? null)
+  }, [threads])
   const info = state.channels[channel]
   const newest = listed
     ? (threads.at(-1)?.summary.last ?? threads.at(-1)?.root)?.id ?? ''

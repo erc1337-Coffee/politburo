@@ -111,15 +111,18 @@ it('shows a thread as a chat: what you wrote and each agent turn under the name 
       <MessageRow m={message('1', me, 'Ada', 'Read the port from PORT.')} options={options(true)} />
       <MessageRow m={message('2', ORCHESTRATOR, 'orchestrator', fence, [block])} options={options(true)} />
       <MessageRow m={message('3', ORCHESTRATOR, 'orchestrator', 'Merged.')} options={options(true)} />
+      <MessageRow m={{ ...message('4', ORCHESTRATOR, 'orchestrator', 'attempt 1 started.'), labels: { 'politburo.status': 'orchestrator' } } as MessageView} options={options(true)} />
     </IdentitiesContext.Provider>
   )
   const page = show(rows({}))
+  // A worker's round is the orchestrator's message, written for the worker: it shows as the worker.
   expect([...page.querySelectorAll('.message')].map(face)).toEqual([
     { name: 'Ada', picture: 'A' },
-    { name: 'orchestrator', picture: 'O' },
+    { name: 'Worker', picture: 'W' },
     { name: 'orchestrator', picture: 'O' },
   ])
-  // A worker's round is the orchestrator's message, written for the worker: it shows as the worker once named.
+  const status = () => page.querySelector('.status-line')!
+  expect([status().querySelector('.status-line-author')?.textContent, status().querySelector('.avatar')?.textContent]).toEqual(['orchestrator', 'O'])
   flushSync(() => root!.render(rows({ [me]: { name: 'Ada L.', avatar: PIXEL }, [ORCHESTRATOR]: { name: 'Conductor', avatar: null }, worker: { name: 'Builder', avatar: PIXEL } })))
   const [mine, round, said] = [...page.querySelectorAll('.message')]
   expect([mine, round, said].map((el) => face(el!))).toEqual([
@@ -127,6 +130,7 @@ it('shows a thread as a chat: what you wrote and each agent turn under the name 
     { name: 'Builder', picture: PIXEL },
     { name: 'Conductor', picture: 'C' },
   ])
+  expect([status().querySelector('.status-line-author')?.textContent, status().querySelector('.avatar img')?.getAttribute('src') ?? null]).toEqual(['Conductor', null])
   expect(round!.textContent).toContain('Reading the config first.')
   expect(round!.textContent).toContain('Done: PORT is read now.')
 })

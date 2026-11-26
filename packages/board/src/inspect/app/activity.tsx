@@ -114,9 +114,7 @@ function StepView({ step }: { step: Step }) {
   }
 }
 
-export function isActivity(block: BlockView): boolean {
-  return block.schema === 'worker_activity' && block.version === 1 && Array.isArray((block.data as { items?: unknown }).items)
-}
+export { isActivity } from './store.ts'
 
 export function ActivityBlock({ block }: { block: BlockView }) {
   const data = block.data as unknown as Activity

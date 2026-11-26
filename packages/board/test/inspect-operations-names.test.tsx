@@ -50,6 +50,21 @@ it('names the orchestrator, the relay and each worker as the board does', async 
   expect(page.querySelector('.node.worker .node-title')?.textContent).toContain('Builder · round 1')
 })
 
+// A 1×1 PNG.
+const PIXEL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+const portraits = (page: HTMLElement) => ({
+  orchestrator: page.querySelector('.node.heart image')?.getAttribute('href') ?? null,
+  relay: page.querySelector('.node.relay image')?.getAttribute('href') ?? null,
+})
+
+it("fills the orchestrator's and the relay's circles with the pictures the board gives them, and leaves them plain without", async () => {
+  orchestratorAnswers()
+  const page = await show({ [ORCHESTRATOR]: { name: null, avatar: PIXEL }, relay: { name: null, avatar: PIXEL } })
+  expect(portraits(page)).toEqual({ orchestrator: PIXEL, relay: PIXEL })
+  flushSync(() => root!.render(<Operations identities={{}} />))
+  expect(portraits(page)).toEqual({ orchestrator: null, relay: null })
+})
+
 it('keeps their own names when the board gives none', async () => {
   orchestratorAnswers()
   const page = await show({})

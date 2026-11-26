@@ -95,6 +95,11 @@ export type State = AttentionState & {
   watchers: Listed<RegistrationView>
   /** How the board shows people, agents and services, by key: names and pictures in place of their own. */
   identities: Identities
+  /**
+   * Who answered each listed thread whose replies the page hasn't loaded, by root, as of its reply `last`:
+   * read for its faces only, never merged into `messages`.
+   */
+  replyFaces: Record<string, { last: string | null; faces: MessageView[] }>
 }
 
 export const initialState: State = {
@@ -129,6 +134,7 @@ export const initialState: State = {
   everySchedule: false,
   watchers: { is: 'unasked' },
   identities: {},
+  replyFaces: {},
 }
 
 /** Whether a message as the board shows it already reflects a change you made. */
@@ -419,7 +425,33 @@ export function shownMessage(state: State, message: MessageView, now: string): M
 
 export type Thread = { root: MessageView; replies: MessageView[]; pending: Pending[] }
 
-/** A root's replies at a glance: how many, the latest, and the last three people who wrote one. */
+/** A worker's round, as the orchestrator posts one: a `worker_activity@1` block of its thinking and actions. */
+export function isActivity(block: BlockView): boolean {
+  return block.schema === 'worker_activity' && block.version === 1 && Array.isArray((block.data as { items?: unknown }).items)
+}
+
+/**
+ * Whose face a message shows: `worker` for a worker's round, which the orchestrator posts for it,
+ * else its author's actor. The page's identities are keyed the same way.
+ */
+export const faceKey = (m: Pick<MessageView, 'by' | 'blocks'>): string => ((m.blocks ?? []).some(isActivity) ? 'worker' : m.by.actor)
+
+/** The most faces a thread's replies show. */
+export const FACES_MAX = 6
+
+/** One reply per face, the most recent of each, newest last, at most `FACES_MAX`. */
+export function facesOf(replies: readonly MessageView[]): MessageView[] {
+  const byFace = new Map<string, MessageView>()
+  for (const reply of [...replies].sort(byWritten)) {
+    if (reply.deleted) continue
+    const key = faceKey(reply)
+    byFace.delete(key)
+    byFace.set(key, reply)
+  }
+  return [...byFace.values()].slice(-FACES_MAX)
+}
+
+/** A root's replies at a glance: how many, the latest, and one face per person or service that wrote one. */
 export type ReplySummary = { count: number; last: MessageView | null; faces: MessageView[] }
 
 /** A thread in a channel, with its replies summarized. */
@@ -427,7 +459,7 @@ export type ChannelThread = Thread & { summary: ReplySummary }
 
 function summarize(replies: MessageView[], count = replies.length, last: MessageView | null = replies.at(-1) ?? null): ReplySummary {
   const newest = last && replies.length > 0 && byWritten(replies.at(-1)!, last) > 0 ? replies.at(-1)! : last
-  const faces = [...new Map([...replies, ...(newest && !replies.includes(newest) ? [newest] : [])].map((r) => [r.by.actor, r])).values()].slice(-3)
+  const faces = facesOf([...replies, ...(newest && !replies.includes(newest) ? [newest] : [])])
   return { count: Math.max(count, replies.filter((r) => !r.deleted).length), last: newest, faces }
 }
 

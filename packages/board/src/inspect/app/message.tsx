@@ -9,12 +9,12 @@ import { displayEmoji } from '../../contract/emoji.ts'
 import type { Attachment } from '../../server/index.default.ts'
 import { ActivityBlock, isActivity } from './activity.tsx'
 import { BlockCard } from './blocks.tsx'
-import { nameFor, pictureFor, useIdentities, type Identities } from './identity.ts'
+import { nameFor, pictureFor, SERVICES, useIdentities, type Identities } from './identity.ts'
 import * as board from './board.ts'
 import { setEditing, toast, useEditing } from './chrome.ts'
 import { Ago } from './nav.tsx'
 import { LabelValue } from './sha.tsx'
-import { bodyParts, continues, isTask, schemaOf, sourcePlatform, type Groupable, type Pending, type ReplySummary, type State, type Viewer } from './store.ts'
+import { bodyParts, continues, faceKey, isTask, schemaOf, sourcePlatform, type Groupable, type Pending, type ReplySummary, type State, type Viewer } from './store.ts'
 import { TaskLine } from './task.tsx'
 import { absoluteTime, authorName, fileSize, shownName, timingWords } from './words.ts'
 import { ContextMenuArea, EmojiPicker, fieldMenu, LabelEditor, Panel, Menu, MenuEmojiRow, MenuItem, MenuSeparator, nativeMenu, type KnownLabels } from './ui.tsx'
@@ -250,7 +250,7 @@ export function SourceLogo({ platform }: { platform: string }) {
 // picture is one the board keeps inline (`GET /identities`), else the name's initial.
 export function Avatar({ name, src, size = 28 }: { name: string; src?: string | undefined; size?: number }) {
   return (
-    <span className="avatar" style={{ width: size, height: size, fontSize: size * 0.43 }}>
+    <span className="avatar" title={name} style={{ width: size, height: size, fontSize: size * 0.43 }}>
       {src ? <img src={src} alt="" /> : name.slice(0, 1).toUpperCase()}
     </span>
   )
@@ -258,13 +258,12 @@ export function Avatar({ name, src, size = 28 }: { name: string; src?: string | 
 
 /**
  * Who a message shows as: the board's name and picture for its author, or their own. A worker's
- * round is the orchestrator's message, written for the worker, so it shows as the worker once the
- * board names one.
+ * round is the orchestrator's message, written for the worker, so it shows as the worker: the
+ * board's name and picture for `worker`, else "Worker".
  */
 export function shownAuthor(identities: Identities, m: Pick<MessageView, 'author' | 'by' | 'blocks'>): { name: string; picture: string | undefined } {
-  const own = { name: nameFor(identities, m.by.actor, authorName(m)), picture: pictureFor(identities, m.by.actor) }
-  if (!(m.blocks ?? []).some(isActivity)) return own
-  return { name: nameFor(identities, 'worker', own.name), picture: pictureFor(identities, 'worker') ?? own.picture }
+  const key = faceKey(m)
+  return { name: nameFor(identities, key, key === 'worker' ? SERVICES.worker : authorName(m)), picture: pictureFor(identities, key) }
 }
 
 /** Who reacted, as the board shows them: at most three faces, every name in the title. */
@@ -356,10 +355,13 @@ const copy = (text: string, what: string) =>
     () => toast(`couldn't copy ${what}`),
   )
 
-/** A status line the orchestrator writes in a task thread: one quiet line, apart from the conversation. */
+/** A status line the orchestrator writes in a task thread: one quiet line under its face, apart from the conversation. */
 function StatusLine({ m, now }: { m: MessageView; now: number }) {
+  const { name, picture } = shownAuthor(useIdentities(), m)
   return (
     <div id={`m${m.id}`} className="status-line" {...nativeMenu}>
+      <Avatar name={name} src={picture} size={16} />
+      <span className="status-line-author">{name}</span>
       <span className="status-line-text">{m.text}</span>
       <Ago iso={m.createdAt} now={now} className="faint" />
     </div>

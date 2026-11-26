@@ -693,8 +693,9 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 
 /* --- blocks: the data a message carries, as a card where its fence was --- */
 .block { max-width: 640px; margin: 6px 0; font-size: 12px; }
-.status-line { display: flex; align-items: baseline; gap: 8px; padding: 2px var(--inset) 2px 56px; font-size: 12px; color: var(--muted); }
-.status-line-text { overflow-wrap: anywhere; }
+.status-line { display: flex; align-items: center; gap: 6px; padding: 3px var(--inset) 3px 16px; font-size: 12px; color: var(--muted); }
+.status-line-author { flex-shrink: 0; color: var(--dim); font-weight: 600; }
+.status-line-text { min-width: 0; overflow-wrap: anywhere; }
 /* A chat, as the thread pane shows one: your messages as bubbles, an agent's turn as plain text with
    its thoughts and actions muted, one line each, folded. No avatars. */
 .message.turn-user, .message.turn-agent { grid-template-columns: minmax(0, 1fr); padding: 6px var(--inset) 6px 16px; }
@@ -983,6 +984,8 @@ details.turn-action { display: block; }
 .ops-task .ops-log { padding: 0 0 6px 16px; overflow: visible; }
 
 @keyframes ops-arrive { from { background: var(--shade-hover); } }
+.operations-view .scrim { fill: var(--panel); opacity: .55; pointer-events: none; }
+.operations-view .portrait { pointer-events: none; }
 @keyframes activity-pulse { 50% { opacity: .45; } }
 
 @media (max-width: 64rem) {

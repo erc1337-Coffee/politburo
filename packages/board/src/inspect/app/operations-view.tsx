@@ -2,7 +2,7 @@
 // the spend ledger and each component's details in a side panel. Each message travels its link as a
 // packet and tints the link while it travels; the orchestrator ripples on each tick; a worker's lamp
 // pulses on each heartbeat. At rest nothing moves.
-import { nameFor, SERVICES, type Identities } from './identity.ts'
+import { nameFor, pictureFor, SERVICES, type Identities } from './identity.ts'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { base } from './nav.tsx'
 import { Header } from './ui.tsx'
@@ -371,6 +371,8 @@ export function Operations(props: { lead?: ReactNode; identities?: Identities })
   const orchestratorName = nameFor(identities, snapshot?.orchestrator.actor || undefined, 'Orchestrator')
   const relayName = nameFor(identities, 'relay', SERVICES.relay)
   const workerName = nameFor(identities, 'worker', SERVICES.worker)
+  const orchestratorPicture = pictureFor(identities, snapshot?.orchestrator.actor || undefined)
+  const relayPicture = pictureFor(identities, 'relay')
   const relayLed = offline || !serving ? led('off') : snapshot.relay.reachable === false ? led('fault') : led('ok')
   const orchestratorLed = offline ? led('fault') : serving ? led('ok') : led('warn')
 
@@ -431,6 +433,7 @@ export function Operations(props: { lead?: ReactNode; identities?: Identities })
                 <g className={`node heart${offline ? ' down fault' : !serving ? ' down' : ''}`}>
                   {serving && <circle className="glow" cx={o.x} cy={o.y} r={HEART_R + 26} fill="url(#ops-heart)" />}
                   <circle className="frame" cx={o.x} cy={o.y} r={HEART_R} />
+                  <Portrait id="ops-portrait-orchestrator" at={o} r={HEART_R} src={orchestratorPicture} />
                   {serving && beat.n > 0 && <circle key={beat.n} className="ripple" cx={o.x} cy={o.y} r={HEART_R} style={{ ['--c' as string]: beat.color }} />}
                   <circle className={`led ${orchestratorLed}`} cx={o.x} cy={o.y - 26} r={3.5} />
                   <text className="node-title" x={o.x} y={o.y + 2} textAnchor="middle">{clip(orchestratorName, 14)}</text>
@@ -440,6 +443,7 @@ export function Operations(props: { lead?: ReactNode; identities?: Identities })
 
                 <g className={`node relay${relayDown ? ' down' : ''}${snapshot?.relay.reachable === false ? ' fault' : ''}`}>
                   <circle className="frame" cx={r.x} cy={r.y} r={RELAY_R} />
+                  <Portrait id="ops-portrait-relay" at={r} r={RELAY_R} src={relayPicture} />
                   {!relayDown && streams > 0 && <circle className="ring" cx={r.x} cy={r.y} r={RELAY_R + 6} style={{ ['--spin' as string]: `${Math.max(4, 24 / streams).toFixed(1)}s` }} />}
                   <circle className={`led ${relayLed}`} cx={r.x} cy={r.y - 17} r={3} />
                   <text className="node-title" x={r.x} y={r.y + 5} textAnchor="middle">{clip(relayName, 9)}</text>
@@ -540,6 +544,18 @@ function Facts(props: { rows: Array<[string, ReactNode | null | undefined]> }) {
         <div key={name}><dt>{name}</dt><dd>{value === null || value === undefined || value === '' ? <span className="faint">—</span> : value}</dd></div>
       ))}
     </dl>
+  )
+}
+
+/** A service's picture filling its circle, under a scrim that keeps its name, figures and lamp readable. */
+function Portrait({ id, at, r, src }: { id: string; at: Point; r: number; src: string | undefined }) {
+  if (!src) return null
+  return (
+    <>
+      <clipPath id={id}><circle cx={at.x} cy={at.y} r={r - 1} /></clipPath>
+      <image className="portrait" href={src} x={at.x - r} y={at.y - r} width={r * 2} height={r * 2} preserveAspectRatio="xMidYMid slice" clipPath={`url(#${id})`} />
+      <circle className="scrim" cx={at.x} cy={at.y} r={r - 1} />
+    </>
   )
 }
 
