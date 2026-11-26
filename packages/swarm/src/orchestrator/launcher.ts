@@ -2,7 +2,8 @@
 // address, the channel, a short worker token and the protocol file; the brief goes
 // through the relay in the `start` command, never through the prompt.
 import { execFile } from 'node:child_process'
-import { writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import type { Provider } from './launch.ts'
 
 export interface WorkerPromptInput {
@@ -57,21 +58,50 @@ export const runCommand: CommandRunner = (command, args, { timeoutMs, cwd, env }
   })
 })
 
+/** Where Claude Code keeps its global config: trust decisions and onboarding state. */
+function claudeGlobalConfig(env: NodeJS.ProcessEnv): string {
+  return env.CLAUDE_CONFIG_DIR ? join(env.CLAUDE_CONFIG_DIR, '.claude.json') : join(env.HOME ?? '', '.claude.json')
+}
+
+/** Marks `directory` as trusted, or removes the mark, so the trust screen does not stop the launch. */
+function setTrust(env: NodeJS.ProcessEnv, directory: string, trusted: boolean): void {
+  const file = claudeGlobalConfig(env)
+  let config: { projects?: Record<string, Record<string, unknown>> } = {}
+  try { config = JSON.parse(readFileSync(file, 'utf8')) } catch {}
+  const projects = { ...(config.projects ?? {}) }
+  if (trusted) projects[directory] = { ...(projects[directory] ?? {}), hasTrustDialogAccepted: true }
+  else delete projects[directory]
+  writeFileSync(file, JSON.stringify({ ...config, projects }, null, 2), { mode: 0o600 })
+}
+
+const shellQuote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`
+const ANSI = /\x1b\[[0-9;?]*[ -\/]*[@-~]|\x1b\][^\x07]*\x07/g
+
 /**
  * A launch `Provider` for one attempt: `send` runs the launcher with the prompt in the attempt's
- * launch directory and reads the session id. `CCR_FORCE_BUNDLE=1` makes `claude --cloud` upload
- * that directory instead of cloning from GitHub. The launcher output goes to `<directory>.log`.
+ * launch directory and reads the session id. `claude --cloud` creates a session only in a terminal,
+ * so the launcher runs under `script`, which gives it a pseudo-terminal.
+ * `CCR_FORCE_BUNDLE=1` makes it upload that directory instead of cloning from GitHub.
+ * The launcher output goes to `<directory>.log`.
  * `probe` cannot list cloud sessions by title yet, so it answers `unknown`: an unclear launch becomes
  * `uncertain` and waits for a person, and is never sent twice.
  */
 export function cloudProvider(launcher: readonly string[], prompt: string, directory: string, run: CommandRunner = runCommand): Provider {
   return {
     async send() {
-      const [command, ...args] = launcher
-      const { code, output } = await run(command!, [...args, prompt], { timeoutMs: 5 * 60_000, cwd: directory, env: { ...process.env, CCR_FORCE_BUNDLE: '1' } })
-      writeFileSync(`${directory}.log`, `exit ${code}\n${output}`, { mode: 0o600 })
+      const env = { ...process.env, CCR_FORCE_BUNDLE: '1', WORKER_PROMPT: prompt }
+      const command = `${launcher.map(shellQuote).join(' ')} "$WORKER_PROMPT"`
+      setTrust(env, directory, true)
+      let result: { code: number; output: string }
+      try {
+        result = await run('script', ['-qec', command, '/dev/null'], { timeoutMs: 5 * 60_000, cwd: directory, env })
+      } finally {
+        setTrust(env, directory, false)
+      }
+      const output = result.output.replace(ANSI, '')
+      writeFileSync(`${directory}.log`, `exit ${result.code}\n${output}`, { mode: 0o600 })
       const session = parseSessionId(output)
-      if (code !== 0 || !session) throw new Error(`launcher exited ${code} without a session id`)
+      if (result.code !== 0 || !session) throw new Error(`launcher exited ${result.code} without a session id`)
       return { session }
     },
     async probe() {
