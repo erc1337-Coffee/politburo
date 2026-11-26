@@ -1,9 +1,10 @@
 import { Dialog } from '@base-ui/react/dialog'
-import { ArrowDown, ArrowUp, Lock, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Lock, X } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { ChannelRoute, ChannelSettings, ModelRoute, RepositoryView } from '../../contract/channel-settings.ts'
 import { ChannelPath } from '../../contract/schemas.ts'
 import * as board from './board.ts'
+import { modelSource } from './model-logos.ts'
 import { navigate } from './nav.tsx'
 
 type Row = ChannelRoute & { route: ModelRoute | null }
@@ -15,6 +16,29 @@ function rowsOf(catalog: ModelRoute[], settings: ChannelSettings | undefined): R
   const listed = settings.routes.map((entry) => ({ ...entry, route: byKey.get(entry.key) ?? null }))
   const seen = new Set(settings.routes.map((entry) => entry.key))
   return [...listed, ...catalog.filter((route) => !seen.has(route.key)).map((route) => ({ key: route.key, enabled: false, route }))]
+}
+
+/** A route's name in its provider's column: the label without a closing note that repeats the provider. */
+const modelName = (row: Row) => (row.route?.label ?? row.key).replace(/\s*\((Max|OpenRouter|Claude)\)$/i, '')
+
+/** The board's providers, each a column of its models, in the order the party first names them. */
+function columnsOf(rows: Row[]): Array<{ provider: string; rows: Row[] }> {
+  const columns = new Map<string, Row[]>()
+  for (const row of rows) {
+    const provider = row.route?.provider ?? 'removed'
+    columns.set(provider, [...(columns.get(provider) ?? []), row])
+  }
+  return [...columns].map(([provider, rows]) => ({ provider, rows }))
+}
+
+/** Rows with the enabled ones first, in their order; turning one on puts it last of them. */
+function toggled(rows: Row[], key: string): Row[] {
+  const row = rows.find((entry) => entry.key === key)!
+  const rest = rows.filter((entry) => entry.key !== key)
+  const next = { ...row, enabled: !row.enabled }
+  const on = rest.filter((entry) => entry.enabled)
+  const off = rest.filter((entry) => !entry.enabled)
+  return next.enabled ? [...on, next, ...off] : [...on, next, ...off].sort((a, b) => Number(b.enabled) - Number(a.enabled))
 }
 
 const isGitUrl = (text: string) => /^https:\/\/[^\s/]+\/\S+$/.test(text.trim())
@@ -86,14 +110,16 @@ function ChannelForm(props: { channel?: string; done: () => void }) {
   const path = creating ? pathOf(repository ? repositoryName(picked?.name ?? typed) : typed) : props.channel!
   const notRepository = !creating && typed !== '' && repository === null
 
+  // The enabled rows lead, in fallback order; a move swaps two of them.
   const move = (from: number, to: number) => setRows((current) => {
-    if (!current || to < 0 || to >= current.length) return current
+    if (!current || to < 0 || !current[to]?.enabled || !current[from]?.enabled) return current
     const next = [...current]
     const [row] = next.splice(from, 1)
     next.splice(to, 0, row!)
     return next
   })
-  const toggle = (at: number) => setRows((current) => current && current.map((row, i) => (i === at ? { ...row, enabled: !row.enabled } : row)))
+  const toggle = (key: string) => setRows((current) => current && toggled(current, key))
+  const order = (rows ?? []).filter((row) => row.enabled)
 
   const save = async () => {
     if (creating && !ChannelPath.safeParse(path).success) return setError('name required')
@@ -156,19 +182,47 @@ function ChannelForm(props: { channel?: string; done: () => void }) {
         {rows === null ? <span className="hint">loading…</span>
           : rows.length === 0 ? <span className="hint">{routesError ?? 'no models'}</span>
           : (
-            <ol className="routes">
-              {rows.map((row, i) => (
-                <li key={row.key} className={row.enabled ? '' : 'off'}>
-                  <label className="choice-row" title={row.key}>
-                    <input type="checkbox" checked={row.enabled} onChange={() => toggle(i)} />
-                    <span>{row.route?.label ?? row.key}</span>
-                    {!row.route && <span className="hint"> (removed)</span>}
-                  </label>
-                  <button type="button" className="tool" aria-label={`move ${row.route?.label ?? row.key} up`} disabled={i === 0} onClick={() => move(i, i - 1)}><ArrowUp size={13} /></button>
-                  <button type="button" className="tool" aria-label={`move ${row.route?.label ?? row.key} down`} disabled={i === rows.length - 1} onClick={() => move(i, i + 1)}><ArrowDown size={13} /></button>
-                </li>
-              ))}
-            </ol>
+            <>
+              <div className="model-grid">
+                {columnsOf(rows).map((column) => {
+                  const source = modelSource(column.provider)
+                  return (
+                    <section key={column.provider} className="model-column" aria-label={source?.name ?? column.provider}>
+                      <h3>
+                        {source && <img src={source.src} alt="" />}
+                        <span>{source?.name ?? column.provider}</span>
+                        <span className="model-count">{column.rows.filter((row) => row.enabled).length}/{column.rows.length}</span>
+                      </h3>
+                      {column.rows.map((row) => {
+                        const place = order.indexOf(row) + 1
+                        return (
+                          <button key={row.key} type="button" className={`model-tile${row.enabled ? ' on' : ''}`} aria-pressed={row.enabled}
+                            title={row.key} onClick={() => toggle(row.key)}>
+                            <span className="model-name">{modelName(row)}{!row.route && <span className="hint"> (removed)</span>}</span>
+                            <code className="model-id">{row.route?.model ?? row.key}</code>
+                            {place > 0 && <span className="model-place" aria-label={`fallback ${place}`}>{place}</span>}
+                          </button>
+                        )
+                      })}
+                    </section>
+                  )
+                })}
+              </div>
+              {order.length > 0 ? (
+                <>
+                <p className="model-order-head">fallback order</p>
+                <ol className="model-order" aria-label="fallback order">
+                  {order.map((row, i) => (
+                    <li key={row.key}>
+                      <button type="button" className="tool" aria-label={`move ${modelName(row)} earlier`} disabled={i === 0} onClick={() => move(i, i - 1)}><ChevronLeft size={12} /></button>
+                      <span><b>{i + 1}</b> {modelName(row)}</span>
+                      <button type="button" className="tool" aria-label={`move ${modelName(row)} later`} disabled={i === order.length - 1} onClick={() => move(i, i + 1)}><ChevronRight size={12} /></button>
+                    </li>
+                  ))}
+                </ol>
+                </>
+              ) : <span className="hint">no model on: the channel's tasks do not start</span>}
+            </>
           )}
       </fieldset>
 
