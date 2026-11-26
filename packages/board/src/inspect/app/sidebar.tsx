@@ -69,6 +69,9 @@ export function Sidebar({ state, current, onHome, onCollapse }: { state: State; 
   const at = state.discovery?.url ?? location.host
   const [hidden, setHidden] = useStored<string[]>(`board.hidden:${at}`, [])
   const [showHidden, setShowHidden] = useStored(`board.showHidden:${at}`, false)
+  const [settingsFor, setSettingsFor] = useState<string | null>(null)
+  const viewer = board.viewerOf(state.me!)
+  const manages = (path: string) => viewer.may('manage', path)
   const isHidden = (path: string) => hidden.includes(path)
   const toggleHidden = (path: string) => setHidden(isHidden(path) ? hidden.filter((p) => p !== path) : [...hidden, path])
   const groups = useMemo(() => {
@@ -147,6 +150,18 @@ export function Sidebar({ state, current, onHome, onCollapse }: { state: State; 
                 >
                   <Link to={`/c/${channel.path}`} className={`item${unread ? ' unread' : ''}${isHidden(channel.path) ? ' hidden-channel' : ''}`} current={active} title={channel.path}>
                     <span className="name">#{channel.path.slice(channel.path.lastIndexOf('/') + 1)}</span>
+                    {manages(channel.path) && (
+                      <span
+                        className="gear"
+                        role="button"
+                        aria-label="channel settings"
+                        title="channel settings"
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onClick={(event) => { event.preventDefault(); event.stopPropagation(); setSettingsFor(channel.path) }}
+                      >
+                        <Settings size={13} strokeWidth={2} />
+                      </span>
+                    )}
                     <span
                       className="eye"
                       role="button"
@@ -165,6 +180,7 @@ export function Sidebar({ state, current, onHome, onCollapse }: { state: State; 
           </section>
         ))}
       </div>
+      {settingsFor !== null && <ChannelDialog key={settingsFor} channel={settingsFor} open onOpenChange={(open) => { if (!open) setSettingsFor(null) }} />}
       <div className="sidebar-foot">
         <Link to="/settings/access" className="item settings" current={current.view === 'settings'}>
           <Settings size={14} strokeWidth={1.75} />

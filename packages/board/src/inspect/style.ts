@@ -174,9 +174,9 @@ textarea, [contenteditable]:not([contenteditable='false']) { cursor: text; }
 .sidebar .item.unread { color: var(--bright); font-weight: 600; }
 .sidebar .count { color: var(--faint); font-size: 11px; font-weight: 400; }
 .sidebar h2 .spacer { flex: 1; }
-.sidebar .item .eye { display: none; color: var(--faint); }
-.sidebar .item:hover .eye { display: inline-flex; }
-.sidebar .item .eye:hover { color: var(--bright); }
+.sidebar .item .eye, .sidebar .item .gear { display: none; color: var(--faint); }
+.sidebar .item:hover .eye, .sidebar .item:hover .gear { display: inline-flex; }
+.sidebar .item .eye:hover, .sidebar .item .gear:hover { color: var(--bright); }
 .sidebar .item.hidden-channel { opacity: .55; }
 .sidebar .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 .whoami { display: flex; align-items: center; gap: 6px; padding: 6px 8px; color: var(--muted); font-size: 11px; }
@@ -625,10 +625,28 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 .channel-form .repository { display: flex; align-items: center; gap: 6px; width: 100%; padding: 5px 8px; border: 0; background: none; color: var(--dim); text-align: left; overflow-wrap: anywhere; }
 .channel-form .repository.on { color: var(--accent); font-weight: 600; }
 @media (hover: hover) { .channel-form .repository:hover { background: var(--shade-hover); } }
-.channel-form .routes { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
-.channel-form .routes li { display: flex; align-items: center; gap: 4px; padding: 2px 0 2px 6px; background: var(--shade); }
-.channel-form .routes li .choice-row { flex: 1; }
-.channel-form .routes li.off { color: var(--faint); }
+.dialog.channel-dialog { width: min(620px, calc(100vw - 32px)); }
+.channel-form .field > input { height: 32px; padding: 0 10px; border: 1px solid var(--hairline); border-radius: 5px; outline: none; background: var(--selected); color: var(--bright); font-size: 13px; }
+.channel-form .field > input::placeholder { color: var(--faint); }
+.channel-form .field > input:focus { border-color: var(--focus); }
+.model-list { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.model-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 36px; padding: 0 8px 0 4px; border: 1px solid transparent; border-radius: 5px; color: var(--muted); cursor: grab; user-select: none; }
+.model-row:active { cursor: grabbing; }
+.model-row.on { background: var(--selected); color: var(--bright); }
+.model-row.dragged { opacity: .4; }
+.model-row.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.model-row.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+@media (hover: hover) { .model-row:hover { border-color: var(--hairline); } }
+.model-row > img, .model-logo-gap { width: 16px; height: 16px; border-radius: 3px; flex-shrink: 0; }
+.model-grip { flex-shrink: 0; color: var(--faint); }
+.model-label { display: flex; align-items: baseline; gap: 6px; flex: 1; min-width: 0; font-size: 12.5px; }
+.model-provider { flex-shrink: 0; color: var(--faint); font-size: 11.5px; }
+.model-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-row.on .model-name { font-weight: 600; }
+.switch { position: relative; flex-shrink: 0; width: 30px; height: 17px; padding: 0; border: 1px solid var(--hairline); border-radius: 9px; background: var(--shade); cursor: pointer; transition: background .15s, border-color .15s; }
+.switch > i { position: absolute; top: 2px; left: 2px; width: 11px; height: 11px; border-radius: 50%; background: var(--faint); transition: transform .15s, background .15s; }
+.switch[aria-checked='true'] { border-color: var(--accent); background: var(--accent-transparent); }
+.switch[aria-checked='true'] > i { transform: translateX(13px); background: var(--accent); }
 .channel-form .error { margin: 0; color: var(--red); }
 .ask textarea { width: 100%; min-height: 64px; padding: 6px 8px; border: 0; outline: none; background: var(--shade); font-size: 13px; line-height: 1.5; resize: vertical; }
 .ask textarea:focus { outline: 1px solid var(--focus); }
