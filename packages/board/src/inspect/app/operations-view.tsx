@@ -5,6 +5,7 @@
 import { nameFor, pictureFor, SERVICES, type Identities } from './identity.ts'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { base } from './nav.tsx'
+import { Avatar } from './message.tsx'
 import { Header } from './ui.tsx'
 
 // --- what the orchestrator and the ledger answer ---------------------------------------------
@@ -119,15 +120,16 @@ function followEvents(onEvent: (event: OpsEvent) => void, onReset: () => void, o
 
 const WIDTH = 960
 const TOP = 46
-const ROW = 74
+const ROW = 86
 const SHOWN_WORKERS = 8
 const COLUMN = { lan: 0, relay: 420, cloud: 560 }
 const BOX = { x: 36, w: 156, h: 58 }
-const HEART_R = 46
-const RELAY_R = 32
+/** The orchestrator's and the relay's boxes, by their centers. */
+const ORCHESTRATOR = { w: 164, h: 64 }
+const RELAY = { w: 124, h: 64 }
 const ORCHESTRATOR_X = 304
 const RELAY_X = 490
-const WORKER = { x: 588, w: 352, h: 58 }
+const WORKER = { x: 588, w: 352, h: 72 }
 
 type Kind = 'command' | 'telemetry' | 'question' | 'result' | 'external' | 'usage'
 const COLOR: Record<Kind, string> = {
@@ -156,9 +158,12 @@ const span = (ms: number) => {
 }
 const ago = (now: number, at: number | null) => at === null ? 'never' : now - at < 1000 ? 'now' : `${span(now - at)} ago`
 const clock = (at: number | null) => at === null ? '—' : new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-const clip = (text: string, length: number) => text.length > length ? `${text.slice(0, length - 1)}…` : text
 const words = (state: string) => state.replaceAll('_', ' ')
-const onCircle = (c: Point, r: number, degrees: number): Point => ({ x: c.x + r * Math.cos((degrees * Math.PI) / 180), y: c.y + r * Math.sin((degrees * Math.PI) / 180) })
+type Box = { x: number; y: number; w: number; h: number }
+const around = (c: Point, size: { w: number; h: number }): Box => ({ x: c.x - size.w / 2, y: c.y - size.h / 2, ...size })
+/** Where a link meets a box's side, `dy` from its middle, just outside its frame. */
+const leftOf = (box: Box, dy: number): Point => ({ x: box.x - 3, y: box.y + box.h / 2 + dy })
+const rightOf = (box: Box, dy: number): Point => ({ x: box.x + box.w + 3, y: box.y + box.h / 2 + dy })
 /** A link of straight segments: across, then up or down at a right angle halfway, then across. */
 const curve = (a: Point, b: Point, bend = 0) => {
   const mx = Math.round((a.x + b.x) / 2) + bend
@@ -346,8 +351,8 @@ export function Operations(props: { lead?: ReactNode; identities?: Identities })
   const mid = Math.max(TOP + 128, TOP + block / 2)
   const workerTop = mid - block / 2
   const workerAt = (index: number) => ({ x: WORKER.x, y: workerTop + index * ROW })
-  const o = { x: ORCHESTRATOR_X, y: mid }
-  const r = { x: RELAY_X, y: mid }
+  const o = around({ x: ORCHESTRATOR_X, y: mid }, ORCHESTRATOR)
+  const r = around({ x: RELAY_X, y: mid }, RELAY)
   const board = { x: BOX.x, y: mid - 104 }
   const github = { x: BOX.x, y: mid + 46 }
 
@@ -367,7 +372,7 @@ export function Operations(props: { lead?: ReactNode; identities?: Identities })
 
   const led = (state: 'ok' | 'warn' | 'fault' | 'off') => state
   const boardLed = offline ? led('off') : boardDown ? led('fault') : snapshot.board.paused ? led('warn') : led('ok')
-  // Names as the board shows them; the schematic's boxes are a fixed size, so long ones are clipped there.
+  // Names and pictures as the board shows them; a box cuts a long name short.
   const orchestratorName = nameFor(identities, snapshot?.orchestrator.actor || undefined, 'Orchestrator')
   const relayName = nameFor(identities, 'relay', SERVICES.relay)
   const workerName = nameFor(identities, 'worker', SERVICES.worker)
@@ -398,56 +403,52 @@ export function Operations(props: { lead?: ReactNode; identities?: Identities })
                 <text className="column-label" x={COLUMN.relay + 16} y={26}>RELAY</text>
                 <text className="column-label" x={COLUMN.cloud + 16} y={26}>CLOUD</text>
 
-                {edge('board>orchestrator', curve({ x: board.x + BOX.w, y: board.y + 22 }, onCircle(o, HEART_R + 3, 206)))}
-                {edge('orchestrator>board', curve(onCircle(o, HEART_R + 3, 222), { x: board.x + BOX.w, y: board.y + 40 }, 8))}
-                {edge('orchestrator>github', curve(onCircle(o, HEART_R + 3, 148), { x: github.x + BOX.w, y: github.y + 29 }))}
-                {edge('orchestrator>relay', curve(onCircle(o, HEART_R + 3, -12), onCircle(r, RELAY_R + 3, 192)), relayDown ? 'down' : '')}
-                {edge('relay>orchestrator', curve(onCircle(r, RELAY_R + 3, 168), onCircle(o, HEART_R + 3, 12), 8), relayDown ? 'down' : '')}
+                {edge('board>orchestrator', curve({ x: board.x + BOX.w, y: board.y + 22 }, leftOf(o, -20)))}
+                {edge('orchestrator>board', curve(leftOf(o, -8), { x: board.x + BOX.w, y: board.y + 40 }, 8))}
+                {edge('orchestrator>github', curve(leftOf(o, 16), { x: github.x + BOX.w, y: github.y + 29 }))}
+                {edge('orchestrator>relay', curve(rightOf(o, -8), leftOf(r, -8)), relayDown ? 'down' : '')}
+                {edge('relay>orchestrator', curve(leftOf(r, 8), rightOf(o, 8), 8), relayDown ? 'down' : '')}
                 {workers.map((attempt, index) => {
                   const at = workerAt(index)
                   const settled = !LIVE.has(attempt.state)
                   return (
                     <g key={`links-${attempt.attempt_id}`} className={settled ? 'settled' : ''}>
-                      {edge(`relay>${attempt.channel}`, curve(onCircle(r, RELAY_R + 3, -10), { x: at.x - 2, y: at.y + 21 }))}
-                      {edge(`${attempt.channel}>relay`, curve({ x: at.x - 2, y: at.y + 37 }, onCircle(r, RELAY_R + 3, 10), 8))}
-                      {edge(`launch>${attempt.channel}`, curve(onCircle(o, HEART_R + 3, 58), { x: at.x - 2, y: at.y + WORKER.h / 2 }), 'launch')}
+                      {edge(`relay>${attempt.channel}`, curve(rightOf(r, -8), { x: at.x - 2, y: at.y + WORKER.h / 2 - 8 }))}
+                      {edge(`${attempt.channel}>relay`, curve({ x: at.x - 2, y: at.y + WORKER.h / 2 + 8 }, rightOf(r, 8), 8))}
+                      {edge(`launch>${attempt.channel}`, curve({ x: o.x + o.w - 24, y: o.y + o.h + 3 }, { x: at.x - 2, y: at.y + WORKER.h / 2 }), 'launch')}
                     </g>
                   )
                 })}
 
                 <g className={`node${boardDown ? ' fault' : ''}${offline ? ' down' : ''}`}>
                   <rect className="frame" x={board.x} y={board.y} width={BOX.w} height={BOX.h} rx={7} />
+                  <Card box={{ ...board, w: BOX.w, h: BOX.h }} name="Board" details={[offline ? '—' : boardDown ? 'unreachable' : snapshot.board.paused ? 'paused' : `${liveCount} claimed`]} />
                   <circle className={`led ${boardLed}`} cx={board.x + BOX.w - 14} cy={board.y + 18} r={3.5} />
-                  <text className="node-title" x={board.x + 14} y={board.y + 24}>Board</text>
-                  <text className="node-line small" x={board.x + 14} y={board.y + 43}>{offline ? '—' : boardDown ? 'unreachable' : snapshot.board.paused ? 'paused' : `${liveCount} claimed`}</text>
                   {snapshot?.board.error && <title>{snapshot.board.error}</title>}
                 </g>
 
                 <g className={`node${faults.github ? ' fault' : ''}`}>
                   <rect className="frame" x={github.x} y={github.y} width={BOX.w} height={BOX.h} rx={7} />
+                  <Card box={{ ...github, w: BOX.w, h: BOX.h }} name="GitHub" details={[plural(attempts.filter((a) => a.pr_url).length, 'draft PR')]} />
                   <circle className={`led ${faults.github ? 'fault' : offline ? 'off' : 'ok'}`} cx={github.x + BOX.w - 14} cy={github.y + 18} r={3.5} />
-                  <text className="node-title" x={github.x + 14} y={github.y + 24}>GitHub</text>
-                  <text className="node-line small" x={github.x + 14} y={github.y + 43}>{plural(attempts.filter((a) => a.pr_url).length, 'draft PR')}</text>
                 </g>
 
                 <g className={`node heart${offline ? ' down fault' : !serving ? ' down' : ''}`}>
-                  {serving && <circle className="glow" cx={o.x} cy={o.y} r={HEART_R + 26} fill="url(#ops-heart)" />}
-                  <circle className="frame" cx={o.x} cy={o.y} r={HEART_R} />
-                  <Portrait id="ops-portrait-orchestrator" at={o} r={HEART_R} src={orchestratorPicture} />
-                  {serving && beat.n > 0 && <circle key={beat.n} className="ripple" cx={o.x} cy={o.y} r={HEART_R} style={{ ['--c' as string]: beat.color }} />}
-                  <circle className={`led ${orchestratorLed}`} cx={o.x} cy={o.y - 26} r={3.5} />
-                  <text className="node-title" x={o.x} y={o.y + 2} textAnchor="middle">{clip(orchestratorName, 14)}</text>
-                  <text className="node-line small" x={o.x} y={o.y + 18} textAnchor="middle">{offline ? 'unreachable' : serving ? `${snapshot.orchestrator.live}/${snapshot.orchestrator.live_limit} live` : 'idle'}</text>
+                  {serving && <circle className="glow" cx={ORCHESTRATOR_X} cy={mid} r={ORCHESTRATOR.w / 2 + 20} fill="url(#ops-heart)" />}
+                  <rect className="frame" x={o.x} y={o.y} width={o.w} height={o.h} rx={7} />
+                  {serving && beat.n > 0 && <rect key={beat.n} className="ripple" x={o.x} y={o.y} width={o.w} height={o.h} rx={7} style={{ ['--c' as string]: beat.color }} />}
+                  <Card box={o} name={orchestratorName} picture={orchestratorPicture} avatar
+                    details={[offline ? 'unreachable' : serving ? `${snapshot.orchestrator.live}/${snapshot.orchestrator.live_limit} live` : 'idle']} />
+                  <circle className={`led ${orchestratorLed}`} cx={o.x + o.w - 14} cy={o.y + 18} r={3.5} />
                   {(snapshot?.orchestrator.reason || stateError) && <title>{snapshot?.orchestrator.reason ?? stateError}</title>}
                 </g>
 
                 <g className={`node relay${relayDown ? ' down' : ''}${snapshot?.relay.reachable === false ? ' fault' : ''}`}>
-                  <circle className="frame" cx={r.x} cy={r.y} r={RELAY_R} />
-                  <Portrait id="ops-portrait-relay" at={r} r={RELAY_R} src={relayPicture} />
-                  {!relayDown && streams > 0 && <circle className="ring" cx={r.x} cy={r.y} r={RELAY_R + 6} style={{ ['--spin' as string]: `${Math.max(4, 24 / streams).toFixed(1)}s` }} />}
-                  <circle className={`led ${relayLed}`} cx={r.x} cy={r.y - 17} r={3} />
-                  <text className="node-title" x={r.x} y={r.y + 5} textAnchor="middle">{clip(relayName, 9)}</text>
-                  <text className="node-line small" x={r.x} y={r.y + 19} textAnchor="middle">{snapshot?.relay.reachable === false ? 'down' : snapshot?.relay.latency_ms != null ? `${snapshot.relay.latency_ms} ms` : '—'}</text>
+                  <rect className="frame" x={r.x} y={r.y} width={r.w} height={r.h} rx={7} />
+                  {!relayDown && streams > 0 && <rect className="ring" x={r.x - 4} y={r.y - 4} width={r.w + 8} height={r.h + 8} rx={10} style={{ ['--spin' as string]: `${Math.max(4, 24 / streams).toFixed(1)}s` }} />}
+                  <Card box={r} name={relayName} picture={relayPicture} avatar
+                    details={[snapshot?.relay.reachable === false ? 'down' : snapshot?.relay.latency_ms != null ? `${snapshot.relay.latency_ms} ms` : '—']} />
+                  <circle className={`led ${relayLed}`} cx={r.x + r.w - 14} cy={r.y + 18} r={3} />
                   {snapshot?.relay.error && <title>{snapshot.relay.error}</title>}
                 </g>
 
@@ -460,7 +461,7 @@ export function Operations(props: { lead?: ReactNode; identities?: Identities })
                   </g>
                 )}
                 {workers.map((attempt, index) => (
-                  <Worker key={attempt.attempt_id} name={workerName} attempt={attempt} at={workerAt(index)} now={now}
+                  <Worker key={attempt.attempt_id} name={workerName} picture={pictureFor(identities, 'worker')} attempt={attempt} at={workerAt(index)} now={now}
                     figures={usage?.by_attempt.find((row) => row.attempt === attempt.attempt_id)?.figures}
                     heartbeat={heartbeats[attempt.channel] ?? 0} progress={progress[attempt.channel] ?? 0} fault={(faults[attempt.channel] ?? 0) > 0}
                     selected={selected === attempt.attempt_id} onSelect={() => setSelected(selected === attempt.attempt_id ? null : attempt.attempt_id)} />
@@ -547,20 +548,29 @@ function Facts(props: { rows: Array<[string, ReactNode | null | undefined]> }) {
   )
 }
 
-/** A service's picture filling its circle, under a scrim that keeps its name, figures and lamp readable. */
-function Portrait({ id, at, r, src }: { id: string; at: Point; r: number; src: string | undefined }) {
-  if (!src) return null
+/**
+ * A box's words, as HTML inside its frame: the picture and name on the first line, when it has a
+ * picture slot, then each detail on a line of its own. The frame, the lamp and the animations stay SVG.
+ */
+function Card({ box, name, picture, avatar = picture !== undefined, figure, details }: {
+  box: Box; name: string; picture?: string | undefined; avatar?: boolean; figure?: string; details: ReactNode[]
+}) {
   return (
-    <>
-      <clipPath id={id}><circle cx={at.x} cy={at.y} r={r - 1} /></clipPath>
-      <image className="portrait" href={src} x={at.x - r} y={at.y - r} width={r * 2} height={r * 2} preserveAspectRatio="xMidYMid slice" clipPath={`url(#${id})`} />
-      <circle className="scrim" cx={at.x} cy={at.y} r={r - 1} />
-    </>
+    <foreignObject x={box.x} y={box.y} width={box.w} height={box.h}>
+      <div className="ops-node">
+        <div className="ops-node-head">
+          {avatar && <Avatar name={name} src={picture} size={18} />}
+          <span className="ops-node-name" title={name}>{name}</span>
+          {figure !== undefined && <span className="ops-node-figure">{figure}</span>}
+        </div>
+        {details.filter((detail) => detail !== null && detail !== '').map((detail, i) => <div key={i} className="ops-node-detail">{detail}</div>)}
+      </div>
+    </foreignObject>
   )
 }
 
 function Worker(props: {
-  name: string; attempt: AttemptView; at: Point; now: number; figures: Figures | undefined; heartbeat: number; progress: number
+  name: string; picture: string | undefined; attempt: AttemptView; at: Point; now: number; figures: Figures | undefined; heartbeat: number; progress: number
   fault: boolean; selected: boolean; onSelect: () => void
 }) {
   const { attempt, at, now } = props
@@ -576,17 +586,14 @@ function Worker(props: {
       onClick={props.onSelect} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); props.onSelect() } }}
       role="button" tabIndex={0} aria-pressed={props.selected} aria-label={`task ${attempt.task_id}, ${words(attempt.state)}`}>
       <rect className="frame" x={at.x} y={at.y} width={WORKER.w} height={WORKER.h} rx={7} />
-      <circle className={`led ${state}`} cx={at.x + 16} cy={at.y + 20} r={3.5} />
-      {props.heartbeat > 0 && !settled && <circle key={props.heartbeat} className="pulse" cx={at.x + 16} cy={at.y + 20} r={3.5} />}
-      <text className="node-title" x={at.x + 30} y={at.y + 25}>
-        #{attempt.task_id}<tspan className="node-detail" dx={8}>{clip(props.name, 14)} · round {attempt.round} · attempt {attempt.attempt_no}</tspan>
-      </text>
-      <text className="node-line" x={at.x + 30} y={at.y + 43}>
-        <tspan className={`state state-${attempt.state}`}>{shown}</tspan>
-        <tspan className="node-detail" dx={8}>{clip(where, Math.max(8, 30 - shown.length))}</tspan>
-      </text>
-      <text className="node-figure" x={at.x + WORKER.w - 14} y={at.y + 25} textAnchor="end">{usd(props.figures?.cost_usd ?? attempt.cost_usd)}</text>
-      <text className="node-detail" x={at.x + WORKER.w - 14} y={at.y + 43} textAnchor="end">{ago(now, attempt.last_contact_at)}</text>
+      <Card box={{ ...at, w: WORKER.w, h: WORKER.h }} name={props.name} picture={props.picture} avatar
+        figure={usd(props.figures?.cost_usd ?? attempt.cost_usd)}
+        details={[
+          <><span className={`state state-${attempt.state}`}>{shown}</span> · #{attempt.task_id} · round {attempt.round} · attempt {attempt.attempt_no}</>,
+          `${where} · ${ago(now, attempt.last_contact_at)}`,
+        ]} />
+      <circle className={`led ${state}`} cx={at.x + WORKER.w - 14} cy={at.y + 18} r={3.5} />
+      {props.heartbeat > 0 && !settled && <circle key={props.heartbeat} className="pulse" cx={at.x + WORKER.w - 14} cy={at.y + 18} r={3.5} />}
       <rect className="track" x={at.x + 10} y={at.y + WORKER.h - 4} width={WORKER.w - 20} height={1.5} rx={0.75} />
       {props.progress > 0 && !settled && <rect key={props.progress} className="sweep" x={at.x + 10} y={at.y + WORKER.h - 4} width={WORKER.w - 20} height={1.5} rx={0.75} />}
       <title>{`${attempt.repository} ${attempt.branch}\ncommands ${attempt.messages.commands} · telemetry ${attempt.messages.telemetry}`}</title>

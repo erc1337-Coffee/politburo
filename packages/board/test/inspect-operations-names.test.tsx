@@ -42,33 +42,35 @@ async function show(identities: Parameters<typeof Operations>[0]['identities']) 
   return document.body
 }
 
-it('names the orchestrator, the relay and each worker as the board does', async () => {
-  orchestratorAnswers()
-  const page = await show({ [ORCHESTRATOR]: { name: 'Conductor', avatar: null }, relay: { name: 'Courier', avatar: null }, worker: { name: 'Builder', avatar: null } })
-  const titles = [...page.querySelectorAll('.node-title, .ops-card-head h2')].map((el) => el.textContent)
-  expect(titles).toEqual(expect.arrayContaining(['Conductor', 'Courier']))
-  expect(page.querySelector('.node.worker .node-title')?.textContent).toContain('Builder · round 1')
-})
+// Each service's box, as it reads: its first line, its picture, then its details.
+const box = (page: HTMLElement, node: string) => {
+  const card = page.querySelector(`.node.${node} .ops-node`)!
+  return {
+    name: card.querySelector('.ops-node-name')?.textContent,
+    picture: card.querySelector('.ops-node-head .avatar img')?.getAttribute('src') ?? card.querySelector('.ops-node-head .avatar')?.textContent ?? null,
+    details: [...card.querySelectorAll('.ops-node-detail')].map((line) => line.textContent),
+  }
+}
 
 // A 1×1 PNG.
 const PIXEL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
-const portraits = (page: HTMLElement) => ({
-  orchestrator: page.querySelector('.node.heart image')?.getAttribute('href') ?? null,
-  relay: page.querySelector('.node.relay image')?.getAttribute('href') ?? null,
-})
 
-it("fills the orchestrator's and the relay's circles with the pictures the board gives them, and leaves them plain without", async () => {
+it('shows the orchestrator, the relay and each worker as boxes: picture and name first, details under them', async () => {
   orchestratorAnswers()
-  const page = await show({ [ORCHESTRATOR]: { name: null, avatar: PIXEL }, relay: { name: null, avatar: PIXEL } })
-  expect(portraits(page)).toEqual({ orchestrator: PIXEL, relay: PIXEL })
-  flushSync(() => root!.render(<Operations identities={{}} />))
-  expect(portraits(page)).toEqual({ orchestrator: null, relay: null })
+  const page = await show({ [ORCHESTRATOR]: { name: 'Conductor', avatar: PIXEL }, relay: { name: 'Courier', avatar: PIXEL }, worker: { name: 'Builder', avatar: PIXEL } })
+  expect(page.querySelectorAll('.node.heart circle.frame, .node.relay circle.frame')).toHaveLength(0)
+  expect(box(page, 'heart')).toEqual({ name: 'Conductor', picture: PIXEL, details: ['1/4 live'] })
+  expect(box(page, 'relay')).toEqual({ name: 'Courier', picture: PIXEL, details: ['12 ms'] })
+  expect(box(page, 'worker')).toEqual({ name: 'Builder', picture: PIXEL, details: ['running · #105 · round 1 · attempt 1', expect.stringMatching(/^web · task-105 · /)] })
+  expect([...page.querySelectorAll('.ops-card-head h2')].map((h) => h.textContent)).toEqual(expect.arrayContaining(['Conductor', 'Courier']))
 })
 
-it('keeps their own names when the board gives none', async () => {
+it('keeps their own names and initials when the board gives none', async () => {
   orchestratorAnswers()
   const page = await show({})
-  const titles = [...page.querySelectorAll('.node-title, .ops-card-head h2')].map((el) => el.textContent)
-  expect(titles).toEqual(expect.arrayContaining(['Orchestrator', 'Relay']))
-  expect(page.querySelector('.node.worker .node-title')?.textContent).toContain('Worker · round 1')
+  expect([box(page, 'heart'), box(page, 'relay'), box(page, 'worker')].map(({ name, picture }) => ({ name, picture }))).toEqual([
+    { name: 'Orchestrator', picture: 'O' },
+    { name: 'Relay', picture: 'R' },
+    { name: 'Worker', picture: 'W' },
+  ])
 })

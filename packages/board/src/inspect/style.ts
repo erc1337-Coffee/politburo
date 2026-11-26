@@ -917,9 +917,20 @@ details.turn-action { display: block; }
 .ops-schematic .led.fault { fill: var(--red); opacity: 1; }
 .ops-schematic .heart .glow { opacity: .8; }
 .ops-schematic .heart .ripple { fill: none; stroke: var(--c); stroke-width: 1.5; transform-box: fill-box; transform-origin: center; animation: ops-ripple 1.1s cubic-bezier(.2, .6, .3, 1) forwards; pointer-events: none; }
-@keyframes ops-ripple { from { transform: scale(1); opacity: .75; } to { transform: scale(1.32); opacity: 0; } }
-.ops-schematic .relay .ring { fill: none; stroke: var(--gold); stroke-opacity: .45; stroke-width: 1; stroke-dasharray: 1 5; transform-box: fill-box; transform-origin: center; animation: ops-spin var(--spin, 20s) linear infinite; }
-@keyframes ops-spin { to { transform: rotate(360deg); } }
+@keyframes ops-ripple { from { transform: scale(1); opacity: .75; } to { transform: scale(1.12, 1.3); opacity: 0; } }
+.ops-schematic .relay .ring { fill: none; stroke: var(--gold); stroke-opacity: .45; stroke-width: 1; stroke-dasharray: 1 5; animation: ops-march var(--spin, 20s) linear infinite; }
+@keyframes ops-march { to { stroke-dashoffset: -120; } }
+/* A box's words are HTML in its frame: picture and name first, then a line per detail. */
+.ops-schematic foreignObject { overflow: visible; pointer-events: none; }
+.ops-node { box-sizing: border-box; height: 100%; padding: 9px 26px 8px 12px; display: flex; flex-direction: column; justify-content: center; gap: 3px; font-family: var(--mono); }
+.ops-node-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.ops-node-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--bright); font: 600 14px var(--display); letter-spacing: .01em; }
+.ops-node-figure { margin-left: auto; padding-left: 8px; color: var(--bright); font-size: 12px; font-variant-numeric: tabular-nums; }
+.ops-node-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); font-size: 11px; }
+.ops-node-detail .state { color: var(--dim); }
+.ops-node-detail .state-running { color: var(--ops-ok); }
+.ops-node-detail .state-waiting_answer { color: var(--warning); }
+.ops-schematic .node.down .ops-node-name { color: var(--muted); }
 .ops-schematic .worker { cursor: pointer; outline: none; }
 .ops-schematic .worker:hover .frame { stroke-opacity: 1; }
 .ops-schematic .worker:focus-visible .frame, .ops-schematic .worker.selected .frame { stroke: var(--accent); stroke-opacity: 1; stroke-width: 1.6; }
@@ -984,8 +995,6 @@ details.turn-action { display: block; }
 .ops-task .ops-log { padding: 0 0 6px 16px; overflow: visible; }
 
 @keyframes ops-arrive { from { background: var(--shade-hover); } }
-.operations-view .scrim { fill: var(--panel); opacity: .55; pointer-events: none; }
-.operations-view .portrait { pointer-events: none; }
 @keyframes activity-pulse { 50% { opacity: .45; } }
 
 @media (max-width: 64rem) {
