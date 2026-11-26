@@ -108,6 +108,11 @@ export class GitRepositories {
     return next
   }
 
+  /** Keeps a worker bundle as its task branch in a channel's local repository, without touching `main`. */
+  async keepBundle(repository: string, input: { bundleFile: string; branch: string; head: string; base: string }): Promise<void> {
+    await this.#receive(await this.#local(repository), `refs/heads/${input.branch}`, input)
+  }
+
   /** The bare mirror of `repository` (`owner/name`), fetched up to date. */
   async #mirror(repository: string): Promise<string> {
     const path = join(this.#options.directory, `${repository.replace('/', '__')}.git`)

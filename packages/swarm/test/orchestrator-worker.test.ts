@@ -12,6 +12,7 @@ import { board as openBoard } from '@vercel/board'
 import { local } from '@vercel/board/backend-local'
 import { createRelay, generateSigningKeys, MessageStore, type Relay } from '@remilia/politburo-relay'
 import { parseConfig } from '../src/orchestrator/config.ts'
+import { FinalDecider, KevClient, type ClaudeRunner } from '../src/orchestrator/final-decision.ts'
 import { GitRepositories, localRepository } from '../src/orchestrator/git.ts'
 import { GitHubClient } from '../src/orchestrator/github.ts'
 import { openJournal, type Provider } from '../src/orchestrator/launch.ts'
@@ -117,7 +118,7 @@ describe('orchestrator with the real worker client', () => {
     rmSync(directory, { recursive: true, force: true })
   })
 
-  async function setup(name: string, piMode: string) {
+  async function setup(name: string, piMode: string, decider: FinalDecider | null = null) {
     const team = openBoard({ backend: local({ memory: true }) })
     await team.post('work/app', 'channel')
     await team.configureChannel('work/app', { repository: 'https://github.com/owner/repo', routes: [] })
@@ -174,7 +175,7 @@ worker:
       git: new GitRepositories({ directory: join(stateDirectory, 'repositories'), urlBase: originRoot, token: null }),
       state, journal: openJournal(join(stateDirectory, 'journal')),
       routes: () => [{ label: 'Route A', provider: 'openrouter', model: 'fake' }],
-      provider, log: (entry) => logs.push(entry),
+      provider, log: (entry) => logs.push(entry), decider,
     })
     const until = async (what: string, check: () => Promise<boolean> | boolean, seconds = 60) => {
       for (let i = 0; i < seconds * 10; i++) {
@@ -211,6 +212,40 @@ worker:
       assert.match(round2.text, /"kind":"tool","text":"edit parser.ts"/)
       assert.match(round2.text, /```\n\nparse now returns 3$/, 'the final answer is the reply text')
       assert.equal(round2.blocks?.[0]?.schema, 'worker_activity')
+    } finally {
+      await run.orchestrator.stop()
+      run.state.close()
+    }
+  })
+
+  test('the final decision: Claude corrects a failing check, then Kev and Claude follow up with a new task', async () => {
+    const kevFetch = (async () => new Response(JSON.stringify({ answers: { next: { type: 'choice', choice: 'FOLLOWUP', confidence: 0.9, probabilities: {} } } }))) as unknown as typeof fetch
+    const asked: string[][] = []
+    const claude: ClaudeRunner = async ({ schema }) => {
+      const allowed = (schema as { properties: { label: { enum: string[] } } }).properties.label.enum
+      asked.push(allowed)
+      return allowed.includes('FOLLOWUP')
+        ? { label: 'FOLLOWUP', reason: 'The parser needs a test.', followups: [{ title: 'Test parse', brief: 'Add a unit test for parse.' }] }
+        : { label: 'RETRY', reason: 'The check is fixable.', correction: 'The value checks fail: make parse return 3.' }
+    }
+    const decider = new FinalDecider({ kev: new KevClient({ url: 'http://kev.test', timeoutMs: 1_000, fetch: kevFetch }), claude, kevConfidence: 0.75, followupDepth: 3 })
+    const run = await setup('decision', 'plain', decider)
+    const { task } = await run.team.tasks.create('work/app', 'Make parse return 3')
+    await run.orchestrator.start()
+    try {
+      await run.until('task completion', async () => (await run.team.thread(task.id)).message.task?.state === 'completed', 90)
+      await run.until('the decision label', async () => (await run.team.thread(task.id)).message.labels['politburo.decision'] === 'FOLLOWUP', 20)
+      assert.deepEqual(asked, [['RETRY', 'REVIEW'], ['PASS', 'FOLLOWUP', 'RETRY', 'REVIEW']])
+      const { replies } = await run.team.thread(task.id)
+      const decisions = replies.filter((reply) => reply.blocks?.[0]?.schema === 'final_decision').map((reply) => reply.blocks![0]!.data as Record<string, unknown>)
+      assert.deepEqual(decisions.map((data) => [data.label, data.decided_by]), [['RETRY', 'claude'], ['FOLLOWUP', 'claude']])
+      assert.deepEqual(decisions[1]!.kev, { label: 'FOLLOWUP', confidence: 0.9 })
+      const followup = (decisions[1]!.followups as Array<{ id: string; title: string }>)[0]!
+      assert.equal(followup.title, 'Test parse')
+      const created = (await run.team.thread(followup.id)).message
+      assert.match(created.text, /^Test parse\n\nAdd a unit test for parse\.\n\nFollow-up of #/)
+      assert.deepEqual([created.labels['politburo.followup_of'], created.labels['politburo.followup_depth']], [task.id, '1'])
+      assert.equal(run.github.pulls.length, 1)
     } finally {
       await run.orchestrator.stop()
       run.state.close()

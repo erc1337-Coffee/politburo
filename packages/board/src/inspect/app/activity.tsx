@@ -116,6 +116,40 @@ function StepView({ step }: { step: Step }) {
 
 export { isActivity } from './store.ts'
 
+type Decision = { label: string; decided_by: string; reason: string; kev?: { label: string; confidence: number }; correction?: string; followups?: Array<{ id: string; title: string }> }
+
+export function isDecision(block: BlockView): boolean {
+  return block.schema === 'final_decision' && block.version === 1 && typeof (block.data as { label?: unknown }).label === 'string'
+}
+
+/** Who reached a decision: the rules, Kev, or Claude on top of Kev's first opinion. */
+function decidedBy(data: Decision): string {
+  if (data.decided_by === 'kev' && data.kev) return `Kev ${data.kev.confidence.toFixed(2)}`
+  if (data.decided_by === 'claude') return data.kev ? `Kev ${data.kev.label} ${data.kev.confidence.toFixed(2)} → Claude` : 'Claude'
+  return 'rules'
+}
+
+/** The orchestrator's final decision after a round: one accent line that unfolds into the reason. */
+export function DecisionBlock({ block }: { block: BlockView }) {
+  const data = block.data as unknown as Decision
+  return (
+    <div className="turn decision">
+      <details className="turn-decision">
+        <summary>
+          <span className={`decision-mark ${data.label.toLowerCase()}`}>{data.label}</span>
+          <span className="turn-target">{decidedBy(data)}</span>
+          <ChevronRight size={12} className="turn-chevron" />
+        </summary>
+        <div className="decision-detail">
+          <p>{data.reason}</p>
+          {data.correction && <pre>{data.correction}</pre>}
+          {data.followups?.map((task) => <div key={task.id}>#{task.id} {task.title}</div>)}
+        </div>
+      </details>
+    </div>
+  )
+}
+
 export function ActivityBlock({ block }: { block: BlockView }) {
   const data = block.data as unknown as Activity
   const running = data.state === 'running'
@@ -127,7 +161,7 @@ export function ActivityBlock({ block }: { block: BlockView }) {
     <div className="turn">
       {steps.map((step) => <StepView key={step.key} step={step} />)}
       {running ? (
-        <div className="turn-foot running">Working…</div>
+        <div className="turn-dots" role="status" aria-label="working"><i /><i /><i /></div>
       ) : (
         <div className="turn-foot">
           {data.state !== 'completed' && <span className="turn-ended">round {data.round} ended: {data.state.replaceAll('_', ' ')}</span>}

@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { base } from './nav.tsx'
 import { Avatar } from './message.tsx'
 import { Header } from './ui.tsx'
+import { modelSource } from './model-logos.ts'
 
 // --- what the orchestrator and the ledger answer ---------------------------------------------
 
@@ -20,7 +21,9 @@ type OpsEvent = { seq: number; at: number } & (
   | { kind: 'launch'; task: string; channel: string; outcome: string }
   | { kind: 'attempt'; attempt: string; task: string; channel: string; state: string }
   | { kind: 'fault'; component: string; code: string; task?: string; channel?: string }
-  | { kind: 'usage'; task: string; channel: string; round: number; models: number; input_tokens: number; output_tokens: number; cost_usd: number }
+  | { kind: 'usage'; task: string; channel: string; round: number; models: number; providers?: string[]; input_tokens: number; output_tokens: number; cost_usd: number }
+  | { kind: 'decision_step'; task: string; channel: string; model: 'kev' | 'claude' }
+  | { kind: 'decision'; task: string; channel: string; label: string; decided_by: string }
 )
 type AttemptView = {
   attempt_id: string; task_id: string; attempt_no: number; channel: string; board_channel: string; repository: string; branch: string
@@ -28,6 +31,7 @@ type AttemptView = {
   question_at: number | null; watchdog_due: number | null; cost_usd: number; pr_url: string | null
   heartbeat: { at: number; state: string; round: number; elapsed_seconds: number; pi_alive: boolean } | null
   progress: Record<string, number>; messages: { commands: number; telemetry: number; last_at: number | null }
+  decision_model?: 'kev' | 'claude' | null
 }
 type DirectionStatistics = { messages: number; bytes: number; last_seq: number; last_at: number | null; streams: number }
 type Snapshot = {
@@ -611,7 +615,9 @@ function Worker(props: {
       <Card box={{ ...at, w: WORKER.w, h: WORKER.h }} name={props.name} picture={props.picture} avatar
         figure={usd(props.figures?.cost_usd ?? attempt.cost_usd)}
         details={[
-          <><span className={`state state-${attempt.state}`}>{shown}</span> · #{attempt.task_id} · round {attempt.round} · attempt {attempt.attempt_no}</>,
+          attempt.decision_model
+            ? <><Sources names={[attempt.decision_model]} spin /> <span className="state">deciding · {modelSource(attempt.decision_model)?.name}</span> · #{attempt.task_id}</>
+            : <><span className={`state state-${attempt.state}`}>{shown}</span> · #{attempt.task_id} · round {attempt.round} · attempt {attempt.attempt_no}</>,
           `${where} · ${ago(now, attempt.last_contact_at)}`,
         ]} />
       <circle className={`led ${state}`} cx={at.x + WORKER.w - 14} cy={at.y + 18} r={3.5} />
@@ -708,6 +714,25 @@ function AttemptPanel(props: { name: string; attempt: AttemptView; now: number; 
 const worthShowing = (event: OpsEvent) =>
   event.kind !== 'tick' && !(event.kind === 'telemetry' && event.type === 'heartbeat') && !(event.kind === 'board' && event.action === 'reply')
 
+/** The model sources an event names: the model of a decision step, who decided, or a round's providers. */
+function sourcesOf(event: OpsEvent): string[] {
+  if (event.kind === 'decision_step') return [event.model]
+  if (event.kind === 'decision') return event.decided_by === 'rules' ? [] : [event.decided_by]
+  if (event.kind === 'usage') return event.providers ?? []
+  return []
+}
+
+/** The pictures of model sources, each with its name as a tooltip. */
+function Sources({ names, spin = false }: { names: string[]; spin?: boolean }) {
+  const shown = [...new Map(names.map(modelSource).filter((source) => source !== null).map((source) => [source.name, source])).values()]
+  if (shown.length === 0) return null
+  return (
+    <span className={`ops-sources${spin ? ' spin' : ''}`}>
+      {shown.map((source) => <img key={source.name} src={source.src} alt={source.name} title={source.name} />)}
+    </span>
+  )
+}
+
 function EventRows({ events }: { events: OpsEvent[] }) {
   return (
     <ol className="ops-log">
@@ -716,13 +741,14 @@ function EventRows({ events }: { events: OpsEvent[] }) {
           <time>{clock(event.at)}</time>
           <i style={{ background: event.kind === 'fault' ? 'var(--red)' : COLOR[kindOf(event)] }} />
           <span className="ops-log-text">{describe(event)}</span>
+          <Sources names={sourcesOf(event)} />
         </li>
       ))}
     </ol>
   )
 }
 
-type TaskRow = { task: string; state: string; first: number; last: number; cost: number; faults: number; events: OpsEvent[] }
+type TaskRow = { task: string; state: string; decision: string; first: number; last: number; cost: number; faults: number; events: OpsEvent[] }
 
 /** One row per task, newest first: its latest attempt state, how long it has run, and its cost; it opens into its events. */
 function taskRows(log: OpsEvent[]): { rows: TaskRow[]; other: OpsEvent[] } {
@@ -735,12 +761,13 @@ function taskRows(log: OpsEvent[]): { rows: TaskRow[]; other: OpsEvent[] } {
       other.push(event)
       continue
     }
-    const row = rows.get(task) ?? { task, state: '', first: event.at, last: event.at, cost: 0, faults: 0, events: [] }
+    const row = rows.get(task) ?? { task, state: '', decision: '', first: event.at, last: event.at, cost: 0, faults: 0, events: [] }
     row.events.push(event)
     row.first = Math.min(row.first, event.at)
     row.last = Math.max(row.last, event.at)
     if (event.kind === 'attempt' && !row.state) row.state = event.state
     if (event.kind === 'usage') row.cost += event.cost_usd
+    if (event.kind === 'decision' && !row.decision) row.decision = event.label
     if (event.kind === 'fault') row.faults += 1
     rows.set(task, row)
   }
@@ -770,7 +797,7 @@ function AttemptLog(props: { selected: string | null; log: OpsEvent[]; snapshot:
         <details key={row.task} className={`ops-task${row.faults ? ' fault' : ''}`}>
           <summary>
             <span className="ops-task-id">#{row.task}</span>
-            <span className="ops-task-state">{words(row.state || 'active')}</span>
+            <span className="ops-task-state">{words(row.state || 'active')}{row.decision && <> <span className={`decision-mark ${row.decision.toLowerCase()}`}>{row.decision}</span></>}</span>
             <span className="ops-task-figure">{span(row.last - row.first)}</span>
             <span className="ops-task-figure">{usd(row.cost)}</span>
             {row.faults > 0 && <span className="ops-task-fault">{row.faults} fault{row.faults === 1 ? '' : 's'}</span>}
@@ -790,6 +817,7 @@ function kindOf(event: OpsEvent): Kind {
     case 'telemetry': return event.type === 'question' ? 'question' : event.type === 'result' || event.type === 'bundle_part' ? 'result' : 'telemetry'
     case 'usage': return 'usage'
     case 'fault': return 'question'
+    case 'decision': case 'decision_step': return 'result'
     default: return 'external'
   }
 }
@@ -805,5 +833,7 @@ function describe(event: OpsEvent): string {
     case 'attempt': return words(event.state)
     case 'fault': return `${event.component} · ${words(event.code)}${event.task ? ` · #${event.task}` : ''}`
     case 'usage': return `round ${event.round} · ${usd(event.cost_usd)} · ${tokens(event.input_tokens)} in · ${tokens(event.output_tokens)} out`
+    case 'decision_step': return `deciding · ${modelSource(event.model)?.name ?? event.model}`
+    case 'decision': return `decision ${event.label} · ${modelSource(event.decided_by)?.name ?? event.decided_by}`
   }
 }

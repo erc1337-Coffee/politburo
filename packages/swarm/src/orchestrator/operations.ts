@@ -15,7 +15,9 @@ export type OperationsEventBody =
   | { kind: 'launch'; task: string; channel: string; outcome: string }
   | { kind: 'attempt'; attempt: string; task: string; channel: string; state: string }
   | { kind: 'fault'; component: 'board' | 'relay' | 'github' | 'worker' | 'launch' | 'ledger'; code: string; task?: string; channel?: string }
-  | { kind: 'usage'; task: string; channel: string; round: number; models: number; input_tokens: number; output_tokens: number; cost_usd: number }
+  | { kind: 'usage'; task: string; channel: string; round: number; models: number; providers: string[]; input_tokens: number; output_tokens: number; cost_usd: number }
+  | { kind: 'decision_step'; task: string; channel: string; model: 'kev' | 'claude' }
+  | { kind: 'decision'; task: string; channel: string; label: string; decided_by: string }
 
 export type OperationsEvent = OperationsEventBody & { seq: number; at: number }
 
@@ -49,6 +51,8 @@ export interface AttemptView {
   heartbeat: WorkerHeartbeat | null
   progress: Record<string, number>
   messages: { commands: number; telemetry: number; last_at: number | null }
+  /** The model the attempt's final decision waits on now; null when no decision runs. */
+  decision_model: 'kev' | 'claude' | null
 }
 
 export interface RelayView {
@@ -112,6 +116,7 @@ export function idleSnapshot(reason: string, relayUrl: string, now = Date.now())
 export class OperationsMonitor {
   readonly startedAt: number
   readonly #now: () => number
+  readonly #deciding = new Map<string, 'kev' | 'claude'>()
   readonly #events: OperationsEvent[] = []
   readonly #byAttempt = new Map<string, OperationsEvent[]>()
   readonly #channels = new Map<string, string>()
@@ -164,6 +169,12 @@ export class OperationsMonitor {
     this.#heartbeats.set(attemptId, { ...beat, at: this.#now() })
   }
 
+  /** The model the attempt's final decision waits on now, or null when the decision ended. */
+  deciding(attemptId: string, model: 'kev' | 'claude' | null): void {
+    if (model) this.#deciding.set(attemptId, model)
+    else this.#deciding.delete(attemptId)
+  }
+
   progress(attemptId: string, kinds: string[]): void {
     const counts = this.#progress.get(attemptId) ?? {}
     for (const kind of kinds) counts[kind] = (counts[kind] ?? 0) + 1
@@ -181,6 +192,7 @@ export class OperationsMonitor {
       this.#heartbeats.delete(dropped.attemptId)
       this.#progress.delete(dropped.attemptId)
       this.#messages.delete(dropped.attemptId)
+      this.#deciding.delete(dropped.attemptId)
       this.#channels.delete(dropped.channel)
     }
   }
@@ -244,6 +256,7 @@ export class OperationsMonitor {
         heartbeat: this.#heartbeats.get(attempt.attemptId) ?? null,
         progress: this.#progress.get(attempt.attemptId) ?? {},
         messages: this.#messages.get(attempt.attemptId) ?? { commands: 0, telemetry: 0, last_at: null },
+        decision_model: this.#deciding.get(attempt.attemptId) ?? null,
       })),
       last_seq: this.#seq,
     }

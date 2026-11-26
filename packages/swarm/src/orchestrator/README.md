@@ -15,6 +15,17 @@ and sends the commits as a git bundle in `bundle_part` messages before its `resu
 next step is `publish`, the orchestrator checks the bundle digest, checks that the commits
 descend from the base commit, pushes the branch without force and opens the draft PR.
 
+After a completed round, the final decision labels the task `politburo.decision` with PASS,
+FOLLOWUP, RETRY or REVIEW, and shows it in the thread as a `final_decision@1` block. Kev
+(`KEV_URL`) classifies first; its PASS or REVIEW at or above `decision.kev_confidence` is final.
+Claude (`ORCHESTRATOR_DECISION_MODEL`, run as `claude --print` with the stored claude.ai sign-in
+and no key in its environment) decides on top when Kev is unsure, chooses FOLLOWUP or RETRY, or
+the checks failed, and writes the correction or the follow-up briefs. FOLLOWUP creates up to three
+tasks in the same channel, at most `decision.followup_depth` generations deep. RETRY sends the
+correction as the next round. REVIEW keeps the work (draft PR, or the task branch of a local
+repository) and holds the task for the owner. Infrastructure faults stay with the fixed rules; a
+task they fail or hold is labeled REVIEW. Without either variable, the fixed rules decide alone.
+
 A channel that links no repository has a local bare repository in the state directory
 (`channel_repositories/`). Its tasks start from `main`, and the orchestrator merges the bundle into
 `main`: forward when possible, else with a merge commit. A conflict keeps the work on the task branch.
@@ -56,6 +67,7 @@ watchdog for each live attempt, then admission of new ready tasks.
 | `launcher.ts` | Worker prompt and the `claude --cloud` launch provider |
 | `policy.ts` | Next step after a result (pluggable) and the hard limits around it |
 | `github.ts` | Repository reads and the draft PR (head and base in one repository) |
+| `final-decision.ts` | The final decision after a round: Kev client, Claude runner, labels and the thread block |
 | `git.ts` | Bare mirrors and local channel repositories; launch directories; applies a worker's git bundle and pushes the task branch (never forced) or merges it into a local `main` |
 | `worker-files.ts` | The worker client files each launch directory receives in `.politburo/` |
 | `worker-credentials.ts` | The routes as the worker runs them (`anthropic` becomes `claude-cli`, through `claude --print` on the subscription, unless `ANTHROPIC_API_KEY` is set) and their provider variables (`CLAUDE_CODE_OAUTH_TOKEN`, `OPENROUTER_API_KEY`), sent sealed for the public key in the worker heartbeat |

@@ -69,7 +69,9 @@ it('shows a finished round as a turn: thoughts and actions on one line each, fol
 
 it('says the round is working until it ends, and how it ended when it did not complete', () => {
   const page = show(<ActivityBlock block={activity({ state: 'running', items: ITEMS.slice(0, 2) })} />)
-  expect(lines(page).at(-1)).toBe('Working…')
+  // A running round ends in three pulsing dots, as a chat shows typing.
+  expect(page.querySelector('.turn > :last-child')?.matches('.turn-dots[role="status"]')).toBe(true)
+  expect(page.querySelectorAll('.turn-dots i')).toHaveLength(3)
   flushSync(() => root!.render(<ActivityBlock block={activity({ state: 'lost_contact', round: 2, items: ITEMS.slice(0, 2) })} />))
   expect(lines(page).at(-1)).toBe('round 2 ended: lost contactWorked for 1s')
 })

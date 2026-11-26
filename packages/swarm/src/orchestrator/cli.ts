@@ -5,6 +5,7 @@ import { parseArgs } from 'node:util'
 import { board as openBoard } from '@vercel/board'
 import { loadConfig, parseConfigText } from '../config/load.ts'
 import { loadOrchestratorConfig, type OrchestratorConfig } from './config.ts'
+import { claudeRunner, FinalDecider, KevClient } from './final-decision.ts'
 import { GitRepositories } from './git.ts'
 import { UsageLedger } from './usage-ledger.ts'
 import { idleSnapshot, OperationsMonitor } from './operations.ts'
@@ -52,6 +53,15 @@ async function serve(config: OrchestratorConfig): Promise<number> {
     routes: () => partyRoutes(config),
     provider: (prompt, directory) => cloudProvider(config.worker.launcher, prompt, directory),
     usage: usageLedger,
+    decider: new FinalDecider({
+      kev: config.decision.kevUrl ? new KevClient({ url: config.decision.kevUrl, timeoutMs: config.decision.kevTimeoutSeconds * 1000 }) : null,
+      claude: config.decision.claudeModel
+        ? claudeRunner({ model: config.decision.claudeModel, directory: join(config.stateDirectory, 'decision'), timeoutMs: config.decision.claudeTimeoutSeconds * 1000 })
+        : null,
+      kevConfidence: config.decision.kevConfidence,
+      followupDepth: config.decision.followupDepth,
+      log: (entry) => console.log(JSON.stringify({ at: new Date().toISOString(), ...entry })),
+    }),
   })
   let operations: OperationsServer | null = null
   if (monitor) {
