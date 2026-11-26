@@ -1,5 +1,5 @@
 import { Dialog } from '@base-ui/react/dialog'
-import { ChevronLeft, ChevronRight, Lock, X } from 'lucide-react'
+import { GripVertical, Lock, X } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { ChannelRoute, ChannelSettings, ModelRoute, RepositoryView } from '../../contract/channel-settings.ts'
 import { ChannelPath } from '../../contract/schemas.ts'
@@ -21,14 +21,20 @@ function rowsOf(catalog: ModelRoute[], settings: ChannelSettings | undefined): R
 /** A route's name in its provider's column: the label without a closing note that repeats the provider. */
 const modelName = (row: Row) => (row.route?.label ?? row.key).replace(/\s*\((Max|OpenRouter|Claude)\)$/i, '')
 
-/** The board's providers, each a column of its models, in the order the party first names them. */
-function columnsOf(rows: Row[]): Array<{ provider: string; rows: Row[] }> {
+/** Providers in fixed places: Claude first, OpenRouter second, any other after them. */
+const PROVIDER_PLACE: Record<string, number> = { anthropic: 0, 'claude-cli': 0, openrouter: 1 }
+
+/** The board's providers, each a column of its models in the party's order; the columns never move. */
+function columnsOf(rows: Row[], catalog: ModelRoute[]): Array<{ provider: string; rows: Row[] }> {
+  const place = new Map(catalog.map((route, i) => [route.key, i]))
   const columns = new Map<string, Row[]>()
-  for (const row of rows) {
+  for (const row of [...rows].sort((a, b) => (place.get(a.key) ?? Infinity) - (place.get(b.key) ?? Infinity))) {
     const provider = row.route?.provider ?? 'removed'
     columns.set(provider, [...(columns.get(provider) ?? []), row])
   }
-  return [...columns].map(([provider, rows]) => ({ provider, rows }))
+  return [...columns]
+    .sort(([a], [b]) => (PROVIDER_PLACE[a] ?? 2) - (PROVIDER_PLACE[b] ?? 2))
+    .map(([provider, rows]) => ({ provider, rows }))
 }
 
 /** Rows with the enabled ones first, in their order; turning one on puts it last of them. */
@@ -38,7 +44,7 @@ function toggled(rows: Row[], key: string): Row[] {
   const next = { ...row, enabled: !row.enabled }
   const on = rest.filter((entry) => entry.enabled)
   const off = rest.filter((entry) => !entry.enabled)
-  return next.enabled ? [...on, next, ...off] : [...on, next, ...off].sort((a, b) => Number(b.enabled) - Number(a.enabled))
+  return next.enabled ? [...on, next, ...off] : [...on, ...off, next]
 }
 
 const isGitUrl = (text: string) => /^https:\/\/[^\s/]+\/\S+$/.test(text.trim())
@@ -52,13 +58,24 @@ const repositoryName = (nameOrUrl: string) => nameOrUrl.replace(/\/+$/, '').spli
 
 const shownRepository = (url: string) => /^https:\/\/github\.com\/([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(url)?.[1] ?? url
 
-export function ChannelDialog(props: { channel?: string; trigger: ReactNode; triggerTitle: string; triggerClass?: string }) {
-  const [open, setOpen] = useState(false)
+/**
+ * The channel dialog: with `trigger`, it opens from its own button; without one, `open` and
+ * `onOpenChange` drive it, for a place that cannot hold a button, such as a channel's sidebar row.
+ */
+export function ChannelDialog(props: {
+  channel?: string; trigger?: ReactNode; triggerTitle?: string; triggerClass?: string
+  open?: boolean; onOpenChange?: (open: boolean) => void
+}) {
+  const [own, setOwn] = useState(false)
+  const open = props.open ?? own
+  const setOpen = props.onOpenChange ?? setOwn
   return (
     <Dialog.Root open={open} onOpenChange={setOpen}>
-      <Dialog.Trigger className={props.triggerClass ?? 'tool'} aria-label={props.triggerTitle} title={props.triggerTitle}>
-        {props.trigger}
-      </Dialog.Trigger>
+      {props.trigger !== undefined && (
+        <Dialog.Trigger className={props.triggerClass ?? 'tool'} aria-label={props.triggerTitle} title={props.triggerTitle}>
+          {props.trigger}
+        </Dialog.Trigger>
+      )}
       <Dialog.Portal>
         <Dialog.Backdrop className="dialog-backdrop" />
         <Dialog.Popup className="dialog channel-dialog">
@@ -78,12 +95,14 @@ function ChannelForm(props: { channel?: string; done: () => void }) {
   const [found, setFound] = useState<RepositoryView[]>([])
   const [searchError, setSearchError] = useState<string | null>(null)
   const [rows, setRows] = useState<Row[] | null>(null)
+  const [catalog, setCatalog] = useState<ModelRoute[]>([])
+  const [dragged, setDragged] = useState<number | null>(null)
   const [routesError, setRoutesError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
-    board.loadModelRoutes().then((catalog) => setRows(rowsOf(catalog, settings)), (failed: unknown) => {
+    board.loadModelRoutes().then((catalog) => { setCatalog(catalog); setRows(rowsOf(catalog, settings)) }, (failed: unknown) => {
       setRoutesError(failed instanceof Error ? failed.message : String(failed))
       setRows(rowsOf([], settings))
     })
@@ -110,9 +129,9 @@ function ChannelForm(props: { channel?: string; done: () => void }) {
   const path = creating ? pathOf(repository ? repositoryName(picked?.name ?? typed) : typed) : props.channel!
   const notRepository = !creating && typed !== '' && repository === null
 
-  // The enabled rows lead, in fallback order; a move swaps two of them.
+  // The enabled rows lead, in fallback order; a drop puts the dragged one where it lands.
   const move = (from: number, to: number) => setRows((current) => {
-    if (!current || to < 0 || !current[to]?.enabled || !current[from]?.enabled) return current
+    if (!current || from === to || to < 0 || !current[to]?.enabled || !current[from]?.enabled) return current
     const next = [...current]
     const [row] = next.splice(from, 1)
     next.splice(to, 0, row!)
@@ -184,7 +203,7 @@ function ChannelForm(props: { channel?: string; done: () => void }) {
           : (
             <>
               <div className="model-grid">
-                {columnsOf(rows).map((column) => {
+                {columnsOf(rows, catalog).map((column) => {
                   const source = modelSource(column.provider)
                   return (
                     <section key={column.provider} className="model-column" aria-label={source?.name ?? column.provider}>
@@ -193,34 +212,35 @@ function ChannelForm(props: { channel?: string; done: () => void }) {
                         <span>{source?.name ?? column.provider}</span>
                         <span className="model-count">{column.rows.filter((row) => row.enabled).length}/{column.rows.length}</span>
                       </h3>
-                      {column.rows.map((row) => {
-                        const place = order.indexOf(row) + 1
-                        return (
-                          <button key={row.key} type="button" className={`model-tile${row.enabled ? ' on' : ''}`} aria-pressed={row.enabled}
-                            title={row.key} onClick={() => toggle(row.key)}>
-                            <span className="model-name">{modelName(row)}{!row.route && <span className="hint"> (removed)</span>}</span>
-                            <code className="model-id">{row.route?.model ?? row.key}</code>
-                            {place > 0 && <span className="model-place" aria-label={`fallback ${place}`}>{place}</span>}
-                          </button>
-                        )
-                      })}
+                      {column.rows.map((row) => (
+                        <button key={row.key} type="button" className={`model-tile${row.enabled ? ' on' : ''}`} aria-pressed={row.enabled}
+                          title={row.key} onClick={() => toggle(row.key)}>
+                          <span className="model-name">{modelName(row)}{!row.route && <span className="hint"> (removed)</span>}</span>
+                          <code className="model-id">{row.route?.model ?? row.key}</code>
+                        </button>
+                      ))}
                     </section>
                   )
                 })}
               </div>
               {order.length > 0 ? (
-                <>
-                <p className="model-order-head">fallback order</p>
-                <ol className="model-order" aria-label="fallback order">
-                  {order.map((row, i) => (
-                    <li key={row.key}>
-                      <button type="button" className="tool" aria-label={`move ${modelName(row)} earlier`} disabled={i === 0} onClick={() => move(i, i - 1)}><ChevronLeft size={12} /></button>
-                      <span><b>{i + 1}</b> {modelName(row)}</span>
-                      <button type="button" className="tool" aria-label={`move ${modelName(row)} later`} disabled={i === order.length - 1} onClick={() => move(i, i + 1)}><ChevronRight size={12} /></button>
-                    </li>
-                  ))}
+                <ol className="model-order" aria-label="fallback order, first to last">
+                  {order.map((row, i) => {
+                    const source = modelSource(row.route?.provider ?? '')
+                    return (
+                      <li key={row.key} draggable
+                        className={`model-slot${dragged === i ? ' dragged' : ''}`}
+                        onDragStart={(event) => { setDragged(i); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', row.key) }}
+                        onDragOver={(event) => { if (dragged !== null) { event.preventDefault(); event.dataTransfer.dropEffect = 'move' } }}
+                        onDrop={(event) => { event.preventDefault(); if (dragged !== null) move(dragged, i); setDragged(null) }}
+                        onDragEnd={() => setDragged(null)}>
+                        <GripVertical size={13} className="model-grip" aria-hidden="true" />
+                        {source && <img src={source.src} alt={source.name} title={source.name} />}
+                        <span className="model-name">{modelName(row)}</span>
+                      </li>
+                    )
+                  })}
                 </ol>
-                </>
               ) : <span className="hint">no model on: the channel's tasks do not start</span>}
             </>
           )}
