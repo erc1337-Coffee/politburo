@@ -21,32 +21,6 @@ function rowsOf(catalog: ModelRoute[], settings: ChannelSettings | undefined): R
 /** A route's name in its provider's column: the label without a closing note that repeats the provider. */
 const modelName = (row: Row) => (row.route?.label ?? row.key).replace(/\s*\((Max|OpenRouter|Claude)\)$/i, '')
 
-/** Providers in fixed places: Claude first, OpenRouter second, any other after them. */
-const PROVIDER_PLACE: Record<string, number> = { anthropic: 0, 'claude-cli': 0, openrouter: 1 }
-
-/** The board's providers, each a column of its models in the party's order; the columns never move. */
-function columnsOf(rows: Row[], catalog: ModelRoute[]): Array<{ provider: string; rows: Row[] }> {
-  const place = new Map(catalog.map((route, i) => [route.key, i]))
-  const columns = new Map<string, Row[]>()
-  for (const row of [...rows].sort((a, b) => (place.get(a.key) ?? Infinity) - (place.get(b.key) ?? Infinity))) {
-    const provider = row.route?.provider ?? 'removed'
-    columns.set(provider, [...(columns.get(provider) ?? []), row])
-  }
-  return [...columns]
-    .sort(([a], [b]) => (PROVIDER_PLACE[a] ?? 2) - (PROVIDER_PLACE[b] ?? 2))
-    .map(([provider, rows]) => ({ provider, rows }))
-}
-
-/** Rows with the enabled ones first, in their order; turning one on puts it last of them. */
-function toggled(rows: Row[], key: string): Row[] {
-  const row = rows.find((entry) => entry.key === key)!
-  const rest = rows.filter((entry) => entry.key !== key)
-  const next = { ...row, enabled: !row.enabled }
-  const on = rest.filter((entry) => entry.enabled)
-  const off = rest.filter((entry) => !entry.enabled)
-  return next.enabled ? [...on, next, ...off] : [...on, ...off, next]
-}
-
 const isGitUrl = (text: string) => /^https:\/\/[^\s/]+\/\S+$/.test(text.trim())
 
 const pathOf = (text: string) =>
@@ -95,14 +69,14 @@ function ChannelForm(props: { channel?: string; done: () => void }) {
   const [found, setFound] = useState<RepositoryView[]>([])
   const [searchError, setSearchError] = useState<string | null>(null)
   const [rows, setRows] = useState<Row[] | null>(null)
-  const [catalog, setCatalog] = useState<ModelRoute[]>([])
   const [dragged, setDragged] = useState<number | null>(null)
+  const [over, setOver] = useState<number | null>(null)
   const [routesError, setRoutesError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
-    board.loadModelRoutes().then((catalog) => { setCatalog(catalog); setRows(rowsOf(catalog, settings)) }, (failed: unknown) => {
+    board.loadModelRoutes().then((catalog) => setRows(rowsOf(catalog, settings)), (failed: unknown) => {
       setRoutesError(failed instanceof Error ? failed.message : String(failed))
       setRows(rowsOf([], settings))
     })
@@ -129,16 +103,15 @@ function ChannelForm(props: { channel?: string; done: () => void }) {
   const path = creating ? pathOf(repository ? repositoryName(picked?.name ?? typed) : typed) : props.channel!
   const notRepository = !creating && typed !== '' && repository === null
 
-  // The enabled rows lead, in fallback order; a drop puts the dragged one where it lands.
+  // The list's order is the fallback order of the models that are on; a drop puts the dragged row where it lands.
   const move = (from: number, to: number) => setRows((current) => {
-    if (!current || from === to || to < 0 || !current[to]?.enabled || !current[from]?.enabled) return current
+    if (!current || from === to || to < 0 || to >= current.length) return current
     const next = [...current]
     const [row] = next.splice(from, 1)
     next.splice(to, 0, row!)
     return next
   })
-  const toggle = (key: string) => setRows((current) => current && toggled(current, key))
-  const order = (rows ?? []).filter((row) => row.enabled)
+  const toggle = (key: string) => setRows((current) => current && current.map((row) => (row.key === key ? { ...row, enabled: !row.enabled } : row)))
 
   const save = async () => {
     if (creating && !ChannelPath.safeParse(path).success) return setError('name required')
@@ -201,48 +174,32 @@ function ChannelForm(props: { channel?: string; done: () => void }) {
         {rows === null ? <span className="hint">loading…</span>
           : rows.length === 0 ? <span className="hint">{routesError ?? 'no models'}</span>
           : (
-            <>
-              <div className="model-grid">
-                {columnsOf(rows, catalog).map((column) => {
-                  const source = modelSource(column.provider)
-                  return (
-                    <section key={column.provider} className="model-column" aria-label={source?.name ?? column.provider}>
-                      <h3>
-                        {source && <img src={source.src} alt="" />}
-                        <span>{source?.name ?? column.provider}</span>
-                        <span className="model-count">{column.rows.filter((row) => row.enabled).length}/{column.rows.length}</span>
-                      </h3>
-                      {column.rows.map((row) => (
-                        <button key={row.key} type="button" className={`model-tile${row.enabled ? ' on' : ''}`} aria-pressed={row.enabled}
-                          title={row.key} onClick={() => toggle(row.key)}>
-                          <span className="model-name">{modelName(row)}{!row.route && <span className="hint"> (removed)</span>}</span>
-                          <code className="model-id">{row.route?.model ?? row.key}</code>
-                        </button>
-                      ))}
-                    </section>
-                  )
-                })}
-              </div>
-              {order.length > 0 ? (
-                <ol className="model-order" aria-label="fallback order, first to last">
-                  {order.map((row, i) => {
-                    const source = modelSource(row.route?.provider ?? '')
-                    return (
-                      <li key={row.key} draggable
-                        className={`model-slot${dragged === i ? ' dragged' : ''}`}
-                        onDragStart={(event) => { setDragged(i); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', row.key) }}
-                        onDragOver={(event) => { if (dragged !== null) { event.preventDefault(); event.dataTransfer.dropEffect = 'move' } }}
-                        onDrop={(event) => { event.preventDefault(); if (dragged !== null) move(dragged, i); setDragged(null) }}
-                        onDragEnd={() => setDragged(null)}>
-                        <GripVertical size={13} className="model-grip" aria-hidden="true" />
-                        {source && <img src={source.src} alt={source.name} title={source.name} />}
-                        <span className="model-name">{modelName(row)}</span>
-                      </li>
-                    )
-                  })}
-                </ol>
-              ) : <span className="hint">no model on: the channel's tasks do not start</span>}
-            </>
+            <ol className="model-list" aria-label="models, in fallback order">
+              {rows.map((row, i) => {
+                const source = modelSource(row.route?.provider ?? '')
+                const name = modelName(row)
+                const provider = source?.name ?? row.route?.provider ?? 'removed'
+                // "Claude Claude Opus" reads twice: the provider's name leads already.
+                const shown = name.toLowerCase().startsWith(`${provider.toLowerCase()} `) ? name.slice(provider.length + 1) : name
+                return (
+                  <li key={row.key} draggable title={row.key}
+                    className={`model-row${row.enabled ? ' on' : ''}${dragged === i ? ' dragged' : ''}${over === i && dragged !== null && dragged !== i ? (dragged < i ? ' drop-after' : ' drop-before') : ''}`}
+                    onDragStart={(event) => { setDragged(i); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', row.key) }}
+                    onDragOver={(event) => { if (dragged !== null) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setOver(i) } }}
+                    onDrop={(event) => { event.preventDefault(); if (dragged !== null) move(dragged, i); setDragged(null); setOver(null) }}
+                    onDragEnd={() => { setDragged(null); setOver(null) }}>
+                    <GripVertical size={13} className="model-grip" aria-hidden="true" />
+                    {source ? <img src={source.src} alt={source.name} title={source.name} /> : <span className="model-logo-gap" />}
+                    <span className="model-label">
+                      <span className="model-provider">{provider}</span>
+                      <span className="model-name">{shown}</span>
+                    </span>
+                    <button type="button" role="switch" aria-checked={row.enabled} aria-label={`${name} ${row.enabled ? 'on' : 'off'}`}
+                      className="switch" onClick={() => toggle(row.key)}><i /></button>
+                  </li>
+                )
+              })}
+            </ol>
           )}
       </fieldset>
 

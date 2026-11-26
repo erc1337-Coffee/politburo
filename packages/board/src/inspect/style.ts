@@ -626,27 +626,27 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 .channel-form .repository.on { color: var(--accent); font-weight: 600; }
 @media (hover: hover) { .channel-form .repository:hover { background: var(--shade-hover); } }
 .dialog.channel-dialog { width: min(620px, calc(100vw - 32px)); }
-.model-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-.model-column { display: grid; align-content: start; gap: 4px; min-width: 0; }
-.model-column h3 { display: flex; align-items: center; gap: 6px; margin: 0 0 2px; font-size: 12px; font-weight: 600; color: var(--dim); }
-.model-column h3 img { width: 14px; height: 14px; border-radius: 3px; }
-.model-count { margin-left: auto; font-weight: 400; color: var(--faint); font-variant-numeric: tabular-nums; }
-.model-tile { position: relative; display: grid; gap: 1px; padding: 6px 9px; border: 1px solid var(--hairline); border-radius: 5px; background: none; color: var(--muted); text-align: left; cursor: pointer; transition: border-color .12s, background .12s, color .12s; }
-.model-tile .model-name { font-size: 12.5px; overflow-wrap: anywhere; }
 .channel-form .field > input { height: 32px; padding: 0 10px; border: 1px solid var(--hairline); border-radius: 5px; outline: none; background: var(--selected); color: var(--bright); font-size: 13px; }
 .channel-form .field > input::placeholder { color: var(--faint); }
 .channel-form .field > input:focus { border-color: var(--focus); }
-.model-order { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 10px 0 4px; padding: 0; list-style: none; }
-.model-slot { display: flex; align-items: center; gap: 6px; min-width: 0; height: 34px; padding: 0 10px 0 6px; border: 1px solid var(--accent); border-radius: 5px; background: var(--selected); color: var(--bright); font-size: 12.5px; cursor: grab; user-select: none; }
-.model-slot:active { cursor: grabbing; }
-.model-slot.dragged { opacity: .4; }
-.model-slot img { width: 14px; height: 14px; border-radius: 3px; flex-shrink: 0; }
-.model-slot .model-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-list { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.model-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 36px; padding: 0 8px 0 4px; border: 1px solid transparent; border-radius: 5px; color: var(--muted); cursor: grab; user-select: none; }
+.model-row:active { cursor: grabbing; }
+.model-row.on { background: var(--selected); color: var(--bright); }
+.model-row.dragged { opacity: .4; }
+.model-row.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.model-row.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+@media (hover: hover) { .model-row:hover { border-color: var(--hairline); } }
+.model-row > img, .model-logo-gap { width: 16px; height: 16px; border-radius: 3px; flex-shrink: 0; }
 .model-grip { flex-shrink: 0; color: var(--faint); }
-.model-tile .model-id { font-size: 10.5px; color: var(--faint); overflow-wrap: anywhere; }
-.model-tile.on { border-color: var(--accent); background: var(--selected); color: var(--bright); }
-.model-tile.on .model-name { font-weight: 600; }
-@media (hover: hover) { .model-tile:hover { border-color: var(--muted); } .model-tile.on:hover { border-color: var(--accent); } }
+.model-label { display: flex; align-items: baseline; gap: 6px; flex: 1; min-width: 0; font-size: 12.5px; }
+.model-provider { flex-shrink: 0; color: var(--faint); font-size: 11.5px; }
+.model-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-row.on .model-name { font-weight: 600; }
+.switch { position: relative; flex-shrink: 0; width: 30px; height: 17px; padding: 0; border: 1px solid var(--hairline); border-radius: 9px; background: var(--shade); cursor: pointer; transition: background .15s, border-color .15s; }
+.switch > i { position: absolute; top: 2px; left: 2px; width: 11px; height: 11px; border-radius: 50%; background: var(--faint); transition: transform .15s, background .15s; }
+.switch[aria-checked='true'] { border-color: var(--accent); background: var(--accent-transparent); }
+.switch[aria-checked='true'] > i { transform: translateX(13px); background: var(--accent); }
 .channel-form .error { margin: 0; color: var(--red); }
 .ask textarea { width: 100%; min-height: 64px; padding: 6px 8px; border: 0; outline: none; background: var(--shade); font-size: 13px; line-height: 1.5; resize: vertical; }
 .ask textarea:focus { outline: 1px solid var(--focus); }
