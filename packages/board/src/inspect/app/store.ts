@@ -434,7 +434,7 @@ export function isActivity(block: BlockView): boolean {
  * Whose face a message shows: `worker` for a worker's round, which the orchestrator posts for it,
  * else its author's actor. The page's identities are keyed the same way.
  */
-export const faceKey = (m: Pick<MessageView, 'by' | 'blocks'>): string => ((m.blocks ?? []).some(isActivity) ? 'worker' : m.by.actor)
+export const faceKey = (m: Pick<MessageView, 'by'> & Partial<Pick<MessageView, 'blocks'>>): string => ((m.blocks ?? []).some(isActivity) ? 'worker' : m.by.actor)
 
 /** The most faces a thread's replies show. */
 export const FACES_MAX = 6
@@ -555,7 +555,10 @@ export function knownLabels(state: State): Map<string, Set<string>> {
 const GROUP_MS = 5 * 60_000
 const sameDay = (a: string, b: string) => new Date(a).toDateString() === new Date(b).toDateString()
 
-export type Groupable = Pick<MessageView, 'by' | 'createdAt' | 'deleted' | 'channel' | 're'>
+export type Groupable = Pick<MessageView, 'by' | 'createdAt' | 'deleted' | 'channel' | 're'> & Partial<Pick<MessageView, 'blocks' | 'labels'>>
+
+/** An orchestrator's status line: one line of its own, never part of a group. */
+export const isStatusLine = (m: Pick<Groupable, 'labels' | 'deleted'>): boolean => !m.deleted && Boolean(m.labels?.['politburo.status'])
 
 /**
  * The platform whose logo a message wears, for one that came from a platform: its author's, as their
@@ -574,7 +577,10 @@ export function continues(previous: Groupable | undefined, m: Groupable, hasRepl
     !!previous &&
     !hasReplies &&
     !previous.deleted &&
-    previous.by.actor === m.by.actor &&
+    // A worker's round is written by the orchestrator's actor, and shows under the worker's face.
+    faceKey(previous) === faceKey(m) &&
+    !isStatusLine(previous) &&
+    !isStatusLine(m) &&
     previous.channel === m.channel &&
     previous.re === m.re &&
     sameDay(previous.createdAt, m.createdAt) &&

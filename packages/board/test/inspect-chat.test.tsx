@@ -5,7 +5,7 @@ import { afterEach, expect, it } from 'vitest'
 import type { BlockView, MessageView } from '../src/api/routes.ts'
 import { ActivityBlock } from '../src/inspect/app/activity.tsx'
 import { IdentitiesContext, type Identities } from '../src/inspect/app/identity.ts'
-import { MessageRow, type RowOptions } from '../src/inspect/app/message.tsx'
+import { MessageRow, Messages, type RowOptions } from '../src/inspect/app/message.tsx'
 
 let root: Root | undefined
 
@@ -154,4 +154,21 @@ it('keeps names and avatars outside a chat', () => {
   const page = show(<MessageRow m={message('1', me, 'Ada', 'Read the port from PORT.')} options={options(false)} />)
   expect(page.querySelector('.author')?.textContent).toBe('Ada')
   expect(page.querySelector('.avatar')?.textContent).toBe('A')
+})
+
+it('starts a worker round under its own name and picture when it follows the orchestrator in a thread', () => {
+  const block = activity({ state: 'completed', items: ITEMS.slice(0, 1) })
+  const fence = `\`\`\`json#worker_activity@1\n${JSON.stringify(block.data)}\n\`\`\`\n\nDone.`
+  // The orchestrator's actor writes all of them, a few seconds apart. A status line is a row of its own,
+  // so the message after it starts under its name again.
+  const status = { ...message('2', ORCHESTRATOR, 'orchestrator', 'attempt 1 started.'), labels: { 'politburo.status': 'orchestrator' } } as MessageView
+  const page = show(
+    <Messages
+      now={at}
+      options={options(true)}
+      after={message('1', me, 'Ada', 'Say hello.')}
+      messages={[status, message('7', ORCHESTRATOR, 'orchestrator', 'Round 1 sent.'), message('3', ORCHESTRATOR, 'orchestrator', fence, [block]), { ...status, id: '4', text: 'merged.' } as MessageView, message('5', ORCHESTRATOR, 'orchestrator', 'Branch kept.'), message('6', ORCHESTRATOR, 'orchestrator', 'Draft closed.')]}
+    />,
+  )
+  expect([...page.querySelectorAll('.message')].map((el) => el.querySelector('.author')?.textContent ?? null)).toEqual(['orchestrator', 'Worker', 'orchestrator', null])
 })

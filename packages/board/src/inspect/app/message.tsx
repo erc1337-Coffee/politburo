@@ -14,7 +14,7 @@ import * as board from './board.ts'
 import { setEditing, toast, useEditing } from './chrome.ts'
 import { Ago } from './nav.tsx'
 import { LabelValue } from './sha.tsx'
-import { bodyParts, continues, faceKey, isTask, schemaOf, sourcePlatform, type Groupable, type Pending, type ReplySummary, type State, type Viewer } from './store.ts'
+import { bodyParts, continues, faceKey, isStatusLine, isTask, schemaOf, sourcePlatform, type Groupable, type Pending, type ReplySummary, type State, type Viewer } from './store.ts'
 import { TaskLine } from './task.tsx'
 import { absoluteTime, authorName, fileSize, shownName, timingWords } from './words.ts'
 import { ContextMenuArea, EmojiPicker, fieldMenu, LabelEditor, Panel, Menu, MenuEmojiRow, MenuItem, MenuSeparator, nativeMenu, type KnownLabels } from './ui.tsx'
@@ -377,7 +377,7 @@ export function MessageRow({ m, options, continued = false }: { m: MessageView; 
   const row = useRef<HTMLDivElement>(null)
   const editingId = useEditing()
   const identities = useIdentities()
-  if (m.labels['politburo.status'] && !m.deleted) return <StatusLine m={m} now={options.now} />
+  if (isStatusLine(m)) return <StatusLine m={m} now={options.now} />
   const { name, picture } = shownAuthor(identities, m)
   const canEdit = m.by.actor === options.me && options.viewer.may('post', m.channel)
   const editing = canEdit && editingId === m.id
