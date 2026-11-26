@@ -89,7 +89,9 @@ const ANSI = /\x1b\[[0-9;?]*[ -\/]*[@-~]|\x1b\][^\x07]*\x07/g
 export function cloudProvider(launcher: readonly string[], prompt: string, directory: string, run: CommandRunner = runCommand): Provider {
   return {
     async send() {
-      const env = { ...process.env, CCR_FORCE_BUNDLE: '1', WORKER_PROMPT: prompt }
+      // The setup-token token can only call the model; cloud sessions need the stored claude.ai sign-in, which the token would override.
+      const { CLAUDE_CODE_OAUTH_TOKEN: _token, ...inherited } = process.env
+      const env = { ...inherited, CCR_FORCE_BUNDLE: '1', WORKER_PROMPT: prompt }
       const command = `${launcher.map(shellQuote).join(' ')} "$WORKER_PROMPT"`
       setTrust(env, directory, true)
       let result: { code: number; output: string }

@@ -12,15 +12,16 @@ describe('cloud launcher', () => {
     process.env.CLAUDE_CONFIG_DIR = root
     const directory = join(root, 'launch')
     const trust = () => JSON.parse(readFileSync(join(root, '.claude.json'), 'utf8')).projects?.[directory]?.hasTrustDialogAccepted === true
-    let call: { command: string; args: string[]; prompt: string | undefined; trusted: boolean } | null = null
+    let call: { command: string; args: string[]; prompt: string | undefined; trusted: boolean; token: string | undefined } | null = null
+    process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'model-only'
     const run: CommandRunner = async (command, args, options) => {
-      call = { command, args, prompt: options.env?.WORKER_PROMPT, trusted: trust() }
+      call = { command, args, prompt: options.env?.WORKER_PROMPT, trusted: trust(), token: options.env?.CLAUDE_CODE_OAUTH_TOKEN }
       return { code: 0, output: '\x1b[1mCreated\x1b[0m https://claude.ai/code/session_01ABC\r\n' }
     }
     try {
       const { session } = await cloudProvider(['claude', '--cloud'], "it's the prompt", directory, run).send({ key: 'k', binding: {} as never })
       assert.equal(session, 'session_01ABC')
-      assert.deepEqual(call, { command: 'script', args: ['-qec', `'claude' '--cloud' "$WORKER_PROMPT"`, '/dev/null'], prompt: "it's the prompt", trusted: true })
+      assert.deepEqual(call, { command: 'script', args: ['-qec', `'claude' '--cloud' "$WORKER_PROMPT"`, '/dev/null'], prompt: "it's the prompt", trusted: true, token: undefined })
       assert.equal(trust(), false)
       assert.match(readFileSync(`${directory}.log`, 'utf8'), /^exit 0\nCreated https/)
     } finally {
