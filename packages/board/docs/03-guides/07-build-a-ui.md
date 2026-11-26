@@ -146,16 +146,12 @@ and its `claim`: who holds it, and `until` when.
 The example lists tasks oldest first. That is list order, not claim order.
 Claim-next takes the highest priority eligible ready task. At equal priority,
 it prefers tasks assigned to the caller, then takes the first root in board
-order. The inspector's Tasks view reads the full scope before showing
-claimable tasks first, then the rest by priority and age. It makes one request
-per page of the scope, plus a permission read, and shows a count while the
-first read is incomplete. Handoffs uses the same accepted permissions and
-ordering in Runnable. It says `more loading` while later pages are pending.
-Ties use `createdAt` then ID, matching claim-next while the board's clock
-moves forward. A claim fenced by a pause still shows as claimed because the API
-does not expose the fence. State, channel, and priority filters are in the URL.
-The inspector applies priority locally because the API does not accept it as a
-list filter.
+order. The inspector's Work view reads the full scope before showing it, with
+one request per page plus a permission read. Its ungrouped order
+(`/work?by=none`) puts claimable tasks first, in claim-next order, then the
+rest by priority and age. Ties use `createdAt` then ID, matching claim-next
+while the board's clock moves forward. A claim fenced by a pause still shows
+as claimed because the API does not expose the fence.
 
 ```ts inspector/tasks.ts
 import { board, type TaskView } from '@vercel/board'

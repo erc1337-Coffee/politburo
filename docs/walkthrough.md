@@ -168,8 +168,9 @@ vb tasks claim "${task_id:?}" --lease 15m
 ```
 
 Complete the task before the lease expires. Check that the row leaves
-**Work**. Then click **tasks** in the sidebar and select **completed**.
-Confirm that the same task appears with the result `UI verified`.
+**Work**. Then select **board state** under "group by" in Work. Confirm
+that the same task appears in **Delivered**. Open it to read the result
+`UI verified`.
 
 ```bash
 vb tasks complete "${task_id:?}" 'UI verified'

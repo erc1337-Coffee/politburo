@@ -169,6 +169,7 @@ textarea, [contenteditable]:not([contenteditable='false']) { cursor: text; }
 }
 .sidebar .item:hover { background: var(--shade-hover); color: var(--bright); }
 .sidebar .item[aria-current='page'] { background: var(--selected); color: var(--accent); font-weight: 700; }
+.sidebar .item.sub-item { padding-left: 30px; }
 .sidebar .item .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sidebar .item.unread { color: var(--bright); font-weight: 600; }
 .sidebar .count { color: var(--faint); font-size: 11px; font-weight: 400; }
@@ -505,22 +506,10 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 .page { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 0 16px; }
 .home-view { padding: clamp(16px, 4vw, 40px); }
 .home-view > * { max-width: 52rem; margin-inline: auto; }
-.handoffs-view { padding-block: 8px 12px; }
-.handoffs-view > * + * { margin-block-start: 8px; }
 .home-view p { margin: 0 0 6px; color: var(--muted); }
-.handoffs-view p { margin: 0; }
 .home-view a { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
-.home-intro a { display: inline-flex; min-height: 32px; align-items: center; }
 .home-view a:focus-visible, .home-view button:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 .home-queue h2 { margin: 0; padding-bottom: 2px; border-bottom: 1px solid var(--hairline); font-size: 1rem; color: var(--bright); }
-.handoff-list, .handoff-needs ul { list-style: none; margin: 0; padding: 0; }
-.handoff { padding: 4px 0; overflow-wrap: anywhere; }
-.handoff-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 8px; margin-bottom: 2px; }
-.handoff-title { font-weight: 600; }
-.handoff small { color: var(--muted); }
-.handoff-result { white-space: pre-wrap; }
-.handoff-needs { margin-top: 3px; padding-inline-start: 8px; }
-.handoff-needs li { margin-top: 1px; }
 .needs-view { padding-block: 8px 12px; }
 .needs-view section + section, .needs-view p.error { margin-block-start: 12px; }
 .needs-view ul { list-style: none; margin: 0; padding: 0; }
@@ -687,29 +676,6 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 .attention-row[aria-current='true'] .attention-choice { background: var(--shade-hover); }
 .attention-choice:not(:disabled):hover { color: var(--accent); }
 
-.task-page { overflow-anchor: none; }
-.task-rows { display: grid; container-type: inline-size; }
-.task-row { display: grid; grid-template-columns: 80px 48px minmax(0, 1fr) 32px; align-items: center; gap: 0 8px; min-height: 32px; padding: 4px var(--inset); }
-.task-row:hover { background: var(--shade); }
-.task-row[aria-current] { background: var(--selected); box-shadow: inset 3px 0 var(--accent); }
-.task-row:focus-visible { outline-offset: -2px; }
-.task-priority { color: var(--muted); white-space: nowrap; }
-.task-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); }
-.task-title .label { margin-left: 6px; vertical-align: 1px; }
-.task-now { max-width: 36ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; }
-.task-now .needs { display: inline; }
-.task-now .need + .need { margin-left: 8px; }
-.task-where { color: var(--faint); font-size: 12px; white-space: nowrap; }
-.task-row .time { text-align: right; }
-.task-places { display: grid; padding: 0 12px; }
-.task-place { display: flex; align-items: center; gap: 12px; padding: 5px 8px; color: var(--dim); }
-.task-place:hover { background: var(--shade); color: var(--bright); }
-.task-place .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.task-place .count { color: var(--faint); font-size: 12px; white-space: nowrap; }
-.task-where { display: none; }
-.task-now { grid-column: 3 / -1; grid-row: 2; max-width: none; }
-.task-now:empty { display: none; }
-
 .composer-task { display: flex; gap: 6px; margin: 8px 8px 0; }
 .composer-task .suggest { flex: 1; }
 .composer-task .prefix { margin-right: 8px; font-size: 11px; white-space: nowrap; }
@@ -814,7 +780,7 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 /* --- a narrow page: the sidebar comes over it when it's asked for --- */
 .shell.nav .sidebar { display: grid; z-index: var(--nav-layer); width: min(280px, 84vw) !important; opacity: 1 !important; }
 .shell.nav .scrim { display: block; grid-area: 1 / 1 / -1 / 2; z-index: calc(var(--nav-layer) - 1); background: var(--scrim); }
-:is(.brand .at, .sidebar h2, .sidebar .count, .whoami, .header .meta, .live, .time, .id, .divider, .where, .edited, .undelivered, .hint, .task-state, .task-priority, .task-now, .task-where) { font: var(--metadata); }
+:is(.brand .at, .sidebar h2, .sidebar .count, .whoami, .header .meta, .live, .time, .id, .divider, .where, .edited, .undelivered, .hint, .task-state) { font: var(--metadata); }
 :is(.chip, .label button, .file button, .sidebar h2 .tool, .replies, .clear) { min-height: 24px; }
 .emoji-grid { grid-template-columns: repeat(12, minmax(0, 1fr)); width: min(372px, calc(100vw - 24px)); }
 @media (max-width: 700px) {
@@ -830,15 +796,8 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
    own size, whatever its selector. A desktop keeps the sizes above. --- */
 @media (pointer: coarse) {
   input, textarea, select { font-size: 16px !important; }
-  :is(.header .tool, .sidebar .item, .brand .tool, .whoami, .send, .composer-footer .tool, .task-row) { min-height: 44px; }
+  :is(.header .tool, .sidebar .item, .brand .tool, .whoami, .send, .composer-footer .tool) { min-height: 44px; }
   :is(.header .tool, .brand .tool, .composer-footer .tool) { min-width: 44px; }
-}
-
-@container (min-width: 42rem) {
-  .task-row { grid-template-columns: 80px 48px minmax(0, 1fr) auto auto 36px; }
-  .task-where, .task-now:empty { display: block; }
-  .task-now { grid-column: auto; grid-row: auto; max-width: 24ch; }
-  .task-where { max-width: 16ch; overflow: hidden; text-overflow: ellipsis; }
 }
 
 /* --- wordmark --- */
@@ -850,11 +809,7 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 }
 .brand .wordmark:hover { color: var(--accent); }
 
-.handoffs-view { padding-block: 5px 8px; }
-.handoffs-view > * + * { margin-block-start: 6px; }
 .home-queue h2 { padding-bottom: 1px; }
-.handoff { padding-block: 2px; }
-.handoff-line { margin-bottom: 0; }
 
 /* operations: a live schematic beside the ledger and each component's details */
 .operations-view {
@@ -901,7 +856,7 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 .ops-schematic .frame { fill: var(--bg); stroke: var(--gold); stroke-opacity: .7; stroke-width: 1.1; transition: stroke .3s, stroke-opacity .3s; }
 .ops-schematic .node-title { fill: var(--bright); font: 600 14px var(--display); letter-spacing: .01em; }
 .ops-schematic .node-line { fill: var(--dim); font-size: 12px; }
-.ops-schematic .node-line.small { font-size: 10.5px; fill: var(--muted); }
+.ops-schematic .node-line.small { font-size: 8.5px; fill: var(--muted); }
 .ops-schematic .node-line.faint, .ops-schematic .node-detail { fill: var(--faint); font: 400 11px var(--mono); }
 .ops-schematic .node-figure { fill: var(--bright); font-size: 12px; font-variant-numeric: tabular-nums; }
 .ops-schematic .node.down .frame { stroke: var(--hairline); stroke-opacity: 1; stroke-dasharray: 3 4; }

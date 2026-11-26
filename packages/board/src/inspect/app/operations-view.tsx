@@ -397,7 +397,7 @@ export function Operations(props: { lead?: ReactNode }) {
                   <rect className="frame" x={board.x} y={board.y} width={BOX.w} height={BOX.h} rx={7} />
                   <circle className={`led ${boardLed}`} cx={board.x + BOX.w - 14} cy={board.y + 18} r={3.5} />
                   <text className="node-title" x={board.x + 14} y={board.y + 24}>Board</text>
-                  <text className="node-line" x={board.x + 14} y={board.y + 43}>{offline ? '—' : boardDown ? 'unreachable' : snapshot.board.paused ? 'paused' : `${liveCount} claimed`}</text>
+                  <text className="node-line small" x={board.x + 14} y={board.y + 43}>{offline ? '—' : boardDown ? 'unreachable' : snapshot.board.paused ? 'paused' : `${liveCount} claimed`}</text>
                   {snapshot?.board.error && <title>{snapshot.board.error}</title>}
                 </g>
 
@@ -405,7 +405,7 @@ export function Operations(props: { lead?: ReactNode }) {
                   <rect className="frame" x={github.x} y={github.y} width={BOX.w} height={BOX.h} rx={7} />
                   <circle className={`led ${faults.github ? 'fault' : offline ? 'off' : 'ok'}`} cx={github.x + BOX.w - 14} cy={github.y + 18} r={3.5} />
                   <text className="node-title" x={github.x + 14} y={github.y + 24}>GitHub</text>
-                  <text className="node-line" x={github.x + 14} y={github.y + 43}>{plural(attempts.filter((a) => a.pr_url).length, 'draft PR')}</text>
+                  <text className="node-line small" x={github.x + 14} y={github.y + 43}>{plural(attempts.filter((a) => a.pr_url).length, 'draft PR')}</text>
                 </g>
 
                 <g className={`node heart${offline ? ' down fault' : !serving ? ' down' : ''}`}>

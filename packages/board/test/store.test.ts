@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { AttentionView, BoardEventView, MessageView, ScheduleView, SchemaView, TaskView } from '../src/api/routes.ts'
 import { block } from '../src/contract/blocks.ts'
 import * as attentionStore from '../src/inspect/app/attention-store.ts'
-import { needsAction } from '../src/inspect/app/needs.ts'
+import { projectWork } from '../src/inspect/app/work.ts'
 import * as store from '../src/inspect/app/store.ts'
 import { continues } from '../src/inspect/app/store.ts'
 import { boardWords, cadence, laterFields, localInput, principalName, refusal, span, timingWords, until } from '../src/inspect/app/words.ts'
@@ -344,56 +344,6 @@ describe('the inspector store', () => {
     const changed = { cursor: '9', type: 'task.needs_changed', createdAt: '', payload: { id: '1', needs: ['6', '7'] }, message: task(1, { state: 'waiting', needs: ['6', '7'] }, { version: 9 }) }
     state = store.applyEvent(state, changed as unknown as BoardEventView)
     expect((store.shown(state, '1') as store.TaskRoot).task.needs).toEqual(['6', '7'])
-    expect(store.tasks({ ...state, openTaskRoots: state.messages }, { state: 'waiting', label: [] }, NOW).map((t) => t.task.needs)).toEqual([['6', '7']])
-  })
-
-  it('lists tasks like the board: oldest first, by state, place, labels, owner, and who they are for', () => {
-    const state = store.merge(start, [
-      task(1, {}, { createdAt: at(1), labels: { step: 'fix' } }),
-      task(2, { state: 'waiting', needs: ['1'] }, { createdAt: at(2), channel: 'work/security' }),
-      task(3, claimedBy(ME, at(-1)), { createdAt: at(3) }), // its lease ran out
-      task(4, { state: 'completed', result: 'done' }, { createdAt: at(4) }),
-      task(5, { owner: 'vercel:user:u_ada', for: 'vercel:user:u_ada+fixer' }, { createdAt: at(0), channel: 'workshop' }),
-      task(6, {}, { createdAt: at(5), deleted: true }),
-      message(7, { channel: 'work' }), // a thread that isn't a task
-    ])
-    const accepted = { ...state, openTaskRoots: state.messages }
-    const ids = (filter: Partial<store.TaskFilter>, through?: MessageView) => store.tasks(accepted, { state: 'open', label: [], ...filter }, NOW, through).map((t) => t.id)
-    expect(ids({})).toEqual(['5', '1', '2', '3'])
-    expect(ids({ state: 'all' })).toEqual(['5', '1', '2', '3', '4'])
-    // A lapsed claim lists as ready, and not as claimed.
-    expect(ids({ state: 'ready' })).toEqual(['5', '1', '3'])
-    expect(ids({ state: 'claimed' })).toEqual([])
-    expect(ids({ state: 'completed' })).toEqual(['4'])
-    // A channel is itself; with a trailing slash, itself and what's under it, and nothing that only starts like it.
-    expect(ids({ channel: 'work' })).toEqual(['1', '3'])
-    expect(ids({ channel: 'work/' })).toEqual(['1', '2', '3'])
-    expect(ids({ label: ['step=fix'] })).toEqual(['1'])
-    expect(ids({ owner: 'vercel:user:u_ada' })).toEqual(['5'])
-    expect(ids({ for: 'vercel:user:u_ada+fixer' })).toEqual(['5'])
-    // While the board has more, the list ends at the last task it listed.
-    expect(ids({}, state.messages['1'])).toEqual(['5', '1'])
-    // They're counted only once every open one is here.
-    expect(store.openTasks(state)).toBeNull()
-    expect(store.openTasks({ ...accepted, tasksCounted: true })).toBe(4)
-  })
-
-  it('counts tasks by their current state, moving a lapsed claim back to ready', () => {
-    const state = store.merge(start, [
-      task(1),
-      task(2, claimedBy(ME, at(5))),
-      task(3, { state: 'waiting', needs: ['1'] }),
-      task(4, { state: 'blocked', blocked: { kind: null, reason: 'needs review' } }),
-      task(5, { state: 'failed', reason: 'checks failed' }),
-      task(6, { state: 'completed', result: 'delivered' }),
-      task(7, { state: 'canceled', reason: 'no longer needed' }),
-      task(8, { state: 'canceled', reason: 'deleted' }, { deleted: true }),
-      message(9),
-    ])
-    const counts = { ready: 1, claimed: 1, waiting: 1, blocked: 1, failed: 1, completed: 1, canceled: 1 }
-    const accepted = { ...state, openTaskRoots: state.messages }
-    expect(store.taskCounts(accepted, NOW)).toEqual(counts)
-    expect(store.taskCounts(accepted, NOW + 5 * 60_000)).toEqual({ ...counts, ready: 2, claimed: 0 })
   })
 
   it('says what a refusal means', () => {
@@ -442,41 +392,9 @@ it('shows only open decisions, oldest first, from readable task roots', () => {
     state = withRead(state, canceled, here(request(canceled, 'canceled')))
     const prior = withRead(seeded([absent]), absent, here(request(absent)))
     state = { ...state, attention: { ...prior.attention, ...state.attention } }
-    const groups = needsAction(state, viewer([], { may: (perm, channel) => perm === 'read' && channel === 'work' }), NOW)
-    expect(groups.decisions.map(({ id }) => id)).toEqual(['9', '2'])
-    expect(groups.stalled).toEqual([])
-    expect(groups.ready).toEqual([])
-  })
-
-  it('puts only unclaimable expired claims in stalled, with the longest overdue first', () => {
-    const owner = 'vercel:user:u_ada'
-    const atDeadline = task(1, { ...claimedBy(owner, at(0)), owner }, { createdAt: at(-12) })
-    const overdue = task(2, { ...claimedBy(owner, at(-4)), owner }, { createdAt: at(-10) })
-    const live = task(3, claimedBy(ME, at(1)))
-    const ready = task(4)
-    const groups = needsAction(seeded([atDeadline, overdue, live, ready]), viewer(['read', 'label']), NOW)
-    expect(groups.stalled.map(({ id }) => id)).toEqual(['2', '1'])
-    expect(groups.ready.map(({ id }) => id)).toEqual(['4'])
-  })
-
-  it('orders eligible ready work by priority, then assignment, then age', () => {
-    const worker = `${ME}+worker`
-    const state = seeded([
-      task(1, { priority: 'low' }, { createdAt: at(-10) }),
-      task(2, { priority: 'urgent' }, { createdAt: at(-1) }),
-      task(3, { priority: 'high' }, { createdAt: at(-4) }),
-      task(4, { priority: 'high' }, { createdAt: at(-8) }),
-      task(5, { priority: 'high', for: worker }, { createdAt: at(-2) }),
-      task(6, { priority: 'urgent', for: `${ME}+other` }),
-      task(7, { priority: 'urgent', owner: 'vercel:user:u_ada' }),
-      task(8, { state: 'waiting' }),
-      task(9, {}, { deleted: true }),
-      task(10, { priority: 'urgent' }, { channel: 'read-only' }),
-      task(11, { priority: 'normal' }),
-      task(12, { priority: 'lowest' }),
-    ])
-    const groups = needsAction(state, viewer([], { actor: worker, profile: 'worker', may: (perm, channel) => perm === 'read' || (perm === 'label' && channel === 'work') }), NOW)
-    expect(groups.ready.map(({ id }) => id)).toEqual(['2', '5', '4', '3', '11', '1', '12'])
+    const { groups } = projectWork(state, null, viewer([], { may: (perm, channel) => perm === 'read' && channel === 'work' }), NOW)
+    const needs = groups.find(({ group }) => group === 'needs')!.rows.filter(({ reason }) => reason === 'attention answer needed')
+    expect(needs.map(({ root }) => root.id)).toEqual(['9', '2'])
   })
 
   it('lists held attention tasks oldest first, even for stale or canceled requests', () => {
@@ -749,28 +667,5 @@ it('shows only open decisions, oldest first, from readable task roots', () => {
       { name: 'name', value: 'x', description: 'What it is called' },
       { name: 'anything', value: 1 },
     ])
-  })
-
-  it('offers the places one level down to list tasks from, for a board that lists them a tree at a time', () => {
-    const channels = ['ops', 'work', 'work/api', 'work/web', 'v0/a/b', 'v0/c', 'solo']
-    // A channel with channels under it goes with them, in its tree, which counts it.
-    expect(store.placesUnder(channels)).toEqual([
-      { place: 'ops', channels: 1 },
-      { place: 'solo', channels: 1 },
-      { place: 'v0/', channels: 2 },
-      { place: 'work/', channels: 3 },
-    ])
-    // A tree that's still too big has places of its own: its own channel, its trees, and its channels.
-    expect(store.placesUnder(channels, 'work/')).toEqual([
-      { place: 'work', channels: 1 },
-      { place: 'work/api', channels: 1 },
-      { place: 'work/web', channels: 1 },
-    ])
-    expect(store.placesUnder(channels, 'v0/')).toEqual([
-      { place: 'v0/a/', channels: 1 },
-      { place: 'v0/c', channels: 1 },
-    ])
-    // A tree written without its slash is the same tree.
-    expect(store.placesUnder(channels, 'v0')).toEqual(store.placesUnder(channels, 'v0/'))
   })
 })

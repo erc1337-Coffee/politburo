@@ -2,25 +2,22 @@ import { ListTodo, PanelLeftOpen, SlidersHorizontal, X } from 'lucide-react'
 import { ChannelDialog } from './channel-dialog.tsx'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import type { MessageView, SyncedView } from '../../api/routes.ts'
-import { Attention } from './attention.tsx'
 import * as board from './board.ts'
 import { setEditing } from './chrome.ts'
 import { Composer } from './composer.tsx'
 import { Feed, Toasts } from './feed.tsx'
-import { Home } from './home.tsx'
-import { NeedsAction } from './needs-action.tsx'
+import { Inbox } from './inbox.tsx'
 import { HomeEmblem } from './home-emblem.tsx'
 import { Messages, Pendings, type RowOptions } from './message.tsx'
 import { here, isTypingTarget, Link, navigate, RelativeTime, route, useLocation, useNow, useTypeToFocus } from './nav.tsx'
 import { Settings } from './settings.tsx'
 import { Sidebar } from './sidebar.tsx'
 import { actorFor, TaskCard, taskIds } from './task.tsx'
-import { Tasks } from './tasks.tsx'
 import { FilterButton, FilterChips } from './filters.tsx'
 import { byWritten, channelRows, channelThreads, filtering, isTask, knownLabels, listingOf, matches, mayCancelSchedule, pauseBanner, profilesOf, thread as threadOf, threadSchedules, type Filter, type State, type Viewer } from './store.ts'
 import { Ask, AskForm, Header, HeaderActions, nativeMenu, Panel, ResizeHandle, type KnownLabels } from './ui.tsx'
 import { boardWords, cadence, firstLine, shownName, until } from './words.ts'
-import { cellHasThread, isWorkRoute, workScope } from './work-scope.ts'
+import { cellHasThread, isWorkRoute, workTitle } from './work-scope.ts'
 import { Work } from './work-view.tsx'
 import { Operations } from './operations-view.tsx'
 
@@ -251,12 +248,11 @@ export function App() {
   const current = route(where.path)
   // The tab says which board too, so two inspectors side by side tell apart.
   const named = boardWords(state.discovery).name
-  const title = isWorkRoute(current) ? workScope(current, where.params, board.swarmRecords(), named).title
+  const title = isWorkRoute(current) ? workTitle(current)
     : current.view === 'channel' ? `#${current.channel}`
     : current.view === 'settings' ? `${current.section} · settings`
     : current.view === 'missing' ? 'nothing here'
-    : current.view === 'needs' ? 'Needs action'
-    : current.view === 'handoffs' ? 'HANDOFFS'
+    : current.view === 'inbox' ? 'Inbox'
     : current.view
   useEffect(() => { document.title = `${title} · ${named}` }, [title, named])
 
@@ -337,15 +333,12 @@ export function App() {
         </nav>
         <main className="main" inert={narrow && (nav || where.thread !== null)}>
           <HeaderActions.Provider value={paneIsFront ? null : headerActions}>
-            {current.view === 'needs' && <NeedsAction key={identity} state={state} now={now} lead={expand} />}
-            {current.view === 'handoffs' && <Home key={identity} state={state} now={now} lead={expand} />}
+            {current.view === 'inbox' && <Inbox key={identity} state={state} viewer={viewer} lead={expand} now={now} />}
             {current.view === 'channel' && (
               <Channel key={current.channel} channel={current.channel} state={state} options={options} known={known} lead={expand} filters={filters} />
             )}
             {isWorkRoute(current) && <Work key={`${identity}:${where.path}`} route={current} state={state} now={now} lead={expand} />}
-            {current.view === 'tasks' && <Tasks key={identity} state={state} viewer={viewer} now={now} lead={expand} where={where} known={known} />}
             {current.view === 'operations' && <Operations lead={expand} />}
-            {current.view === 'attention' && <Attention key={identity} state={state} viewer={viewer} lead={expand} now={now} />}
             {current.view === 'settings' && <Settings state={state} viewer={viewer} now={now} lead={expand} where={where} section={current.section} open={current.open} />}
             {current.view === 'missing' && (
               <>

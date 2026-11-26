@@ -1,17 +1,36 @@
 import { useEffect, useMemo, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { keyAction, selectionAfter, type Selection } from './attention-keys.ts'
+import { attentionFor, attentionRows, NO_ATTENTION } from './attention-store.ts'
 import * as board from './board.ts'
 import { Ago, here, Link, RelativeTime, useTypeToFocus } from './nav.tsx'
-import { attentionFor, attentionRows, NO_ATTENTION } from './attention-store.ts'
 import type { State, TaskRoot, Viewer } from './store.ts'
 import { Header } from './ui.tsx'
+import { Row } from './work-view.tsx'
+import { projectWork, type WorkGroup } from './work.ts'
 import { ago, firstLine, left } from './words.ts'
 
-export function Attention({ state, viewer, lead, now }: { state: State; viewer: Viewer; lead: ReactNode; now: number }) {
+/** What needs a person, beside the questions: Work's own groups, so the two never disagree. */
+const SECTIONS: readonly { group: WorkGroup; title: string }[] = [
+  { group: 'needs', title: 'Needs you' },
+  { group: 'repair', title: 'Repair or reconcile' },
+  { group: 'review', title: 'Ready to review' },
+]
+
+/** The home page: questions to answer, then the tasks that need a person. */
+export function Inbox({ state, viewer, lead, now }: { state: State; viewer: Viewer; lead: ReactNode; now: number }) {
   useTypeToFocus('main')
-  useEffect(board.openAttention, [])
-  const rows = useMemo(() => attentionRows(state), [state.messages, state.attention])
-  const items = rows.flatMap((root) => {
+  useEffect(board.openNeeds, [])
+  const records = board.swarmRecords()
+  const taskViewer = useMemo(() => state.openTaskMe && board.viewerOf(state.openTaskMe), [state.openTaskMe])
+  const work = useMemo(() => projectWork(state, records, taskViewer, now), [state, records, taskViewer, now])
+  // Only tasks of the accepted read, so a revoked or omitted task leaves with it.
+  const questions = useMemo(() => attentionRows(state).filter(({ id }) => Object.hasOwn(state.openTaskRoots, id)),
+    [state.messages, state.attention, state.openTaskRoots])
+  const asked = new Set(questions.map(({ id }) => id))
+  const sections = SECTIONS.map(({ group, title }) => ({
+    group, title, rows: work.groups.find((entry) => entry.group === group)?.rows.filter(({ root }) => !asked.has(root.id)) ?? [],
+  })).filter(({ rows }) => rows.length > 0)
+  const items = questions.flatMap((root) => {
     const { held, attention } = attentionFor(state, root, viewer)
     return held && root.task.attentionId !== undefined && attention?.status !== 'canceled' && attention?.status !== 'answered'
       ? [{ taskId: root.id, requestId: root.task.attentionId }]
@@ -20,7 +39,7 @@ export function Attention({ state, viewer, lead, now }: { state: State; viewer: 
   const [previous, select] = useState<Selection | null>(null)
   const selected = selectionAfter(previous, items)
   if (selected !== previous) select(selected)
-  const selectedRow = selected && rows.find((root) => root.id === selected.taskId)
+  const selectedRow = selected && questions.find((root) => root.id === selected.taskId)
   const choice = selectedRow && attentionFor(state, selectedRow, viewer)
   useEffect(() => board.attentionRendered(state), [state])
 
@@ -39,23 +58,43 @@ export function Attention({ state, viewer, lead, now }: { state: State; viewer: 
   }
 
   const supported = state.discovery?.task_attention === true && !state.attentionUnsupported
-  const canAnswer = rows.some((root) => attentionFor(state, root, viewer).reason === null)
+  const canAnswer = questions.some((root) => attentionFor(state, root, viewer).reason === null)
+  const errors = new Set(taskViewer ? Object.values(state.openTaskAttentionRefusals) : [])
+  for (const root of Object.values(state.openTaskRoots)) {
+    const { readError } = attentionFor(state, root as TaskRoot, taskViewer)
+    if (readError !== null) errors.add(readError)
+  }
+  const nothing = questions.length === 0 && sections.length === 0
   return (
     <>
-      <Header title="attention" meta="oldest first" live={state.live} lead={lead} />
-      <div className="page attention-list" role="region" aria-label="attention requests" tabIndex={0} onKeyDown={keys}>
-        {rows.length > 0 && <p className="attention-keys faint">with the list focused: j/k to select{canAnswer ? ', 1–8 to answer' : ''}</p>}
+      <Header title="Inbox" meta="oldest first" live={state.live} lead={lead} />
+      <div className="page home-view needs-view">
         {state.tasksRefused !== null && <p className="empty error">{state.tasksRefused}</p>}
-        {rows.length === 0 && state.tasksRefused === null && (
-          <p className="empty">{!state.tasksCounted ? 'loading…' : !supported ? NO_ATTENTION : 'no open attention requests'}</p>
+        {questions.length > 0 && (
+          <section className="home-queue" aria-labelledby="inbox-questions">
+            <h2 id="inbox-questions">Questions</h2>
+            <div className="attention-list" role="region" aria-label="attention requests" tabIndex={0} onKeyDown={keys}>
+              <p className="attention-keys faint">with the list focused: j/k to select{canAnswer ? ', 1–8 to answer' : ''}</p>
+              {questions.map((root) => (
+                <AttentionRow key={root.id} root={root} state={state} viewer={viewer} now={now} selected={selected?.taskId === root.id}
+                  onSelect={() => {
+                    const item = items.find(({ taskId }) => taskId === root.id)
+                    if (item) select(item)
+                  }} />
+              ))}
+            </div>
+          </section>
         )}
-        {rows.map((root) => (
-          <AttentionRow key={root.id} root={root} state={state} viewer={viewer} now={now} selected={selected?.taskId === root.id}
-            onSelect={() => {
-              const item = items.find(({ taskId }) => taskId === root.id)
-              if (item) select(item)
-            }} />
+        {sections.map(({ group, title, rows }) => (
+          <section key={group} className="home-queue" aria-labelledby={`inbox-${group}`}>
+            <h2 id={`inbox-${group}`}>{title}</h2>
+            <ul role="list">{rows.map((row) => <Row key={row.root.id} row={row} state={state} />)}</ul>
+          </section>
         ))}
+        {nothing && state.tasksRefused === null && errors.size === 0 && (
+          <p className="empty" role="status">{!state.tasksCounted ? 'loading…' : supported ? 'nothing needs you' : `nothing needs you; ${NO_ATTENTION}`}</p>
+        )}
+        {[...errors].map((error) => <p key={error} role="status" className="error">{error}</p>)}
       </div>
     </>
   )

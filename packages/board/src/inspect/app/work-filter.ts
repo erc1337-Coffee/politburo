@@ -62,10 +62,9 @@ export function filterWork(rows: readonly WorkRow[], filter: WorkFilter): WorkRo
   })
 }
 
-// No History view: the open-task read does not hold closed tasks.
+// Views of the swarm grouping. Finished tasks show when Work groups by board state or not at all.
 export const SAVED_VIEWS = {
-  attention: { title: 'My attention', groups: ['needs', 'review'] },
-  operations: { title: 'Repo operations', groups: OPEN_WORK_GROUPS },
+  open: { title: 'All open', groups: OPEN_WORK_GROUPS },
   available: { title: 'Available', groups: ['pull'] },
   live: { title: 'Live claims', groups: ['running'] },
   review: { title: 'Review queue', groups: ['review'] },

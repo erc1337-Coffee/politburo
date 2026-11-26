@@ -17,6 +17,7 @@ import type { ChannelSettings, ModelRoute, RepositoryView } from '../../contract
 import { toast } from './chrome.ts'
 import { listing } from './listing.ts'
 import { base, currentPath, route } from './nav.tsx'
+import { groupingOf } from './routes.ts'
 import * as store from './store.ts'
 import { refusal, said } from './words.ts'
 import { fixtureRecords } from './work-fixtures.ts'
@@ -128,7 +129,7 @@ export async function setProfile(next: Profile | null | undefined): Promise<bool
       listed = listingForCurrentHandle()
       set((s) => ({ ...s, me, schedules: { is: 'loading' }, live: bootStarted ? 'reconnecting' : s.live,
         tasksCounted: false, openTaskRoots: {}, openTaskMe: null, openTaskAttentionRefusals: {}, paneThread: null,
-        taskScope: null, tasksLoading: null, tasksTooWide: false, threadDenials: new Map(), messages: {},
+        taskScope: null, tasksLoading: null, threadDenials: new Map(), messages: {},
         tasksRefused: null, attention: {}, attentionUnsupported: false }))
     })
     if (bootStarted) void boot().catch((error) => toast(said(error)))
@@ -279,7 +280,7 @@ export async function boot(): Promise<void> {
   }, () => {})
   void loadSchemas()
   void loadSchedules()
-  if (route(currentPath()).view !== 'needs' && openTaskRead?.identity !== identity) refreshOpenTasks()
+  if (!opensTaskRead(route(currentPath()).view) && openTaskRead?.identity !== identity) refreshOpenTasks()
 }
 
 // #region guide inspector/live.ts
@@ -647,20 +648,22 @@ let needsVisit: symbol | undefined
 
 function taskQuery() {
   const view = route(currentPath()).view
-  const channel = view === 'tasks' ? store.readFilter(new URLSearchParams(location.search)).channel : undefined
-  // Work scopes share one open-task read, so a later read can drop a task it omits.
-  // Tasks and Handoffs read every state.
-  const work = view === 'work' || view === 'presidium' || view === 'party' || view === 'cell' || view === 'needs'
-  const all = !work && (view === 'tasks' || view === 'handoffs' || state.taskScope === store.taskScope())
-  const stateFilter = all ? 'all' : 'open'
-  return { state: stateFilter, ...(channel ? { channel } : {}) } as const
+  // Task views share one read, so a later read can drop a task it omits. Work grouped by
+  // board state, or not grouped, shows finished tasks too, so it reads every state.
+  const all = view === 'work' ? groupingOf(new URLSearchParams(location.search)) !== 'swarm'
+    : view !== 'inbox' && view !== 'cell' && state.taskScope === store.taskScope()
+  return { state: all ? 'all' : 'open' } as const
 }
+
+/** The views that start their own task read and revalidate it themselves (`openNeeds`). */
+const opensTaskRead = (view: string) => view === 'inbox' || view === 'work' || view === 'cell'
+
+const scopeOf = (query: ReturnType<typeof taskQuery>) => query.state === 'open' ? 'open' : store.taskScope()
 
 /** Feed events invalidate a read, but never admit a task. */
 function observeOpenTaskEvent(root: MessageView, taken: number) {
   if (root.re !== null || !store.isTask(root)) return
   const query = taskQuery()
-  if (query.channel && !store.inChannel(root.channel, query.channel)) return
   const member = state.openTaskRoots[root.id]
   if (member && member.version >= root.version) return
   const read = openTaskRead?.identity === identity ? openTaskRead : undefined
@@ -691,7 +694,7 @@ function forgetThread(id: string, reason: string, fromNeedsAttention = false) {
 /** One complete scope, with its own permissions, for every task view. */
 function refreshOpenTasks(revalidate = false) {
   const query = taskQuery()
-  const scope = query.state === 'open' ? 'open' : store.taskScope(query.channel)
+  const scope = scopeOf(query)
   if (openTaskRead?.identity === identity) {
     openTaskRead.again = true
     openTaskRead.superseded ||= revalidate || openTaskRead.scope !== scope
@@ -701,7 +704,7 @@ function refreshOpenTasks(revalidate = false) {
   const handle = team
   const current = () => read.identity === identity && !read.superseded
   set((s) => ({ ...s, tasksLoading: 0 }))
-  // Needs action reads permissions alongside its open-task snapshot. Queues read
+  // The Inbox and Work read permissions alongside their task snapshot. Other views read
   // permissions after the last page so a revocation during paging is also reflected.
   const needsMe = needsVisit ? handle.me().then((me) => ({ me }), (error: unknown) => ({ error })) : undefined
   void (async () => {
@@ -753,8 +756,7 @@ function refreshOpenTasks(revalidate = false) {
       for (const view of Object.values(s.messages)) {
         if (view.id === id || !store.isTask(view) || Object.hasOwn(openTaskRoots, view.id)) continue
         if (Object.hasOwn(s.openTaskRoots, view.id) ||
-          ((!query.channel || store.inChannel(view.channel, query.channel)) &&
-            (query.state === 'all' || store.OPEN_STATES.includes(view.task.state)))) omitted.add(view.id)
+          query.state === 'all' || store.OPEN_STATES.includes(view.task.state)) omitted.add(view.id)
       }
       const next = store.merge(store.evictThreads(s, omitted, evictedAt), roots, read.taken)
       // Hide omitted or revoked task content until the pane's own fresh read answers.
@@ -763,22 +765,16 @@ function refreshOpenTasks(revalidate = false) {
       const paneThread = hide && s.paneThread?.result === 'readable'
         ? { ...s.paneThread, result: 'loading' as const, messages: {} } : s.paneThread
       return { ...next, openTaskRoots, openTaskMe: me, taskScope: scope, tasksLoading: null,
-        tasksCounted: me !== null && !query.channel, tasksRefused: me ? null : refusal(error),
-        tasksTooWide: (error as { code?: unknown } | null)?.code === 'channel_tree_too_large',
+        tasksCounted: me !== null, tasksRefused: me ? null : refusal(error),
         openTaskAttentionRefusals: me ? {} : s.openTaskAttentionRefusals, paneThread }
     })
     refreshThreadPane()
     if (me && needsVisit) refreshAttentionRoots()
-    else if (me && attentionVisit) {
-      for (const root of attentionStore.attentionTasks(state)) {
-        if (state.attention[root.id]?.latest?.id !== root.task.attentionId) void readAttention(root)
-      }
-    }
   }
 }
 
 export function watchTaskReads() {
-  const revalidate = () => { if (state.me && route(currentPath()).view !== 'needs') refreshOpenTasks(true) }
+  const revalidate = () => { if (state.me && !opensTaskRead(route(currentPath()).view)) refreshOpenTasks(true) }
   const visible = () => { if (document.visibilityState === 'visible') revalidate() }
   let previous = currentPath() + location.search
   const navigateRead = () => {
@@ -790,9 +786,8 @@ export function watchTaskReads() {
     }
     const changed = taskURL(next) !== taskURL(previous)
     previous = next
-    const view = route(currentPath()).view
-    if (changed && (view === 'tasks' || view === 'handoffs' || view === 'presidium' ||
-        (state.taskScope !== null && state.taskScope !== 'open' && state.taskScope !== store.taskScope()))) revalidate()
+    // A Work grouping that reads every state, or one that doesn't, needs its own read.
+    if (changed && state.me && state.taskScope !== null && scopeOf(taskQuery()) !== state.taskScope) refreshOpenTasks(true)
   }
   window.addEventListener('popstate', navigateRead)
   window.addEventListener('focus', revalidate)
@@ -825,13 +820,13 @@ export function openNeeds() {
 
 function refreshAttentionRoots() {
   if (!attentionVisit) return
-  const roots = needsVisit ? Object.values(state.openTaskRoots).filter(attentionStore.holdsAttention) : attentionStore.attentionTasks(state)
+  const roots = Object.values(state.openTaskRoots).filter(attentionStore.holdsAttention)
   for (const root of roots) void readAttention(root)
 }
 
-export function openAttention() {
+/** Questions are read once the task read that `openNeeds` starts is accepted. */
+function openAttention() {
   const visit = attentionVisit = Symbol()
-  refreshAttentionRoots()
   return () => {
     if (attentionVisit !== visit) return
     attentionVisit = undefined
@@ -848,7 +843,7 @@ function refreshAttentionEvents(events: BoardEventView[]) {
     if ((event.type === 'message.edited' || event.type === 'message.deleted') && message?.re) touched.add(message.re)
   }
   for (const id of touched) {
-    const root = needsVisit ? state.openTaskRoots[id] : state.messages[id]
+    const root = state.openTaskRoots[id]
     if (attentionStore.holdsAttention(root)) void readAttention(root)
   }
 }
@@ -865,20 +860,19 @@ export function attentionRendered(rendered: store.State) {
 async function readAttention(root: ReturnType<typeof attentionStore.attentionTasks>[number]) {
   const as = identity
   const visit = attentionVisit
-  const needs = needsVisit
   const epoch = openTaskEpoch
   const { id } = root
   const reading = attentionStore.beginAttentionRead(state, root)
   set(() => reading.state)
   const current = () => as === identity && visit === attentionVisit &&
     state.attention[id]?.latest === reading.read &&
-    (!needs || (epoch === openTaskEpoch && Object.hasOwn(state.openTaskRoots, id)))
+    epoch === openTaskEpoch && Object.hasOwn(state.openTaskRoots, id)
   try {
     const { attention } = await team.tasks.attention(id)
     if (current()) set((s) => attentionStore.finishAttentionRead(s, id, reading.read, { is: 'here', value: attention }))
   } catch (error) {
     if (!current()) return
-    if (inaccessible(error) && needs) {
+    if (inaccessible(error)) {
       forgetThread(id, said(error), true)
       refreshThreadPane(id)
       return

@@ -10,7 +10,6 @@ export type SwarmRecords = {
     name: string
     colour: string
     openClaimLimit?: number
-    labels?: { party_board?: string; repo_view?: string; mob_view?: string }
   }>
   observations: Record<string, Observation>
 }
@@ -140,15 +139,6 @@ function own<T>(record: Record<string, T> | undefined, key: string | undefined):
 
 export function partyOf(records: SwarmRecords | null, partyId: string | null) {
   return own(records?.parties, partyId ?? undefined)
-}
-
-export function labelsOf(records: SwarmRecords | null, partyId: string | null, boardName = 'board') {
-  const party = partyOf(records, partyId)
-  return {
-    partyBoard: { label: party?.labels?.party_board ?? 'Standing Committee', subtitle: `Standing Committee: ${party?.name ?? partyId ?? 'party'} board` },
-    repoView: { label: party?.labels?.repo_view ?? 'Presidium', subtitle: `Presidium: ${boardName} repo` },
-    mobView: { label: party?.labels?.mob_view ?? 'Cell', subtitle: 'Cell: one mob view' },
-  }
 }
 
 export function projectWork(state: State, records: SwarmRecords | null, viewer: Viewer | null, now: number) {

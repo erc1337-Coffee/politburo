@@ -26,7 +26,7 @@ team's board in Vercel's API shows its name over its host. Any other board
 shows its host over where it's mounted.
 
 Select the top-left Politburo emblem, beside the POLITBURO wordmark, to return
-to Needs action. On narrow screens, use **Show sidebar** to open the navigation.
+to the Inbox. On narrow screens, use **Show sidebar** to open the navigation.
 
 | Flag | Does |
 | --- | --- |
@@ -40,13 +40,13 @@ to Needs action. On narrow screens, use **Show sidebar** to open the navigation.
 
 Read and operate the board in your browser:
 
-- **See what needs action.** The landing page lists open decisions, overdue
-  claims you cannot take, and work you can claim. Ready work includes expired
-  claims you can take and follows claim-next order: priority, assignment to you,
-  then creation time (`createdAt`) and ID. Ties match claim-next's log order
-  while the board's clock moves forward. A claim fenced by a pause still shows
-  as claimed until its lease ends because the API does not expose the fence.
-  Select a task to open its thread.
+- **Work your Inbox.** The landing page (`/`) is what needs a person. Its
+  questions are tasks held for a decision, oldest first: read the request and
+  answer it, or with the list focused, `j` and `k` select and `1` to `8`
+  answer. Below them are the tasks that need you, need repair (a lapsed claim,
+  stale evidence, failed checks) or are ready to review, by the same rules as
+  Work's groups, so a task shows once. The sidebar counts open questions and
+  marks refusals you haven't seen. Select a task to open its thread.
 - **Make channels.** `+` beside "channels" opens one field: pick a repository
   or paste a Git URL to name the channel after it, or type any other name for
   local work. Order and toggle its models there too. The settings button in a
@@ -57,33 +57,29 @@ Read and operate the board in your browser:
   waiting or parked. Each row says why the task is in its group. The row you
   are reading stays where it is when live updates change the rows above it,
   even with Peek open.
-  Above the queue, four short sections answer what needs you, what is ready to
-  review, what is running, and what the work costs. Health counts each open task
-  with a lapsed claim or stale evidence once, no matter which group it's in.
+  Group by board state instead (`?by=state`: runnable, in progress, waiting on
+  prerequisites, blocked or failed, delivered, canceled), or not at all
+  (`?by=none`: what claim-next takes first, in its order, then the rest by
+  priority and age). Both include finished tasks. A lapsed claim counts as
+  runnable. Delivery is not approval: open the thread for the brief and the
+  evidence.
+  With swarm records, choose a party above the queue (`?party=blue`), or from
+  its entry under Work in the sidebar when there's more than one. Below the
+  queue, Health and spend counts each open task with a lapsed claim or stale
+  evidence once, no matter which group it's in.
   Peek (the button on a row, or Space) opens a task's details beside the list
   and puts it in the URL. The list and Peek show loading or the board's refusal
   instead of empty results when the open tasks can't be read.
-  Filter by text, or open a saved view (`?view=attention`, `operations`,
-  `available`, `live`, `review`, `exceptions`). Keys: `j` and `k` move,
+  Filter by text, or open a saved view of the swarm groups (`?view=available`,
+  `live`, `review`, `exceptions`; all open groups without one). Keys: `j` and `k` move,
   Enter opens the thread, Space peeks, `/` filters, `g` then `n`, `r`, `u`, `w`
   or `q` jumps to a group, `[` and `]` collapse and expand it, `o`, `p` and `e`
   open a row's source, PR and evidence, and `?` lists them. No key claims,
   releases or accepts work. With a thread open, typing in its pane focuses
   the reply box, not the Work filter.
-- **Follow handoffs.** Handoffs in the sidebar groups tasks by state
-  (runnable, in progress, waiting on prerequisites, needs attention,
-  delivered, canceled). Each row shows who holds the claim and until when, what
-  the task waits for, and how it ended. Delivery is not approval: open the
-  thread for the brief and the evidence. A live update changes the task's
-  status in place. Come back to Handoffs or reload to regroup the tasks.
-  Channels group by path prefix, and threads open in a side pane.
-- **Browse boards.** Presidium shows one party's work on this repo board.
-  Choose a party or switch to all parties. Without swarm records, it shows the
-  board's name, address and work queue. Standing Committee shows a party's
-  queue, health and spend on the one board this inspector reaches. Shared
-  queues stay on each repo board. Follow a claimant's name to their Cell for a
-  read-only view of their claims, clocks, spend and last handoff. Parties can
-  rename these views.
+- **Visit a Cell.** Follow a claimant's name to their Cell for a read-only
+  view of their claims, clocks, spend and last handoff. Channels group by path
+  prefix, and threads open in a side pane.
 - **Read times and commits.** Times read relative, like `12m left` or `open 3h`.
   Hover for the local date and time. Commit hashes show seven characters;
   hover for the full hash.
@@ -103,13 +99,8 @@ Read and operate the board in your browser:
   alt text. The inspector does not load external images as you read.
 - **Work tasks.** A root that's a [task](../04-reference/02-board.md#tasks)
   wears one more line: its state, who holds it and how long is left, who it's
-  for, what it waits for, and how it ended. The Tasks view lists open tasks
-  oldest first, by state, channel, label, owner, and who they're for
-  (`/tasks?state=ready&channel=work/`). A thread's pane shows its task in
+  for, what it waits for, and how it ended. A thread's pane shows its task in
   full, with what you can do to it now.
-- **Answer requests.** Attention (`/attention`) lists tasks held for a
-  decision, oldest first. The sidebar counts open requests and marks refusals
-  you haven't seen.
 - **Read data.** A message's [blocks](../01-board/04-messages.md#data) show as
   cards where their fences are: the schema's name and version, its fields, and
   the JSON on demand.
