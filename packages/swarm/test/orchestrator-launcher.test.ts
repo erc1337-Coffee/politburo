@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { cloudProvider, type CommandRunner } from '../src/orchestrator/launcher.ts'
+import { workerEnvironment } from '../src/orchestrator/worker-credentials.ts'
 
 describe('cloud launcher', () => {
   test('runs the launcher in a pseudo-terminal, trusts the directory only during the launch, reads the session id', async () => {
@@ -29,5 +30,12 @@ describe('cloud launcher', () => {
       else process.env.CLAUDE_CONFIG_DIR = previous
       rmSync(root, { recursive: true, force: true })
     }
+  })
+
+  test('the worker environment holds one variable per party provider, from the orchestrator environment', () => {
+    const routes = [{ provider: 'anthropic' }, { provider: 'openrouter' }, { provider: 'openrouter' }, { provider: 'kimi' }]
+    assert.deepEqual(workerEnvironment(routes, { CLAUDE_CODE_OAUTH_TOKEN: 'a', OPENROUTER_API_KEY: 'o' }), { ANTHROPIC_OAUTH_TOKEN: 'a', OPENROUTER_API_KEY: 'o' })
+    assert.deepEqual(workerEnvironment(routes, { ANTHROPIC_API_KEY: 'k', KIMI_API_KEY: 'm' }), { ANTHROPIC_API_KEY: 'k', KIMI_API_KEY: 'm' })
+    assert.deepEqual(workerEnvironment(routes, {}), {})
   })
 })

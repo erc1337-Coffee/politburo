@@ -12,6 +12,7 @@ export const PACKAGES_DIRECTORY = resolve(dirname(fileURLToPath(import.meta.url)
 export function workerFiles(packagesDirectory = PACKAGES_DIRECTORY): Array<{ path: string; source: string }> {
   const relative = [
     'relay/src/messages.ts',
+    'relay/src/sealed.ts',
     ...readdirSync(join(packagesDirectory, 'worker', 'src')).filter((name) => name.endsWith('.ts')).map((name) => `worker/src/${name}`),
     'worker/pi-extension/ask_orchestrator.ts',
     'worker/WORKER_RELAY_PROTOCOL.md',

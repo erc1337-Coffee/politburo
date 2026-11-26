@@ -61,6 +61,8 @@ export class PiRound {
   #lastActivity = Date.now()
   #idlePaused = false
   #stopReason: 'stopped' | 'timeout' | 'idle' | null = null
+  /** The last model reply was an error, so the round did not complete even when Pi exits 0. */
+  #lastFailed = false
   readonly #models = new Map<string, ModelUsage>()
   #summary = ''
   #error = ''
@@ -111,6 +113,7 @@ export class PiRound {
         this.#summary = text
         onItem({ at, kind: 'say', text: clip(text, 600) })
       }
+      this.#lastFailed = Boolean(message.errorMessage)
       if (message.errorMessage) {
         this.#error = message.errorMessage
         onItem({ at, kind: 'error', text: clip(message.errorMessage, 400) })
@@ -163,10 +166,10 @@ export class PiRound {
     clearInterval(watch)
     if (buffer.trim()) this.#handle(buffer.trim())
     const models = [...this.#models.values()]
-    const exitReason = this.#stopReason ?? (exitCode === 0 ? 'completed' : 'failed')
+    const exitReason = this.#stopReason ?? (exitCode === 0 && !this.#lastFailed ? 'completed' : 'failed')
     if (exitReason === 'failed' && !this.#error) this.#error = stderr.trim().split('\n').slice(-5).join('\n')
     return {
-      exitReason, exitCode, summary: this.#summary || this.#error || '(no reply)', models,
+      exitReason, exitCode, summary: (this.#lastFailed ? this.#error : this.#summary) || this.#error || '(no reply)', models,
       costUsd: models.reduce((sum, row) => sum + row.cost_usd, 0), error: this.#error,
     }
   }

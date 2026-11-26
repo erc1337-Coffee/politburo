@@ -15,7 +15,8 @@
   "exports": {
     ".": "./dist/index.js",
     "./protocol": "./dist/protocol.js",
-    "./messages": "./dist/messages.js"
+    "./messages": "./dist/messages.js",
+    "./sealed": "./dist/sealed.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

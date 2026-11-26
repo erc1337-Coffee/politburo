@@ -68,6 +68,10 @@ const args = process.argv.slice(2)
 const prompt = args[args.indexOf('--') + 1] || ''
 const emit = (event) => process.stdout.write(JSON.stringify(event) + '\\n')
 async function main() {
+  if (process.env.OPENROUTER_API_KEY !== 'sealed-test-key') {
+    emit({ type: 'message_end', message: { role: 'assistant', content: [], errorMessage: 'No fallback tier is ready (missing login or cooling down)' } })
+    return
+  }
   let value = /checks fail/.test(prompt) ? 3 : 2
   if (process.env.FAKE_PI_MODE === 'ask' && !/checks fail/.test(prompt)) {
     const dir = process.env.POLITBURO_QUESTION_DIRECTORY
@@ -99,12 +103,14 @@ describe('orchestrator with the real worker client', () => {
     relay = createRelay({ verificationKey: keys.publicKeyPem, store: relayStore })
     await new Promise<void>((resolve) => relay.server.listen(0, '127.0.0.1', resolve))
     relayUrl = `http://127.0.0.1:${(relay.server.address() as AddressInfo).port}`
+    process.env.OPENROUTER_API_KEY = 'sealed-test-key'
     mkdirSync(join(directory, 'bin'))
     writeFileSync(join(directory, 'bin', 'pi'), FAKE_PI)
     chmodSync(join(directory, 'bin', 'pi'), 0o755)
   })
 
   after(async () => {
+    delete process.env.OPENROUTER_API_KEY
     for (const worker of workers) worker.kill('SIGKILL')
     await relay.close()
     relayStore.close()
@@ -144,9 +150,11 @@ worker:
         const upload = join(root, `upload-${channel}`)
         cpSync(launchDirectory, upload, { recursive: true })
         assert.ok(existsSync(join(upload, protocol)), 'the protocol file is in the upload')
+        // The worker gets the provider key only through the sealed credentials command.
+        const { OPENROUTER_API_KEY: _key, ...withoutKey } = process.env
         const worker = spawn(process.execPath, ['--experimental-strip-types', join(upload, '.politburo/packages/worker/src/cli.ts'), 'run', '--relay-url', relayUrl, '--channel', channel], {
           cwd: upload,
-          env: { ...process.env, HOME: home, POLITBURO_WORKER_HOME: join(home, '.politburo_worker'), PATH: `${join(directory, 'bin')}:${process.env.PATH}`, FAKE_PI_MODE: piMode },
+          env: { ...withoutKey, HOME: home, POLITBURO_WORKER_HOME: join(home, '.politburo_worker'), PATH: `${join(directory, 'bin')}:${process.env.PATH}`, FAKE_PI_MODE: piMode },
           stdio: ['pipe', 'ignore', 'pipe'],
         })
         let stderr = ''

@@ -11,6 +11,7 @@ const start: StartData = {
   model: { pi_model: 'fallback/codex-cursor', fallback_tiers: [] },
   checks: [{ name: 'test', command: 'pnpm test', timeout_seconds: 600 }],
   telemetry: { heartbeat_seconds: 60, progress_mode: 'summary' },
+  credentials: false,
 }
 const result: ResultData = {
   round: 1, exit_reason: 'completed', pi_exit_code: 0, summary: 'done', branch: 'claude/task-12', head_commit: sha1,

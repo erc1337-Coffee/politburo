@@ -19,6 +19,8 @@ import { repositoryName, type GitHubClient } from './github.ts'
 import { launch, launchKey, recover, type Binding, type Journal, type Provider } from './launch.ts'
 import { workerPrompt } from './launcher.ts'
 import { workerFiles } from './worker-files.ts'
+import { workerEnvironment } from './worker-credentials.ts'
+import { seal } from '@remilia/politburo-relay/sealed'
 import { fixedRulesPolicy, limitStep, type NextStep, type NextStepPolicy } from './policy.ts'
 import type { RelayClient, Subscription } from './relay-client.ts'
 import { LIVE_STATES, type AttemptRecord, type StateStore } from './state.ts'
@@ -70,6 +72,8 @@ export class Orchestrator {
   readonly #leaseRenewedAt = new Map<string, number>()
   readonly #subscriptions = new Map<string, Subscription>()
   readonly #faults = new Map<string, number>()
+  /** The worker public key each attempt's credentials were last sealed for. */
+  readonly #sealedFor = new Map<string, string>()
   readonly #lastProgressReply = new Map<string, number>()
   readonly #skipped = new Set<string>()
   #chain: Promise<void> = Promise.resolve()
@@ -452,6 +456,7 @@ export class Orchestrator {
       model: { pi_model: config.worker.piModel, fallback_tiers: plan.routes },
       checks: config.worker.checks.map((check) => ({ name: check.name, command: check.command, timeout_seconds: check.timeoutSeconds })),
       telemetry: { heartbeat_seconds: config.watchdog.heartbeatSeconds, progress_mode: config.worker.progressMode },
+      credentials: Object.keys(workerEnvironment(plan.routes)).length > 0,
     }
     const startCommand = envelope('start', message.id, channel, start, now)
     if (JSON.stringify(startCommand).length > 60 * 1024) {
@@ -527,11 +532,22 @@ export class Orchestrator {
     this.#subscriptions.set(attempt.channel, subscription)
   }
 
+  /** Seals Pi's provider variables for the worker's public key and sends them. */
+  async #sendCredentials(attempt: AttemptRecord, publicKey: string): Promise<void> {
+    const environment = workerEnvironment(this.#d.routes())
+    if (Object.keys(environment).length === 0) return
+    this.#sealedFor.set(attempt.attemptId, publicKey)
+    await this.#send(attempt, envelope('credentials', attempt.taskId, attempt.channel, seal(publicKey, environment, attempt.channel), this.#d.now()))
+    this.#d.log({ event: 'credentials_sent', task: attempt.taskId, channel: attempt.channel, names: Object.keys(environment).sort() })
+  }
+
   async #onTelemetry(attemptId: string, seq: number, body: unknown): Promise<void> {
     const attempt = this.#d.state.get(attemptId)
     if (!attempt || !LIVE_STATES.includes(attempt.state) || seq <= attempt.telemetrySeq) return
     const parsed = parseTelemetry(body)
-    const valid = parsed.ok && parsed.message.task === attempt.taskId && parsed.message.channel === attempt.channel
+    // Before the start command arrives, the worker does not know its task and names it `unknown`.
+    const task = parsed.ok && (parsed.message.task === attempt.taskId || (parsed.message.type === 'heartbeat' && parsed.message.task === 'unknown'))
+    const valid = parsed.ok && task && parsed.message.channel === attempt.channel
     const fresh = valid && this.#d.state.markSeen(attempt.channel, parsed.message.id)
     this.#transition(attempt, { telemetrySeq: seq })
     if (!valid) {
@@ -549,8 +565,9 @@ export class Orchestrator {
     this.#transition(attempt, { lastContactAt: now, ...(attempt.state === 'awaiting_contact' ? { state: 'running' } : {}) })
     switch (message.type) {
       case 'heartbeat': {
-        const { state, round, elapsed_seconds, pi_alive } = message.data
+        const { state, round, elapsed_seconds, pi_alive, public_key } = message.data
         this.#d.monitor?.heartbeat(attempt.attemptId, { state, round, elapsed_seconds, pi_alive })
+        if (public_key && this.#sealedFor.get(attempt.attemptId) !== public_key) await this.#sendCredentials(attempt, public_key)
         return
       }
       case 'progress': return this.#onProgress(attempt, message, now)

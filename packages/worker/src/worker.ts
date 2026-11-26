@@ -8,6 +8,7 @@ import {
   BUNDLE_PART_MAX, envelope, parseCommand,
   type Command, type ExitReason, type ResultData, type StartData, type Telemetry, type WorkerState,
 } from '../../relay/src/messages.ts'
+import { open, workerKeyPair } from '../../relay/src/sealed.ts'
 import { commitAll, createBundle, diffStat, head, prepareWorktree } from './git.ts'
 import { PiRound, type ModelUsage, type PiRoundResult, type ProgressItem } from './pi.ts'
 import type { WorkerFiles } from './state.ts'
@@ -34,6 +35,7 @@ export interface WorkerOptions {
 const MAX_BUNDLE_PARTS = 64
 const PROGRESS_INTERVAL_MS = 10_000
 const TOKEN_MARGIN_SECONDS = 120
+const CREDENTIALS_WAIT_MS = 300_000
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text)
 
 interface CheckResult { name: string; exit_code: number | null; duration_seconds: number; output_tail: string }
@@ -82,6 +84,9 @@ export class Worker {
   #finish!: (code: number) => void
   readonly #finished: Promise<number>
   #stopping = false
+  readonly #keys = workerKeyPair()
+  #credentials: Record<string, string> | null = null
+  #credentialsArrived: () => void = () => undefined
 
   constructor(options: WorkerOptions, token: string) {
     this.#o = options
@@ -156,6 +161,7 @@ export class Worker {
     this.#send('heartbeat', {
       state: this.#state, round: this.#round, last_command_seq: this.#cursor.lastSeq,
       elapsed_seconds: Math.round((this.#now() - this.#startedAt) / 1000), token_exp: this.#tokenExp, pi_alive: this.#pi?.alive ?? false,
+      ...(this.#credentials ? {} : { public_key: this.#keys.publicKey }),
     })
   }
 
@@ -241,6 +247,18 @@ export class Worker {
   async #onCommand(command: Command): Promise<void> {
     switch (command.type) {
       case 'start': return this.#onStart(command.data)
+      case 'credentials': {
+        try {
+          this.#credentials = open(this.#keys.privateKey, command.data, this.#o.channel)
+        } catch (error) {
+          this.#item({ at: this.#now(), kind: 'error', text: clip(`credentials refused: ${(error as Error).message}`, 300) })
+          return
+        }
+        this.#status(`credentials received: ${Object.keys(this.#credentials).sort().join(', ') || 'none'}`)
+        this.#heartbeat()
+        this.#credentialsArrived()
+        return
+      }
       case 'instruct': {
         if (!this.#start) return
         if (command.data.mode === 'interrupt' && this.#roundRunning) {
@@ -315,6 +333,18 @@ export class Worker {
     const start = this.#start
     if (!start || this.#roundRunning || this.#stopping) return
     this.#roundRunning = true
+    if (start.credentials && !this.#credentials) {
+      this.#status('waiting for credentials')
+      const arrived = await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(false), CREDENTIALS_WAIT_MS)
+        this.#credentialsArrived = () => { clearTimeout(timer); resolve(true) }
+      })
+      if (!arrived) {
+        this.#roundRunning = false
+        await this.#safeStop('worker_error', `no credentials within ${CREDENTIALS_WAIT_MS / 1000} s`, EXIT.configuration)
+        return
+      }
+    }
     this.#round = round
     this.#state = 'running'
     this.#o.files.writeJson('start.json', { start, round })
@@ -331,6 +361,7 @@ export class Worker {
       extensions: this.#o.extensions,
       env: {
         ...process.env,
+        ...this.#credentials,
         PI_FALLBACK_TIERS: tiers,
         POLITBURO_QUESTION_DIRECTORY: this.#questionDirectory(),
         POLITBURO_QUESTION_WAIT_SECONDS: String(start.limits.question_wait_seconds),
