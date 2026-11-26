@@ -2,7 +2,7 @@ import { createServer, request } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createBoardClient, type BoardClient } from '../src/client/client.ts'
-import { route } from '../src/inspect/app/routes.ts'
+import { groupingOf, route } from '../src/inspect/app/routes.ts'
 import { startInspector, type Inspector } from '../src/inspect/server.ts'
 import { serve } from './http.ts'
 import { personToken, testBoard } from './harness.ts'
@@ -44,18 +44,24 @@ function exactly(path: string, headers: Record<string, string> = {}) {
 }
 
 describe('inspector navigation', () => {
-  it('lands on Needs action and keeps Handoffs at its own URL', () => {
-    expect(route('/')).toEqual({ view: 'needs' })
-    expect(route('/handoffs')).toEqual({ view: 'handoffs' })
-  })
-
-  it('opens each work scope at its own URL and rejects unknown or malformed links', () => {
-    expect(route('/presidium')).toEqual({ view: 'presidium' })
-    expect(route('/party/blue')).toEqual({ view: 'party', party: 'blue' })
+  it('lands on the Inbox and opens Work and a Cell at their own URLs', () => {
+    expect(route('/')).toEqual({ view: 'inbox' })
+    expect(route('/work')).toEqual({ view: 'work' })
     expect(route('/cell/local%3Auser%3Areader%2Bworker')).toEqual({ view: 'cell', cell: 'local:user:reader+worker' })
-    for (const path of ['/unknown-scope/blue', '/party/', '/cell/', '/cell/%ZZ']) {
+    for (const path of ['/unknown-scope/blue', '/cell/', '/cell/%ZZ']) {
       expect(route(path), path).toEqual({ view: 'missing' })
     }
+  })
+
+  it.each(['/tasks', '/handoffs', '/attention', '/presidium', '/party/blue'])('shows no page at the removed %s', (path) => {
+    expect(route(path)).toEqual({ view: 'missing' })
+  })
+
+  it('reads the Work grouping from the URL, swarm groups by default', () => {
+    expect(groupingOf(new URLSearchParams(''))).toBe('swarm')
+    expect(groupingOf(new URLSearchParams('by=state'))).toBe('state')
+    expect(groupingOf(new URLSearchParams('by=none'))).toBe('none')
+    expect(groupingOf(new URLSearchParams('by=other'))).toBe('swarm')
   })
 
   it.each(['/activity', '/global-chat', '/inbox/slack'])('shows no such page at %s', (path) => {
@@ -65,7 +71,7 @@ describe('inspector navigation', () => {
 
 describe('inspect', () => {
   it('serves the page for every route, and its bundle', async () => {
-    for (const path of ['/', '/presidium', '/?thread=12', '/c/errors-www', '/tasks', '/settings/schemas/test-run@1']) {
+    for (const path of ['/', '/work?by=state', '/?thread=12', '/c/errors-www', '/settings/schemas/test-run@1']) {
       const response = await fetch(`${inspector.url}${path}`)
       expect(response.status).toBe(200)
       expect(response.headers.get('content-security-policy')).toContain("script-src 'self'")

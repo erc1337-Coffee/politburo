@@ -1,4 +1,3 @@
-import { DEFAULT_TASK_PRIORITY, TaskPriority } from '../../contract/schemas.ts'
 import type { ActorView, BoardStatus, BlockView, BoardEventView, ChannelView, Discovery, GrantView, Me, MessageView, RegistrationView, ScheduleView, SchemaView, TaskView, ThreadsPage } from '../../api/routes.ts'
 // `@vercel/board/schemas`, in an app of yours.
 import { findBlocks } from '../../contract/blocks.ts'
@@ -76,7 +75,6 @@ export type State = AttentionState & {
   openTaskMe: Me | null
   taskScope: string | null
   tasksLoading: number | null
-  tasksTooWide: boolean
   threadDenials: ReadonlyMap<string, number>
   /** The result of the open pane's own read, independent of cached messages. */
   paneThread: { id: string; identity: number; result: 'loading' | 'readable' | { refused: string }; messages: Record<string, MessageView>; refreshError?: string } | null
@@ -114,7 +112,6 @@ export const initialState: State = {
   openTaskMe: null,
   taskScope: null,
   tasksLoading: null,
-  tasksTooWide: false,
   threadDenials: new Map(),
   paneThread: null,
   openTaskAttentionRefusals: {},
@@ -703,95 +700,8 @@ export function moves(state: State, root: TaskRoot, viewer: Viewer, now: number)
   }
 }
 
-/** Which tasks a list shows, as the board's API takes them: `channel` is a channel or, with a trailing `/`, it and what's under it. */
-export function taskState(task: TaskView, now: number, _status: BoardStatus | null): TaskState {
-  return stateNow(task, now)
-}
-
-
-export type TaskFilter = { channel?: string; state: 'open' | 'all' | TaskState; label: string[]; owner?: string; for?: string; priority?: TaskPriority }
-
-export const taskScope = (channel?: string) => `all:${channel ?? ''}`
-
-export const TASK_FILTER_STATES = ['open', 'waiting', 'ready', 'claimed', 'blocked', 'completed', 'failed', 'canceled', 'all'] as const
-
-/** The task list filter from its URL: `/tasks?state=ready&channel=work/&priority=urgent`. */
-export function readFilter(params: URLSearchParams): TaskFilter {
-  const state = params.get('state') ?? 'open'
-  const priority = TaskPriority.safeParse(params.get('priority'))
-  const one = (name: 'channel' | 'owner' | 'for') => (params.get(name) ? { [name]: params.get(name)! } : {})
-  return {
-    state: TASK_FILTER_STATES.find((name) => name === state) ?? 'open',
-    label: params.getAll('label').filter(Boolean),
-    ...(priority.success ? { priority: priority.data } : {}),
-    ...one('channel'),
-    ...one('owner'),
-    ...one('for'),
-  }
-}
-
-export const inChannel = (channel: string, wanted: string) => (wanted.endsWith('/') ? channel === wanted.slice(0, -1) || channel.startsWith(wanted) : channel === wanted)
-
-/** Where a task list can look: a tree (`work/`, it and what's under it) or one channel, and how many of your channels it holds. */
-export type TaskPlace = { place: string; channels: number }
-
-/**
- * The places one level below `under`, a tree such as `work/`, or below the whole board without it:
- * the tree's own channel, each tree under it, and each channel with nothing under it, by name. For a
- * board that lists tasks a tree at a time, as Vercel's does for a caller who doesn't read every
- * channel: a tree that's still too big has places of its own.
- */
-export function placesUnder(channels: string[], under?: string): TaskPlace[] {
-  const base = under === undefined ? '' : under.endsWith('/') ? under : `${under}/`
-  const own = base.slice(0, -1)
-  const inside = channels.filter((path) => path.startsWith(base))
-  const treeOf = (path: string) => `${base}${path.slice(base.length).split('/')[0]}/`
-  const trees = new Set(inside.filter((path) => path.slice(base.length).includes('/')).map(treeOf))
-  const found = new Map<string, TaskPlace>()
-  if (base && channels.includes(own)) found.set(own, { place: own, channels: 1 })
-  for (const path of inside) {
-    // A channel with channels under it goes with them, in its tree: the tree holds it.
-    const place = trees.has(treeOf(path)) ? treeOf(path) : path
-    const known = found.get(place)
-    if (known) known.channels++
-    else found.set(place, { place, channels: 1 })
-  }
-  return [...found.values()].sort((a, b) => (a.place < b.place ? -1 : a.place > b.place ? 1 : 0))
-}
-
-/** The board's rules for a task list, for tasks already here, so one that changes state moves in or out as it happens. */
-export function taskMatches(root: TaskRoot, filter: TaskFilter, now: number, status: BoardStatus | null): boolean {
-  const { task } = root
-  if (root.deleted) return false
-  if (filter.channel && !inChannel(root.channel, filter.channel)) return false
-  // Open is what the task wears; a state by name is what it is now, so a lapsed claim lists as ready.
-  if (filter.state === 'open' ? !OPEN_STATES.includes(task.state) : filter.state !== 'all' && taskState(task, now, status) !== filter.state) return false
-  if (filter.owner && task.owner !== filter.owner) return false
-  if (filter.for && task.for !== filter.for) return false
-  if (filter.priority && (task.priority ?? DEFAULT_TASK_PRIORITY) !== filter.priority) return false
-  return filter.label.every((label) => hasLabel(root.labels, label))
-}
-
-/** Rows from the accepted membership, with local filters and display overlays. */
-export function tasks(state: State, filter: TaskFilter, now: number, through?: MessageView): TaskRoot[] {
-  const iso = new Date(now).toISOString()
-  return Object.values(state.openTaskRoots).map((root) => shownMessage(state, root, iso))
-    .filter((root): root is TaskRoot => isTask(root) && taskMatches(root, filter, now, state.status))
-    .filter((root) => !through || byWritten(root, through) <= 0).sort(byWritten)
-}
-
-/** How many loaded tasks are in each state, treating a lapsed claim as ready. */
-export function taskCounts(state: State, now: number): Record<TaskState, number> {
-  const counts = { ready: 0, claimed: 0, waiting: 0, blocked: 0, failed: 0, completed: 0, canceled: 0 }
-  for (const root of Object.values(state.openTaskRoots)) {
-    if (isTask(root) && !root.deleted) counts[stateNow(root.task, now)]++
-  }
-  return counts
-}
-
-/** How many tasks are open, once every open one is loaded. */
-export const openTasks = (state: State): number | null =>
-  state.tasksCounted ? Object.values(state.openTaskRoots).filter((m) => isTask(m) && !m.deleted && OPEN_STATES.includes(m.task.state)).length : null
+/** The scope of a read of every task, for telling it from the open-task read. */
+export const taskScope = () => 'all:'
 
 // --- blocks and schemas -------------------------------------------------------------------
 

@@ -1,4 +1,4 @@
-import { Activity, CircleHelp, ClipboardList, Eye, EyeOff, House, ListTodo, LayoutGrid, PanelLeftClose, Plus, Settings } from 'lucide-react'
+import { Activity, Eye, EyeOff, Inbox, LayoutGrid, PanelLeftClose, Plus, Settings } from 'lucide-react'
 import { compileAccess } from '../../server/access.ts'
 import { ChannelDialog } from './channel-dialog.tsx'
 import { useEffect, useMemo, useState } from 'react'
@@ -9,11 +9,10 @@ import { toast } from './chrome.ts'
 import { HomeEmblem } from './home-emblem.tsx'
 import { Avatar } from './message.tsx'
 import { Link, useLocation, type Route } from './nav.tsx'
-import { openTasks, type State } from './store.ts'
+import type { State } from './store.ts'
 import { ContextMenuArea, MenuItem } from './ui.tsx'
 import { boardWords, shownName } from './words.ts'
-import { repoPartyOf, workScopeUrl } from './work-scope.ts'
-import { labelsOf } from './work.ts'
+import { workScopeUrl } from './work-scope.ts'
 
 // --- sidebar -------------------------------------------------------------------------
 
@@ -81,13 +80,12 @@ export function Sidebar({ state, current, onHome, onCollapse }: { state: State; 
     }
     return [...out]
   }, [state.channels, hidden, showHidden, current])
-  const open = openTasks(state)
-  const attention = useMemo(() => attentionTasks(state).length, [state.messages])
+  const questions = useMemo(() => attentionTasks(state).length, [state.messages])
   const where = boardWords(state.discovery)
   const { params } = useLocation()
-  const records = board.swarmRecords()
-  const repoParty = repoPartyOf(records, current.view === 'party' ? current.party : params.get('party'))
-  const repoView = labelsOf(records, repoParty, where.name).repoView
+  // Parties are Work scopes; list them under Work only when there is a choice.
+  const parties = Object.entries(board.swarmRecords()?.parties ?? {})
+  const scoped = current.view === 'work' ? params.get('party') : null
   const copy = (text: string) => void navigator.clipboard.writeText(text).then(() => toast(`copied ${text}`))
   return (
     <>
@@ -102,37 +100,24 @@ export function Sidebar({ state, current, onHome, onCollapse }: { state: State; 
       </div>
       <div className="view-body">
       <div className="sidebar-scroll">
-        <Link to="/" className="item" current={current.view === 'needs'}>
-          <ListTodo size={14} aria-hidden="true" />
-          <span>Needs action</span>
-        </Link>
-        <Link to={workScopeUrl('/presidium', params, repoParty)} className="item" current={current.view === 'presidium'} title={repoView.subtitle}>
-          <LayoutGrid size={14} aria-hidden="true" />
-          <span>{repoView.label}</span>
-        </Link>
-        {Object.entries(records?.parties ?? {}).map(([id, party]) => {
-          const { label, subtitle } = labelsOf(records, id).partyBoard
-          return <Link key={id} to={workScopeUrl(`/party/${encodeURIComponent(id)}`, params)} className="item"
-            current={current.view === 'party' && current.party === id} title={subtitle}>
-            <span>{label}</span><small className="faint name">{party.name}</small>
-          </Link>
-        })}
-        <Link to="/handoffs" className="item" current={current.view === 'handoffs'}>
-          <House size={14} aria-hidden="true" />
-          <span>Handoffs</span>
-        </Link>
-        <Link to="/tasks" className="item" current={current.view === 'tasks'}>
-          <ClipboardList size={14} aria-hidden="true" />
-          <span className="name">Tasks</span>
-          {open !== null && open > 0 && <span className="count">{open}</span>}
-        </Link>
-        <Link to="/work" className="item" current={current.view === 'work'}><ListTodo size={14} aria-hidden="true" /><span className="name">Work</span></Link>
-        <Link to="/operations" className="item" current={current.view === 'operations'}><Activity size={14} aria-hidden="true" /><span className="name">Operations</span></Link>
-        <Link to="/attention" className="item" current={current.view === 'attention'}>
-          <CircleHelp size={14} aria-hidden="true" />
-          <span className="name">Attention</span>
-          {attention > 0 && <span className="count">{attention}</span>}
+        <Link to="/" className="item" current={current.view === 'inbox'} title="questions and tasks that need a person">
+          <Inbox size={14} aria-hidden="true" />
+          <span className="name">Inbox</span>
+          {questions > 0 && <span className="count">{questions}</span>}
           {hasUnshownRefusal(state) && <span className="faint">refused</span>}
+        </Link>
+        <Link to={workScopeUrl('/work', params)} className="item" current={(current.view === 'work' && scoped === null) || current.view === 'cell'}>
+          <LayoutGrid size={14} aria-hidden="true" />
+          <span className="name">Work</span>
+        </Link>
+        {parties.length > 1 && parties.map(([id, party]) => (
+          <Link key={id} to={workScopeUrl('/work', params, id)} className="item sub-item" current={scoped === id} title={`Work in ${party.name}`}>
+            <span className="name">{party.name}</span>
+          </Link>
+        ))}
+        <Link to="/operations" className="item" current={current.view === 'operations'}>
+          <Activity size={14} aria-hidden="true" />
+          <span className="name">Operations</span>
         </Link>
         <h2>
           <span className="spacer">channels</span>

@@ -120,19 +120,29 @@ function lane(title: string) {
 
 const mainText = () => document.querySelector('main')?.textContent
 
-it('shows a handoff lease relatively with its local deadline on hover', async () => {
+/** A Work queue group by its title, such as `Ready to pull` or, grouped by board state, `Runnable`. */
+function group(title: string) {
+  const box = [...document.querySelectorAll('main .work-queue section')].find((section) => section.querySelector('h3')?.textContent?.startsWith(`${title} (`))
+  expect(box, `group: ${title}`).toBeDefined()
+  return box!
+}
+
+const workRows = (inElement?: ParentNode) => [...(inElement ?? document.querySelector('main')!).querySelectorAll<HTMLElement>('li[data-work-row]')]
+const workIds = (inElement?: ParentNode) => workRows(inElement).map((row) => row.dataset.taskId)
+const workTitles = (inElement?: ParentNode) => workRows(inElement).map((row) => row.querySelector('a')?.textContent)
+
+it('shows a lease relatively in Work and with its local deadline on hover in the thread', async () => {
   const { client, as, open } = await workbench()
   const { task } = await client.tasks.create('work', { text: 'Review the lease' })
   const { until } = await as('worker').tasks.claim(task.id, { lease: 750 })
   vi.setSystemTime(Date.parse(until) - 750_000)
-  await open(`/handoffs?thread=${task.id}`)
+  await open(`/work?thread=${task.id}`)
   await vi.waitFor(() => {
-    const row = link('Review the lease', lane('In progress')).closest('li')!
-    for (const scope of [row, threadPane()]) {
-      const deadline = scope?.querySelector(`time[datetime="${until}"]`)
-      expect(deadline?.textContent).toBe('12m left')
-      expect(deadline?.getAttribute('title')).toBe(new Date(until).toLocaleString())
-    }
+    const row = link('Review the lease', group('Running')).closest('li')!
+    expect(row.querySelector(`[title="${until}"]`)?.textContent).toBe('expires in 12m')
+    const deadline = threadPane()?.querySelector(`time[datetime="${until}"]`)
+    expect(deadline?.textContent).toBe('12m left')
+    expect(deadline?.getAttribute('title')).toBe(new Date(until).toLocaleString())
   })
 })
 
@@ -199,7 +209,7 @@ it('shows an older day divider relatively with the local timestamp on hover', as
   })
 })
 
-it('shows loading before the empty Needs action sentence on an empty board', async () => {
+it('shows loading before the empty Inbox sentence on an empty board', async () => {
   const { open } = await workbench()
   const listed = Promise.withResolvers<void>()
   releaseGates.push(() => listed.resolve())
@@ -208,18 +218,18 @@ it('shows loading before the empty Needs action sentence on an empty board', asy
     return send()
   } })
   await vi.waitFor(() => {
-    expect(document.querySelector('main h1')?.textContent).toBe('Needs action')
+    expect(document.querySelector('main h1')?.textContent).toBe('Inbox')
     expect(mainText()).toContain('loading…')
-    expect(mainText()).not.toContain('nothing needs anyone')
+    expect(mainText()).not.toContain('nothing needs you')
   })
   listed.resolve()
-  await vi.waitFor(() => expect(mainText()).toContain('nothing needs anyone'))
-  link('Handoffs').click()
-  await vi.waitFor(() => expect(document.querySelector('main h1')?.textContent).toBe('HANDOFFS'))
-  expect(location.pathname).toBe('/handoffs')
+  await vi.waitFor(() => expect(mainText()).toContain('nothing needs you'))
+  link('Work').click()
+  await vi.waitFor(() => expect(document.querySelector('main h1')?.textContent).toBe('Work'))
+  expect(location.pathname).toBe('/work')
 })
 
-it('renders the three Needs action groups with ordered thread links', async () => {
+it('renders Inbox questions and lapsed claims with thread links, and leaves ready work to Work', async () => {
   const { client, as, open } = await workbench({ attentionResponders: responders })
   const { id: decisionId } = await hold(client, 'Approve wording', 'Ship it?')
   const { task: lapsed } = await client.tasks.create('work', { text: 'Overdue urgent', priority: 'urgent' })
@@ -227,23 +237,23 @@ it('renders the three Needs action groups with ordered thread links', async () =
   const worker = as('worker')
   const { task: stalled } = await client.tasks.create('work', { text: 'Overdue assigned', for: (await worker.me()).actor })
   const stalledLease = await worker.tasks.claim(stalled.id, { lease: 30 })
-  const { task: normal } = await client.tasks.create('work', { text: 'Normal work' })
-  const { task: high } = await client.tasks.create('work', { text: 'High work', priority: 'high' })
+  await client.tasks.create('work', { text: 'Normal work' })
+  await client.tasks.create('work', { text: 'High work', priority: 'high' })
   vi.setSystemTime(Math.max(Date.parse(lease.until), Date.parse(stalledLease.until)) + 12 * 60_000)
   await open()
   await vi.waitFor(() => {
-    expect([...document.querySelectorAll('main section h2')].map((heading) => heading.textContent)).toEqual([
-      'Open decisions', 'Stalled or overdue claims', 'Ready work',
-    ])
-    const linksIn = (title: string) => [...lane(title).querySelectorAll('a')].map((a) => [a.textContent, a.getAttribute('href')])
-    expect(linksIn('Open decisions')).toEqual([['Approve wording', `/?thread=${decisionId}`]])
-    expect(linksIn('Stalled or overdue claims')).toEqual([['Overdue assigned', `/?thread=${stalled.id}`]])
-    expect(linksIn('Ready work')).toEqual([['Overdue urgent', `/?thread=${lapsed.id}`], ['High work', `/?thread=${high.id}`], ['Normal work', `/?thread=${normal.id}`]])
-    expect(link('Overdue urgent').closest('li')?.textContent).toContain('lease ended 12m ago')
+    expect([...document.querySelectorAll('main section h2')].map((heading) => heading.textContent)).toEqual(['Questions', 'Repair or reconcile'])
+    expect(decision(decisionId).querySelector('a')?.getAttribute('href')).toBe(`/?thread=${decisionId}`)
+    const repair = lane('Repair or reconcile')
+    expect(workTitles(repair)).toEqual(['Overdue urgent', 'Overdue assigned'])
+    expect(link('Overdue assigned', repair).getAttribute('href')).toBe(`/?thread=${stalled.id}`)
+    expect(link('Overdue urgent').closest('li')?.textContent).toContain('claim lapsed 12m ago')
   })
+  expect(mainText()).not.toContain('Normal work')
+  expect(mainText()).not.toContain('High work')
 })
 
-it.each(['list omission', 'thread 404'] as const)('removes a revoked Needs action row after a %s', async (read) => {
+it('removes a revoked Inbox question after the list omits it', async () => {
   const { api, open } = await workbench({ attentionResponders: responders })
   const target = { kind: 'project' as const, project: 'prj_reader' }
   const token = await deploymentToken('dpl_reader', target.project, 'production')
@@ -251,35 +261,45 @@ it.each(['list omission', 'thread 404'] as const)('removes a revoked Needs actio
   const { grant } = await api.createGrant({ principals: [target], can: { work: 'all' } })
   await api.createGrant({ principals: [target], can: { keep: 'all' } })
   const viewer = createBoardClient({ url: BOARD_URL, token, profile: null, fetch: (input, init) => api.fetch(new Request(input, init)) })
-  // A decision is shown even without label access, so refreshing /me alone cannot hide it.
-  const id = read === 'list omission' ? (await hold(viewer, 'Private queue', 'Continue?')).id
-    : (await viewer.tasks.create('work', { text: 'Private queue' })).task.id
-  await viewer.tasks.create('keep', { text: 'Public queue' })
+  const { id } = await hold(viewer, 'Private queue', 'Continue?')
   await open('/', { token })
-  const row = await vi.waitFor(() => link('Private queue', lane(read === 'list omission' ? 'Open decisions' : 'Ready work')))
-  if (read === 'thread 404') {
-    row.click()
-    await vi.waitFor(() => expect(threadPane()?.textContent).toContain('Private queue'))
-    document.querySelector<HTMLButtonElement>('button[aria-label="Close thread"]')!.click()
-    await vi.waitFor(() => expect(threadPane()).toBeNull())
-  }
+  await vi.waitFor(() => expect(decision(id)?.textContent).toContain('Private queue'))
   await api.revokeGrant(grant.id)
   await vi.waitFor(() => expect(viewer.thread(id)).rejects.toMatchObject({ status: 404 }))
-  if (read === 'list omission') {
-    link('Handoffs').click()
-    await vi.waitFor(() => expect(location.pathname).toBe('/handoffs'))
-    link('Needs action').click()
-  } else {
-    row.focus()
-    row.click()
-  }
+  link('Work').click()
+  await vi.waitFor(() => expect(location.pathname).toBe('/work'))
+  inboxLink().click()
   await vi.waitFor(() => {
-    expect(lane('Ready work').textContent).toContain('Public queue')
+    expect(mainText()).toContain('nothing needs you')
     expect(mainText()).not.toContain('Private queue')
-    if (read === 'thread 404') {
-      expect(threadPane()).not.toBeNull()
-      expect(threadPane()?.textContent).not.toContain('Private queue')
-    }
+  })
+})
+
+it('removes a revoked Work row after its thread answers 404', async () => {
+  const { api, open } = await workbench()
+  const target = { kind: 'project' as const, project: 'prj_reader' }
+  const token = await deploymentToken('dpl_reader', target.project, 'production')
+  await api.revokeGrant('g2')
+  const { grant } = await api.createGrant({ principals: [target], can: { work: 'all' } })
+  await api.createGrant({ principals: [target], can: { keep: 'all' } })
+  const viewer = createBoardClient({ url: BOARD_URL, token, profile: null, fetch: (input, init) => api.fetch(new Request(input, init)) })
+  const { task } = await viewer.tasks.create('work', { text: 'Private queue' })
+  await viewer.tasks.create('keep', { text: 'Public queue' })
+  await open('/work', { token })
+  const row = await vi.waitFor(() => link('Private queue', group('Ready to pull')))
+  row.click()
+  await vi.waitFor(() => expect(threadPane()?.textContent).toContain('Private queue'))
+  document.querySelector<HTMLButtonElement>('button[aria-label="Close thread"]')!.click()
+  await vi.waitFor(() => expect(threadPane()).toBeNull())
+  await api.revokeGrant(grant.id)
+  await vi.waitFor(() => expect(viewer.thread(task.id)).rejects.toMatchObject({ status: 404 }))
+  row.focus()
+  row.click()
+  await vi.waitFor(() => {
+    expect(group('Ready to pull').textContent).toContain('Public queue')
+    expect(mainText()).not.toContain('Private queue')
+    expect(threadPane()).not.toBeNull()
+    expect(threadPane()?.textContent).not.toContain('Private queue')
   })
 })
 
@@ -303,14 +323,14 @@ it('evicts a focused decision when its delayed attention read is refused', async
   await viewer.tasks.create('keep', { text: 'Neighbor' })
   const requested = gate()
   const release = gate()
-  await open('/', { token, transport: async (request, send) => {
+  await open('/work', { token, transport: async (request, send) => {
     if (attentionRead(request)) {
       requested.resolve()
       await release.promise
     }
     return send()
   } })
-  const row = await vi.waitFor(() => link('Private decision', lane('Open decisions')))
+  const row = await vi.waitFor(() => link('Private decision', group('Needs you')))
   row.focus()
   await requested.promise
   await api.revokeGrant(grant.id)
@@ -319,7 +339,7 @@ it('evicts a focused decision when its delayed attention read is refused', async
   await vi.waitFor(() => {
     expect(mainText()).not.toContain('Private decision')
     expect(mainText()).toContain(`message not found: #${task.id}`)
-    expect(document.activeElement).toBe(link('Neighbor', lane('Ready work')))
+    expect(document.activeElement).toBe(link('Neighbor', group('Ready to pull')))
   })
 })
 
@@ -330,12 +350,12 @@ it('re-reads an already open thread when revalidation removes its task', async (
   await viewer.tasks.create('keep', { text: 'Still readable' })
   let revalidating = false
   const release = gate()
-  await open('/', { token, transport: async (request, send) => {
+  await open('/work', { token, transport: async (request, send) => {
     const response = await send()
     if (revalidating && routePath(request) === `/messages/${task.id}`) await release.promise
     return response
   } })
-  const row = await vi.waitFor(() => link('Private open thread', lane('Ready work')))
+  const row = await vi.waitFor(() => link('Private open thread', group('Ready to pull')))
   row.click()
   await vi.waitFor(() => expect(threadPane()?.textContent).toContain('Private open thread'))
   await api.revokeGrant(grant.id)
@@ -343,7 +363,7 @@ it('re-reads an already open thread when revalidation removes its task', async (
   revalidating = true
   window.dispatchEvent(new Event('focus'))
   await vi.waitFor(() => {
-    expect(lane('Ready work').textContent).toContain('Still readable')
+    expect(group('Ready to pull').textContent).toContain('Still readable')
     expect(mainText()).not.toContain('Private open thread')
     expect(threadPane()?.textContent).not.toContain('Private open thread')
     expect(threadPane()?.textContent).toContain('loading…')
@@ -364,7 +384,7 @@ it('does not render a deleted task from the first list snapshot', async () => {
   const release = gate()
   const consumed = gate()
   let deletionDelivered = false
-  await open('/', { transport: async (request, send) => {
+  await open('/work', { transport: async (request, send) => {
     if (openTasksRead(request)) {
       const response = await send()
       sampled.resolve()
@@ -385,7 +405,7 @@ it('does not render a deleted task from the first list snapshot', async () => {
   await consumed.promise
   release.resolve()
   await vi.waitFor(() => {
-    expect(lane('Ready work').textContent).toContain('Survives first read')
+    expect(group('Ready to pull').textContent).toContain('Survives first read')
     expect(mainText()).not.toContain('Deleted during first read')
   })
 })
@@ -400,21 +420,21 @@ it('renders claim-next order as soon as a lease lapses, including assignment and
   const { task: second } = await client.tasks.create('work', { text: 'Newer normal' })
   const { task: assigned } = await client.tasks.create('work', { text: 'Assigned normal', for: actor })
   const expiry = Date.parse(lease.until)
-  const ready = () => [...lane('Ready work').querySelectorAll('a')].map((row) => row.getAttribute('href'))
-  const before = [assigned.id, first.id, second.id].map((id) => `/?thread=${id}`)
+  const before = [assigned.id, first.id, second.id]
   vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
   vi.setSystemTime(expiry - 10_000)
-  await open('/', { profile: 'worker' })
-  await vi.waitFor(() => expect(ready()).toEqual(before))
+  // Ungrouped, Work lists what claim-next takes first, in its order; a running claim follows.
+  await open('/work?by=none', { profile: 'worker' })
+  await vi.waitFor(() => expect(workIds()).toEqual([...before, urgent.id]))
   await act(async () => vi.advanceTimersByTimeAsync(expiry - Date.now() - 1))
-  expect(ready()).toEqual(before)
+  expect(workIds()).toEqual([...before, urgent.id])
   await act(async () => vi.advanceTimersByTimeAsync(1_001))
-  const rendered = ready()
+  const rendered = workIds()
   const taken: string[] = []
   for (let next = await worker.tasks.claim({ channel: 'work' }); next; next = await worker.tasks.claim({ channel: 'work' })) {
-    taken.push(`/?thread=${next.task.id}`)
+    taken.push(next.task.id)
   }
-  expect(taken).toEqual([`/?thread=${urgent.id}`, ...before])
+  expect(taken).toEqual([urgent.id, ...before])
   expect(rendered).toEqual(taken)
 })
 
@@ -425,7 +445,7 @@ it('revalidates on window focus and does not re-admit a revoked row from a delay
   await viewer.tasks.create('keep', { text: 'Other work' })
   const queued = Promise.withResolvers<void>()
   let delivered = false
-  await open('/', { token, transport: async (request, send) => {
+  await open('/work', { token, transport: async (request, send) => {
     if (routePath(request) !== '/events') return send()
     if (delivered) queued.resolve() // The next poll starts after the previous events were queued for paint.
     const response = await send()
@@ -435,7 +455,7 @@ it('revalidates on window focus and does not re-admit a revoked row from a delay
     }
     return response
   } })
-  const row = await vi.waitFor(() => link('Private work', lane('Open decisions')))
+  const row = await vi.waitFor(() => link('Private work', group('Needs you')))
   row.focus()
   await act(async () => { await new Promise<void>((resolve) => requestAnimationFrame(() => resolve())) })
   const frames: FrameRequestCallback[] = []
@@ -449,7 +469,7 @@ it('revalidates on window focus and does not re-admit a revoked row from a delay
     window.dispatchEvent(new Event('focus'))
     await vi.waitFor(() => {
       expect(mainText()).not.toContain('Private work')
-      expect(document.activeElement).toBe(link('Other work', lane('Ready work')))
+      expect(document.activeElement).toBe(link('Other work', group('Ready to pull')))
     })
     frame.mockRestore()
     await act(async () => { for (const run of frames) run(performance.now()) })
@@ -459,7 +479,7 @@ it('revalidates on window focus and does not re-admit a revoked row from a delay
   }
 })
 
-it('revalidates Needs action when the live feed reconnects after an outage', async () => {
+it('revalidates Work when the live feed reconnects after an outage', async () => {
   const { api, open, target, token, viewer } = await grantedWorkbench()
   const { grant } = await api.createGrant({ principals: [target], can: { work: 'all' } })
   const { task } = await viewer.tasks.create('work', { text: 'Private until reconnect' })
@@ -467,18 +487,18 @@ it('revalidates Needs action when the live feed reconnects after an outage', asy
   const fail = Promise.withResolvers<void>()
   releaseGates.push(() => fail.resolve())
   let first = true
-  await open('/', { token, transport: async (request, send) => {
+  await open('/work', { token, transport: async (request, send) => {
     if (!isFeed(request) || !first) return send()
     first = false
     await fail.promise
     return Response.json({ error: { code: 'unavailable', message: 'Feed unavailable' } }, { status: 503 })
   } })
-  await vi.waitFor(() => link('Private until reconnect', lane('Ready work')))
+  await vi.waitFor(() => link('Private until reconnect', group('Ready to pull')))
   await api.revokeGrant(grant.id)
   await vi.waitFor(() => expect(viewer.thread(task.id)).rejects.toMatchObject({ status: 404 }))
   fail.resolve()
   await vi.waitFor(() => {
-    expect(lane('Ready work').textContent).toContain('Still visible')
+    expect(group('Ready to pull').textContent).toContain('Still visible')
     expect(mainText()).not.toContain('Private until reconnect')
   })
 })
@@ -494,7 +514,7 @@ it('discards an older list snapshot when a later revalidation is requested', asy
   const next = Promise.withResolvers<void>()
   releaseGates.push(() => first.resolve(), () => next.resolve())
   let initial = true
-  await open('/', { token, transport: async (request, send) => {
+  await open('/work', { token, transport: async (request, send) => {
     if (!openTasksRead(request)) return send()
     const before = initial
     initial = false
@@ -517,7 +537,7 @@ it('discards an older list snapshot when a later revalidation is requested', asy
   expect(mainText()).not.toContain('Outdated snapshot')
   next.resolve()
   await vi.waitFor(() => {
-    expect(lane('Ready work').textContent).toContain('Fresh snapshot')
+    expect(group('Ready to pull').textContent).toContain('Fresh snapshot')
     expect(mainText()).not.toContain('Outdated snapshot')
   })
 })
@@ -533,13 +553,13 @@ it('refreshes label access with the accepted read, matching claim-next without h
   const me = Promise.withResolvers<void>()
   releaseGates.push(() => list.resolve())
   let revalidating = false
-  await open('/', { token, transport: async (request, send) => {
+  await open('/work', { token, transport: async (request, send) => {
     const response = await send()
     if (revalidating && routePath(request) === '/me') me.resolve()
     if (revalidating && openTasksRead(request)) await list.promise
     return response
   } })
-  const row = await vi.waitFor(() => link('Needs label', lane('Ready work')))
+  const row = await vi.waitFor(() => link('Needs label', group('Ready to pull')))
   row.focus()
   await api.revokeGrant(grant.id)
   await vi.waitFor(() => expect(viewer.tasks.claim({ channel: 'work' })).rejects.toMatchObject({ status: 403 }))
@@ -547,12 +567,12 @@ it('refreshes label access with the accepted read, matching claim-next without h
   revalidating = true
   document.dispatchEvent(new Event('visibilitychange'))
   await act(async () => { await me.promise })
-  expect(link('Needs label', lane('Ready work'))).toBe(row)
+  expect(link('Needs label', group('Ready to pull'))).toBe(row)
   list.resolve()
   await vi.waitFor(() => {
-    expect(lane('Ready work').textContent).toContain('Still claimable')
-    expect(mainText()).not.toContain('Needs label')
-    expect(lane('Open decisions').textContent).toContain('Readable decision')
+    expect(workTitles(group('Ready to pull'))).toEqual(['Still claimable'])
+    expect(group('Waiting or parked').textContent).toContain('Needs label')
+    expect(group('Needs you').textContent).toContain('Readable decision')
   })
 })
 
@@ -564,7 +584,7 @@ it('shows tasks created after the first list snapshot only once a follow-up read
   const next = Promise.withResolvers<void>()
   releaseGates.push(() => first.resolve(), () => next.resolve())
   let initial = true
-  await open('/', { transport: async (request, send) => {
+  await open('/work', { transport: async (request, send) => {
     if (!openTasksRead(request)) return send()
     if (!initial) {
       const response = await send()
@@ -580,12 +600,12 @@ it('shows tasks created after the first list snapshot only once a follow-up read
   await sampled.promise
   await client.tasks.create('work', { text: 'Created during first read' })
   first.resolve()
-  await vi.waitFor(() => expect(lane('Ready work').textContent).toContain('In first snapshot'))
+  await vi.waitFor(() => expect(group('Ready to pull').textContent).toContain('In first snapshot'))
   expect(mainText()).not.toContain('Created during first read')
   next.resolve()
-  await vi.waitFor(() => expect(lane('Ready work').textContent).toContain('Created during first read'))
+  await vi.waitFor(() => expect(group('Ready to pull').textContent).toContain('Created during first read'))
   await client.tasks.create('work', { text: 'Created after first read' })
-  await vi.waitFor(() => expect(lane('Ready work').textContent).toContain('Created after first read'))
+  await vi.waitFor(() => expect(group('Ready to pull').textContent).toContain('Created after first read'))
 })
 
 it('removes a focused deleted row, focuses its neighbor and holds the remaining order until blur', async () => {
@@ -594,9 +614,9 @@ it('removes a focused deleted row, focuses its neighbor and holds the remaining 
   const { task: removed } = await client.tasks.create('work', { text: 'Reading' })
   await client.tasks.create('work', { text: 'Next' })
   const { task: promoted } = await client.tasks.create('work', { text: 'Promoted' })
-  await open()
-  const names = () => [...lane('Ready work').querySelectorAll('a')].map((a) => a.textContent)
-  const reading = await vi.waitFor(() => link('Reading', lane('Ready work')))
+  await open('/work')
+  const names = () => workTitles(group('Ready to pull'))
+  const reading = await vi.waitFor(() => link('Reading', group('Ready to pull')))
   reading.focus()
   await as('worker').tasks.priority(promoted.id, 'urgent')
   await vi.waitFor(() => expect(link('Promoted').closest('li')?.textContent).toContain('urgent'))
@@ -605,9 +625,9 @@ it('removes a focused deleted row, focuses its neighbor and holds the remaining 
   await as().delete(removed.id)
   await vi.waitFor(() => {
     expect(names()).toEqual(['Previous', 'Next', 'Promoted'])
-    expect(document.activeElement).toBe(link('Next', lane('Ready work')))
+    expect(document.activeElement).toBe(link('Next', group('Ready to pull')))
   })
-  link('Next', lane('Ready work')).blur()
+  link('Next', group('Ready to pull')).blur()
   await vi.waitFor(() => expect(names()).toEqual(['Promoted', 'Previous', 'Next']))
 })
 
@@ -617,20 +637,20 @@ it('shows attention refusals alongside rows and clears membership on a refused t
   await client.tasks.create('work', { text: 'Still ready' })
   let refuseTasks = false
   const refuse = (message: string) => Response.json({ error: { code: 'unavailable', message } }, { status: 503 })
-  await open('/', { transport: async (request, forward) => {
+  await open('/work', { transport: async (request, forward) => {
     if (attentionRead(request)) return refuse('Attention read unavailable')
-    if (refuseTasks && routePath(request) === '/tasks' && new URL(request.url).searchParams.get('state') === 'open') return refuse('Task list unavailable')
+    if (refuseTasks && openTasksRead(request)) return refuse('Task list unavailable')
     return forward()
   } })
   await vi.waitFor(() => {
     expect(mainText()).toContain('Attention read unavailable')
-    expect(link('A decision', lane('Open decisions'))).toBeDefined()
-    expect(link('Still ready', lane('Ready work'))).toBeDefined()
+    expect(link('A decision', group('Needs you'))).toBeDefined()
+    expect(link('Still ready', group('Ready to pull'))).toBeDefined()
   })
-  link('Handoffs').click()
-  await vi.waitFor(() => expect(location.pathname).toBe('/handoffs'))
+  inboxLink().click()
+  await vi.waitFor(() => expect(location.pathname).toBe('/'))
   refuseTasks = true
-  link('Needs action').click()
+  link('Work').click()
   await vi.waitFor(() => {
     expect(mainText()).toContain('Task list unavailable')
     expect(mainText()).not.toContain('A decision')
@@ -638,31 +658,20 @@ it('shows attention refusals alongside rows and clears membership on a refused t
   })
 })
 
-it('shows normal priority and lets the reader set and remove the URL priority filter', async () => {
+it('shows normal priority and lets the reader remove a URL priority filter', async () => {
   const { client, open } = await workbench()
   await client.tasks.create('work', { text: 'Check copy' })
   await client.tasks.create('work', { text: 'Fix release', priority: 'urgent' })
-  await open('/tasks?state=ready&channel=work')
-  const rows = () => [...document.querySelectorAll('main [role="link"]')].map((row) => row.textContent)
+  await open('/work?by=none&priority=urgent')
+  const rows = () => workRows().map((row) => row.textContent)
+  await vi.waitFor(() => expect(rows()).toEqual([expect.stringMatching(/urgent.*Fix release/)]), { timeout: 5000 })
+  link('priority: urgent (remove)').click()
   await vi.waitFor(() => expect(rows()).toEqual([expect.stringMatching(/urgent.*Fix release/), expect.stringMatching(/normal.*Check copy/)]), { timeout: 5000 })
-
-  document.querySelector<HTMLButtonElement>('button[aria-label="filter tasks"]')!.click()
-  const urgent = await vi.waitFor(() => {
-    const button = [...document.querySelectorAll<HTMLButtonElement>('[aria-label="priority"] button')].find((el) => el.textContent === 'urgent')
-    expect(button).toBeDefined()
-    return button!
-  }, { timeout: 5000 })
-  urgent.click()
-  await vi.waitFor(() => expect(rows()).toEqual([expect.stringContaining('Fix release')]), { timeout: 5000 })
-  expect(Object.fromEntries(new URLSearchParams(location.search))).toEqual({ state: 'ready', channel: 'work', priority: 'urgent' })
-
-  document.querySelector<HTMLButtonElement>('button[title="remove priority urgent"]')!.click()
-  await vi.waitFor(() => expect(rows()).toHaveLength(2), { timeout: 5000 })
-  expect(Object.fromEntries(new URLSearchParams(location.search))).toEqual({ state: 'ready', channel: 'work' })
+  expect(Object.fromEntries(new URLSearchParams(location.search))).toEqual({ by: 'none' })
 }, 30_000)
 
-const taskRows = () => [...document.querySelectorAll<HTMLElement>('main [data-task-row]')]
-const taskRowIds = () => taskRows().map((row) => row.dataset.taskRow)
+const taskRows = () => workRows()
+const taskRowIds = () => workIds()
 const taskRead = { timeout: 5000 }
 
 // Observe a real event leaving the proxy before releasing a held animation frame.
@@ -677,7 +686,7 @@ function seeTaskEvent(type: string, seen: () => void) {
   }
 }
 
-it('orders rendered Ready rows by default claim-next eligibility, priority, assignment and age', async () => {
+it('orders ungrouped Work rows by default claim-next eligibility, priority, assignment and age', async () => {
   const { api, as, client, open } = await workbench()
   const worker = as('worker')
   const me = await worker.me()
@@ -700,8 +709,9 @@ it('orders rendered Ready rows by default claim-next eligibility, priority, assi
   vi.setSystemTime(Date.parse(lease.until) + 1)
   expect((await worker.tasks.list({ channel: 'work', state: 'open' })).tasks.find(({ message }) => message.id === lapsed.id)?.message.task?.state).toBe('claimed')
 
-  await open('/tasks?state=ready&channel=work', { profile: 'worker' })
-  const expected = [urgent.id, lapsed.id, assigned.id, first.id, second.id, other.id, foreign.id]
+  await open('/work?by=none', { profile: 'worker' })
+  const rest = [parked.id, other.id, foreign.id, held.id]
+  const expected = [urgent.id, lapsed.id, assigned.id, first.id, second.id, ...rest]
   await vi.waitFor(() => expect(taskRowIds()).toEqual(expected), taskRead)
   const rendered = taskRowIds()
   const claimed: string[] = []
@@ -710,11 +720,11 @@ it('orders rendered Ready rows by default claim-next eligibility, priority, assi
     if (!next) break
     claimed.push(next.task.id)
   }
-  // The rows claim-next can take come first, in the order it takes them; the rest follow.
-  expect(rendered).toEqual([...claimed, other.id, foreign.id])
+  // The rows claim-next can take come first, in the order it takes them; the rest follow by priority and age.
+  expect(rendered).toEqual([...claimed, ...rest])
 }, 30_000)
 
-it('waits for all Ready pages before showing the same first task as claim-next', async () => {
+it('waits for all task pages before showing the same first task as claim-next', async () => {
   const { as, open } = await workbench()
   const worker = as('worker')
   for (let offset = 0; offset < 200; offset += 50) {
@@ -723,12 +733,11 @@ it('waits for all Ready pages before showing the same first task as claim-next',
   await worker.tasks.create('work', { text: 'Urgent task', priority: 'urgent' })
   const release = Promise.withResolvers<void>()
   releaseGates.push(release.resolve)
-  await open('/tasks?state=ready&channel=work', { profile: 'worker', proxy: async (request, forward) => {
-    const query = new URL(request.url).searchParams
-    if (routePath(request) === '/tasks' && query.get('channel') === 'work' && query.has('after')) await release.promise
+  await open('/work?by=none', { profile: 'worker', proxy: async (request, forward) => {
+    if (routePath(request) === '/tasks' && new URL(request.url).searchParams.has('after')) await release.promise
     return forward(request)
   } })
-  await vi.waitFor(() => expect(mainText()).toContain('loading all 200 so far'), taskRead)
+  await vi.waitFor(() => expect(mainText()).toContain('loading…'), taskRead)
   expect(taskRowIds()).toEqual([])
   release.resolve()
   await vi.waitFor(() => expect(taskRowIds()).toHaveLength(201), taskRead)
@@ -736,7 +745,7 @@ it('waits for all Ready pages before showing the same first task as claim-next',
   expect(first).toBe((await worker.tasks.claim({ channel: 'work' }))?.task.id)
 }, 30_000)
 
-it('moves a lapsed claim into Ready in claim order with a ready badge on the same tick', async () => {
+it('moves a lapsed claim into Runnable ahead of normal work on the same tick', async () => {
   const { as, open } = await workbench()
   const worker = as('worker')
   const { task: normal } = await worker.tasks.create('work', { text: 'Normal task' })
@@ -744,13 +753,15 @@ it('moves a lapsed claim into Ready in claim order with a ready badge on the sam
   const lease = await worker.tasks.claim(urgent.id, { lease: 30 })
   vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
   vi.setSystemTime(Date.parse(lease.until) - 5000)
-  await open('/tasks?state=ready', { profile: 'worker' })
-  await vi.waitFor(() => expect(taskRowIds()).toEqual([normal.id]), taskRead)
+  await open('/work?by=state', { profile: 'worker' })
+  await vi.waitFor(() => {
+    expect(workIds(group('Runnable'))).toEqual([normal.id])
+    expect(workIds(group('In progress'))).toEqual([urgent.id])
+  }, taskRead)
   await act(async () => { await vi.advanceTimersByTimeAsync(Date.parse(lease.until) - Date.now() - 1) })
-  expect(taskRowIds()).toEqual([normal.id])
+  expect(workIds(group('Runnable'))).toEqual([normal.id])
   await act(async () => { await vi.advanceTimersByTimeAsync(1001) })
-  expect(taskRowIds()).toEqual([urgent.id, normal.id])
-  expect(taskRows()[0]?.querySelector('.task-state')?.textContent).toBe('ready')
+  expect(workIds(group('Runnable'))).toEqual([urgent.id, normal.id])
 }, 30_000)
 
 async function revocableTasks() {
@@ -764,14 +775,14 @@ async function revocableTasks() {
   return { ...bench, admin, secret, publicTask, revoke: () => admin.revokeGrant(grant.id) }
 }
 
-it('drops a cached Ready row when a fresh task read omits it after revocation', async () => {
+it('drops a cached row when a grouping that reads every state omits it after revocation', async () => {
   const { client, open, secret, publicTask, revoke } = await revocableTasks()
-  await open('/tasks?state=ready&priority=normal')
+  await open('/work')
   await vi.waitFor(() => expect(taskRowIds()).toEqual([publicTask.id, secret.id]), taskRead)
   await revoke()
   expect((await client.tasks.list({ state: 'ready' })).tasks.map(({ message }) => message.id)).toEqual([publicTask.id])
-  // Navigation with the same board query must revalidate, not just apply the local chip filter.
-  document.querySelector<HTMLButtonElement>('button[title="remove priority normal"]')!.click()
+  // Switching to a grouping that reads every state starts a new read, not only a new layout.
+  link('none').click()
   await vi.waitFor(() => expect(taskRowIds()).toEqual([publicTask.id]), taskRead)
 }, 30_000)
 
@@ -780,7 +791,7 @@ it('does not accept an older task response when focus requested a newer read', a
   const reads = Array.from({ length: 2 }, () => ({ sampled: Promise.withResolvers<void>(), release: Promise.withResolvers<void>() }))
   releaseGates.push(...reads.map(({ release }) => release.resolve))
   let page = 0
-  await open('/tasks?state=all', { proxy: async (request, forward) => {
+  await open('/work?by=none', { proxy: async (request, forward) => {
     const response = await forward(request)
     const read = routePath(request) === '/tasks' && new URL(request.url).searchParams.get('state') === 'all' ? reads[page++] : undefined
     if (read) {
@@ -801,20 +812,10 @@ it('does not accept an older task response when focus requested a newer read', a
   await vi.waitFor(() => expect(taskRowIds()).toEqual([publicTask.id]), taskRead)
 }, 30_000)
 
-it('drops a row whose read grant was revoked between the task page and permission snapshots', async () => {
-  const { open, revoke, publicTask } = await revocableTasks()
-  await open('/tasks?state=all', { proxy: async (request, forward) => {
-    const response = await forward(request)
-    if (routePath(request) === '/tasks' && new URL(request.url).searchParams.get('state') === 'all') await revoke()
-    return response
-  } })
-  await vi.waitFor(() => expect(taskRowIds()).toEqual([publicTask.id]), taskRead)
-}, 30_000)
-
 it('clears loaded rows when the board refuses a revalidation', async () => {
   const { open, publicTask, secret } = await revocableTasks()
   let refused = false
-  await open('/tasks?state=all', { transport: async (request, send) => {
+  await open('/work?by=none', { transport: async (request, send) => {
     if (refused && routePath(request) === '/tasks') {
       return Response.json({ error: { code: 'forbidden', message: 'Task list refused' } }, { status: 403 })
     }
@@ -830,7 +831,7 @@ it('clears loaded rows when the board refuses a revalidation', async () => {
 it('does not bring back a revoked task from a feed frame delayed past a focus revalidation', async () => {
   const { client, open, secret, publicTask, revoke } = await revocableTasks()
   const seen = Promise.withResolvers<void>()
-  await open('/tasks?state=ready', { proxy: seeTaskEvent('reaction.added', seen.resolve) })
+  await open('/work?by=none', { proxy: seeTaskEvent('reaction.added', seen.resolve) })
   await vi.waitFor(() => expect(taskRowIds()).toEqual([publicTask.id, secret.id]), taskRead)
   await vi.waitFor(() => expect(document.querySelector('.live')?.textContent).toBe('live'), taskRead)
   const frames: FrameRequestCallback[] = []
@@ -857,7 +858,7 @@ it('does not bring back a revoked task from a feed frame delayed past a focus re
 it('revalidates task access when the feed reconnects after a failed poll', async () => {
   const { client, open, secret, publicTask, revoke } = await revocableTasks()
   let dropNext = false
-  await open('/tasks?state=ready', { transport: async (request, send) => {
+  await open('/work?by=none', { transport: async (request, send) => {
     if (routePath(request) === '/events' && dropNext) {
       dropNext = false
       return Response.json({ error: { code: 'unavailable', message: 'connection lost' } }, { status: 503 })
@@ -877,7 +878,7 @@ it('refreshes label permission with the loaded rows even when read access remain
   const urgent = (await client.tasks.create('limited', { text: 'Urgent but needs label permission', priority: 'urgent' })).task
   await admin.createGrant({ principals: [{ kind: 'everyone' }], can: { limited: ['read'] } })
   const { grant } = await admin.createGrant({ principals: [{ kind: 'user', userId: 'u_reader' }], can: { limited: ['label'] } })
-  await open('/tasks?state=ready')
+  await open('/work?by=none')
   await vi.waitFor(() => expect(taskRowIds().slice(0, 2)).toEqual([urgent.id, publicTask.id]), taskRead)
   await admin.revokeGrant(grant.id)
   await expect(client.tasks.claim({ channel: 'limited' })).rejects.toMatchObject({ status: 403 })
@@ -896,9 +897,9 @@ it('re-reads for a task announced while the first page snapshot is held, and for
   let watchingCreate = false
   const seen = Promise.withResolvers<void>()
   const watch = seeTaskEvent('task.created', () => { if (watchingCreate) seen.resolve() })
-  await open('/tasks?channel=work', { proxy: async (request, forward) => {
+  await open('/work?by=none', { proxy: async (request, forward) => {
     const response = await watch(request, forward)
-    if (hold && routePath(request) === '/tasks' && new URL(request.url).searchParams.get('channel') === 'work') {
+    if (hold && routePath(request) === '/tasks') {
       hold = false
       sampled.resolve()
       await release.promise
@@ -933,7 +934,7 @@ it('drops a cached row when opening its thread is refused after revocation', asy
   const release = Promise.withResolvers<void>()
   releaseGates.push(release.resolve)
   let hold = false
-  await open('/tasks?state=ready', { proxy: async (request, forward) => {
+  await open('/work?by=none', { proxy: async (request, forward) => {
     if (hold && routePath(request) === '/tasks') await release.promise
     return forward(request)
   } })
@@ -941,7 +942,7 @@ it('drops a cached row when opening its thread is refused after revocation', asy
   hold = true
   await revoke()
   await expect(client.thread(secret.id)).rejects.toMatchObject({ status: 404 })
-  taskRows()[1]!.click()
+  taskRows()[1]!.querySelector('a')!.click()
   await vi.waitFor(() => expect(taskRowIds()).toEqual([publicTask.id]), taskRead)
   expect(document.body.textContent).not.toContain('Private task')
 }, 30_000)
@@ -953,7 +954,7 @@ it('keeps a refused thread and its cache empty after a delayed feed frame', asyn
   releaseGates.push(release.resolve)
   const watch = seeTaskEvent('reaction.added', seen.resolve)
   let hold = false
-  await open('/tasks?state=ready', { proxy: async (request, forward) => {
+  await open('/work?by=none', { proxy: async (request, forward) => {
     const response = await watch(request, forward)
     if (hold && routePath(request) === '/tasks') await release.promise
     return response
@@ -969,15 +970,15 @@ it('keeps a refused thread and its cache empty after a delayed feed frame', asyn
     hold = true
     await revoke()
     await expect(client.thread(secret.id)).rejects.toMatchObject({ status: 404 })
-    taskRows()[1]!.click()
+    taskRows()[1]!.querySelector('a')!.click()
     await vi.waitFor(() => expect(document.body.textContent).toContain('message not found'), taskRead)
     expect(document.body.textContent).not.toContain('Private task')
     frame.mockRestore()
     flushSync(() => { for (const flush of frames) flush(performance.now()) })
     expect(document.body.textContent).not.toContain('Private task')
-    link('Handoffs').click()
+    inboxLink().click()
     await vi.waitFor(() => {
-      expect(document.querySelector('main h1')?.textContent).toBe('HANDOFFS')
+      expect(document.querySelector('main h1')?.textContent).toBe('Inbox')
       expect(mainText()).not.toContain('Private task')
     }, taskRead)
   } finally {
@@ -992,7 +993,7 @@ it('keeps a live reply out of the pane until its own read accepts it, without in
   const release = Promise.withResolvers<void>()
   releaseGates.push(release.resolve)
   let hold = false
-  await open(`/tasks?thread=${task.id}`, { proxy: async (request, forward) => {
+  await open(`/work?thread=${task.id}`, { proxy: async (request, forward) => {
     const response = await forward(request)
     if (hold && routePath(request) === `/messages/${task.id}`) {
       reading.resolve()
@@ -1019,17 +1020,17 @@ it('keeps a live reply out of the pane until its own read accepts it, without in
   expect(draft.value).toBe('A reply in progress')
 }, 30_000)
 
-it('keeps the same focused Ready row in place during a live promotion until blur', async () => {
+it('keeps the same focused row in place during a live promotion until blur', async () => {
   const { client, open } = await workbench()
   const { task: first } = await client.tasks.create('work', { text: 'First task', priority: 'high' })
   const { task: second } = await client.tasks.create('work', { text: 'Reading this task' })
-  await open(`/tasks?state=ready&thread=${second.id}`)
+  await open(`/work?by=none&thread=${second.id}`)
   await vi.waitFor(() => expect(taskRowIds()).toEqual([first.id, second.id]), taskRead)
   const reading = taskRows()[1]!
   reading.focus()
   expect(document.activeElement).toBe(reading)
   await client.tasks.priority(second.id, 'urgent')
-  await vi.waitFor(() => expect(reading.querySelector('.task-priority')?.textContent).toBe('urgent'), taskRead)
+  await vi.waitFor(() => expect(reading.querySelector('small')?.textContent).toBe('urgent'), taskRead)
   expect(taskRowIds()).toEqual([first.id, second.id])
   expect(taskRows()[1]).toBe(reading)
   expect(document.activeElement).toBe(reading)
@@ -1042,7 +1043,7 @@ it('removes a focused task deleted by another client and passes focus to the nex
   const { task: first } = await client.tasks.create('work', { text: 'First' })
   const { task: second } = await client.tasks.create('work', { text: 'Second' })
   const { task: third } = await client.tasks.create('work', { text: 'Third' })
-  await open('/tasks?state=all')
+  await open('/work?by=none')
   await vi.waitFor(() => expect(taskRowIds()).toEqual([first.id, second.id, third.id]), taskRead)
   taskRows()[1]!.focus()
   const other = as()
@@ -1059,27 +1060,26 @@ it('removes a focused task deleted by another client and passes focus to the nex
   await other.delete(first.id)
   await vi.waitFor(() => {
     expect(taskRowIds()).toEqual([])
-    expect(document.activeElement).toBe(document.querySelector('.task-rows'))
+    expect(document.activeElement).toBe(document.querySelector('.work-list'))
   }, taskRead)
 }, 30_000)
 
-it('shows urgent before older normal work in Handoffs Runnable', async () => {
+it('shows urgent before older normal work in Runnable', async () => {
   const { client, open } = await workbench()
   await client.tasks.create('work', { text: 'Normal Handoff' })
   await client.tasks.create('work', { text: 'Urgent Handoff', priority: 'urgent' })
-  await open('/handoffs')
-  await vi.waitFor(() => expect([...lane('Runnable').querySelectorAll('.handoff-title')].map((a) => a.textContent))
-    .toEqual(['Urgent Handoff', 'Normal Handoff']), taskRead)
+  await open('/work?by=state')
+  await vi.waitFor(() => expect(workTitles(group('Runnable'))).toEqual(['Urgent Handoff', 'Normal Handoff']), taskRead)
 }, 30_000)
 
-const runnableTitles = () => [...lane('Runnable').querySelectorAll('.handoff-title')].map((row) => row.textContent)
+const runnableTitles = () => workTitles(group('Runnable'))
 
-it('does not let a reaction from an overlapping poll restore an omitted Handoff', async () => {
+it('does not let a reaction from an overlapping poll restore an omitted row', async () => {
   const { client, open, secret, revoke } = await revocableTasks()
   const polling = gate()
   const sampled = gate()
   const release = gate()
-  await open('/handoffs', { transport: async (request, send) => {
+  await open('/work?by=state', { transport: async (request, send) => {
     if (routePath(request) !== '/events') return send()
     const result = send()
     if (Number(new URL(request.url).searchParams.get('wait')) > 0) polling.resolve()
@@ -1111,7 +1111,7 @@ it('does not let a reaction from an overlapping poll restore an omitted Handoff'
   } finally { frame.mockRestore() }
 })
 
-it('does not apply a retained Handoff edit from a poll dispatched before its accepted read', async () => {
+it('does not apply a retained edit from a poll dispatched before its accepted read', async () => {
   const { client, open, publicTask, revoke } = await revocableTasks()
   const polling = gate()
   const list = gate()
@@ -1121,7 +1121,7 @@ it('does not apply a retained Handoff edit from a poll dispatched before its acc
   const recheck = gate()
   let read = 0
   let revalidating = false
-  await open('/handoffs', { transport: async (request, send) => {
+  await open('/work?by=state', { transport: async (request, send) => {
     if (routePath(request) === '/tasks' && revalidating) {
       if (++read > 1) await recheck.promise
       const response = await send()
@@ -1164,50 +1164,50 @@ it('does not apply a retained Handoff edit from a poll dispatched before its acc
   await vi.waitFor(() => expect(runnableTitles()).toEqual(['Edited during the older poll']))
 })
 
-it('evicts a revoked task from Handoffs and the already loaded channel', async () => {
+it('evicts a revoked task from Work and the already loaded channel', async () => {
   const { open, revoke } = await revocableTasks()
   await open('/c/secret')
   await vi.waitFor(() => expect(mainText()).toContain('Private task'))
-  link('Handoffs').click()
-  await vi.waitFor(() => expect(runnableTitles()).toContain('Private task'))
+  link('Work').click()
+  await vi.waitFor(() => expect(workTitles()).toContain('Private task'))
   await revoke()
   window.dispatchEvent(new Event('focus'))
-  await vi.waitFor(() => expect(runnableTitles()).toEqual(['Shared task']))
+  await vi.waitFor(() => expect(workTitles()).toEqual(['Shared task']))
   history.pushState(null, '', '/c/secret')
   window.dispatchEvent(new PopStateEvent('popstate'))
   await vi.waitFor(() => expect(document.querySelector('main h1')?.textContent).toBe('#secret'))
   expect(mainText()).not.toContain('Private task')
 })
 
-it('orders Handoffs with the refreshed label grant and matches claim-next', async () => {
+it('orders ungrouped Work with the refreshed label grant and matches claim-next', async () => {
   const { admin, as, open } = await revocableTasks()
   const worker = as('worker')
   await worker.tasks.create('limited', { text: 'Urgent but no longer claimable', priority: 'urgent' })
   await admin.createGrant({ principals: [{ kind: 'everyone' }], can: { limited: ['read'] } })
   const { grant } = await admin.createGrant({ principals: [{ kind: 'user', userId: 'u_reader' }], can: { limited: ['label'] } })
-  await open('/handoffs', { profile: 'worker' })
-  await vi.waitFor(() => expect(runnableTitles()[0]).toBe('Urgent but no longer claimable'))
+  await open('/work?by=none', { profile: 'worker' })
+  await vi.waitFor(() => expect(workTitles()[0]).toBe('Urgent but no longer claimable'))
   await admin.revokeGrant(grant.id)
   await expect(worker.tasks.claim({ channel: 'limited' })).rejects.toMatchObject({ status: 403 })
   window.dispatchEvent(new Event('focus'))
-  await vi.waitFor(() => expect(runnableTitles()[0]).toBe('Shared task'))
-  const first = runnableTitles()[0]
+  await vi.waitFor(() => expect(workTitles()[0]).toBe('Shared task'))
+  const first = workTitles()[0]
   expect((await worker.tasks.claim({ channel: 'work' }))?.task.text).toBe(first)
 })
 
-it('says more loading in Runnable until the urgent task on page two is read', async () => {
+it('says loading in Work until the urgent task on page two is read', async () => {
   const { as, open } = await workbench()
   const worker = as('worker')
   for (let offset = 0; offset < 200; offset += 50)
     await worker.tasks.createMany('work', Array.from({ length: 50 }, (_, i) => ({ text: `Normal handoff ${offset + i}` })))
   await worker.tasks.create('work', { text: 'Urgent handoff', priority: 'urgent' })
   const release = gate()
-  await open('/handoffs', { profile: 'worker', transport: async (request, send) => {
+  await open('/work?by=state', { profile: 'worker', transport: async (request, send) => {
     if (routePath(request) === '/tasks' && new URL(request.url).searchParams.has('after')) await release.promise
     return send()
   } })
-  await vi.waitFor(() => expect(lane('Runnable').textContent).toContain('more loading'))
-  expect(runnableTitles()).toEqual([])
+  await vi.waitFor(() => expect(mainText()).toContain('loading…'))
+  expect(workTitles()).toEqual([])
   release.resolve()
   await vi.waitFor(() => expect(runnableTitles()).toHaveLength(201), taskRead)
   expect(runnableTitles()[0]).toBe((await worker.tasks.claim({ channel: 'work' }))?.task.text)
@@ -1219,7 +1219,7 @@ it('ignores a superseded thread success released after a newer real 404', async 
   const release = gate()
   const delivered = gate()
   let held = false
-  await open(`/handoffs?thread=${secret.id}`, { transport: async (request, send) => {
+  await open(`/work?thread=${secret.id}`, { transport: async (request, send) => {
     const response = await send()
     if (!held && routePath(request) === `/messages/${secret.id}`) {
       held = true
@@ -1242,9 +1242,8 @@ it('ignores a superseded thread success released after a newer real 404', async 
 it('keeps unsent reply text and attachments through a 503 and recovery', async () => {
   const { client, open } = await workbench()
   const { task } = await client.tasks.create('work', { text: 'Thread with a draft' })
-  await client.tasks.create('elsewhere', { text: 'Different task scope' })
   let outage = false
-  await open(`/handoffs?thread=${task.id}`, { transport: async (request, send) => {
+  await open(`/work?thread=${task.id}`, { transport: async (request, send) => {
     if (outage && routePath(request) === `/messages/${task.id}`)
       return Response.json({ error: { code: 'unavailable', message: 'temporary outage' } }, { status: 503 })
     return send()
@@ -1274,70 +1273,33 @@ it('keeps unsent reply text and attachments through a 503 and recovery', async (
   expect(document.activeElement).toBe(draft)
   expect(draft.value).toBe('Draft text')
   expect(threadPane()?.textContent).toContain('notes.txt')
-
-  // A scope change can also hide the pane while it rechecks access.
-  outage = true
-  history.pushState(null, '', `/tasks?channel=elsewhere&thread=${task.id}`)
-  window.dispatchEvent(new PopStateEvent('popstate'))
-  await vi.waitFor(() => {
-    expect(threadPane()?.textContent).toContain('temporary outage')
-    expect(threadPane()?.querySelector('textarea')).toBeNull()
-  })
-  outage = false
-  window.dispatchEvent(new Event('focus'))
-  await vi.waitFor(() => {
-    expect(threadPane()?.querySelector('textarea')?.value).toBe('Draft text')
-    expect(threadPane()?.textContent).toContain('notes.txt')
-  })
 })
 
-it('keeps a focused Handoff in its original lane when another reader claims it', async () => {
-  const { api, as, open } = await workbench()
-  const { task } = await api.tasks.create('work', { text: 'Review the release' })
-  await open('/handoffs')
-  const reading = await vi.waitFor(() => link('Review the release', lane('Runnable')))
-  reading.focus()
-  expect(document.activeElement).toBe(reading)
-
-  await as('worker').tasks.claim(task.id)
-  await vi.waitFor(() => {
-    const row = link('Review the release', lane('Runnable')).closest('li')!
-    expect(row.textContent).toContain('claimed')
-    expect(row.textContent).toContain('Held by')
-    expect(document.activeElement).toBe(reading)
-  })
-
-  link('Presidium').click()
-  await vi.waitFor(() => expect(document.querySelector('main h1')?.textContent).toBe('Presidium'))
-  link('Handoffs').click()
-  await vi.waitFor(() => expect(link('Review the release', lane('In progress'))).toBeDefined())
-})
-
-it('shows a completed task and its result in the Delivered lane', async () => {
+it('shows a completed task in the Delivered lane', async () => {
   const { api, open } = await workbench()
   const { task } = await api.tasks.create('work', { text: 'Publish the release notes' })
   await (await api.tasks.claim(task.id)).complete('Release notes are live')
-  await open('/handoffs')
+  await open('/work?by=state')
   await vi.waitFor(() => {
-    const delivered = lane('Delivered')
+    const delivered = group('Delivered')
     expect(link('Publish the release notes', delivered)).toBeDefined()
-    expect(delivered.textContent).toContain('Delivery: Release notes are live')
+    expect(delivered.textContent).toContain('completed')
   })
 })
 
-it('typing over Handoffs focuses the open thread reply', async () => {
-  const { api, open } = await workbench()
-  const { task } = await api.tasks.create('work', { text: 'Check the build' })
-  await open(`/handoffs?thread=${task.id}`)
+it('typing over the Inbox focuses the open thread reply', async () => {
+  const { client, open } = await workbench({ attentionResponders: responders })
+  const { id } = await hold(client, 'Check the build', 'Ship the build?')
+  await open(`/?thread=${id}`)
   const reply = await vi.waitFor(() => {
     const field = document.querySelector<HTMLTextAreaElement>('textarea[placeholder="reply to thread…"]')
     expect(field).not.toBeNull()
     return field!
   })
-  const overHandoffs = link('Check the build', lane('Runnable'))
-  overHandoffs.focus()
-  expect(document.activeElement).toBe(overHandoffs)
-  overHandoffs.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true }))
+  const overInbox = await vi.waitFor(() => decision(id).querySelector<HTMLAnchorElement>('a')!)
+  overInbox.focus()
+  expect(document.activeElement).toBe(overInbox)
+  overInbox.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true }))
   expect(document.activeElement).toBe(reply)
 })
 
@@ -1727,7 +1689,7 @@ it('shows live pause detail on every view and lets the manager resume with a rea
   await client.pause('maintenance window')
   const me = await client.me()
   await vi.waitFor(() => expect(banner().textContent).toMatch(new RegExp(`^paused by ${me.name}, .+ ago: maintenance window$`)))
-  for (const [path, title] of [['/presidium', 'Presidium'], ['/c/work', '#work'], ['/tasks', 'tasks'], ['/attention', 'attention'], ['/settings/access', 'settings'], ['/handoffs', 'HANDOFFS']]) {
+  for (const [path, title] of [['/work', 'Work'], ['/c/work', '#work'], ['/operations', 'operations'], ['/settings/access', 'settings'], ['/', 'Inbox']]) {
     document.querySelector<HTMLAnchorElement>(`.sidebar a[href="${path}"]`)!.click()
     await vi.waitFor(() => expect(document.querySelector('main h1')?.textContent).toBe(title))
     expect(banner().hidden).toBe(false)
@@ -1986,7 +1948,9 @@ const question = '<img src=x onerror=alert(1)>'
 const staleWords = 'the attention request or its snapshot is no longer current'
 const unsupportedWords = 'this board does not keep task attention requests'
 const readOnlyWords = 'answering needs a person acting as themselves with post access'
-const inboxLink = () => document.querySelector<HTMLAnchorElement>('a[href="/attention"]')!
+const inboxLink = () => document.querySelector<HTMLAnchorElement>('.sidebar-scroll a[href="/"]')!
+/** Leave the Inbox for a view that reads no attention: the `work` channel. */
+const leaveInbox = () => document.querySelector<HTMLAnchorElement>('.sidebar a[href="/c/work"]')!.click()
 const inboxCount = () => inboxLink().querySelector('.count')?.textContent
 const attentionList = () => document.querySelector<HTMLElement>('[aria-label="attention requests"]')!
 const decision = (id: string) => document.getElementById(`attention-${id}`)!
@@ -2029,7 +1993,7 @@ it.each([
   const { client, open } = await workbench({ attentionResponders: responders })
   const { id, attention: { expiresAt } } = await hold(client, 'Draft for review', 'Ship the draft?')
   vi.setSystemTime(Date.parse(expiresAt) + offset)
-  await open('/attention')
+  await open('/')
   await vi.waitFor(() => {
     const time = decision(id)?.querySelector(`time[datetime="${expiresAt}"]`)
     expect(time?.textContent).toBe(expected)
@@ -2043,14 +2007,14 @@ function press(target: HTMLElement, key: string) {
   return event.defaultPrevented
 }
 
-it('opens Attention from the sidebar, counts only holds, escapes questions, and applies each allowed read as it arrives', async () => {
+it('opens the Inbox from the sidebar, counts only holds, escapes questions, and applies each allowed read as it arrives', async () => {
   const { client, open } = await workbench({ attentionResponders: responders })
   await client.tasks.create('work', { text: 'A ready task' })
   const a = await hold(client, 'First draft', question)
   const b = await hold(client, 'Second draft', 'Use the second draft?')
   const release = gate()
   const reads: string[] = []
-  await open('/handoffs', { transport: async (r, send) => {
+  await open('/c/work', { transport: async (r, send) => {
     const response = await send()
     if (attentionRead(r)) {
       reads.push(r.url)
@@ -2062,7 +2026,7 @@ it('opens Attention from the sidebar, counts only holds, escapes questions, and 
   expect(reads).toEqual([])
   inboxLink().click()
   await vi.waitFor(() => expect(choice(b.id)?.disabled).toBe(false))
-  expect(location.pathname).toBe('/attention')
+  expect(location.pathname).toBe('/')
   expect(inboxLink().getAttribute('aria-current')).toBe('page')
   expect(decision(a.id).textContent).toContain('reading request')
   expect([...attentionList().querySelectorAll('article')].map((row) => row.id)).toEqual([`attention-${a.id}`, `attention-${b.id}`])
@@ -2073,7 +2037,7 @@ it('opens Attention from the sidebar, counts only holds, escapes questions, and 
   await vi.waitFor(() => expect(document.querySelector('aside[aria-label="Thread"]')?.textContent).toContain('First draft'))
   expect([...document.querySelectorAll('aside[aria-label="Thread"] button')].some((button) => button.textContent === 'unblock')).toBe(false)
   expect(reads).toHaveLength(2)
-  link('Handoffs').click()
+  leaveInbox()
   const c = await hold(client, 'Third draft', 'Use the third draft?')
   await vi.waitFor(() => expect(inboxCount()).toBe('3'))
   expect(reads).toHaveLength(2)
@@ -2090,7 +2054,7 @@ it('ignores an Attention refusal that arrives after switching to a responder', a
   const a = await hold(client, 'First draft', 'Use this draft?')
   const captured = gate()
   const release = gate()
-  await open('/attention', { profile: 'reviewer', transport: async (r, send) => {
+  await open('/', { profile: 'reviewer', transport: async (r, send) => {
     if (!attentionRead(r) || r.headers.get('x-board-profile') !== 'reviewer') return send()
     const refused = await unsupported.fetch(r)
     expect(refused.status).toBe(501)
@@ -2117,28 +2081,11 @@ it('ignores an Attention refusal that arrives after switching to a responder', a
   expect(choice(a.id)?.disabled).toBe(false)
 })
 
-it('lets j/k from the focused empty Attention list reach the open thread composer', async () => {
-  const { client, open } = await workbench({ attentionResponders: responders })
-  const { task } = await client.tasks.create('work', { text: 'Check the title' })
-  await open(`/attention?thread=${task.id}`)
-  const reply = await vi.waitFor(() => {
-    const field = document.querySelector<HTMLTextAreaElement>('textarea[data-composer="thread"]')
-    expect(field).not.toBeNull()
-    return field!
-  })
-  expect(inboxCount()).toBeUndefined()
-  for (const key of ['j', 'k']) {
-    attentionList().focus()
-    expect(press(attentionList(), key)).toBe(false)
-    expect(document.activeElement).toBe(reply)
-  }
-})
-
 it('consumes only real moves and enabled digits, and requires reselection after a replacement or removal', async () => {
   const { client, open } = await workbench({ attentionResponders: responders })
   const a = await hold(client, 'First draft', 'Use the first draft?')
   const b = await hold(client, 'Second draft', 'Use the second draft?')
-  await open('/attention')
+  await open('/')
   await vi.waitFor(() => expect(choice(b.id)?.disabled).toBe(false))
   const list = attentionList()
   list.focus()
@@ -2175,7 +2122,7 @@ it('consumes only real moves and enabled digits, and requires reselection after 
 it.each(['profile', 'deployment', 'read only', 'no discovery'] as const)('explains why Attention is read only with %s', async (identity) => {
   const { client, open } = await workbench({ attentionResponders: responders })
   const a = await hold(client, 'First draft', 'Use this draft?')
-  await open('/attention', {
+  await open('/', {
     ...(identity === 'profile' ? { profile: 'reviewer' } : {}),
     ...(identity === 'deployment' ? { token: await deploymentToken('marketing', 'prj_marketing', 'production', { audience: BOARD_URL }) } : {}),
     ...(identity === 'read only' ? { can: '*=read' } : {}),
@@ -2199,7 +2146,7 @@ it.each([403, 409] as const)('shows the board’s %i write refusal without an ex
   const a = await hold(client, 'First draft', 'Use this draft?')
   let reads = 0
   const answer = Promise.withResolvers<number>()
-  await open('/attention', { transport: async (r, send) => {
+  await open('/', { transport: async (r, send) => {
     const response = await send()
     if (attentionRead(r)) reads++
     if (answerWrite(r)) answer.resolve(response.status)
@@ -2224,7 +2171,7 @@ it.each(['read', 'write'] as const)('shows a real 501 on %s and offers no answer
   otherBoards.push(unsupported)
   const a = await hold(client, 'First draft', 'Use this draft?')
   const refused = Promise.withResolvers<number>()
-  await open('/attention', { transport: async (r, send) => {
+  await open('/', { transport: async (r, send) => {
     if (!(operation === 'read' ? attentionRead(r) : answerWrite(r))) return send()
     const response = await unsupported.fetch(r)
     refused.resolve(response.status)
@@ -2248,7 +2195,7 @@ it('flags an unseen 404 off-view, renders its words, then unlocks the same reque
   const releaseWrite = gate()
   const releaseRead = gate()
   let reads = 0
-  await open('/attention', { transport: async (r, send) => {
+  await open('/', { transport: async (r, send) => {
     if (answerWrite(r)) {
       const response = await empty.fetch(r)
       writing.resolve(response.status)
@@ -2262,8 +2209,8 @@ it('flags an unseen 404 off-view, renders its words, then unlocks the same reque
   await vi.waitFor(() => expect(choice(a.id)?.disabled).toBe(false))
   choice(a.id)!.click()
   expect(await writing.promise).toBe(404)
-  link('Handoffs').click()
-  await vi.waitFor(() => expect(location.pathname).toBe('/handoffs'))
+  leaveInbox()
+  await vi.waitFor(() => expect(location.pathname).toBe('/c/work'))
   releaseWrite.resolve()
   await vi.waitFor(() => expect(inboxLink().textContent).toContain('refused'))
   expect(reads).toBe(1)
@@ -2287,7 +2234,7 @@ it.each(['feed', 'thread'] as const)('clears an unseen refusal for A when a newe
   const refusedRead = Promise.withResolvers<string>()
   const listed = gate()
   let replace = false
-  await open('/attention', { transport: async (r, send) => {
+  await open('/', { transport: async (r, send) => {
     if (source === 'thread' && isFeed(r)) await feed.promise
     if (answerWrite(r)) {
       await beforeAnswer.promise
@@ -2306,8 +2253,9 @@ it.each(['feed', 'thread'] as const)('clears an unseen refusal for A when a newe
   } })
   await vi.waitFor(() => expect(choice(a.id)?.disabled).toBe(false))
   choice(a.id)!.click()
-  link('Handoffs').click()
-  const thread = await vi.waitFor(() => link('Draft for review', lane('Needs attention')))
+  history.pushState(null, '', '/work?by=state')
+  window.dispatchEvent(new PopStateEvent('popstate'))
+  const thread = await vi.waitFor(() => link('Draft for review', group('Blocked or failed')))
   await listed.promise
   const replaceA = () => client.tasks.ask(a.id, { ...a.request, question: 'Use B?', replaces: a.attention.id })
   // Until an accepted root shows B, the refused write belongs to the A the page saw.
@@ -2320,9 +2268,10 @@ it.each(['feed', 'thread'] as const)('clears an unseen refusal for A when a newe
   await vi.waitFor(() => expect(inboxLink().textContent).not.toContain('refused'))
   replace = true
   inboxLink().click()
-  const words = await refusedRead.promise
-  await vi.waitFor(() => expect(decision(a.id)?.textContent).toContain(words))
-  expect(decision(a.id).textContent).not.toContain(staleWords)
+  await refusedRead.promise
+  // The Inbox treats a missing request as a missing task: the question leaves, and no stale words stay.
+  await vi.waitFor(() => expect(decision(a.id)).toBeNull())
+  expect(mainText()).not.toContain(staleWords)
   expect(inboxLink().textContent).not.toContain('refused')
 })
 
@@ -2331,7 +2280,7 @@ it.each(['before', 'after'] as const)('ignores a superseded read that arrives %s
   const a = await hold(client, 'First draft', 'Use this draft?')
   const pending = [0, 1].map(() => ({ captured: gate(), release: gate() }))
   let reads = 0
-  await open('/attention', { transport: async (r, send) => {
+  await open('/', { transport: async (r, send) => {
     const response = await send()
     if (attentionRead(r)) {
       const read = pending[reads++]!
@@ -2341,8 +2290,8 @@ it.each(['before', 'after'] as const)('ignores a superseded read that arrives %s
     return response
   } })
   await pending[0]!.captured.promise
-  link('Handoffs').click()
-  await vi.waitFor(() => expect(location.pathname).toBe('/handoffs'))
+  leaveInbox()
+  await vi.waitFor(() => expect(location.pathname).toBe('/c/work'))
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(Date.parse(a.attention.expiresAt) + 1)
   inboxLink().click()
@@ -2362,7 +2311,7 @@ it('settles Ship it from the feed without rolling back a newer thread hold', asy
   const a = await hold(client, 'First draft', 'Use this draft?')
   const feed = gate()
   const answer = Promise.withResolvers<number>()
-  await open('/attention', { transport: async (r, send) => {
+  await open('/', { transport: async (r, send) => {
     if (isFeed(r)) await feed.promise
     const response = await send()
     if (answerWrite(r)) answer.resolve(response.status)
@@ -2388,7 +2337,7 @@ it.each(['same request', 'replacement'] as const)('scopes a late competing 409 t
   const sendAnswer = gate()
   const releaseRefusal = gate()
   const refused = Promise.withResolvers<number>()
-  await open('/attention', { transport: async (r, send) => {
+  await open('/', { transport: async (r, send) => {
     if (!answerWrite(r)) return send()
     await sendAnswer.promise
     const response = await send()
@@ -2425,7 +2374,7 @@ it('offers a working unblock for a plain hold after an answered request', async 
   await client.tasks.answer(a.id, a.attention.id, { option: 'ship', commit })
   const root = await client.tasks.block(a.id, 'Wait for translation')
   expect(root.task?.attentionId).toBe(a.attention.id)
-  await open(`/attention?thread=${a.id}`)
+  await open(`/?thread=${a.id}`)
   await vi.waitFor(() => expect(threadPane()?.textContent).toContain('Wait for translation'))
   expect(unblockButton()).toBeDefined()
   unblockButton()!.click()
@@ -2439,7 +2388,7 @@ it('keeps a stale request read-only without offering an unblock the board refuse
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(Date.parse(a.attention.expiresAt) + 1)
   await expect(client.tasks.unblock(a.id)).rejects.toMatchObject({ status: 409, code: 'attention_required' })
-  await open(`/attention?thread=${a.id}`)
+  await open(`/?thread=${a.id}`)
   await vi.waitFor(() => expect(decision(a.id)?.textContent).toContain('read only: the request is stale'))
   await vi.waitFor(() => expect(threadPane()?.textContent).toContain('Use this draft?'))
   expect(unblockButton()).toBeUndefined()
@@ -2452,7 +2401,7 @@ it.each(['read', 'write'] as const)('hides all answer buttons on a 501 with a di
   const b = await hold(client, 'Second draft', 'Use the second draft?')
   const release = gate()
   const words = 'this deployment has not enabled attention'
-  await open('/attention', { transport: async (r, send) => {
+  await open('/', { transport: async (r, send) => {
     const refused = operation === 'read' ? attentionRead(r) && r.url.endsWith(`/${a.id}/attention`) : answerWrite(r)
     if (!refused) return send()
     await release.promise
@@ -2475,7 +2424,7 @@ it('keeps the answering overlay after HTTP success until the real feed confirms'
   const a = await hold(client, 'First draft', 'Use this draft?')
   const feed = gate()
   const answer = Promise.withResolvers<number>()
-  await open('/attention', { transport: async (r, send) => {
+  await open('/', { transport: async (r, send) => {
     if (isFeed(r)) await feed.promise
     const response = await send()
     if (answerWrite(r)) answer.resolve(response.status)

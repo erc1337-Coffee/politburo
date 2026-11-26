@@ -123,13 +123,14 @@ function visitScope(path: string) {
   window.dispatchEvent(new PopStateEvent('popstate'))
 }
 
-it('keeps Standing Committee rows and health in their own party and shows no work for an unknown party', async () => {
+it('keeps party-scoped rows and health in their own party and shows no work for an unknown party', async () => {
   const { create, open } = await workBoard()
   await create('plb-4', 'Build Blue release', { claim: true })
   await create('plb-2', 'Build rival release', { party: 'default', claim: true })
-  await open('/party/blue?swarm=fixtures')
+  await open('/work?party=blue&swarm=fixtures')
   await vi.waitFor(() => {
-    expect(mainTitle()).toBe('Standing Committee')
+    expect(mainTitle()).toBe('Work')
+    expect(document.querySelector('main header')?.textContent).toMatch(/Blue Party · 1 \/ 2 active/)
     expect(titles()).toEqual(['Build Blue release'])
     const health = document.querySelector('main table')?.textContent
     expect(health).toMatch(/Blue Party.*1 \/ 2.*51000 known/)
@@ -137,58 +138,63 @@ it('keeps Standing Committee rows and health in their own party and shows no wor
     expect(document.querySelector('main')?.textContent).not.toContain('Build rival release')
   })
 
-  visitScope('/party/unknown?swarm=fixtures')
+  visitScope('/work?party=unknown&swarm=fixtures')
   await vi.waitFor(() => {
     expect(statuses()).toContain('no party with that id')
     expect(document.querySelector('main li a[href*="thread="]')).toBeNull()
   })
 })
 
-it('asks which party to use in Presidium, reveals rival claims on request, and shows real work without swarm records', async () => {
+it('chooses a party scope in Work, back to all parties, and shows all work without swarm records', async () => {
   const { create, actor, open } = await workBoard()
   const rival = await actor('u_rival')
   await create(1, 'Blue release')
   const { task } = await create(2, 'Rival release', { party: 'default' })
   await rival.tasks.claim(task.id)
-  await open('/presidium?swarm=fixtures')
-  const chooser = await vi.waitFor(() => {
-    expect(mainTitle()).toBe('Presidium')
-    expect(document.querySelector('main')?.textContent).toContain('choose a party:')
-    expect(link("The People's Party", document.querySelector('main')!)).toBeDefined()
-    const blue = link('Blue Party', document.querySelector('main')!)
-    expect(blue).toBeDefined()
-    return blue!
+  await open('/work?swarm=fixtures')
+  const scope = () => document.querySelector('main nav[aria-label="Party scope"]')
+  const blue = await vi.waitFor(() => {
+    expect(titles().sort()).toEqual(['Blue release', 'Rival release'])
+    expect(link('all', scope()!)?.getAttribute('aria-current')).toBe('page')
+    expect(link("The People's Party", scope()!)).toBeDefined()
+    return link('Blue Party', scope()!)!
   })
-  chooser.click()
-  await vi.waitFor(() => expect(titles()).toEqual(['Blue release']))
-  link('all parties')!.click()
+  blue.click()
+  await vi.waitFor(() => {
+    expect(titles()).toEqual(['Blue release'])
+    expect(param('party')).toBe('blue')
+  })
+  link('all', scope()!)!.click()
   await vi.waitFor(() => {
     expect(titles().sort()).toEqual(['Blue release', 'Rival release'])
     expect(row('Rival release').textContent).toContain('u_rival')
   })
 
-  visitScope('/presidium')
+  visitScope('/work')
   await vi.waitFor(() => {
-    expect(mainTitle()).toBe('Presidium')
-    expect(document.querySelector('main')?.textContent).toContain(`${boardAddress.host} · ${boardAddress.pathname}`)
+    expect(scope()).toBeNull()
     expect(titles().sort()).toEqual(['Blue release', 'Rival release'])
   })
 })
 
-it('names only the Blue Presidium Chapter in the tab, header and sidebar, and keeps the plain subtitle', async () => {
+it('lists each party under Work in the sidebar and marks the one in scope', async () => {
   const { open } = await workBoard()
-  await open('/presidium?party=blue&swarm=fixtures')
-  for (const [party, name] of [['blue', 'Chapter'], ['default', 'Presidium']] as const) {
-    if (party === 'default') visitScope('/presidium?party=default&swarm=fixtures')
-    await vi.waitFor(() => {
-      expect(mainTitle()).toBe(name)
-      expect(document.title).toBe(`${name} · ${boardAddress.host}`)
-      expect(document.querySelector('main header')?.textContent).toContain(`Presidium: ${boardAddress.host} repo`)
-      const repoLink = link(name, sidebar())
-      expect(repoLink?.pathname).toBe('/presidium')
-      expect(new URL(repoLink!.href).searchParams.get('party')).toBe(party)
-    })
-  }
+  await open('/work?party=blue&swarm=fixtures')
+  const entry = (name: string) => link(name, sidebar())
+  await vi.waitFor(() => {
+    expect(document.title).toBe(`Work · ${boardAddress.host}`)
+    for (const [name, party] of [['Blue Party', 'blue'], ["The People's Party", 'default']] as const) {
+      expect(entry(name)?.pathname).toBe('/work')
+      expect(new URL(entry(name)!.href).searchParams.get('party')).toBe(party)
+    }
+    expect(entry('Blue Party')?.getAttribute('aria-current')).toBe('page')
+    expect(entry('Work')?.getAttribute('aria-current')).toBeNull()
+  })
+  visitScope('/work?swarm=fixtures')
+  await vi.waitFor(() => {
+    expect(entry('Work')?.getAttribute('aria-current')).toBe('page')
+    expect(entry('Blue Party')?.getAttribute('aria-current')).toBeNull()
+  })
 })
 
 it('shows only the Cell claimant’s work and clock, PR and spend, without write controls even in its thread', async () => {
@@ -213,8 +219,8 @@ it('shows only the Cell claimant’s work and clock, PR and spend, without write
     expect(own.querySelector('time')?.textContent).toBe(claim.until)
     expect(own.textContent).toContain('PR #41 open · CI failed')
     expect(own.textContent).toContain('142k tokens · partial')
-    const back = link('back to Chapter')
-    expect(back?.pathname).toBe('/presidium')
+    const back = link('back to Work')
+    expect(back?.pathname).toBe('/work')
     expect(new URL(back!.href).searchParams.get('party')).toBe('blue')
     expectNoWrites(document.querySelector('main')!)
   })
@@ -329,29 +335,32 @@ it('never shows a cached task missing from the latest read in any scope and link
   const claimant = current.task.task!.claim!.actor
   let readable = old.task.id
   // Change the proxy's open list while the task itself remains open and cached.
-  await open('/party/blue?swarm=fixtures', async () => {
+  await open('/work?party=blue&swarm=fixtures', async () => {
     const page = await client.tasks.list({ state: 'open' })
     return Response.json({ ...page, tasks: page.tasks.filter(({ message }) => message.id === readable) })
   })
   await vi.waitFor(() => expect(titles()).toEqual(['Old claim']))
 
   readable = current.task.id
-  visitScope('/presidium?party=blue&swarm=fixtures')
   const onlyCurrent = () => {
     expect(titles()).toEqual(['Current claim'])
     expect(document.querySelector('main')?.textContent).not.toContain('Old claim')
   }
-  await vi.waitFor(onlyCurrent)
+  visitScope(`/cell/${encodeURIComponent(claimant)}?party=blue&swarm=fixtures`)
+  await vi.waitFor(() => {
+    expect(mainTitle()).toBe('Cell')
+    onlyCurrent()
+  })
+  visitScope('/work?party=blue&swarm=fixtures')
+  await vi.waitFor(() => {
+    expect(mainTitle()).toBe('Work')
+    onlyCurrent()
+  })
   const cell = link('u_reader', row('Current claim'))
   expect(cell?.pathname).toBe(`/cell/${encodeURIComponent(claimant)}`)
   cell!.click()
   await vi.waitFor(() => {
     expect(mainTitle()).toBe('Cell')
-    onlyCurrent()
-  })
-  visitScope('/party/blue?swarm=fixtures')
-  await vi.waitFor(() => {
-    expect(mainTitle()).toBe('Standing Committee')
     onlyCurrent()
   })
 })
@@ -434,6 +443,39 @@ it('defaults to all open groups and keeps a text search inside the selected save
   })
   typeFilter('deploy')
   await vi.waitFor(() => expect(titles()).toEqual(['Deploy build']))
+})
+
+it('groups Work by board state with finished tasks, and lists every task ungrouped with claimable work first', async () => {
+  const { create, client, open } = await workBoard()
+  const done = await create(1, 'Ship the release', { claim: true })
+  await done.claim!.complete('shipped')
+  await create(2, 'Run the build', { claim: true })
+  await create(3, 'Write the notes')
+  const groupBy = (name: string) => link(name, document.querySelector('main nav[aria-label="Group work by"]')!)!
+  await open()
+  await vi.waitFor(() => {
+    expect(headings()).toEqual(['Running', 'Ready to pull'])
+    expect(document.querySelector('main')?.textContent).not.toContain('Ship the release')
+  })
+
+  groupBy('board state').click()
+  await vi.waitFor(() => {
+    expect(param('by')).toBe('state')
+    expect(headings()).toEqual(['Runnable', 'In progress', 'Delivered'])
+    expect(titles()).toEqual(['Write the notes', 'Run the build', 'Ship the release'])
+    expect(document.querySelector('nav[aria-label="Saved work views"]')).toBeNull()
+  })
+  await create(4, 'Plan the next release')
+  await vi.waitFor(() => expect(titles()).toEqual(['Write the notes', 'Plan the next release', 'Run the build', 'Ship the release']))
+
+  groupBy('none').click()
+  await vi.waitFor(() => {
+    expect(param('by')).toBe('none')
+    expect(headings()).toEqual(['All tasks'])
+    expect(titles().slice(0, 2)).toEqual(['Write the notes', 'Plan the next release'])
+    expect(titles().slice(2).sort()).toEqual(['Run the build', 'Ship the release'])
+  })
+  expect((await client.tasks.list({ state: 'all' })).tasks).toHaveLength(4)
 })
 
 it('leaves typing and modified keys alone but lets bare shortcuts navigate visible work', async () => {
@@ -629,19 +671,13 @@ it('opens only web links in new tabs and never sends a write from a work key', a
   expect(writes).toEqual([])
 })
 
-it('keeps the four home sections in order and shows an empty message in each', async () => {
+it('shows Health and spend after the queue, with an empty message on an empty board', async () => {
   const { open } = await workBoard()
   await open()
   await vi.waitFor(() => {
-    expect([...document.querySelectorAll('main section h2')].map((heading) => [
-      heading.textContent,
-      heading.closest('section')?.querySelector('[role="status"]')?.textContent,
-    ])).toEqual([
-      ['Needs you', 'nothing needs you'],
-      ['Ready to review', 'nothing to review'],
-      ['Running now', 'nothing running'],
-      ['Health and spend', 'no health data'],
-    ])
+    expect([...document.querySelectorAll('main h2')].map((heading) => heading.textContent)).toEqual(['Queue', 'Health and spend'])
+    expect(document.querySelector('#work-health [role="status"]')?.textContent).toBe('no health data')
+    expect(statuses()).toContain('nothing on the board')
   })
 })
 
@@ -821,16 +857,14 @@ it('/work holds a focused row at the same viewport offset during live regrouping
   expect(row.getBoundingClientRect().top).toBe(top - blockHeight)
 })
 
-it('holds the focused queue row at its viewport offset when Running now gains a task with peek open', async () => {
+it('holds the focused queue row at its viewport offset when the queue gains a Running group with peek open', async () => {
   const { create, actor, open } = await workBoard()
   const worker = await actor('u_worker')
   const { task: first } = await create(1, 'First ready task')
   const { task: second } = await create(2, 'Reading this task')
   await open(`?peek=${second.id}`)
-  const running = () => [...document.querySelectorAll('main section h2')]
-    .find((heading) => heading.textContent === 'Running now')?.closest('section')
   await vi.waitFor(() => {
-    expect(running()?.textContent).toContain('nothing running')
+    expect(headings()).toEqual(['Ready to pull'])
     expect(titles()).toEqual(['First ready task', 'Reading this task'])
     expect(peek()?.querySelector('h2')?.textContent).toBe('Reading this task')
   })
@@ -843,7 +877,7 @@ it('holds the focused queue row at its viewport offset when Running now gains a 
   const getRect = Element.prototype.getBoundingClientRect
   vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
     if (!this.matches('li') || !queue().contains(this)) return getRect.call(this)
-    // happy-dom has no layout: include Home above the queue in the stubbed geometry.
+    // happy-dom has no layout: stub one block per heading and row.
     const blocks = [...list.querySelectorAll('h2, h3, h4, li')]
     return new DOMRect(0, blocks.indexOf(this) * blockHeight - scroll.scrollTop, 100, blockHeight)
   })
@@ -855,10 +889,10 @@ it('holds the focused queue row at its viewport offset when Running now gains a 
 
   await worker.tasks.claim(first.id)
   await vi.waitFor(() => {
-    expect(running()?.querySelector('li a')?.textContent).toBe('First ready task')
     expect(headings()).toEqual(['Running', 'Ready to pull'])
-    // Running now adds a party, claimant and row; the queue adds a group heading.
-    expect(scroll.scrollTop).toBe(20 + 4 * blockHeight)
+    expect(titles()).toEqual(['First ready task', 'Reading this task'])
+    // The queue adds the Running heading above the row being read.
+    expect(scroll.scrollTop).toBe(20 + blockHeight)
     expect(row.getBoundingClientRect().top).toBe(top)
     expect(document.activeElement).toBe(reading)
     expect(peek()?.querySelector('h2')?.textContent).toBe('Reading this task')
