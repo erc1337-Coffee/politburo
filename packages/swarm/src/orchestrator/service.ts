@@ -19,7 +19,7 @@ import { repositoryName, type GitHubClient } from './github.ts'
 import { launch, launchKey, recover, type Binding, type Journal, type Provider } from './launch.ts'
 import { workerPrompt } from './launcher.ts'
 import { workerFiles } from './worker-files.ts'
-import { workerEnvironment } from './worker-credentials.ts'
+import { workerEnvironment, workerRoutes } from './worker-credentials.ts'
 import { seal } from '@remilia/politburo-relay/sealed'
 import { fixedRulesPolicy, limitStep, type NextStep, type NextStepPolicy } from './policy.ts'
 import type { RelayClient, Subscription } from './relay-client.ts'
@@ -453,7 +453,7 @@ export class Orchestrator {
       repository: { url: plan.url, base_ref: baseRef, base_commit: baseCommit },
       branch,
       limits: { max_seconds: config.worker.maxSeconds, idle_seconds: config.worker.idleSeconds, question_wait_seconds: config.watchdog.questionWaitSeconds },
-      model: { pi_model: config.worker.piModel, fallback_tiers: plan.routes },
+      model: { pi_model: config.worker.piModel, fallback_tiers: workerRoutes(plan.routes) },
       checks: config.worker.checks.map((check) => ({ name: check.name, command: check.command, timeout_seconds: check.timeoutSeconds })),
       telemetry: { heartbeat_seconds: config.watchdog.heartbeatSeconds, progress_mode: config.worker.progressMode },
       credentials: Object.keys(workerEnvironment(plan.routes)).length > 0,

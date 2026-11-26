@@ -54,7 +54,7 @@ watchdog for each live attempt, then admission of new ready tasks.
 | `github.ts` | Repository reads and the draft PR (head and base in one repository) |
 | `git.ts` | Bare mirrors; launch directories; applies a worker's git bundle and pushes the task branch (never forced) |
 | `worker-files.ts` | The worker client files each launch directory receives in `.politburo/` |
-| `worker-credentials.ts` | Pi's provider variables for the party (`OPENROUTER_API_KEY`, `ANTHROPIC_OAUTH_TOKEN` from `CLAUDE_CODE_OAUTH_TOKEN`), sent to the worker sealed for the public key in its heartbeat |
+| `worker-credentials.ts` | The routes as the worker runs them (`anthropic` becomes `claude-cli`, through `claude --print` on the subscription, unless `ANTHROPIC_API_KEY` is set) and their provider variables (`CLAUDE_CODE_OAUTH_TOKEN`, `OPENROUTER_API_KEY`), sent sealed for the public key in the worker heartbeat |
 | `launch.ts`, `journal.ts` | Launch a session once, record it, recover after a restart |
 | `stages/` | Review stages and the evidence gate (not connected yet) |
 | `cli.ts` | `serve`, `status`, `check` |

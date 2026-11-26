@@ -36,6 +36,9 @@ const MAX_BUNDLE_PARTS = 64
 const PROGRESS_INTERVAL_MS = 10_000
 const TOKEN_MARGIN_SECONDS = 120
 const CREDENTIALS_WAIT_MS = 300_000
+/** The cloud session's own Claude Code variables stay out of Pi, so a nested `claude` acts as a plain CLI. */
+const piEnvironment = (env: NodeJS.ProcessEnv) =>
+  Object.fromEntries(Object.entries(env).filter(([name]) => !/^(CLAUDE_|CLAUDECODE$|CCR_)/.test(name)))
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text)
 
 interface CheckResult { name: string; exit_code: number | null; duration_seconds: number; output_tail: string }
@@ -360,7 +363,7 @@ export class Worker {
       sessionId: `task-${start.task_id}-attempt-${start.attempt}`,
       extensions: this.#o.extensions,
       env: {
-        ...process.env,
+        ...piEnvironment(process.env),
         ...this.#credentials,
         PI_FALLBACK_TIERS: tiers,
         POLITBURO_QUESTION_DIRECTORY: this.#questionDirectory(),

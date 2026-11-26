@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { cloudProvider, type CommandRunner } from '../src/orchestrator/launcher.ts'
-import { workerEnvironment } from '../src/orchestrator/worker-credentials.ts'
+import { workerEnvironment, workerRoutes } from '../src/orchestrator/worker-credentials.ts'
 
 describe('cloud launcher', () => {
   test('runs the launcher in a pseudo-terminal, trusts the directory only during the launch, reads the session id', async () => {
@@ -34,8 +34,10 @@ describe('cloud launcher', () => {
 
   test('the worker environment holds one variable per party provider, from the orchestrator environment', () => {
     const routes = [{ provider: 'anthropic' }, { provider: 'openrouter' }, { provider: 'openrouter' }, { provider: 'kimi' }]
-    assert.deepEqual(workerEnvironment(routes, { CLAUDE_CODE_OAUTH_TOKEN: 'a', OPENROUTER_API_KEY: 'o' }), { ANTHROPIC_OAUTH_TOKEN: 'a', OPENROUTER_API_KEY: 'o' })
-    assert.deepEqual(workerEnvironment(routes, { ANTHROPIC_API_KEY: 'k', KIMI_API_KEY: 'm' }), { ANTHROPIC_API_KEY: 'k', KIMI_API_KEY: 'm' })
+    assert.deepEqual(workerEnvironment(routes, { CLAUDE_CODE_OAUTH_TOKEN: 'a', OPENROUTER_API_KEY: 'o' }), { CLAUDE_CODE_OAUTH_TOKEN: 'a', OPENROUTER_API_KEY: 'o' })
+    assert.deepEqual(workerEnvironment(routes, { ANTHROPIC_API_KEY: 'k', KIMI_API_KEY: 'm', CLAUDE_CODE_OAUTH_TOKEN: 'a' }), { ANTHROPIC_API_KEY: 'k', KIMI_API_KEY: 'm' })
+    assert.deepEqual(workerRoutes([{ provider: 'anthropic', model: 'm' }], {}), [{ provider: 'claude-cli', model: 'm' }])
+    assert.deepEqual(workerRoutes([{ provider: 'anthropic', model: 'm' }], { ANTHROPIC_API_KEY: 'k' }), [{ provider: 'anthropic', model: 'm' }])
     assert.deepEqual(workerEnvironment(routes, {}), {})
   })
 })
