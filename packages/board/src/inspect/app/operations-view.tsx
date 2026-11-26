@@ -552,7 +552,7 @@ function Worker(props: {
       </text>
       <text className="node-line" x={at.x + 30} y={at.y + 43}>
         <tspan className={`state state-${attempt.state}`}>{shown}</tspan>
-        <tspan className="node-detail" dx={8}>{clip(where, Math.max(8, 38 - shown.length))}</tspan>
+        <tspan className="node-detail" dx={8}>{clip(where, Math.max(8, 30 - shown.length))}</tspan>
       </text>
       <text className="node-figure" x={at.x + WORKER.w - 14} y={at.y + 25} textAnchor="end">{usd(props.figures?.cost_usd ?? attempt.cost_usd)}</text>
       <text className="node-detail" x={at.x + WORKER.w - 14} y={at.y + 43} textAnchor="end">{ago(now, attempt.last_contact_at)}</text>
