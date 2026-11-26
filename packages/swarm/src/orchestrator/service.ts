@@ -719,6 +719,14 @@ export class Orchestrator {
         return
       }
       case 'publish': return this.#publish(attempt, result, bundleFile)
+      case 'complete': {
+        await this.#finishWorker(attempt, 'the task is done')
+        await this.#settle(attempt, 'complete', () => this.#held(attempt).complete(workerText(result.summary, 2_000))).catch(() => undefined)
+        await this.#reply(attempt.taskId, 'Orchestrator: task completed; no change was needed.')
+        this.#transition(attempt, { state: 'settled', outcome: 'completed' })
+        this.#unsubscribe(attempt)
+        return
+      }
       case 'retry': {
         await this.#finishWorker(attempt, step.reason)
         await this.#lostOrRetry(attempt, step.reason)

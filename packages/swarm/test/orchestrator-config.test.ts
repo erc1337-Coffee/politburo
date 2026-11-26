@@ -52,6 +52,15 @@ describe('next step', () => {
     assert.equal((await fixedRulesPolicy.decide(input(1))).kind, 'instruct')
   })
 
+  test('a completed round without changes closes the task; a failed one is retried', async () => {
+    const unchanged = (exitReason: 'completed' | 'failed') => {
+      const base = input(0)
+      return { ...base, result: { ...base.result, exit_reason: exitReason, checks: [], diff_stat: { files: 0, insertions: 0, deletions: 0 } } }
+    }
+    assert.equal((await fixedRulesPolicy.decide(unchanged('completed'))).kind, 'complete')
+    assert.equal((await fixedRulesPolicy.decide(unchanged('failed'))).kind, 'retry')
+  })
+
   test('limits turn rounds into a retry, then a failure', async () => {
     assert.equal(limitStep(await fixedRulesPolicy.decide(input(1, 3)), input(1, 3), limits).kind, 'retry')
     assert.equal(limitStep(await fixedRulesPolicy.decide(input(1, 3, 2)), input(1, 3, 2), limits).kind, 'fail')

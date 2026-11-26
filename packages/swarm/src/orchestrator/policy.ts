@@ -3,6 +3,8 @@ import type { ResultData } from '@remilia/politburo-relay/messages'
 
 export type NextStep =
   | { kind: 'publish' }
+  /** The task is done and needed no change: it closes with the worker's answer. */
+  | { kind: 'complete' }
   | { kind: 'instruct'; text: string }
   | { kind: 'retry'; reason: string }
   | { kind: 'fail'; reason: string }
@@ -23,14 +25,15 @@ export interface NextStepPolicy { decide(input: DecisionInput): Promise<NextStep
 const tail = (text: string, max: number) => (text.length > max ? text.slice(-max) : text)
 
 /**
- * Fixed rules: a completed round with all checks passing is published; failing checks get one
+ * Fixed rules: a completed round with all checks passing is published, or closes the task when
+ * it changed nothing (a failed model call ends the round as failed, not completed); failing checks get one
  * more round with their output; a worker that ended without a result is retried in a new session.
  */
 export const fixedRulesPolicy: NextStepPolicy = {
   async decide({ result }) {
     const failing = result.checks.filter((check) => check.exit_code !== 0)
     if (result.exit_reason === 'completed' && failing.length === 0) {
-      if (result.diff_stat.files === 0) return { kind: 'fail', reason: 'the worker finished without changes' }
+      if (result.diff_stat.files === 0) return { kind: 'complete' }
       return { kind: 'publish' }
     }
     if (result.exit_reason === 'completed' || result.exit_reason === 'failed') {
