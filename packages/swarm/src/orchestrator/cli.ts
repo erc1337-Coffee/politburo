@@ -136,7 +136,7 @@ export async function orchestratorCommand(argv: string[]): Promise<number> {
     return 1
   }
   if (action === 'check') {
-    console.log(JSON.stringify({ ok: true, repositories: config.repositories.allow, routes: partyRoutes(config).map((route) => route.label) }))
+    console.log(JSON.stringify({ ok: true, routes: partyRoutes(config).map((route) => route.label) }))
     return 0
   }
   if (action === 'status') return status(config, values.json === true)

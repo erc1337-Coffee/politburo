@@ -43,7 +43,7 @@ watchdog for each live attempt, then admission of new ready tasks.
 | Path | Contents |
 | --- | --- |
 | `service.ts` | The loop, admission, attempt states, telemetry handling, settlement |
-| `config.ts` | YAML configuration (snake_case) over defaults; allow and deny lists |
+| `config.ts` | YAML configuration (snake_case) over defaults |
 | `state.ts` | SQLite state: attempts, telemetry cursors, seen message ids, command outbox; instance lock |
 | `usage-ledger.ts` | Appends one dispatch per attempt (tier `mob`) and one usage record per model row of each round result to the party's spend ledger (`ledger.file`, default `/ledger/ledger.sqlite`). The file is open only during a write, so the board can read it. |
 | `relay-client.ts` | Token minting, command POST, telemetry SSE with resume and backoff, relay statistics |
@@ -54,6 +54,7 @@ watchdog for each live attempt, then admission of new ready tasks.
 | `github.ts` | Repository reads and the draft PR (head and base in one repository) |
 | `git.ts` | Bare mirrors; launch directories; applies a worker's git bundle and pushes the task branch (never forced) |
 | `worker-files.ts` | The worker client files each launch directory receives in `.politburo/` |
+| `worker-credentials.ts` | The routes as the worker runs them (`anthropic` becomes `claude-cli`, through `claude --print` on the subscription, unless `ANTHROPIC_API_KEY` is set) and their provider variables (`CLAUDE_CODE_OAUTH_TOKEN`, `OPENROUTER_API_KEY`), sent sealed for the public key in the worker heartbeat |
 | `launch.ts`, `journal.ts` | Launch a session once, record it, recover after a restart |
 | `stages/` | Review stages and the evidence gate (not connected yet) |
 | `cli.ts` | `serve`, `status`, `check` |
@@ -65,7 +66,6 @@ state_directory: /orchestrator
 board_profile: orchestrator
 party_file: /party/party_configuration.yaml
 relay: { signing_key_file: /orchestrator/keys/relay_signing_key.pem }
-repositories: { allow: [owner/name] }   # upstreams are denied by default
 ```
 
 Every other setting has a default in `config.ts`. The relay address comes from `RELAY_URL`. Credentials come from the environment:

@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import { describe, test } from 'node:test'
-import { parseConfig, repositoryAllowed } from '../src/orchestrator/config.ts'
+import { parseConfig } from '../src/orchestrator/config.ts'
 import { parseSessionId } from '../src/orchestrator/launcher.ts'
 import { fixedRulesPolicy, limitStep, type DecisionInput } from '../src/orchestrator/policy.ts'
 
@@ -10,15 +10,9 @@ const minimal = ''
 
 describe('orchestrator config', () => {
   test('merges snake_case settings over the defaults', () => {
-    const config = parse(`${minimal}repositories: { allow: [Owner/Repo] }\nlimits: { rounds_per_attempt: 4 }\n`)
+    const config = parse(`${minimal}limits: { rounds_per_attempt: 4 }\n`)
     assert.equal(config.limits.roundsPerAttempt, 4)
     assert.equal(config.limits.attemptsPerTask, 2)
-    assert.ok(repositoryAllowed(config, 'owner/repo'))
-  })
-
-  test('the deny list wins over the allow list', () => {
-    const config = parse(`${minimal}repositories: { allow: [remiliacorporation/politburo] }\n`)
-    assert.ok(!repositoryAllowed(config, 'remiliacorporation/politburo'))
   })
 
   test('refuses unknown settings, plain HTTP relays and bad values', () => {
@@ -27,7 +21,7 @@ describe('orchestrator config', () => {
     assert.throws(() => parseConfig('', {}), /RELAY_URL/)
     assert.throws(() => parse('relay: { url: "https://relay.example.net" }\n'), /RELAY_URL/)
     assert.throws(() => parse(`${minimal}board: { lease_seconds: 5 }\n`), /lease_seconds/)
-    assert.throws(() => parse(`${minimal}repositories: { allow: [nope] }\n`), /owner\/name/)
+    assert.throws(() => parse(`${minimal}repositories: { deny: [owner/repo] }\n`), /repositories/)
   })
 })
 
@@ -56,6 +50,15 @@ describe('next step', () => {
   test('passing checks publish; failing checks get another round', async () => {
     assert.equal((await fixedRulesPolicy.decide(input(0))).kind, 'publish')
     assert.equal((await fixedRulesPolicy.decide(input(1))).kind, 'instruct')
+  })
+
+  test('a completed round without changes closes the task; a failed one is retried', async () => {
+    const unchanged = (exitReason: 'completed' | 'failed') => {
+      const base = input(0)
+      return { ...base, result: { ...base.result, exit_reason: exitReason, checks: [], diff_stat: { files: 0, insertions: 0, deletions: 0 } } }
+    }
+    assert.equal((await fixedRulesPolicy.decide(unchanged('completed'))).kind, 'complete')
+    assert.equal((await fixedRulesPolicy.decide(unchanged('failed'))).kind, 'retry')
   })
 
   test('limits turn rounds into a retry, then a failure', async () => {

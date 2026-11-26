@@ -11,7 +11,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { BoardError, type board as openBoard, type MessageView } from '@vercel/board'
 import { envelope, parseTelemetry, type BundlePartData, type Command, type ResultData, type StartData, type Telemetry } from '@remilia/politburo-relay/messages'
-import { repositoryAllowed, type OrchestratorConfig } from './config.ts'
+import type { OrchestratorConfig } from './config.ts'
 import type { GitRepositories } from './git.ts'
 import type { UsageLedger } from './usage-ledger.ts'
 import { errorCode, type OperationsEventBody, type OperationsMonitor, type OperationsSnapshot, type WakeSource } from './operations.ts'
@@ -19,6 +19,9 @@ import { repositoryName, type GitHubClient } from './github.ts'
 import { launch, launchKey, recover, type Binding, type Journal, type Provider } from './launch.ts'
 import { workerPrompt } from './launcher.ts'
 import { workerFiles } from './worker-files.ts'
+import { workerEnvironment, workerRoutes } from './worker-credentials.ts'
+import { ACTIVITY_SCHEMA, RoundReport } from './round-report.ts'
+import { seal } from '@remilia/politburo-relay/sealed'
 import { fixedRulesPolicy, limitStep, type NextStep, type NextStepPolicy } from './policy.ts'
 import type { RelayClient, Subscription } from './relay-client.ts'
 import { LIVE_STATES, type AttemptRecord, type StateStore } from './state.ts'
@@ -51,7 +54,10 @@ export interface OrchestratorDependencies {
   log?: (entry: Record<string, unknown>) => void
 }
 
-const PROGRESS_REPLY_MS = 10 * 60_000
+/** Least time between two edits of a round's thread reply while the round runs. */
+const REPORT_EDIT_MS = 5_000
+/** The label of the orchestrator's own status lines in a task thread. */
+export const STATUS_LABEL = 'politburo.status'
 const MAX_FAULTS = 3
 /** At most 64 bundle parts (about 2.3 MiB of bundle) for one round. */
 const MAX_BUNDLE_PARTS = 64
@@ -70,7 +76,10 @@ export class Orchestrator {
   readonly #leaseRenewedAt = new Map<string, number>()
   readonly #subscriptions = new Map<string, Subscription>()
   readonly #faults = new Map<string, number>()
-  readonly #lastProgressReply = new Map<string, number>()
+  /** The worker public key each attempt's credentials were last sealed for. */
+  readonly #sealedFor = new Map<string, string>()
+  /** Each live attempt's current round reply, and when it was last edited. */
+  readonly #reports = new Map<string, { report: RoundReport; editedAt: number }>()
   readonly #skipped = new Set<string>()
   #chain: Promise<void> = Promise.resolve()
   #wakeQueued = false
@@ -92,6 +101,8 @@ export class Orchestrator {
   /** Recovers live attempts, then follows board events and starts the sweep. */
   async start(): Promise<void> {
     this.#actor = (await this.#d.board.me()).actor
+    await this.#d.board.createSchema(ACTIVITY_SCHEMA as unknown as Parameters<Board['createSchema']>[0])
+      .catch((error: Error) => this.#d.log({ event: 'schema_create_failed', schema: ACTIVITY_SCHEMA.name, message: error.message }))
     await this.#serial(() => this.#recover())
     this.#events = new AbortController()
     void this.#followEvents(this.#events.signal)
@@ -239,9 +250,10 @@ export class Orchestrator {
     return this.#d.board.tasks.held(attempt.taskId, { epoch: attempt.claimEpoch, token: attempt.claimToken })
   }
 
+  /** A status line of the orchestrator in the task thread; the board shows it apart from the conversation. */
   async #reply(taskId: string, text: string): Promise<void> {
     try {
-      await this.#d.board.reply(taskId, text)
+      await this.#d.board.reply(taskId, { text: text.replace(/^Orchestrator: /, ''), labels: { [STATUS_LABEL]: 'orchestrator' } })
       this.#emit({ kind: 'board', action: 'reply', task: taskId })
     } catch (error) {
       this.#d.log({ event: 'board_reply_failed', task: taskId, message: (error as Error).message })
@@ -255,7 +267,10 @@ export class Orchestrator {
     if (change.state) {
       this.#d.log({ event: 'attempt_state', attempt: attempt.attemptId, task: attempt.taskId, channel: attempt.channel, state: change.state, reason })
       this.#emit({ kind: 'attempt', attempt: attempt.attemptId, task: attempt.taskId, channel: attempt.channel, state: change.state })
-      if (change.state === 'settled') this.#d.monitor?.settled(attempt)
+      if (change.state === 'settled') {
+        this.#d.monitor?.settled(attempt)
+        this.#reports.delete(attempt.attemptId)
+      }
     }
   }
 
@@ -393,7 +408,6 @@ export class Orchestrator {
     if (!settings?.repository) return this.#skip(message, `Channel #${message.channel} links no repository.`)
     const repository = repositoryName(settings.repository)
     if (!repository) return this.#skip(message, `The repository of #${message.channel} is not a github.com repository.`)
-    if (!repositoryAllowed(this.#d.config, repository)) return this.#skip(message, `Repository ${repository} is not on the orchestrator allow list.`)
     const party = this.#d.routes()
     const byKey = new Map(party.map((route) => [`${route.provider}/${route.model}`, route]))
     const routes = settings.routes.length === 0
@@ -450,9 +464,10 @@ export class Orchestrator {
       repository: { url: plan.url, base_ref: baseRef, base_commit: baseCommit },
       branch,
       limits: { max_seconds: config.worker.maxSeconds, idle_seconds: config.worker.idleSeconds, question_wait_seconds: config.watchdog.questionWaitSeconds },
-      model: { pi_model: config.worker.piModel, fallback_tiers: plan.routes },
+      model: { pi_model: config.worker.piModel, fallback_tiers: workerRoutes(plan.routes) },
       checks: config.worker.checks.map((check) => ({ name: check.name, command: check.command, timeout_seconds: check.timeoutSeconds })),
       telemetry: { heartbeat_seconds: config.watchdog.heartbeatSeconds, progress_mode: config.worker.progressMode },
+      credentials: Object.keys(workerEnvironment(plan.routes)).length > 0,
     }
     const startCommand = envelope('start', message.id, channel, start, now)
     if (JSON.stringify(startCommand).length > 60 * 1024) {
@@ -528,11 +543,22 @@ export class Orchestrator {
     this.#subscriptions.set(attempt.channel, subscription)
   }
 
+  /** Seals Pi's provider variables for the worker's public key and sends them. */
+  async #sendCredentials(attempt: AttemptRecord, publicKey: string): Promise<void> {
+    const environment = workerEnvironment(this.#d.routes())
+    if (Object.keys(environment).length === 0) return
+    this.#sealedFor.set(attempt.attemptId, publicKey)
+    await this.#send(attempt, envelope('credentials', attempt.taskId, attempt.channel, seal(publicKey, environment, attempt.channel), this.#d.now()))
+    this.#d.log({ event: 'credentials_sent', task: attempt.taskId, channel: attempt.channel, names: Object.keys(environment).sort() })
+  }
+
   async #onTelemetry(attemptId: string, seq: number, body: unknown): Promise<void> {
     const attempt = this.#d.state.get(attemptId)
     if (!attempt || !LIVE_STATES.includes(attempt.state) || seq <= attempt.telemetrySeq) return
     const parsed = parseTelemetry(body)
-    const valid = parsed.ok && parsed.message.task === attempt.taskId && parsed.message.channel === attempt.channel
+    // Before the start command arrives, the worker does not know its task and names it `unknown`.
+    const task = parsed.ok && (parsed.message.task === attempt.taskId || (parsed.message.type === 'heartbeat' && parsed.message.task === 'unknown'))
+    const valid = parsed.ok && task && parsed.message.channel === attempt.channel
     const fresh = valid && this.#d.state.markSeen(attempt.channel, parsed.message.id)
     this.#transition(attempt, { telemetrySeq: seq })
     if (!valid) {
@@ -550,8 +576,9 @@ export class Orchestrator {
     this.#transition(attempt, { lastContactAt: now, ...(attempt.state === 'awaiting_contact' ? { state: 'running' } : {}) })
     switch (message.type) {
       case 'heartbeat': {
-        const { state, round, elapsed_seconds, pi_alive } = message.data
+        const { state, round, elapsed_seconds, pi_alive, public_key } = message.data
         this.#d.monitor?.heartbeat(attempt.attemptId, { state, round, elapsed_seconds, pi_alive })
+        if (public_key && this.#sealedFor.get(attempt.attemptId) !== public_key) await this.#sendCredentials(attempt, public_key)
         return
       }
       case 'progress': return this.#onProgress(attempt, message, now)
@@ -563,11 +590,36 @@ export class Orchestrator {
 
   async #onProgress(attempt: AttemptRecord, message: Extract<Telemetry, { type: 'progress' }>, now: number): Promise<void> {
     this.#d.monitor?.progress(attempt.attemptId, message.data.items.map((item) => item.kind))
-    const last = this.#lastProgressReply.get(attempt.attemptId) ?? 0
-    if (now - last < PROGRESS_REPLY_MS || message.data.items.length === 0) return
-    this.#lastProgressReply.set(attempt.attemptId, now)
-    const lines = message.data.items.slice(-5).map((item) => `- ${item.kind}: ${workerText(item.text, 300)}`)
-    await this.#reply(attempt.taskId, `Worker report (round ${message.data.round}):\n${lines.join('\n')}`)
+    const entry = this.#report(attempt, message.data.round)
+    if (!entry.report.add(message.data.items.map((item) => ({ ...item, text: workerText(item.text, 1_000) })))) return
+    if (entry.report.messageId && now - entry.editedAt < REPORT_EDIT_MS) return
+    await this.#publishReport(attempt, entry, now)
+  }
+
+  /** The reply of the attempt's round `round`; a new round starts a new reply. */
+  #report(attempt: AttemptRecord, round: number): { report: RoundReport; editedAt: number } {
+    const current = this.#reports.get(attempt.attemptId)
+    if (current && current.report.round === round) return current
+    const entry = { report: new RoundReport(attempt.taskId, attempt.attemptNo, round), editedAt: 0 }
+    this.#reports.set(attempt.attemptId, entry)
+    return entry
+  }
+
+  /** Posts the round's reply, or edits it with what came since. */
+  async #publishReport(attempt: AttemptRecord, entry: { report: RoundReport; editedAt: number }, now: number): Promise<void> {
+    const { report } = entry
+    entry.editedAt = now
+    try {
+      if (report.messageId) {
+        await this.#d.board.edit(report.messageId, report.text())
+      } else {
+        report.messageId = (await this.#d.board.reply(attempt.taskId, report.text())).id
+      }
+      this.#emit({ kind: 'board', action: 'reply', task: attempt.taskId })
+    } catch (error) {
+      this.#d.log({ event: 'board_reply_failed', task: attempt.taskId, message: (error as Error).message })
+      this.#emit({ kind: 'fault', component: 'board', code: errorCode(error), task: attempt.taskId })
+    }
   }
 
   async #onQuestion(attempt: AttemptRecord, message: Extract<Telemetry, { type: 'question' }>, now: number): Promise<void> {
@@ -635,7 +687,9 @@ export class Orchestrator {
       output_tokens: result.models.reduce((sum, row) => sum + row.output_tokens, 0),
       cost_usd: result.cost_usd,
     })
-    await this.#reply(attempt.taskId, `Worker report (round ${result.round}, ${result.exit_reason}): ${workerText(result.summary, 1_500)}\nFiles ${result.diff_stat.files}, +${result.diff_stat.insertions} -${result.diff_stat.deletions}. Checks: ${result.checks.map((check) => `${check.name} ${check.exit_code === 0 ? 'pass' : 'fail'}`).join(', ') || 'none'}.`)
+    const entry = this.#report(attempt, result.round)
+    entry.report.finish(result, workerText)
+    await this.#publishReport(attempt, entry, this.#d.now())
     const bundleFile = this.#assembleBundle(attempt, result)
     const task = await this.#d.board.thread(attempt.taskId).then((thread) => thread.message).catch(() => null)
     const input = {
@@ -665,6 +719,14 @@ export class Orchestrator {
         return
       }
       case 'publish': return this.#publish(attempt, result, bundleFile)
+      case 'complete': {
+        await this.#finishWorker(attempt, 'the task is done')
+        await this.#settle(attempt, 'complete', () => this.#held(attempt).complete(workerText(result.summary, 2_000))).catch(() => undefined)
+        await this.#reply(attempt.taskId, 'Orchestrator: task completed; no change was needed.')
+        this.#transition(attempt, { state: 'settled', outcome: 'completed' })
+        this.#unsubscribe(attempt)
+        return
+      }
       case 'retry': {
         await this.#finishWorker(attempt, step.reason)
         await this.#lostOrRetry(attempt, step.reason)
@@ -714,7 +776,6 @@ export class Orchestrator {
   async #publish(attempt: AttemptRecord, result: ResultData, bundleFile: string | null): Promise<void> {
     this.#transition(attempt, { state: 'publishing' })
     const { github } = this.#d
-    if (!repositoryAllowed(this.#d.config, attempt.repository)) return this.#apply(attempt, { kind: 'fail', reason: `${attempt.repository} is not allowed` }, result)
     if (!bundleFile || !result.head_commit || !attempt.baseCommit) return this.#apply(attempt, { kind: 'retry', reason: 'no verified bundle to push' }, result)
     try {
       await this.#d.git.publishBundle(attempt.repository, { bundleFile, branch: attempt.branch, head: result.head_commit, base: attempt.baseCommit })

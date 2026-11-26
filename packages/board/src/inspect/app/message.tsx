@@ -7,6 +7,7 @@ import { LOGOS } from '../../contract/logos.ts'
 import type { MessageView, SchemaView } from '../../api/routes.ts'
 import { displayEmoji } from '../../contract/emoji.ts'
 import type { Attachment } from '../../server/index.default.ts'
+import { ActivityBlock, isActivity } from './activity.tsx'
 import { BlockCard } from './blocks.tsx'
 import * as board from './board.ts'
 import { setEditing, toast, useEditing } from './chrome.ts'
@@ -37,6 +38,8 @@ export type RowOptions = {
   schemas?: SchemaView[] | null
   /** Each actor the page knows, by ID, as they show: who a mention reads as. */
   names?: Record<string, string>
+  /** Shows the messages as a chat: yours as bubbles, everyone else's as plain turns, with no avatars. */
+  chat?: boolean
 }
 
 // A mention is `@[actor-id]` or `@[email]`, as the board stores one: any other `@word` is text.
@@ -121,6 +124,8 @@ function Body({ m, schemas, names }: { m: MessageView; schemas: SchemaView[] | n
       {parts.map((part, i) =>
         'text' in part ? (
           <Text key={i} text={part.text} edited={edited && i === lastText} {...(names ? { names } : {})} />
+        ) : isActivity(part.block) ? (
+          <ActivityBlock key={i} block={part.block} />
         ) : (
           <BlockCard
             key={i}
@@ -327,12 +332,23 @@ const copy = (text: string, what: string) =>
     () => toast(`couldn't copy ${what}`),
   )
 
+/** A status line the orchestrator writes in a task thread: one quiet line, apart from the conversation. */
+function StatusLine({ m, now }: { m: MessageView; now: number }) {
+  return (
+    <div id={`m${m.id}`} className="status-line" {...nativeMenu}>
+      <span className="status-line-text">{m.text}</span>
+      <Ago iso={m.createdAt} now={now} className="faint" />
+    </div>
+  )
+}
+
 export function MessageRow({ m, options, continued = false }: { m: MessageView; options: RowOptions; continued?: boolean }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [hovered, setHovered] = useState(false)
   const [labelsOpen, setLabelsOpen] = useState(false)
   const row = useRef<HTMLDivElement>(null)
   const editingId = useEditing()
+  if (m.labels['politburo.status'] && !m.deleted) return <StatusLine m={m} now={options.now} />
   const name = authorName(m)
   const canEdit = m.by.actor === options.me && options.viewer.may('post', m.channel)
   const editing = canEdit && editingId === m.id
@@ -345,6 +361,8 @@ export function MessageRow({ m, options, continued = false }: { m: MessageView; 
   const thread = m.re ?? m.id
   // A task's state is its `board.task` label too, which its line already says.
   const labels = Object.entries(m.labels).filter(([key]) => !(key.startsWith('board.') && m.task))
+  // In a chat, what you wrote is a bubble; an agent's round, or anyone else's message, is a turn.
+  const turn = options.chat ? (m.by.actor === options.me && !(m.blocks ?? []).some(isActivity) ? 'user' : 'agent') : null
 
   const items = (
     <>
@@ -372,11 +390,11 @@ export function MessageRow({ m, options, continued = false }: { m: MessageView; 
       <div
         ref={row}
         id={`m${m.id}`}
-        className={`message${continued ? ' continued' : ''}${active ? ' active' : ''}`}
+        className={`message${turn ? ` turn-${turn}` : ''}${continued ? ' continued' : ''}${active ? ' active' : ''}`}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
       >
-        <div className="gutter">
+        {!turn && <div className="gutter">
           {continued ? (
             <span {...nativeMenu}><Ago iso={m.createdAt} now={options.now} className="gutter-time" /></span>
           ) : (
@@ -385,13 +403,13 @@ export function MessageRow({ m, options, continued = false }: { m: MessageView; 
               {m.from && <SourceLogo platform={sourcePlatform(m, options.platforms) ?? m.from} />}
             </span>
           )}
-        </div>
+        </div>}
         <div className="body">
           {!continued && (
             <div className="meta-line">
-              <span className="author" {...nativeMenu}>
+              {turn !== 'user' && <span className="author" {...nativeMenu}>
                 {name}
-              </span>
+              </span>}
               <Ago iso={m.createdAt} />
               {m.noSync && options.syncConfigured && <span className="badge">board only</span>}
               {m.schedule && (
@@ -489,7 +507,7 @@ type Me = { actor: string; name: string; handle: string; profile: string | null 
  * Posts on their way, after `after` (the last message shown). Each is grouped
  * exactly as its message will be, so nothing moves when the board confirms it.
  */
-export function Pendings(props: { posts: Pending[]; me: Me; after?: MessageView; afterHasReplies?: boolean }) {
+export function Pendings(props: { posts: Pending[]; me: Me; after?: MessageView; afterHasReplies?: boolean; chat?: boolean }) {
   const seen = (post: Pending): Groupable => ({ by: { actor: props.me.actor } as MessageView['by'], createdAt: post.createdAt, deleted: false, channel: post.channel, re: post.re })
   return (
     <>
@@ -497,18 +515,18 @@ export function Pendings(props: { posts: Pending[]; me: Me; after?: MessageView;
         const previous = i === 0 ? props.after : seen(props.posts[i - 1]!)
         // One to send later says when under its own header, so it never runs on from the row above.
         const continued = post.later === undefined && continues(previous, seen(post), i === 0 ? (props.afterHasReplies ?? false) : false)
-        return <PendingRow key={post.key} post={post} me={props.me} continued={continued} />
+        return <PendingRow key={post.key} post={post} me={props.me} continued={continued} chat={props.chat ?? false} />
       })}
     </>
   )
 }
 
 /** A post on its way, or one that didn't make it. */
-export function PendingRow({ post, me, continued = false }: { post: Pending; me: Me; continued?: boolean }) {
+export function PendingRow({ post, me, continued = false, chat = false }: { post: Pending; me: Me; continued?: boolean; chat?: boolean }) {
   const status = post.later ? (post.error ? "didn't schedule" : 'scheduling…') : post.error ? "didn't send" : 'sending…'
   return (
-    <div className={`message pending${continued ? ' continued' : ''}${post.error ? ' failed' : ''}`}>
-      <div className="gutter">
+    <div className={`message pending${chat ? ' turn-user' : ''}${continued ? ' continued' : ''}${post.error ? ' failed' : ''}`}>
+      {!chat && <div className="gutter">
         {continued ? (
           <span className="gutter-time shown" title={status}>
             …
@@ -516,11 +534,11 @@ export function PendingRow({ post, me, continued = false }: { post: Pending; me:
         ) : (
           <Avatar name={shownName(me)} />
         )}
-      </div>
+      </div>}
       <div className="body">
         {!continued && (
           <div className="meta-line">
-            <span className="author">{shownName(me)}</span>
+            {!chat && <span className="author">{shownName(me)}</span>}
             <span className="time">{status}</span>
             {post.later && (
               <span className="badge">

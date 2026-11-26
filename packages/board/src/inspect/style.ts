@@ -682,6 +682,43 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 
 /* --- blocks: the data a message carries, as a card where its fence was --- */
 .block { max-width: 640px; margin: 6px 0; font-size: 12px; }
+.status-line { display: flex; align-items: baseline; gap: 8px; padding: 2px var(--inset) 2px 56px; font-size: 12px; color: var(--muted); }
+.status-line-text { overflow-wrap: anywhere; }
+/* A chat, as the thread pane shows one: your messages as bubbles, an agent's turn as plain text with
+   its thoughts and actions muted, one line each, folded. No avatars. */
+.message.turn-user, .message.turn-agent { grid-template-columns: minmax(0, 1fr); padding: 6px var(--inset) 6px 16px; }
+.message.turn-user.continued, .message.turn-agent.continued { padding-top: 0; }
+@media (hover: hover) { .message.turn-user:not(.active):hover, .message.turn-agent:not(.active):hover { background: none; } }
+.message.turn-user > .body { justify-self: start; max-width: min(720px, 100%); padding: 8px 12px; border-radius: 8px; background: var(--shade); }
+.message.turn-user.active > .body { background: var(--shade-hover); }
+.message.turn-user .meta-line { margin-bottom: 2px; }
+.message.turn-user .text code { background: var(--shade-hover); }
+.turn { display: grid; gap: 6px; max-width: 720px; margin: 4px 0 8px; font-size: 12.5px; color: var(--muted); }
+.turn summary { list-style: none; display: inline-flex; align-items: center; gap: 6px; max-width: 100%; }
+.turn summary::-webkit-details-marker { display: none; }
+.turn summary:hover, .turn summary:hover .turn-target { color: var(--dim); }
+.turn-chevron { flex-shrink: 0; opacity: .7; transition: transform .12s; }
+.turn details[open] > summary .turn-chevron { transform: rotate(90deg); }
+.turn-thought > summary { color: var(--faint); }
+.turn-thought > p { margin: 4px 0 2px; padding-left: 10px; color: var(--faint); font-style: italic; white-space: pre-wrap; line-height: 1.5; }
+.turn-action { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--muted); }
+details.turn-action { display: block; }
+.turn-icon { flex-shrink: 0; color: var(--faint); }
+.turn-verb { flex-shrink: 0; }
+.turn-target { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--faint); }
+.turn-action.failed .turn-icon, .turn-action.failed .turn-verb { color: var(--red); }
+.turn-action > pre { margin: 4px 0 2px 19px; padding: 6px 8px; max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 4px; font-size: 11.5px; background: var(--shade); color: var(--faint); }
+.turn-action.failed > pre { color: var(--red); }
+.turn > .text { margin: 2px 0; }
+.turn-note { color: var(--muted); }
+.turn-note.error, .turn-ended { color: var(--red); }
+.turn-note.warning { color: var(--gold); }
+.turn-foot { display: flex; flex-wrap: wrap; gap: 4px 10px; color: var(--faint); font-size: 11.5px; }
+.turn-foot:empty { display: none; }
+.turn-foot.running { color: var(--muted); animation: activity-pulse 1.6s ease-in-out infinite; }
+.turn .added { color: var(--accent); }
+.turn .removed-lines { color: var(--red); }
+
 .block-head { display: flex; align-items: center; gap: 10px; height: 26px; padding: 0 0 0 10px; background: var(--shade); }
 .block-head .spacer { flex: 1; }
 .block-head .tool { height: 26px; }
@@ -917,14 +954,25 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 /* the message log */
 .ops-messages { flex: 1; min-height: 9rem; display: flex; flex-direction: column; }
 .ops-log { flex: 1; min-height: 0; overflow: auto; list-style: none; margin: 0; padding: 4px 0; font: var(--metadata); scrollbar-width: thin; }
-.ops-log li { display: grid; grid-template-columns: auto 7px 5.5rem minmax(0, 1fr); align-items: center; gap: 10px; padding: 2px 12px; animation: ops-arrive .6s ease-out; }
+.ops-log li { display: grid; grid-template-columns: auto 7px minmax(0, 1fr); align-items: center; gap: 10px; padding: 2px 12px; animation: ops-arrive .6s ease-out; }
 .ops-log li:hover { background: var(--shade); }
 .ops-log li.fault .ops-log-text { color: var(--red); }
 .ops-log i { width: 6px; height: 6px; border-radius: 50%; }
 .ops-log time { color: var(--faint); font-variant-numeric: tabular-nums; }
 .ops-log-kind { color: var(--faint); }
 .ops-log-text { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ops-tasks { flex: 1; min-height: 0; overflow: auto; padding: 4px 0; font: var(--metadata); scrollbar-width: thin; }
+.ops-task > summary { list-style: none; cursor: pointer; display: grid; grid-template-columns: 4rem minmax(0, 1fr) auto auto auto auto; align-items: center; gap: 12px; padding: 4px 12px; }
+.ops-task > summary::-webkit-details-marker { display: none; }
+.ops-task > summary:hover, .ops-task[open] > summary { background: var(--shade); }
+.ops-task-id { color: var(--bright); font-variant-numeric: tabular-nums; }
+.ops-task-state { color: var(--dim); }
+.ops-task-figure, .ops-task > summary time { color: var(--faint); font-variant-numeric: tabular-nums; }
+.ops-task-fault { color: var(--red); }
+.ops-task .ops-log { padding: 0 0 6px 16px; overflow: visible; }
+
 @keyframes ops-arrive { from { background: var(--shade-hover); } }
+@keyframes activity-pulse { 50% { opacity: .45; } }
 
 @media (max-width: 64rem) {
   .operations-view { overflow: auto; }

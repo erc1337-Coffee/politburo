@@ -163,7 +163,7 @@ describe('orchestrator', () => {
     rmSync(directory, { recursive: true, force: true })
   })
 
-  async function setup(name: string, script: WorkerScript, overrides = '', allow = 'owner/repo') {
+  async function setup(name: string, script: WorkerScript, overrides = '') {
     const team = openBoard({ backend: local({ memory: true }) })
     await team.post('work/app', 'channel')
     await team.configureChannel('work/app', { repository: 'https://github.com/owner/repo', routes: [] })
@@ -173,7 +173,6 @@ describe('orchestrator', () => {
 state_directory: ${stateDirectory}
 sweep_seconds: 1
 relay: { signing_key_file: unused }
-repositories: { allow: [${allow}] }
 watchdog: { heartbeat_seconds: 5, contact_timeout_seconds: 2, missed_heartbeats: 2, stop_grace_seconds: 1, question_wait_seconds: 30 }
 ${overrides}
 `, { RELAY_URL: relayUrl })
@@ -336,24 +335,6 @@ ${overrides}
       await run.done(task.id, ['failed'])
       assert.equal(run.github.branchHead(`claude/task-${task.id}`), null)
       assert.equal(run.github.pulls.length, 0)
-    } finally {
-      await run.orchestrator.stop()
-      run.state.close()
-    }
-  })
-
-  test('skips a channel whose repository is not allowed, and says why once', async () => {
-    const run = await setup('denied', async () => {}, '', 'owner/other')
-    const { task } = await run.team.tasks.create('work/app', 'Not allowed')
-    await run.orchestrator.start()
-    try {
-      await sleep(300)
-      await run.orchestrator.tick()
-      const thread = await run.team.thread(task.id)
-      const notes = thread.replies.filter((reply) => reply.text.includes('not on the orchestrator allow list'))
-      assert.equal(notes.length, 1)
-      assert.equal(thread.message.task?.state, 'ready')
-      assert.equal(run.launches.length, 0)
     } finally {
       await run.orchestrator.stop()
       run.state.close()

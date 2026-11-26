@@ -68,6 +68,10 @@ const args = process.argv.slice(2)
 const prompt = args[args.indexOf('--') + 1] || ''
 const emit = (event) => process.stdout.write(JSON.stringify(event) + '\\n')
 async function main() {
+  if (process.env.OPENROUTER_API_KEY !== 'sealed-test-key') {
+    emit({ type: 'message_end', message: { role: 'assistant', content: [], errorMessage: 'No fallback tier is ready (missing login or cooling down)' } })
+    return
+  }
   let value = /checks fail/.test(prompt) ? 3 : 2
   if (process.env.FAKE_PI_MODE === 'ask' && !/checks fail/.test(prompt)) {
     const dir = process.env.POLITBURO_QUESTION_DIRECTORY
@@ -99,12 +103,14 @@ describe('orchestrator with the real worker client', () => {
     relay = createRelay({ verificationKey: keys.publicKeyPem, store: relayStore })
     await new Promise<void>((resolve) => relay.server.listen(0, '127.0.0.1', resolve))
     relayUrl = `http://127.0.0.1:${(relay.server.address() as AddressInfo).port}`
+    process.env.OPENROUTER_API_KEY = 'sealed-test-key'
     mkdirSync(join(directory, 'bin'))
     writeFileSync(join(directory, 'bin', 'pi'), FAKE_PI)
     chmodSync(join(directory, 'bin', 'pi'), 0o755)
   })
 
   after(async () => {
+    delete process.env.OPENROUTER_API_KEY
     for (const worker of workers) worker.kill('SIGKILL')
     await relay.close()
     relayStore.close()
@@ -122,7 +128,6 @@ describe('orchestrator with the real worker client', () => {
 state_directory: ${stateDirectory}
 sweep_seconds: 1
 relay: { signing_key_file: unused }
-repositories: { allow: [owner/repo] }
 watchdog: { heartbeat_seconds: 5, contact_timeout_seconds: 60, missed_heartbeats: 6, stop_grace_seconds: 5, question_wait_seconds: 60 }
 worker:
   checks:
@@ -145,9 +150,11 @@ worker:
         const upload = join(root, `upload-${channel}`)
         cpSync(launchDirectory, upload, { recursive: true })
         assert.ok(existsSync(join(upload, protocol)), 'the protocol file is in the upload')
+        // The worker gets the provider key only through the sealed credentials command.
+        const { OPENROUTER_API_KEY: _key, ...withoutKey } = process.env
         const worker = spawn(process.execPath, ['--experimental-strip-types', join(upload, '.politburo/packages/worker/src/cli.ts'), 'run', '--relay-url', relayUrl, '--channel', channel], {
           cwd: upload,
-          env: { ...process.env, HOME: home, POLITBURO_WORKER_HOME: join(home, '.politburo_worker'), PATH: `${join(directory, 'bin')}:${process.env.PATH}`, FAKE_PI_MODE: piMode },
+          env: { ...withoutKey, HOME: home, POLITBURO_WORKER_HOME: join(home, '.politburo_worker'), PATH: `${join(directory, 'bin')}:${process.env.PATH}`, FAKE_PI_MODE: piMode },
           stdio: ['pipe', 'ignore', 'pipe'],
         })
         let stderr = ''
@@ -196,9 +203,14 @@ worker:
       assert.ok(!git(run.github.origin, 'ls-tree', '-r', '--name-only', branch).includes('.politburo'), 'the worker client is not in the task branch')
       await run.until('worker exit', () => run.workerExit(run.channels[0]!) !== null, 40)
       assert.equal(run.workerExit(run.channels[0]!), 0)
-      const replies = (await run.team.thread(task.id)).replies.map((reply) => reply.text).join('\n')
-      assert.match(replies, /round 2 sent to the worker/)
-      assert.match(replies, /Worker report \(round 2, completed\): parse now returns 3/)
+      const { replies } = await run.team.thread(task.id)
+      assert.ok(replies.some((reply) => reply.labels['politburo.status'] === 'orchestrator' && /^round 2 sent to the worker/.test(reply.text)), 'status lines carry the label')
+      const round2 = replies.find((reply) => reply.text.startsWith('```json#worker_activity@1') && reply.text.includes('"round":2'))
+      assert.ok(round2, 'one reply per round, with the activity block')
+      assert.match(round2.text, /"state":"completed"/)
+      assert.match(round2.text, /"kind":"tool","text":"edit parser.ts"/)
+      assert.match(round2.text, /```\n\nparse now returns 3$/, 'the final answer is the reply text')
+      assert.equal(round2.blocks?.[0]?.schema, 'worker_activity')
     } finally {
       await run.orchestrator.stop()
       run.state.close()

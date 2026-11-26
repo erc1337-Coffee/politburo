@@ -61,6 +61,7 @@ describe('worker', () => {
     limits: { max_seconds: 600, idle_seconds: 600, question_wait_seconds: 60 },
     model: { pi_model: 'fallback/codex-cursor', fallback_tiers: [] }, checks: [],
     telemetry: { heartbeat_seconds: 5, progress_mode: 'events' },
+    credentials: false,
   })
 
   async function command(channel: string, type: string, data: unknown): Promise<void> {

@@ -43,7 +43,7 @@ interface PiEvent {
   result?: unknown
   message?: {
     role?: string; provider?: string; model?: string; stopReason?: string; errorMessage?: string
-    content?: Array<{ type?: string; text?: string }>
+    content?: Array<{ type?: string; text?: string; thinking?: string }>
     usage?: { input?: number; output?: number; cost?: { total?: number } }
   }
 }
@@ -61,6 +61,8 @@ export class PiRound {
   #lastActivity = Date.now()
   #idlePaused = false
   #stopReason: 'stopped' | 'timeout' | 'idle' | null = null
+  /** The last model reply was an error, so the round did not complete even when Pi exits 0. */
+  #lastFailed = false
   readonly #models = new Map<string, ModelUsage>()
   #summary = ''
   #error = ''
@@ -102,15 +104,20 @@ export class PiRound {
     if (event.type === 'tool_execution_start') {
       const target = event.args?.command ?? event.args?.path ?? ''
       onItem({ at, kind: 'tool', text: clip(`${event.toolName ?? 'tool'} ${typeof target === 'string' ? target : JSON.stringify(target)}`, 300) })
-    } else if (event.type === 'tool_execution_end' && event.isError) {
-      onItem({ at, kind: 'error', text: clip(textOf(event.result), 240) })
+    } else if (event.type === 'tool_execution_end') {
+      const output = textOf(event.result).trim()
+      if (event.isError) onItem({ at, kind: 'error', text: clip(output, 600) })
+      else if (output) onItem({ at, kind: 'output', text: clip(output, 1_000) })
     } else if (event.type === 'message_end' && event.message?.role === 'assistant') {
       const message = event.message
+      const thinking = (message.content ?? []).filter((part) => part.type === 'thinking').map((part) => part.thinking ?? '').join('\n').trim()
+      if (thinking) onItem({ at, kind: 'thinking', text: clip(thinking, 1_000) })
       const text = (message.content ?? []).filter((part) => part.type === 'text').map((part) => part.text ?? '').join('\n').trim()
       if (text) {
         this.#summary = text
         onItem({ at, kind: 'say', text: clip(text, 600) })
       }
+      this.#lastFailed = Boolean(message.errorMessage)
       if (message.errorMessage) {
         this.#error = message.errorMessage
         onItem({ at, kind: 'error', text: clip(message.errorMessage, 400) })
@@ -163,10 +170,10 @@ export class PiRound {
     clearInterval(watch)
     if (buffer.trim()) this.#handle(buffer.trim())
     const models = [...this.#models.values()]
-    const exitReason = this.#stopReason ?? (exitCode === 0 ? 'completed' : 'failed')
+    const exitReason = this.#stopReason ?? (exitCode === 0 && !this.#lastFailed ? 'completed' : 'failed')
     if (exitReason === 'failed' && !this.#error) this.#error = stderr.trim().split('\n').slice(-5).join('\n')
     return {
-      exitReason, exitCode, summary: this.#summary || this.#error || '(no reply)', models,
+      exitReason, exitCode, summary: (this.#lastFailed ? this.#error : this.#summary) || this.#error || '(no reply)', models,
       costUsd: models.reduce((sum, row) => sum + row.cost_usd, 0), error: this.#error,
     }
   }

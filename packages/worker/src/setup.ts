@@ -8,6 +8,8 @@ import { fileURLToPath } from 'node:url'
 
 export const PI_PACKAGE = '@earendil-works/pi-coding-agent@1.4.0'
 export const CURSOR_PROVIDER_PACKAGE = 'npm:@ifi/pi-provider-cursor@0.5.1'
+/** The `claude-cli` provider: Claude models through `claude --print`, so a Claude subscription pays from its plan limits. */
+export const CLAUDE_CLI_PROVIDER_PACKAGE = 'npm:@pi-plugins/claude-cli@0.3.0'
 
 /** The `packages` directory: the repository layout and the uploaded worker layout are the same. */
 const packagesDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -54,6 +56,8 @@ export async function preparePi(log: (line: string) => void): Promise<PiSetup> {
   if (!existsSync(catalog) && existsSync(join(SPRITE_DIRECTORY, 'models-store.json'))) copyFileSync(join(SPRITE_DIRECTORY, 'models-store.json'), catalog)
   const authSeed = join(SPRITE_DIRECTORY, 'pi-auth-ensure')
   if (existsSync(authSeed)) await run('sh', [authSeed], 30_000)
+  const claudeCli = await run(piCommand, ['install', CLAUDE_CLI_PROVIDER_PACKAGE])
+  if (claudeCli.code !== 0) log(`the Claude CLI provider did not install: ${claudeCli.output.slice(-200)}`)
   if (process.env.PI_CURSOR) {
     const installed = await run(piCommand, ['install', CURSOR_PROVIDER_PACKAGE])
     if (installed.code !== 0) log(`the Cursor provider did not install: ${installed.output.slice(-200)}`)

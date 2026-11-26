@@ -3,7 +3,7 @@
 export { launch, launchKey, openJournal, recover } from './launch.ts'
 export type { Attention, Binding, Control, HookStep, Journal, JournalFailure, JournalRecord, LaunchResult, Provider } from './launch.ts'
 export * from './stages/index.ts'
-export { DEFAULT_CONFIG, loadOrchestratorConfig, parseConfig, repositoryAllowed, type OrchestratorConfig } from './config.ts'
+export { DEFAULT_CONFIG, loadOrchestratorConfig, parseConfig, type OrchestratorConfig } from './config.ts'
 export { GitHubClient, GitHubError, repositoryName } from './github.ts'
 export { cloudProvider, parseSessionId, workerPrompt } from './launcher.ts'
 export { WORKER_DIRECTORY, workerFiles } from './worker-files.ts'

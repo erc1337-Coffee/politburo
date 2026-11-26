@@ -16,12 +16,12 @@ The start prompt gives you `relay_url`, `channel` and `bootstrap_token`.
 
 Run every command from the repository root (the directory that contains `.politburo/`).
 
-1. Check Node: `node --version` must be 22.18 or later.
+1. Check Node: `node --version` must be 22.21 or later. `NODE_USE_ENV_PROXY=1` makes its `fetch` use the session's network proxy.
 2. Start the client in the background. Replace the three values from the prompt:
 
    ```sh
    mkdir -p ~/.politburo_worker
-   printf '%s\n' '<bootstrap_token>' | nohup node --experimental-strip-types \
+   printf '%s\n' '<bootstrap_token>' | NODE_USE_ENV_PROXY=1 nohup node --experimental-strip-types \
      .politburo/packages/worker/src/cli.ts run --relay-url '<relay_url>' --channel '<channel>' \
      > ~/.politburo_worker/<channel>.log 2>&1 &
    ```

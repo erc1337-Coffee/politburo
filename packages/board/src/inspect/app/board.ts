@@ -234,8 +234,9 @@ export async function boot(): Promise<void> {
       if (!message) return true
       const id = store.threadId(message)
       const member = state.openTaskRoots[id]
+      // A task read holds roots only, so it cannot replace a reply: replies older than the read still count.
       if (member || store.isTask(message) || state.threadDenials.has(id))
-        return Boolean(member) && taken > acceptedTaskGeneration && taken > (state.threadDenials.get(id) ?? -1)
+        return Boolean(member) && (message.re !== null || taken > acceptedTaskGeneration) && taken > (state.threadDenials.get(id) ?? -1)
       return true
     })
     listed.apply(allowed.map(({ event }) => event), allowed.map(({ taken }) => taken))

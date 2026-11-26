@@ -5,7 +5,7 @@
 
 export const MESSAGE_VERSION = 1
 
-export type CommandType = 'start' | 'instruct' | 'answer' | 'stop' | 'renew'
+export type CommandType = 'start' | 'credentials' | 'instruct' | 'answer' | 'stop' | 'renew'
 export type TelemetryType = 'heartbeat' | 'progress' | 'question' | 'bundle_part' | 'result'
 
 export interface Envelope<T extends string, D> {
@@ -33,7 +33,11 @@ export interface StartData {
   model: { pi_model: string; fallback_tiers: unknown[] }
   checks: Array<{ name: string; command: string; timeout_seconds: number }>
   telemetry: { heartbeat_seconds: number; progress_mode: 'summary' | 'events' }
+  /** A `credentials` command follows once the worker's heartbeat carries its public key; Pi waits for it. */
+  credentials: boolean
 }
+/** Environment variables for Pi, sealed for the worker's public key (see sealed.ts). */
+export interface CredentialsData { ephemeral_public_key: string; nonce: string; ciphertext: string }
 export interface InstructData { round: number; text: string; mode: 'next_round' | 'interrupt' }
 export interface AnswerData { question_id: string; text: string }
 /** `send_bundle`: send the commits made so far as bundle parts and a final result before exiting. */
@@ -48,8 +52,10 @@ export interface HeartbeatData {
   elapsed_seconds: number
   token_exp: number
   pi_alive: boolean
+  /** The worker's X25519 public key, base64url, until it has received its credentials. */
+  public_key?: string
 }
-export type ProgressKind = 'tool' | 'say' | 'error' | 'usage' | 'diff' | 'warning'
+export type ProgressKind = 'thinking' | 'tool' | 'output' | 'say' | 'error' | 'usage' | 'diff' | 'warning'
 export interface ProgressData { round: number; items: Array<{ at: number; kind: ProgressKind; text: string }> }
 export interface QuestionData { question_id: string; round: number; text: string; options?: string[] }
 /** One part of the round's git bundle (base64). Workers hold no GitHub credential: the orchestrator pushes. */
@@ -77,6 +83,7 @@ export interface ResultData {
 
 export type Command =
   | Envelope<'start', StartData>
+  | Envelope<'credentials', CredentialsData>
   | Envelope<'instruct', InstructData>
   | Envelope<'answer', AnswerData>
   | Envelope<'stop', StopData>
@@ -125,6 +132,8 @@ const object = (fields: Record<string, Check>, optional: string[] = []): Check =
 const ID = /^[A-Za-z0-9_-]{1,100}$/
 const SHA1 = /^[0-9a-f]{40}$/
 const SHA256 = /^[0-9a-f]{64}$/
+const BASE64URL = /^[A-Za-z0-9_-]+$/
+const KEY = /^[A-Za-z0-9_-]{43}$/
 const BRANCH = /^claude\/task-[A-Za-z0-9_-]{1,100}$/
 const text = (max: number) => str(max)
 
@@ -137,7 +146,9 @@ const commandData: Record<CommandType, Check> = {
     model: object({ pi_model: text(200), fallback_tiers: anyList(20) }),
     checks: list(object({ name: text(100), command: text(2_000), timeout_seconds: int(1) }), 20),
     telemetry: object({ heartbeat_seconds: int(5), progress_mode: oneOf('summary', 'events') }),
+    credentials: bool,
   }),
+  credentials: object({ ephemeral_public_key: str(43, KEY), nonce: str(16, BASE64URL), ciphertext: str(48_000, BASE64URL) }),
   instruct: object({ round: int(2), text: text(32_000), mode: oneOf('next_round', 'interrupt') }),
   answer: object({ question_id: str(100, ID), text: text(8_000) }),
   stop: object({ reason: text(1_000), send_bundle: bool }),
@@ -147,11 +158,11 @@ const commandData: Record<CommandType, Check> = {
 const telemetryData: Record<TelemetryType, Check> = {
   heartbeat: object({
     state: oneOf('waiting_start', 'running', 'waiting_answer', 'checking', 'bundling', 'stopping', 'finished'),
-    round: int(0), last_command_seq: int(0), elapsed_seconds: num, token_exp: int(0), pi_alive: bool,
-  }),
+    round: int(0), last_command_seq: int(0), elapsed_seconds: num, token_exp: int(0), pi_alive: bool, public_key: str(43, KEY),
+  }, ['public_key']),
   progress: object({
     round: int(0),
-    items: list(object({ at: int(0), kind: oneOf('tool', 'say', 'error', 'usage', 'diff', 'warning'), text: text(1_024) }), 50),
+    items: list(object({ at: int(0), kind: oneOf('thinking', 'tool', 'output', 'say', 'error', 'usage', 'diff', 'warning'), text: text(1_024) }), 50),
   }),
   question: object({ question_id: str(100, ID), round: int(1), text: text(4_096), options: list(text(200), 10) }, ['options']),
   bundle_part: object({ round: int(1), index: int(0), count: int(1), data: str(BUNDLE_PART_MAX, /^[A-Za-z0-9+/]*={0,2}$/) }),

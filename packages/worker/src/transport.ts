@@ -112,7 +112,7 @@ export class CommandStream {
       } catch (error) {
         if (this.#closed) break
         if (!controller.signal.aborted) {
-          log(`commands stream: ${(error as Error).message}`)
+          log(`commands stream: ${describeError(error)}`)
           await sleep(backoff(failures++))
         }
       } finally {
@@ -184,7 +184,7 @@ export class TelemetrySender {
         status = response.status
         await response.body?.cancel()
       } catch (error) {
-        log(`telemetry: ${(error as Error).message}`)
+        log(`telemetry: ${describeError(error)}`)
       }
       if (status === 201 || status === 200) {
         onContact()
@@ -210,4 +210,11 @@ export class TelemetrySender {
       this.#wake = null
     }
   }
+}
+
+/** The error message with its cause, such as the code of a refused connection behind `fetch failed`. */
+function describeError(error: unknown): string {
+  const { message, cause } = error as Error & { cause?: { code?: string; message?: string } }
+  const reason = cause?.code ?? cause?.message
+  return reason ? `${message} (${reason})` : message
 }
