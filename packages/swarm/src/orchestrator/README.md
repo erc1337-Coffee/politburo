@@ -15,6 +15,10 @@ and sends the commits as a git bundle in `bundle_part` messages before its `resu
 next step is `publish`, the orchestrator checks the bundle digest, checks that the commits
 descend from the base commit, pushes the branch without force and opens the draft PR.
 
+A channel that links no repository has a local bare repository in the state directory
+(`channel_repositories/`). Its tasks start from `main`, and the orchestrator merges the bundle into
+`main`: forward when possible, else with a merge commit. A conflict keeps the work on the task branch.
+
 Run it with `swarm orchestrator serve --config FILE`. `check` validates the
 configuration and the party routes; `status` prints the live attempts.
 
@@ -52,7 +56,7 @@ watchdog for each live attempt, then admission of new ready tasks.
 | `launcher.ts` | Worker prompt and the `claude --cloud` launch provider |
 | `policy.ts` | Next step after a result (pluggable) and the hard limits around it |
 | `github.ts` | Repository reads and the draft PR (head and base in one repository) |
-| `git.ts` | Bare mirrors; launch directories; applies a worker's git bundle and pushes the task branch (never forced) |
+| `git.ts` | Bare mirrors and local channel repositories; launch directories; applies a worker's git bundle and pushes the task branch (never forced) or merges it into a local `main` |
 | `worker-files.ts` | The worker client files each launch directory receives in `.politburo/` |
 | `worker-credentials.ts` | The routes as the worker runs them (`anthropic` becomes `claude-cli`, through `claude --print` on the subscription, unless `ANTHROPIC_API_KEY` is set) and their provider variables (`CLAUDE_CODE_OAUTH_TOKEN`, `OPENROUTER_API_KEY`), sent sealed for the public key in the worker heartbeat |
 | `launch.ts`, `journal.ts` | Launch a session once, record it, recover after a restart |

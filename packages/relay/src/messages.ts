@@ -140,7 +140,7 @@ const text = (max: number) => str(max)
 const commandData: Record<CommandType, Check> = {
   start: object({
     task_id: str(100, ID), attempt: int(1), round: int(1), title: text(300), brief: text(40_000), brief_sha256: str(64, SHA256),
-    repository: object({ url: str(500, /^https:\/\//), base_ref: text(200), base_commit: str(40, SHA1) }),
+    repository: object({ url: str(500, /^(https:\/\/|local:)/), base_ref: text(200), base_commit: str(40, SHA1) }),
     branch: str(120, BRANCH),
     limits: object({ max_seconds: int(1), idle_seconds: int(1), question_wait_seconds: int(1) }),
     model: object({ pi_model: text(200), fallback_tiers: anyList(20) }),

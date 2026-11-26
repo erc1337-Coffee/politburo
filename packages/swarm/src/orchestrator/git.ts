@@ -1,4 +1,5 @@
-// Applies worker git bundles to bare mirrors and pushes the task branch.
+// Applies worker git bundles to bare mirrors and pushes the task branch, or merges them into the
+// local repository of a channel that links no repository.
 import { execFile } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -12,7 +13,16 @@ export interface GitOptions {
   urlBase: string
   /** Token for HTTPS remotes. It goes to git through the environment, never through arguments. */
   token: string | null
+  /** Directory for the local repositories of channels that link no repository, one per channel. */
+  localDirectory?: string
 }
+
+/** The repository name of a channel's local repository. */
+export const localRepository = (channel: string) => `local:${channel}`
+export const isLocalRepository = (repository: string) => repository.startsWith('local:')
+/** The branch of a local repository that each task starts from and merges into. */
+export const LOCAL_BRANCH = 'main'
+const IDENTITY = ['-c', 'user.name=politburo-orchestrator', '-c', 'user.email=politburo-orchestrator@localhost', '-c', 'commit.gpgsign=false']
 
 const SHA = /^[0-9a-f]{40}$/
 
@@ -22,6 +32,7 @@ export class GitRepositories {
   constructor(options: GitOptions) {
     this.#options = options
     mkdirSync(options.directory, { recursive: true, mode: 0o700 })
+    if (options.localDirectory) mkdirSync(options.localDirectory, { recursive: true, mode: 0o700 })
   }
 
   #env(): NodeJS.ProcessEnv {
@@ -42,6 +53,61 @@ export class GitRepositories {
     })
   }
 
+  /** The local repository of a channel; a new one starts with one empty commit on `main`. */
+  async #local(repository: string): Promise<string> {
+    if (!this.#options.localDirectory) throw new GitError('local repositories are not configured')
+    const path = join(this.#options.localDirectory, `${repository.slice('local:'.length).replace(/[^A-Za-z0-9._-]/g, '_')}.git`)
+    if (existsSync(join(path, 'HEAD'))) return path
+    await this.#git(['init', '--quiet', '--bare', `--initial-branch=${LOCAL_BRANCH}`, path])
+    const tree = await this.#git(['hash-object', '-t', 'tree', '-w', '/dev/null'], path)
+    const root = await this.#git([...IDENTITY, 'commit-tree', tree, '-m', 'Channel repository'], path)
+    await this.#git(['update-ref', `refs/heads/${LOCAL_BRANCH}`, root, ''], path)
+    return path
+  }
+
+  /** The commit `main` of a channel's local repository points at; creates the repository when it is new. */
+  async localHead(repository: string): Promise<string> {
+    return this.#git(['rev-parse', `refs/heads/${LOCAL_BRANCH}`], await this.#local(repository))
+  }
+
+  /** The bare repository a launch starts from: the channel's local one, or the GitHub mirror. */
+  #source(repository: string): Promise<string> {
+    return isLocalRepository(repository) ? this.#local(repository) : this.#mirror(repository)
+  }
+
+  /** Fetches a verified worker bundle into `repository` as `staging`, and checks that it holds `head` on top of `base`. */
+  async #receive(path: string, staging: string, input: { bundleFile: string; branch: string; head: string; base: string }): Promise<void> {
+    if (!SHA.test(input.head) || !SHA.test(input.base)) throw new GitError('head and base must be full commit ids')
+    await this.#git(['bundle', 'verify', '--quiet', input.bundleFile], path)
+    await this.#git(['fetch', '--quiet', '--no-tags', input.bundleFile, `+refs/heads/${input.branch}:${staging}`], path)
+    const fetched = await this.#git(['rev-parse', staging], path)
+    if (fetched !== input.head) throw new GitError(`the bundle holds ${fetched}, the worker reported ${input.head}`)
+    await this.#git(['merge-base', '--is-ancestor', input.base, input.head], path).catch(() => {
+      throw new GitError(`${input.head} does not descend from the base ${input.base}`)
+    })
+  }
+
+  /**
+   * Merges a worker bundle into `main` of a channel's local repository and keeps the task branch.
+   * `main` moves forward when the task started from it; when other work landed first, a merge commit
+   * joins them, and a conflict leaves `main` as it is. Returns the new `main`.
+   */
+  async mergeBundle(repository: string, input: { bundleFile: string; branch: string; head: string; base: string; message: string }): Promise<string> {
+    const path = await this.#local(repository)
+    await this.#receive(path, `refs/heads/${input.branch}`, input)
+    const main = await this.#git(['rev-parse', `refs/heads/${LOCAL_BRANCH}`], path)
+    const forward = await this.#git(['merge-base', '--is-ancestor', main, input.head], path).then(() => true, () => false)
+    let next = input.head
+    if (!forward) {
+      const tree = await this.#git(['merge-tree', '--write-tree', main, input.head], path).catch(() => {
+        throw new GitError(`the work conflicts with ${LOCAL_BRANCH}; it stays on branch ${input.branch}`)
+      })
+      next = await this.#git([...IDENTITY, 'commit-tree', tree.split('\n')[0]!, '-p', main, '-p', input.head, '-m', input.message], path)
+    }
+    await this.#git(['update-ref', `refs/heads/${LOCAL_BRANCH}`, next, main], path)
+    return next
+  }
+
   /** The bare mirror of `repository` (`owner/name`), fetched up to date. */
   async #mirror(repository: string): Promise<string> {
     const path = join(this.#options.directory, `${repository.replace('/', '__')}.git`)
@@ -56,16 +122,8 @@ export class GitRepositories {
    * and `base` must be an ancestor of `head`. The push never forces.
    */
   async publishBundle(repository: string, input: { bundleFile: string; branch: string; head: string; base: string }): Promise<void> {
-    if (!SHA.test(input.head) || !SHA.test(input.base)) throw new GitError('head and base must be full commit ids')
     const mirror = await this.#mirror(repository)
-    await this.#git(['bundle', 'verify', '--quiet', input.bundleFile], mirror)
-    const staging = `refs/orchestrator/${input.branch}`
-    await this.#git(['fetch', '--quiet', '--no-tags', input.bundleFile, `+refs/heads/${input.branch}:${staging}`], mirror)
-    const fetched = await this.#git(['rev-parse', staging], mirror)
-    if (fetched !== input.head) throw new GitError(`the bundle holds ${fetched}, the worker reported ${input.head}`)
-    await this.#git(['merge-base', '--is-ancestor', input.base, input.head], mirror).catch(() => {
-      throw new GitError(`${input.head} does not descend from the base ${input.base}`)
-    })
+    await this.#receive(mirror, `refs/orchestrator/${input.branch}`, input)
     await this.#git(['push', '--quiet', 'origin', `${input.head}:refs/heads/${input.branch}`], mirror)
   }
 
@@ -76,7 +134,7 @@ export class GitRepositories {
    */
   async prepareLaunchDirectory(repository: string, baseCommit: string, directory: string, files: Array<{ path: string; source: string }>): Promise<void> {
     if (!SHA.test(baseCommit)) throw new GitError('the base must be a full commit id')
-    const mirror = await this.#mirror(repository)
+    const mirror = await this.#source(repository)
     rmSync(directory, { recursive: true, force: true })
     await this.#git(['clone', '--quiet', '--no-checkout', mirror, directory])
     await this.#git(['checkout', '--quiet', '-B', 'politburo-launch', baseCommit], directory)
@@ -86,7 +144,7 @@ export class GitRepositories {
       copyFileSync(file.source, join(directory, file.path))
     }
     await this.#git(['add', '--force', '--', ...files.map((file) => file.path)], directory)
-    await this.#git(['-c', 'user.name=politburo-orchestrator', '-c', 'user.email=politburo-orchestrator@localhost', '-c', 'commit.gpgsign=false',
+    await this.#git([...IDENTITY,
       'commit', '--quiet', '--no-verify', '-m', 'Politburo worker client'], directory)
   }
 }
