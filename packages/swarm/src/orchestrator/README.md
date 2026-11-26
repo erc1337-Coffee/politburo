@@ -43,7 +43,7 @@ watchdog for each live attempt, then admission of new ready tasks.
 | Path | Contents |
 | --- | --- |
 | `service.ts` | The loop, admission, attempt states, telemetry handling, settlement |
-| `config.ts` | YAML configuration (snake_case) over defaults; allow and deny lists |
+| `config.ts` | YAML configuration (snake_case) over defaults |
 | `state.ts` | SQLite state: attempts, telemetry cursors, seen message ids, command outbox; instance lock |
 | `usage-ledger.ts` | Appends one dispatch per attempt (tier `mob`) and one usage record per model row of each round result to the party's spend ledger (`ledger.file`, default `/ledger/ledger.sqlite`). The file is open only during a write, so the board can read it. |
 | `relay-client.ts` | Token minting, command POST, telemetry SSE with resume and backoff, relay statistics |
@@ -65,7 +65,6 @@ state_directory: /orchestrator
 board_profile: orchestrator
 party_file: /party/party_configuration.yaml
 relay: { signing_key_file: /orchestrator/keys/relay_signing_key.pem }
-repositories: { deny: [owner/name] }    # no branches or PRs; upstreams by default
 ```
 
 Every other setting has a default in `config.ts`. The relay address comes from `RELAY_URL`. Credentials come from the environment:

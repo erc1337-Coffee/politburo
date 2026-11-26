@@ -11,7 +11,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { BoardError, type board as openBoard, type MessageView } from '@vercel/board'
 import { envelope, parseTelemetry, type BundlePartData, type Command, type ResultData, type StartData, type Telemetry } from '@remilia/politburo-relay/messages'
-import { repositoryAllowed, type OrchestratorConfig } from './config.ts'
+import type { OrchestratorConfig } from './config.ts'
 import type { GitRepositories } from './git.ts'
 import type { UsageLedger } from './usage-ledger.ts'
 import { errorCode, type OperationsEventBody, type OperationsMonitor, type OperationsSnapshot, type WakeSource } from './operations.ts'
@@ -393,7 +393,6 @@ export class Orchestrator {
     if (!settings?.repository) return this.#skip(message, `Channel #${message.channel} links no repository.`)
     const repository = repositoryName(settings.repository)
     if (!repository) return this.#skip(message, `The repository of #${message.channel} is not a github.com repository.`)
-    if (!repositoryAllowed(this.#d.config, repository)) return this.#skip(message, `Repository ${repository} is denied.`)
     const party = this.#d.routes()
     const byKey = new Map(party.map((route) => [`${route.provider}/${route.model}`, route]))
     const routes = settings.routes.length === 0
@@ -714,7 +713,6 @@ export class Orchestrator {
   async #publish(attempt: AttemptRecord, result: ResultData, bundleFile: string | null): Promise<void> {
     this.#transition(attempt, { state: 'publishing' })
     const { github } = this.#d
-    if (!repositoryAllowed(this.#d.config, attempt.repository)) return this.#apply(attempt, { kind: 'fail', reason: `${attempt.repository} is not allowed` }, result)
     if (!bundleFile || !result.head_commit || !attempt.baseCommit) return this.#apply(attempt, { kind: 'retry', reason: 'no verified bundle to push' }, result)
     try {
       await this.#d.git.publishBundle(attempt.repository, { bundleFile, branch: attempt.branch, head: result.head_commit, base: attempt.baseCommit })

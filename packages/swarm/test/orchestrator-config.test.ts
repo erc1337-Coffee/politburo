@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import { describe, test } from 'node:test'
-import { parseConfig, repositoryAllowed } from '../src/orchestrator/config.ts'
+import { parseConfig } from '../src/orchestrator/config.ts'
 import { parseSessionId } from '../src/orchestrator/launcher.ts'
 import { fixedRulesPolicy, limitStep, type DecisionInput } from '../src/orchestrator/policy.ts'
 
@@ -13,12 +13,6 @@ describe('orchestrator config', () => {
     const config = parse(`${minimal}limits: { rounds_per_attempt: 4 }\n`)
     assert.equal(config.limits.roundsPerAttempt, 4)
     assert.equal(config.limits.attemptsPerTask, 2)
-    assert.ok(repositoryAllowed(config, 'owner/repo'))
-  })
-
-  test('upstreams are denied by default', () => {
-    const config = parse(minimal)
-    assert.ok(!repositoryAllowed(config, 'remiliacorporation/politburo'))
   })
 
   test('refuses unknown settings, plain HTTP relays and bad values', () => {
@@ -27,7 +21,7 @@ describe('orchestrator config', () => {
     assert.throws(() => parseConfig('', {}), /RELAY_URL/)
     assert.throws(() => parse('relay: { url: "https://relay.example.net" }\n'), /RELAY_URL/)
     assert.throws(() => parse(`${minimal}board: { lease_seconds: 5 }\n`), /lease_seconds/)
-    assert.throws(() => parse(`${minimal}repositories: { deny: [nope] }\n`), /owner\/name/)
+    assert.throws(() => parse(`${minimal}repositories: { deny: [owner/repo] }\n`), /repositories/)
   })
 })
 
