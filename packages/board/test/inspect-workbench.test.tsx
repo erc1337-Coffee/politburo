@@ -1385,7 +1385,7 @@ async function switchProfile(name: string, fromRegistry = false) {
     await act(async () => typeInto(field, name))
     field.form!.querySelector('button')!.click()
   }
-  await vi.waitFor(() => expect(document.querySelector('.sidebar-foot')!.textContent).toContain(`acting as ${name}`))
+  await vi.waitFor(() => expect(document.querySelector('.whoami .as')!.textContent).toContain(name))
 }
 
 it('labels the signed-in person and lists only registered profiles in Settings', async () => {
@@ -1394,7 +1394,7 @@ it('labels the signed-in person and lists only registered profiles in Settings',
   await as('reviewer').agents.register({ channel: 'work', role: 'implementation-worker', harness: 'shell' })
   await open('/settings/access')
   const me = await client.me()
-  await vi.waitFor(() => expect(document.querySelector('.sidebar-foot')!.textContent).toContain(`acting as ${me.name}`))
+  await vi.waitFor(() => expect(document.querySelector('.whoami .as')!.textContent).toContain(me.name))
   expect(document.querySelector('.sidebar-foot button[title="post as"]')).toBeNull()
   await switchProfile('reviewer', true)
   button('post as').click()
@@ -1410,7 +1410,7 @@ it('waits for a name in app-served mode and then shows that profile', async () =
   expect(document.querySelector('main')).toBeNull()
   typeInto(field, 'reviewer')
   field.form!.querySelector('button')!.click()
-  await vi.waitFor(() => expect(document.querySelector('.sidebar-foot')!.textContent).toContain('acting as reviewer'))
+  await vi.waitFor(() => expect(document.querySelector('.whoami .as')!.textContent).toContain('reviewer'))
 })
 
 it('keeps the identity shown and the author of writes in sync when switching during named boot', async () => {
@@ -1450,7 +1450,7 @@ it('keeps the identity shown and the author of writes in sync when switching dur
       const { messages } = await client.channel('work').messages()
       expect(messages.find((message) => message.text === 'Edits ready')?.by.profile).toBe('editor')
     })
-    expect(document.querySelector('.sidebar-foot')?.textContent).toContain('acting as editor')
+    expect(document.querySelector('.whoami .as')?.textContent).toContain('editor')
   } finally {
     release.resolve()
   }
@@ -1619,7 +1619,9 @@ it.each([
   const openRail = () => {
     expect(getComputedStyle(rail()).display).not.toBe('none')
     expect(rail().hidden).toBe(false)
-    expect(rail().querySelector('.whoami')?.textContent).toContain(identity)
+    // The rail shows who you are by picture and name only.
+    expect(rail().querySelector('.whoami .as')?.textContent).toContain(identity.slice('acting as '.length))
+    expect(rail().querySelector('.whoami')?.textContent).not.toContain('acting as')
     expect(header()).not.toContain('acting as')
   }
   if (width >= 1024) {
@@ -2074,7 +2076,7 @@ it('ignores an Attention refusal that arrives after switching to a responder', a
   const yourself = await vi.waitFor(() => menuItem('act as yourself'))
   yourself.click()
   const me = await client.me()
-  await vi.waitFor(() => expect(document.querySelector('.sidebar-foot')?.textContent).toContain(`acting as ${me.name}`))
+  await vi.waitFor(() => expect(document.querySelector('.whoami .as')?.textContent).toContain(me.name))
   inboxLink().click()
   await vi.waitFor(() => expect(choice(a.id)?.disabled).toBe(false))
   await act(async () => release.resolve())

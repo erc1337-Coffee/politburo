@@ -188,7 +188,7 @@ export function Sidebar({ state, current, onHome, onCollapse }: { state: State; 
         </Link>
         <div className="whoami" title={state.me!.actor}>
           <Avatar name={nameFor(state.identities, state.me!.actor, shownName(state.me!))} src={pictureFor(state.identities, state.me!.actor)} size={24} />
-          <span className="as">acting as {nameFor(state.identities, state.me!.actor, shownName(state.me!))}</span>
+          <span className="as">{nameFor(state.identities, state.me!.actor, shownName(state.me!))}</span>
         </div>
       </div>
       </div>
