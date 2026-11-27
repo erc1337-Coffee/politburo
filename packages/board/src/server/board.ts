@@ -2,11 +2,10 @@ import type { ModelRoute, RepositoryView } from '../contract/channel-settings.ts
 import type { BoardEventView } from '../api/routes.ts'
 import { BoardError, createBoardClient, eventsState, type BoardClient, type EventsOptions, type NewTaskOptions, type ProfileOption, type TaskOptions } from '../client/client.ts'
 import { derivedId } from '../client/ids.ts'
-import type { SyncProvider } from '../sync/provider.ts'
-import { SYNC, type Backend, type BoardBinding, type Caller, type SelfCaller, type Subscription, type SyncEntry } from './backend.ts'
+import type { Backend, BoardBinding, Caller, SelfCaller, Subscription } from './backend.ts'
 import type { Middleware } from './middleware.ts'
 import { createPolicy, type Policy, type PolicyOptions, type Serving } from './policy.ts'
-import { createServe, type PlatformCaller, type Serve } from './serve.ts'
+import { createServe, type Serve } from './serve.ts'
 import type { Watcher } from './watcher.ts'
 import { canHeader, canText, compileAccess, InvalidCan, parseCan, type Can } from './access.ts'
 
@@ -19,7 +18,7 @@ export type BoardOptions = PolicyOptions & (BackendOptions | DefaultOptions) & {
   initiallyPaused?: boolean
   /**
    * Runs on every post and edit before it reaches the backend, whatever it came from: requests (a
-   * board on `http()` using this one included), watchers, schedules, the handle, and sync's imports.
+   * board on `http()` using this one included), watchers, schedules, and the handle.
    * Each calls `next()` to pass the write on; one that doesn't drops it.
    */
   middleware?: readonly Middleware[]
@@ -34,13 +33,6 @@ export type BoardOptions = PolicyOptions & (BackendOptions | DefaultOptions) & {
   repositories?: (query: string | undefined, signal: AbortSignal) => Promise<RepositoryView[]>
   /** Tails the board runs for you, keyed by an id you choose: `{ triage: { tail: 'firehose', run } }`. */
   watch?: Record<string, Watcher>
-  /**
-   * Two-way sync, keyed by a name you choose: `{ slack: slack('slack/acme', channels({...})) }`. It
-   * runs here, wherever the board lives: webhooks land at `<board>/webhooks/<key>`, and what the
-   * board's channels say goes out to the platforms. On `http()`, the board it uses must let this
-   * deployment `sync` in those channels.
-   */
-  sync?: Record<string, SyncProvider>
   /**
    * The board's public URL, which every token's audience must equal. Inferred from requests
    * otherwise only behind a server that checks Host (`vb serve`), and in development: elsewhere a
@@ -68,9 +60,9 @@ export type Board = BoardClient & {
   /**
    * The handle, acting with `profile`: `<principal>+<profile>` over HTTP, `board:client:<profile>`
    * on `local()`. `null` acts as yourself, outside any agent session. With `can`, the board holds
-   * every call it makes to that, as it holds a sandbox to its policy's `x-board-can`: an agent's tool
-   * that runs `vb()` on `team.as('fixer', { can: ['read', 'post'] })` can't read sync's inbox or
-   * change grants. A narrowed handle's own `as()` and `sandboxPolicy()` stay inside its `can`.
+   * every call it makes to that, as it holds a request to its `x-board-can`: an agent's tool that
+   * runs `vb()` on `team.as('fixer', { can: ['read', 'post'] })` can't change grants. A narrowed
+   * handle's own `as()` stays inside its `can`.
    */
   as(profile: ProfileOption, options?: AsOptions): Board
 }
@@ -80,8 +72,8 @@ export type AsOptions = {
   /**
    * What the handle may do at most, as `x-board-can` narrows a request: a `can` (`{ 'dev/': ['read',
    * 'post'] }`, `['read']`) or its header form (`dev/=read,post`). It only narrows what this
-   * deployment may do, and what the handle it's called on may: never sync's records, watchers'
-   * registrations, or what `manage` does unless it says so. Without one, the handle's own.
+   * deployment may do, and what the handle it's called on may: never watchers' registrations, or
+   * what `manage` does unless it says so. Without one, the handle's own.
    */
   can?: Can | string
 }
@@ -104,8 +96,6 @@ type DefaultOptions = {
 export type Runtime = {
   /** The backend for a board() given none: in Node, `http()` to the board at `BOARD_URL`. */
   backend(): Backend
-  /** Loads the sync engine, only for a board that syncs. */
-  sync: () => Promise<typeof import('../sync/engine.ts')>
   /** Loads what the policy finds in the environment, the first time a board serves: null where nothing does, so pass `authenticate`. */
   serving: (() => Promise<Serving>) | null
 }
@@ -121,7 +111,7 @@ export type BoardContext = {
   state: { learned: string | null }
   ownUrl(): string | null
   /** An in-process client through the board, as `caller`: its posts are idempotent per trigger. */
-  clientAs(caller: Caller | PlatformCaller, trigger: string | null): BoardClient
+  clientAs(caller: Caller, trigger: string | null): BoardClient
   /** The handle, acting as `caller`: a watcher's, the middleware's, or a schedule's creator's. */
   handleOf(caller: Caller, trigger: string | null): Board
 }
@@ -213,7 +203,6 @@ export function createBoard(options: BoardOptions, runtime: Runtime): Board {
     }
   }
   const watch = options.watch ?? {}
-  const entries = options.sync ?? {}
   const state: BoardContext['state'] = { learned: null }
   /** Under the configured mount, so the router accepts the paths an in-process client builds. */
   const inProcess = `http://in-process.board${(options.basePath ?? '').replace(/\/+$/, '')}`
@@ -224,7 +213,7 @@ export function createBoard(options: BoardOptions, runtime: Runtime): Board {
   }
 
   let loading: Promise<Serve> | null = null
-  /** The board's pipeline, made once, when the board first serves, watches, syncs, or a handle calls it. */
+  /** The board's pipeline, made once, when the board first serves, watches, or a handle calls it. */
   function server(): Promise<Serve> {
     loading ??= createServe(context)
     loading.catch(() => (loading = null))
@@ -232,7 +221,7 @@ export function createBoard(options: BoardOptions, runtime: Runtime): Board {
   }
 
   // `writes` counts a trigger's posts, which their IDs derive from: a handle `stoppedBy` makes counts on with the one it came from.
-  function clientAs(caller: Caller | PlatformCaller, trigger: string | null, stop?: AbortSignal, writes = { made: 0 }): BoardClient {
+  function clientAs(caller: Caller, trigger: string | null, stop?: AbortSignal, writes = { made: 0 }): BoardClient {
     const inject = async (request: Request) => (await server()).inject(request, caller, trigger, writes)
     return createBoardClient({
       url: inProcess,
@@ -337,32 +326,10 @@ export function createBoard(options: BoardOptions, runtime: Runtime): Board {
   const subscriptions: Record<string, Subscription> = Object.fromEntries(
     Object.entries(watch).map(([id, watcher]) => [id, { kind: 'tail', tail: watcher.tail }]),
   )
-  if (Object.keys(entries).length > 0) subscriptions[SYNC] = { kind: 'sync' }
-  /** This board's sync entries, as its sync and discovery see them. */
-  const ownEntries: SyncEntry[] = Object.entries(entries).map(([key, entry]) => ({ key, platform: entry.platform }))
   const binding: BoardBinding = {
     initiallyPaused: options.initiallyPaused ?? false,
     subscriptions,
     run: async (id, event, meta) => (await server()).run(id, event, meta),
-    receive: async (key, item, meta) => (await server()).receive(key, item, meta),
-    pull: async () => (ownEntries.length > 0 ? (await server()).pull() : 0),
-    sync: ownEntries,
-    readSource: async (key, target, limit, after) => (await server()).readSource(key, target, limit, after),
-    joinSource: async (key, target) => (await server()).joinSource(key, target),
-    locate: (url) => {
-      const read = new Map<string, { platform: string; thread: string; message: string | null }>()
-      for (const entry of Object.values(entries)) {
-        const found = entry.locate(url)
-        if (found) read.set(JSON.stringify([entry.platform, found.thread, found.message]), { platform: entry.platform, ...found })
-      }
-      return [...read.values()]
-    },
-    linkOf: async (key, thread, message) => {
-      const entry = Object.hasOwn(entries, key) ? entries[key] : undefined
-      if (!entry || !thread.startsWith(`${key}:`)) return null
-      return entry.url(thread.slice(key.length + 1), message).catch(() => null)
-    },
-    typing: async (messages, status) => (await server()).typing(messages, status),
     accessNow: (principal, grants, now) => policy.accessNow(principal, grants, now),
     inboxRolesFor: (principal) => [...(inboxRolesByPrincipal.get(principal) ?? [])],
     modelRoutes: () => options.modelRoutes ?? [],

@@ -27,9 +27,8 @@ export async function boardStatus(command: 'status' | 'pause' | 'resume', args: 
 export async function inbox(args: string[]): Promise<number> {
   const [verb, id, status, extra] = args
   if (verb === 'read' || verb === 'ack' || verb === 'archive') {
-    if (flags.limit !== undefined) throw usage('--limit is for raw sync inboxes.', { reason: 'unknown_option' })
     if (verb === 'read') {
-      if (args.length > 1) throw usage('inbox read takes no arguments.', { next: [{ instruction: 'For a sync key named read, use raw', argv: [...cli(), 'inbox', 'raw', 'read'] }] })
+      if (args.length > 1) throw usage('inbox read takes no arguments.')
       const read = await client().operationalInbox.read()
       if (flags.json) return result(read), 0
       return out(formatOperationalInbox(read.messages)), 0
@@ -48,25 +47,12 @@ export async function inbox(args: string[]): Promise<number> {
     if (flags.json) return result(acked), 0
     return out(`${lineText(acked.message.id)}  ${status}`), 0
   }
-  const [key, channel] = verb === 'raw' ? args.slice(1) : args
-  if (!key) throw usage(verb === 'raw' ? 'Missing the sync entry whose inbox to read, such as slack.' : 'Missing what to read: use inbox read or name a sync entry.', { reason: 'missing_arguments' })
-  const events = await client().inbox(key, {
-    ...(channel ? { channel } : {}),
-    ...(flags.limit ? { limit: Number(flags.limit) } : {}),
-  })
-  if (flags.json) return result({ events }), 0
-  if (events.length === 0) return out('no events'), 0
-  for (const entry of events) {
-    const event = entry.event as { kind: string; thread: string; text?: string; type?: string; emoji?: string; author?: { handle: string } }
-    const detail = event.text ?? event.type ?? event.emoji ?? ''
-    out(`${entry.createdAt}  ${entry.channel}  ${event.kind}  ${event.author?.handle ?? ''}  ${detail.split('\n')[0]}`)
-  }
-  return 0
+  throw usage(verb === undefined ? 'Missing what to do: read, ack, or archive.' : `Unknown command ${verb} for inbox.`, { reason: verb === undefined ? 'missing_arguments' : 'unknown_command' })
 }
 
 export function doingInbox(a: string | undefined, b: string | undefined): string {
   if (a === 'read') return 'read your operational inbox'
   if (a === 'ack') return `acknowledge inbox message ${b}`
   if (a === 'archive') return `archive inbox message ${b}`
-  return `read ${a === 'raw' ? b : a}'s inbox`
+  return 'use the operational inbox'
 }

@@ -854,9 +854,6 @@ details.turn-action { display: block; }
   .sched-text { grid-column: 1 / -1; grid-row: 2; }
 }
 
-.inbox-row { display: grid; grid-template-columns: 70px 90px 1fr; gap: 12px; padding: 6px 20px; }
-.inbox-row:hover { background: var(--shade); }
-.inbox-row pre { margin: 4px 0 0; color: var(--faint); font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* --- a narrow page: the sidebar comes over it when it's asked for --- */
 .shell.nav .sidebar { display: grid; z-index: var(--nav-layer); width: min(280px, 84vw) !important; opacity: 1 !important; }

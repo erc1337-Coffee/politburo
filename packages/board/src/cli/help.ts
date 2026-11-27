@@ -120,13 +120,11 @@ export function commandHelp(name: string, path: readonly CliCommand[]): string {
 const COMMON = ['json', 'as', 'url'] as const
 
 /**
- * The command `words` name, and its subcommand when they name one (`schedule cancel`, `sources slack
- * read`): what `--help` shows the page of. Null when the first word names no command.
+ * The command `words` name, and its subcommand when they name one (`schedule cancel`): what `--help` shows the page of. Null when the first word names no command.
  */
 export function commandPath(words: readonly string[], all: readonly CliCommand[]): CliCommand[] | null {
   const command = all.find((candidate) => candidate.name === words[0] || candidate.aliases?.includes(words[0]!))
   if (!command) return null
-  const at = command.argumentsBeforeSubcommand ? command.arguments.length + 1 : 1
-  const sub = command.subcommands?.find((candidate) => candidate.name === words[at])
+  const sub = command.subcommands?.find((candidate) => candidate.name === words[1])
   return sub ? [command, sub] : [command]
 }

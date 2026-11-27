@@ -293,12 +293,12 @@ it('keeps receipts and replacements after reopening SQLite, and checks current r
   }
 })
 
-it('does not expose operational sends, receipts or archive in generic feeds, threads, watchers or sync', async () => {
+it('does not expose operational sends, receipts or archive in generic feeds, threads or watchers', async () => {
   const watched: string[] = []
   const team = testBoard({ watch: { all: { tail: '--all', run: ({ event }) => void watched.push(event.cursor) } } })
   const { ada, pat } = await people(team)
   const { cursor } = await pat.poll()
-  await pat.register({ watch: { all: { tail: '--all' } }, sync: [{ key: 'slack', platform: 'slack' }] })
+  await pat.register({ watch: { all: { tail: '--all' } } })
   const { message } = await ada.operationalInbox.send({ to: direct(ADA), topic: 'private handoff', text: 'eyes only' })
   await ada.operationalInbox.ack(message.id, 'acted')
   await ada.operationalInbox.archive(message.id)
@@ -329,10 +329,7 @@ it('does not expose operational sends, receipts or archive in generic feeds, thr
   expect((await pat.threads()).threads.map((t) => t.message.id)).toEqual([control.id])
   await expect(pat.thread(message.id)).rejects.toMatchObject({ status: 404 })
   await expect(ada.thread(message.id)).rejects.toMatchObject({ status: 404 })
-  expect(await pat.inbox('slack')).toEqual([])
   await vi.waitFor(() => expect(watched).toEqual([ordinary[0]!.cursor]))
   const matches = await pat.matches({ wait: 1 })
-  expect(matches.map((m) => [m.watcher, m.event.type, m.event.message?.id]).sort()).toEqual([
-    ['@sync', 'message.posted', control.id], ['all', 'message.posted', control.id],
-  ])
+  expect(matches.map((m) => [m.watcher, m.event.type, m.event.message?.id])).toEqual([['all', 'message.posted', control.id]])
 })

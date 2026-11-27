@@ -1,5 +1,5 @@
 import { everyChannel } from '../client/channels.ts'
-import { INBOX_EVENT_ID_MAX, type AttentionDraft, type BoardEventView, type CreatedInvite, type Discovery, type Explanation, type GrantView, type InviteView, type Joined, type Me, type MessageView, type RegistrationView } from '../api/routes.ts'
+import { type AttentionDraft, type BoardEventView, type CreatedInvite, type Discovery, type Explanation, type GrantView, type InviteView, type Joined, type Me, type MessageView, type RegistrationView } from '../api/routes.ts'
 import { BoardError, type ExplainPrincipal, type Filters, type NewTaskOptions, type TaskInBatch, type TaskOptions } from '../client/client.ts'
 import { block } from '../contract/blocks.ts'
 import { canonical } from '../contract/data-schemas.ts'
@@ -24,7 +24,7 @@ import { politburo, type Made } from './politburo.ts'
  */
 
 /** What a check is about, for the report's headings. */
-export type CheckGroup = 'core' | 'network-pause' | 'paging' | 'search' | 'schedules' | 'tasks' | 'work-evidence' | 'work-lifecycle' | 'grants' | 'invites' | 'schemas' | 'attachments' | 'watchers' | 'sync' | 'agents' | 'operational-inbox'
+export type CheckGroup = 'core' | 'network-pause' | 'paging' | 'search' | 'schedules' | 'tasks' | 'work-evidence' | 'work-lifecycle' | 'grants' | 'invites' | 'schemas' | 'attachments' | 'watchers' | 'agents' | 'operational-inbox'
 
 export type CheckResult = {
   group: CheckGroup
@@ -422,26 +422,6 @@ async function register(ctx: Context): Promise<{ made: Awaited<ReturnType<Board[
     if (error instanceof BoardError && error.status === 403) return { skip: "this token can't register schemas" }
     throw error
   }
-}
-
-/** The sync key the sync checks register, a platform of their own, so nothing reaches a real one. */
-const SYNC_KEY = 'conformance'
-
-/**
- * Registers a sync on `SYNC_KEY` for a check, and says where to put the token's registration back
- * after: or why it can't, since registering replaces the token's watchers.
- */
-async function registerSync(ctx: Context): Promise<{ registered: true } | { skip: string }> {
-  const registered = (await ctx.board.watchers()).find((registration) => registration.owner === ctx.me.principal)
-  if (registered && (Object.keys(registered.watch).length > 0 || (registered.sync?.length ?? 0) > 0))
-    return { skip: 'this token has watchers or a sync registered here, which registering would replace' }
-  try {
-    await ctx.board.register({ watch: {}, sync: [{ key: SYNC_KEY, platform: SYNC_KEY }] })
-  } catch (error) {
-    if (error instanceof BoardError && error.status === 403) return { skip: "this token can't register a sync here" }
-    throw error
-  }
-  return { registered: true }
 }
 
 async function post(ctx: Context, text: string, extra: { id?: string; attachments?: string[] } = {}) {
@@ -2292,49 +2272,6 @@ const CHECKS: Check[] = [
     },
   },
   {
-    group: 'tasks',
-    name: 'holds a task when anyone but its owner edits its root, which ends its claim',
-    run: async (ctx) => {
-      // A board that keeps no tasks says so before anything is imported.
-      await ctx.board.tasks.list({ channel: ctx.channel, limit: 1 })
-      // The run owns every task it makes and writes every root it posts, so the other author is a
-      // platform's: a thread imported as its user, made a task, then edited on the platform.
-      const key = SYNC_KEY
-      const thread = `${key}:${ctx.labels.conformance}:task`
-      const author = { id: `${key}:user:${ctx.labels.conformance}`, handle: 'conformance', name: 'Conformance', avatar: null, isBot: false }
-      const origin = { thread, message: '1' }
-      const registered = await registerSync(ctx)
-      if ('skip' in registered) return registered.skip
-      let id: string | null
-      try {
-        ;({ message: id } = await ctx.board.syncImport({
-          op: 'post', author, from: key, channel: ctx.channel, text: 'conformance: from a platform, to make a task', labels: ctx.labels, noSync: true,
-          origin: { channel: `${key}:${ctx.labels.conformance}`, thread, subthread: null, message: '1', context: null },
-        }))
-      } catch (error) {
-        await ctx.board.register({ watch: {} }).catch(() => {})
-        if (error instanceof BoardError && error.status === 403) return `this token can't sync in ${ctx.channel}`
-        throw error
-      }
-      try {
-        isRef(id, "an import's message")
-        await ctx.board.tasks.create({ re: id! })
-        const claim = await ctx.board.tasks.claim(id!, { lease: 60 })
-        await ctx.board.syncImport({ op: 'edit', author, from: key, origin, text: 'conformance: edited on the platform' })
-        const edited = (await ctx.board.thread(id!)).message
-        same(edited.text, 'conformance: edited on the platform', "the root's text, once edited")
-        same(edited.task?.state, 'blocked', 'the task, once its root was edited by someone else')
-        same(edited.task?.blocked?.kind, 'edited', 'what it is held for')
-        await rejects(claim.complete(), 409, 'claim_lost', "the claim's complete, once the edit held the task")
-        same((await ctx.board.tasks.unblock(id!)).task?.state, 'ready', 'the task, once its owner unblocked it')
-      } finally {
-        // Its author is the platform user: only an import can take it down.
-        await ctx.board.syncImport({ op: 'delete', author, from: key, origin }).catch(() => {})
-        await ctx.board.register({ watch: {} }).catch(() => {})
-      }
-    },
-  },
-  {
     group: 'grants',
     name: 'grants a principal, lists it, and revokes it',
     run: (ctx) =>
@@ -2781,8 +2718,8 @@ const CHECKS: Check[] = [
     run: async (ctx) => {
       const registered = (await ctx.board.watchers()).find((r) => r.owner === ctx.me.principal)
       // Registering replaces a principal's watchers: never on one that has some.
-      if (registered && (Object.keys(registered.watch).length > 0 || (registered.sync?.length ?? 0) > 0))
-        return 'this token has watchers or a sync registered here, and checking would replace them'
+      if (registered && Object.keys(registered.watch).length > 0)
+        return 'this token has watchers registered here, and checking would replace them'
       await ctx.board.register({ watch: { conformance: { tail: `${ctx.channel} --label conformance=${ctx.labels.conformance}` } } })
       try {
         const message = await post(ctx, 'conformance: for a watcher')
@@ -2806,250 +2743,10 @@ const CHECKS: Check[] = [
       const narrowed = ctx.withCan(`${ctx.channel}=all`)
       const registered = (await ctx.board.watchers()).find((r) => r.owner === ctx.me.principal)
       // What's registered now, so a board that wrongly takes it leaves the registration as it was.
-      const now = { watch: registered?.watch ?? {}, ...(registered?.sync ? { sync: registered.sync } : {}) }
+      const now = { watch: registered?.watch ?? {} }
       await narrowedOut(narrowed.register(now), 'registering watchers')
       await narrowedOut(narrowed.matches(), 'pulling matches')
       await narrowedOut(narrowed.ack(`conformance-${ctx.labels.conformance}`, { lease: 'conformance' }), 'acking a match')
-    },
-  },
-  {
-    group: 'sync',
-    name: "keeps sync's records: an import as a profile of its importer, its lookups by platform ID, a receipt, and where it's synced",
-    run: async (ctx) => {
-      const key = SYNC_KEY
-      const thread = `${key}:${ctx.labels.conformance}:1`
-      const author = { id: `${key}:user:${ctx.labels.conformance}`, handle: 'conformance', name: 'Conformance', avatar: null, isBot: false }
-      const origin = { thread, message: '1' }
-      // A sync names its entries when it registers.
-      const registered = await registerSync(ctx)
-      if ('skip' in registered) return registered.skip
-      let imported: { message: string | null }
-      try {
-        imported = await ctx.board.syncImport({
-          op: 'post', author, from: key, channel: ctx.channel, text: 'conformance: from a platform', labels: ctx.labels, noSync: true,
-          origin: { channel: `${key}:${ctx.labels.conformance}`, thread, subthread: null, message: '1', context: null },
-          id: `conformance-sync-${ctx.labels.conformance}`,
-        })
-      } catch (error) {
-        await ctx.board.register({ watch: {} }).catch(() => {})
-        if (error instanceof BoardError && error.status === 403) return `this token can't sync in ${ctx.channel}`
-        throw error
-      }
-      const id = imported.message
-      isRef(id, "an import's message")
-      try {
-        const message = (await ctx.board.thread(id!)).message
-        // A sync elsewhere's word: the platform user as a profile of its principal, shown through it.
-        same(message.by.actor, `${ctx.me.principal}+${author.id}`, "the import's author")
-        same(message.by.principal, ctx.me.principal, "the import's principal")
-        same(message.by.profile, author.id, "the import's profile")
-        same(message.author?.name, author.name, "the import's author's name")
-        check(message.author?.via !== undefined, `the import's author should say who it's via, got ${show(message.author)}`)
-        same(message.from, key, "the import's from")
-        same(message.origin?.thread, thread, "the import's origin")
-        const found = await ctx.board.syncFind({ thread, message: '1' })
-        same(found.message, id, 'the message found by its platform IDs')
-        check(found.thread !== null, 'the thread found by its platform thread')
-        same((await ctx.board.syncThread(found.thread!)).root, id, "the synced thread's root")
-        const again = await ctx.board.syncImport({ op: 'post', author, from: key, channel: ctx.channel, text: 'conformance: from a platform', noSync: true, id: `conformance-sync-${ctx.labels.conformance}` })
-        same(again.message, id, 'the same import, sent again')
-        // A platform thread is one board thread's: another import can't take it over.
-        await rejects(
-          ctx.board.syncImport({ op: 'post', author, from: key, channel: ctx.channel, text: 'conformance: a second root', noSync: true, origin: { thread, subthread: null, message: '3', context: null } }),
-          409,
-          'already_synced',
-          'an import from a platform thread another board thread syncs with',
-        )
-        // A delivery is to one of its thread's targets.
-        const external = { thread: `${key}:${ctx.labels.conformance}:2`, message: '2' }
-        await ctx.board.syncReceipt({ kind: 'thread', message: id!, target: external.thread, targetKind: 'thread', cause: 'request' })
-        await ctx.board.syncReceipt({ kind: 'message', message: id!, target: external.thread, external })
-        same(JSON.stringify((await ctx.board.syncCopies([id!]))[id!]?.[external.thread]), JSON.stringify(external), 'the copy its receipt recorded')
-        // Readers see where it's synced from the same records, and a link no sync here knows names nothing.
-        const { targets } = await ctx.board.sync(id!)
-        check(targets.some((row) => row.target === external.thread && row.message === external.message), `where the thread is synced should show the copy its receipt recorded, got ${show(targets)}`)
-        await rejects(ctx.board.linked(`https://conformance.invalid/${ctx.labels.conformance}`), 404, 'message_not_found', 'a link no sync here knows')
-      } finally {
-        // Its author is the platform user: only an import can take it down.
-        await ctx.board.syncImport({ op: 'delete', author, from: key, origin }).catch(() => {})
-        // And a second root, on a board that took one.
-        await ctx.board.syncImport({ op: 'delete', author, from: key, origin: { thread, message: '3' } }).catch(() => {})
-        await ctx.board.register({ watch: {} }).catch(() => {})
-      }
-    },
-  },
-  {
-    group: 'sync',
-    name: "meets a platform user an import's text mentions: an actor as one who wrote would be, whom the text names by that actor's ID",
-    run: async (ctx) => {
-      const key = SYNC_KEY
-      const thread = `${key}:${ctx.labels.conformance}:mentioned`
-      const author = { id: `${key}:user:${ctx.labels.conformance}`, handle: 'conformance', name: 'Conformance', avatar: null, isBot: false }
-      // Someone the platform knows, who has written nothing here.
-      const cc = { id: `${key}:user:${ctx.labels.conformance}-cc`, handle: 'conformance-cc', name: 'Conformance Cc', avatar: null, isBot: false }
-      const origin = { thread, message: '1' }
-      const registered = await registerSync(ctx)
-      if ('skip' in registered) return registered.skip
-      try {
-        let imported: { message: string | null }
-        try {
-          imported = await ctx.board.syncImport({
-            op: 'post', author, from: key, channel: ctx.channel, text: `conformance: cc @[${cc.id}]`, mentioned: [cc], labels: ctx.labels, noSync: true,
-            origin: { channel: `${key}:${ctx.labels.conformance}`, thread, subthread: null, message: '1', context: null },
-            id: `conformance-mentioned-${ctx.labels.conformance}`,
-          })
-        } catch (error) {
-          if (error instanceof BoardError && error.status === 403) return `this token can't sync in ${ctx.channel}`
-          throw error
-        }
-        isRef(imported.message, "an import's message")
-        // A sync elsewhere's user is a profile of its principal, mentioned or writing.
-        const actor = `${ctx.me.principal}+${cc.id}`
-        same((await ctx.board.thread(imported.message!)).message.text, `conformance: cc @[${actor}]`, "the import's text, its mention by the actor's ID")
-        const met = (await ctx.board.actors()).find((known) => known.id === actor)
-        check(met !== undefined, `the board should know the user the import mentioned as ${actor}`)
-        same(met?.name, cc.name, "the mentioned user's name")
-      } finally {
-        await ctx.board.syncImport({ op: 'delete', author, from: key, origin }).catch(() => {})
-        await ctx.board.register({ watch: {} }).catch(() => {})
-      }
-    },
-  },
-  {
-    group: 'sync',
-    name: "queues a platform thread's events in its sync's inbox once, and leases each after the one before is acked",
-    run: async (ctx) => {
-      const registered = await registerSync(ctx)
-      if ('skip' in registered) return registered.skip
-      try {
-        const run = ctx.labels.conformance
-        const author = { id: `${SYNC_KEY}:user:${run}`, handle: 'conformance', name: 'Conformance', avatar: null, isBot: false }
-        const thread = `${SYNC_KEY}:${run}:inbox`
-        const eventOf = (message: string) => ({
-          id: `conformance-inbox-${run}-${message}`,
-          event: { kind: 'message' as const, channel: `${SYNC_KEY}:${run}`, thread, subthread: null, message, isRoot: message === '1', text: `conformance: inbox event ${message}`, context: null, author },
-          raw: { conformance: run, message },
-        })
-        const pushed = [eventOf('1'), eventOf('2')]
-        await ctx.board.inboxPush(SYNC_KEY, pushed)
-        // A platform's retry of an event lands once.
-        await ctx.board.inboxPush(SYNC_KEY, [pushed[0]!])
-        const lease = async () => (await ctx.board.inboxNext(SYNC_KEY, { limit: 50 })).filter((item) => item.thread === thread)
-        // A platform thread's events come one at a time, in order: each only once the one before is acked.
-        for (const { event, raw } of pushed) {
-          const leased = await lease()
-          same(leased.length, 1, `the events leased from the platform thread, for message ${event.message}`)
-          const item = leased[0]!
-          same(item.event.kind === 'message' ? item.event.message : null, event.message, 'the platform message leased next')
-          same(JSON.stringify(item.raw), JSON.stringify(raw), "the leased event's raw payload")
-          await ctx.board.inboxAck(SYNC_KEY, item.id, { lease: item.lease })
-        }
-        same((await lease()).length, 0, 'the events leased once both are acked')
-      } finally {
-        await ctx.board.register({ watch: {} }).catch(() => {})
-      }
-    },
-  },
-  {
-    group: 'sync',
-    name: "takes an edit of a long message in its sync's inbox, under the longest event ID the protocol allows, and refuses a longer one",
-    run: async (ctx) => {
-      const registered = await registerSync(ctx)
-      if ('skip' in registered) return registered.skip
-      try {
-        const run = ctx.labels.conformance
-        const author = { id: `${SYNC_KEY}:user:${run}`, handle: 'conformance', name: 'Conformance', avatar: null, isBot: false }
-        const thread = `${SYNC_KEY}:${run}:long`
-        const location = { channel: `${SYNC_KEY}:${run}`, thread, subthread: null, message: '1', author }
-        // A deployment comment, edited from Building to Ready: thousands of characters, as platforms send them.
-        const text = (status: string) => `conformance: ${status}\n${'| project | deployment | preview | updated |\n'.repeat(250)}`
-        const idOf = (kind: string) => `conformance-inbox-${run}-long-${kind}-`.padEnd(INBOX_EVENT_ID_MAX, 'x')
-        const pushed = [
-          { id: idOf('message'), event: { kind: 'message' as const, ...location, isRoot: true, text: text('Building'), context: null }, raw: null },
-          { id: idOf('edited'), event: { kind: 'edited' as const, ...location, text: text('Ready') }, raw: null },
-        ]
-        for (const event of pushed) await ctx.board.inboxPush(SYNC_KEY, [event])
-        await refused(
-          ctx.board.inboxPush(SYNC_KEY, [{ ...pushed[1]!, id: `${pushed[1]!.id}x` }]),
-          400,
-          `an inbox event ID over ${INBOX_EVENT_ID_MAX} characters`,
-        )
-        for (const { event } of pushed) {
-          const leased = (await ctx.board.inboxNext(SYNC_KEY, { limit: 50 })).filter((item) => item.thread === thread)
-          same(leased.length, 1, `the events leased from the platform thread, for its ${event.kind} event`)
-          const item = leased[0]!
-          same(item.event.kind, event.kind, 'the platform event leased next')
-          same('text' in item.event ? item.event.text : null, event.text, `the ${event.kind} event's text`)
-          await ctx.board.inboxAck(SYNC_KEY, item.id, { lease: item.lease })
-        }
-      } finally {
-        await ctx.board.register({ watch: {} }).catch(() => {})
-      }
-    },
-  },
-  {
-    group: 'sync',
-    name: 'hands a sync each message change as a match of its @sync watcher',
-    run: async (ctx) => {
-      // A token that syncs elsewhere but not here gets no match for a post here. One that names no
-      // sync anywhere, as a board that lists no permissions, is checked.
-      const access = compileAccess(ctx.me.can)
-      if (access.anywhere('sync') && !access.can('sync', ctx.channel)) return `this token can't sync in ${ctx.channel}`
-      const registered = await registerSync(ctx)
-      if ('skip' in registered) return registered.skip
-      try {
-        const message = await post(ctx, 'conformance: for a sync')
-        const deadline = Date.now() + 10_000
-        let match: Awaited<ReturnType<Board['matches']>>[number] | undefined
-        while (!match && Date.now() < deadline) match = (await ctx.board.matches({ wait: 5 })).find((m) => m.watcher === '@sync' && m.event.message?.id === message.id)
-        check(match, "a pull should hand the sync a match for the post, as its @sync watcher's")
-        same(match.event.type, 'message.posted', "the sync's match")
-        await ctx.board.ack(match.id, { lease: match.lease })
-      } finally {
-        await ctx.board.register({ watch: {} }).catch(() => {})
-      }
-    },
-  },
-  {
-    group: 'sync',
-    name: 'keeps noSync on a post and a reply, so sync sends neither',
-    run: async (ctx) => {
-      const { root, reply } = needRoot(ctx)
-      const thread = await ctx.board.thread(root.id)
-      same(thread.message.noSync, true, "a post's noSync, read back")
-      same(thread.replies.find((m) => m.id === reply.id)?.noSync, true, "a reply's noSync, read back")
-    },
-  },
-  {
-    group: 'sync',
-    name: "refuses a caller narrowed with x-board-can sync's records: imports, receipts, and the inbox",
-    run: async (ctx) => {
-      if (!ctx.withCan) return NO_CAN
-      const { root } = needRoot(ctx)
-      const registered = await registerSync(ctx)
-      if ('skip' in registered) return registered.skip
-      const run = ctx.labels.conformance
-      const author = { id: `${SYNC_KEY}:user:${run}`, handle: 'conformance', name: 'Conformance', avatar: null, isBot: false }
-      const thread = `${SYNC_KEY}:${run}:narrowed`
-      try {
-        const narrowed = ctx.withCan(`${ctx.channel}=all`)
-        await narrowedOut(
-          narrowed.syncImport({
-            op: 'post', author, from: SYNC_KEY, channel: ctx.channel, text: 'conformance: a narrowed import', labels: ctx.labels, noSync: true,
-            origin: { channel: `${SYNC_KEY}:${run}`, thread, subthread: null, message: '1', context: null },
-          }),
-          'an import',
-        )
-        await narrowedOut(narrowed.syncReceipt({ kind: 'failed', message: root.id, target: thread, error: 'conformance' }), 'a receipt')
-        const event = { kind: 'message' as const, channel: `${SYNC_KEY}:${run}`, thread, subthread: null, message: '1', isRoot: true, text: 'conformance: a narrowed push', context: null, author }
-        await narrowedOut(narrowed.inboxPush(SYNC_KEY, [{ id: `conformance-narrowed-${run}`, event, raw: null }]), 'a push to the inbox')
-        await narrowedOut(narrowed.inboxNext(SYNC_KEY, { limit: 1 }), 'a lease from the inbox')
-        await narrowedOut(narrowed.inboxAck(SYNC_KEY, `conformance-narrowed-${run}`, { lease: 'conformance' }), 'an ack to the inbox')
-      } finally {
-        // An import a board wrongly took: only an import can take it down.
-        await ctx.board.syncImport({ op: 'delete', author, from: SYNC_KEY, origin: { thread, message: '1' } }).catch(() => {})
-        await ctx.board.register({ watch: {} }).catch(() => {})
-      }
     },
   },
   {
@@ -3297,8 +2994,8 @@ export async function conformance(board: Board, options: ConformanceOptions = {}
   const wrong =
     discovery instanceof Error
       ? discovery.message
-      : typeof discovery.audience !== 'string' || typeof discovery.url !== 'string' || !Array.isArray(discovery.sync)
-        ? `discovery should have url, audience, and sync, got ${show(discovery)}`
+      : typeof discovery.audience !== 'string' || typeof discovery.url !== 'string'
+        ? `discovery should have url and audience, got ${show(discovery)}`
         : null
   if (wrong !== null) {
     checks.push({ group: 'core', name: 'says in its discovery where it is', status: 'failed', detail: wrong })

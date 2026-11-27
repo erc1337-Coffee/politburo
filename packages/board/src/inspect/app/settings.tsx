@@ -1,7 +1,7 @@
-import { Check, ChevronsUpDown, RefreshCw } from 'lucide-react'
+import { Check, ChevronsUpDown } from 'lucide-react'
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import type { InboxEntry, Me } from '../../api/routes.ts'
+import type { Me } from '../../api/routes.ts'
 import * as board from './board.ts'
 import { buttonSoundsEnabled, setButtonSounds } from './button-feedback.ts'
 import { Access } from './grants.tsx'
@@ -14,7 +14,7 @@ import { AskForm, Header, Menu, MenuItem, MenuSeparator, nativeMenu, Panel, Unli
 import { cadence, firstLine, said, shownName, until } from './words.ts'
 
 // The board's configuration, apart from what's said on it: who gets in, what blocks can hold,
-// what posts later, what watches, and what syncs. One view, a tab per section.
+// what posts later, and what watches. One view, a tab per section.
 
 const ActionsSlot = createContext<HTMLElement | null>(null)
 
@@ -57,7 +57,6 @@ export function Settings(props: { state: State; viewer: Viewer; now: number; lea
           {section === 'schemas' && <Schemas state={state} viewer={viewer} selected={props.open} />}
           {section === 'schedules' && <Schedules state={state} viewer={viewer} now={props.now} all={props.where.params.get('show') === 'all'} />}
           {section === 'watchers' && <Watchers state={state} />}
-          {section === 'sync' && <Sync key={props.open} state={state} entry={props.open} />}
         </div>
       </ActionsSlot.Provider>
       </div>
@@ -193,69 +192,8 @@ function Watchers({ state }: { state: State }) {
                 <code>{watcher.tail}</code>
               </div>
             ))}
-            {registration.sync.map((entry) => (
-              <div key={entry.key} className="watch-row">
-                <span className="watch-id">{entry.key}</span>
-                <span className="faint">syncs {entry.platform}</span>
-              </div>
-            ))}
           </section>
         ))}
-    </>
-  )
-}
-
-// --- sync --------------------------------------------------------------------------------------
-
-/** The board's sync entries, and each one's raw events: what the platform sent, newest first. Not on the board's log, so not live. */
-function Sync({ state, entry }: { state: State; entry: string | null }) {
-  const entries = state.discovery?.sync ?? []
-  const key = entry ?? entries[0]?.key ?? null
-  const [events, setEvents] = useState<InboxEntry[] | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const load = () => {
-    if (key === null) return
-    setError(null)
-    board.loadInbox(key).then(setEvents, (e: Error) => setError(e.message))
-  }
-  useEffect(() => {
-    setEvents(null)
-    load()
-  }, [key])
-  if (entries.length === 0 || key === null) return <p className="empty">this board syncs nothing</p>
-  return (
-    <>
-      <Actions>
-        <button className="tool" type="button" title="refresh" onClick={load}>
-          <RefreshCw size={14} strokeWidth={1.75} />
-        </button>
-      </Actions>
-      <nav className="tabs plain">
-        {entries.map((one) => (
-          <Link key={one.key} to={`/settings/sync/${one.key}`} className="tab" current={one.key === key}>
-            {one.key}
-            {one.platform !== one.key && <span className="faint"> {one.platform}</span>}
-          </Link>
-        ))}
-      </nav>
-      {error && <p className="empty error">{error}</p>}
-      {!error && events === null && <p className="empty">loading…</p>}
-      {events?.length === 0 && <p className="empty">no events yet</p>}
-      {events?.map((row) => {
-        const event = row.event as { kind: string; text?: string; type?: string; emoji?: string; author?: { handle?: string } }
-        return (
-          <div key={row.id} className="inbox-row">
-            <Ago iso={row.createdAt} />
-            <span><span className="badge">{event.kind}</span></span>
-            <div>
-              <div>
-                <span className="author">{event.author?.handle ?? '—'}</span> {event.text ?? event.type ?? event.emoji ?? ''}
-              </div>
-              <pre>{row.channel} · {row.event.thread}</pre>
-            </div>
-          </div>
-        )
-      })}
     </>
   )
 }

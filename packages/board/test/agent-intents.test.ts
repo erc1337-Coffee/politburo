@@ -62,16 +62,10 @@ async function fixture(freshness = 5) {
   return { team, token, client, worker, agent }
 }
 
-async function runFixture(freshness?: number, synced = false) {
+async function runFixture(freshness?: number) {
   const configured = await fixture(freshness)
   const { client, worker, agent } = configured
-  if (synced) await client.register({ watch: {}, sync: [{ key: 'slack', platform: 'slack' }] })
-  const { task } = synced
-    ? await client.tasks.create({ re: (await client.syncImport({
-        op: 'post', from: 'slack', channel: config.channel, text: 'a synced run to probe', noSync: true,
-        author: { id: 'slack:user:U1', handle: 'worker', name: 'Worker', avatar: null, isBot: false },
-      })).message! })
-    : await client.tasks.create(config.channel, 'a run to probe')
+  const { task } = await client.tasks.create(config.channel, 'a run to probe')
   const claim = await worker.tasks.claim(task.id, { lease: 30 })
   const run: AgentRun = { task: task.id, epoch: claim.epoch }
   const issue = async (requestId: string, ttlSeconds = 30) => (await client.agents.issueIntent(agent.id, {
@@ -123,7 +117,7 @@ it('hides intents and health from unauthorized callers and authors receipts from
 })
 
 it('requires a positive status report on the exact current claim binding and epoch', async () => {
-  const { client, worker, agent, task, run, issue, take, report, claim, health } = await runFixture(undefined, true)
+  const { client, worker, agent, task, run, issue, take, report, claim, health } = await runFixture()
   const other = await client.as('other').agents.register(config)
   const check = { ...command, verb: 'status', ttlSeconds: 30, requestId: 'wrong-binding', run } as const
   await expect(client.agents.issueIntent(other.id, check)).rejects.toMatchObject(hidden)

@@ -76,13 +76,6 @@ import type {
   ExplainQuery,
   Explanation,
   EventsQuery,
-  InboxAckBody,
-  InboxEntry,
-  InboxItem,
-  InboxNextQuery,
-  InboxPushBody,
-  InboxQuery,
-  LinkedQuery,
   LabelBody,
   MatchesQuery,
   MatchView,
@@ -98,23 +91,10 @@ import type {
   ScheduleView,
   SchemaBody,
   SchemaView,
-  SourceJoin,
-  SourceJoinBody,
-  SourceRead,
-  SourceReadQuery,
   ThreadsPage,
-  SyncCopiesQuery,
-  SyncCopiesView,
-  SyncFindQuery,
-  SyncFindView,
-  SyncImportBody,
-  SyncReceiptBody,
-  SyncThreadView,
-  SyncedView,
   ThreadQuery,
   ThreadsQuery,
   ThreadView,
-  TypingBody,
   UploadStartBody,
   UploadTicket,
 } from './routes.ts'
@@ -130,7 +110,7 @@ type Nothing = Record<string, never>
  * board() serves each at its route in `routes` and calls the backend's method of the same name.
  */
 export type Protocol = {
-  /** Where the board is and what it syncs, for a client to mint a token from: it needs none itself. */
+  /** Where the board is, for a client to mint a token from: it needs none itself. */
   discovery: { input: Nothing; output: Discovery }
   me: { input: Nothing; output: Me }
   /** Work admission and its pause epoch, for any admitted caller. 501 `no_network_pause` when unsupported. */
@@ -273,45 +253,11 @@ export type Protocol = {
   ack: { input: Id & Input<typeof AckBody>; output: { ok: true } }
   /** Long-polls with `wait`. board() serves SSE from it, so a backend has one way to read events. */
   events: { input: Input<typeof EventsQuery>; output: EventsPage }
-  /** Typing in the platform threads the message's thread is synced to: needs `post` there. Answers the threads that took it. */
-  typing: { input: Id & Input<typeof TypingBody>; output: { targets: string[] } }
-  /** A platform channel or thread, read with sync entry `key`'s app where that sync runs: needs `manage` everywhere. */
-  readSource: { input: Key & Input<typeof SourceReadQuery>; output: SourceRead }
-  /** Adds sync entry `key`'s app to a public channel, where that sync runs and opted in: needs `manage` everywhere. */
-  joinSource: { input: Key & Input<typeof SourceJoinBody>; output: SourceJoin }
-  /** Where a message's thread is synced, and its copy on each target, from sync's records: needs `read` where it is. */
-  synced: { input: Id; output: SyncedView }
-  /**
-   * The thread of the board message a platform link names, from sync's records: the platform is
-   * never asked. 404 `message_not_found` for a link the board didn't sync, or one the caller can't read.
-   */
-  linked: { input: Input<typeof LinkedQuery>; output: ThreadView }
-
-  // Sync's records, which sync in board() keeps through these wherever the board lives. Each needs `sync`.
-  /**
-   * A platform's write as its platform author, idempotent per platform event. `dropped`: the
-   * middleware kept a post or an edit off the board, and what it responded, for sync to tell the
-   * author on the platform.
-   */
-  syncImport: { input: Input<typeof SyncImportBody>; output: { message: string | null; dropped?: string[] } }
-  /** A delivery, its files, a failure, or a thread's new target. `attached` is false for a target the thread had. */
-  syncReceipt: { input: Input<typeof SyncReceiptBody>; output: { ok: true; attached?: boolean } }
-  syncThread: { input: { thread: string }; output: SyncThreadView }
-  syncFind: { input: Input<typeof SyncFindQuery>; output: SyncFindView }
-  /** Messages' copies on platforms that the caller's sync recorded, by target: another sync's never show. */
-  syncCopies: { input: Input<typeof SyncCopiesQuery>; output: SyncCopiesView }
   /** Private mail to a verified principal or a configured role. A board that keeps none answers 501 `no_operational_inbox`. */
   sendOperationalMessage: { input: Input<typeof SendOperationalMessageBody>; output: { message: OperationalMessage } }
   readOperationalInbox: { input: Nothing; output: { messages: OperationalMessage[] } }
   ackOperationalMessage: { input: Id & Input<typeof AckOperationalMessageBody>; output: { message: OperationalMessage } }
   archiveOperationalMessage: { input: Id; output: { message: OperationalMessage } }
-  /** Platform events into the caller's inbox, deduplicated by their platform IDs. */
-  inboxPush: { input: Key & Input<typeof InboxPushBody>; output: { ok: true } }
-  /** The caller's next inbox events, leased, one platform thread at a time and in order. */
-  inboxNext: { input: Key & Input<typeof InboxNextQuery>; output: { items: InboxItem[] } }
-  inboxAck: { input: Key & Id & Input<typeof InboxAckBody>; output: { ok: true } }
-  /** Raw platform events, newest first, for debugging sync. */
-  inbox: { input: Key & Input<typeof InboxQuery>; output: { events: InboxEntry[] } }
 }
 
 export type Method = keyof Protocol

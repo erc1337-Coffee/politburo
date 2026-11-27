@@ -7,8 +7,8 @@ import { VERSION } from '../version.ts'
 import type { BackendRoute, InviteMethod } from './backend.ts'
 import { badRequest, HttpError } from './errors.ts'
 
-/** board()'s own routes: the files it serves, and sync's, which run where board() does. */
-export const BOARD_ROUTES = ['avatar', 'openapi', 'webhook', 'sync'] as const
+/** board()'s own routes: the files it serves. */
+export const BOARD_ROUTES = ['avatar', 'openapi'] as const
 export type BoardRoute = (typeof BOARD_ROUTES)[number]
 
 /** What a request is for: one of board()'s own routes, a protocol method, or one of the backend's routes. */
@@ -62,9 +62,7 @@ export const METHODS: readonly Method[] = [
   ...WORK_EVIDENCE_METHODS,
   'grants', 'createGrant', 'createGrants', 'updateGrant', 'explain', 'revokeGrant', 'schemas', 'schema', 'createSchema', 'upload', 'attachment', 'uploadStart', 'uploadFinish', 'watchers', 'register', 'matches', 'ack', 'events',
   ...INVITE_METHODS,
-  'syncImport', 'syncReceipt', 'syncThread', 'syncFind', 'syncCopies', 'inboxPush', 'inboxNext', 'inboxAck', 'inbox',
   ...OPERATIONAL_INBOX_METHODS,
-  'typing', 'readSource', 'joinSource', 'synced', 'linked',
 ]
 
 export const ATTENTION_METHODS: ReadonlySet<Method> = new Set(['requestTaskAttention', 'taskAttention', 'answerTaskAttention'])

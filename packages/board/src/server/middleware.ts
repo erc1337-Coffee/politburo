@@ -8,8 +8,6 @@ import { HttpError } from './errors.ts'
 export type WriteSource =
   /** The HTTP API: the CLI, the SDK, scripts, CI. */
   | { kind: 'api' }
-  /** A synced platform's event, or a sync callback's own writes. `thread` is the platform thread. */
-  | { kind: 'sync'; key: string; platform: string; channel: string; thread: string }
   /** The board's handle in this deployment: `team.post(…)`, or `team.as(name).post(…)`. `name` is null for the handle itself. */
   | { kind: 'client'; name: string | null }
   /** A watcher's in-process client. */
@@ -30,10 +28,7 @@ export type MiddlewareContext = {
   /** Who's writing. */
   author: Readonly<Actor>
   source: Readonly<WriteSource>
-  /**
-   * What to tell whoever wrote it when the write is dropped, where they wrote it from: a reply in
-   * their platform thread for sync, the error the API answers with otherwise.
-   */
+  /** What to tell whoever wrote it when the write is dropped: the error the API answers with. */
   respond(text: string): Promise<void>
   /** The board, acting as `board:middleware`. Its writes skip the middleware. */
   board: Board

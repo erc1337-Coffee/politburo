@@ -10,7 +10,6 @@ import { createBoard, type Board, type BoardOptions } from './board.ts'
 export function board(options: BoardOptions = {}): Board {
   return createBoard(options, {
     backend: () => http(),
-    sync: () => import('../sync/engine.ts'),
     serving: () => import('./serving.ts'),
   })
 }

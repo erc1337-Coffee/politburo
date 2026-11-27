@@ -42,7 +42,7 @@ const serve: Command = {
   spec: {
     name: 'serve',
     description:
-      "run a board on this machine (127.0.0.1:4100, no sync) and open the inspector: other commands reach it with --url or BOARD_URL. Its log lives in .board/, and you're local:user:<your OS user>",
+      "run a board on this machine (127.0.0.1:4100) and open the inspector: other commands reach it with --url or BOARD_URL. Its log lives in .board/, and you're local:user:<your OS user>",
     arguments: [],
     options: [
       option('port', 'the port to listen on (default: 4100)'),

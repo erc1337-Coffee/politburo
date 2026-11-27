@@ -113,8 +113,6 @@ describe('cli', () => {
     expect(edit).toMatchObject({ code: 2, stdout: '', stderr: expect.stringMatching(/^error: edit can't attach files: reply with the file instead\.\n\n {2}Reply with it:\n {4}vb reply <ID> <TEXT> --attach <FILE>\n/) })
     expect(failure(await vb(['edit', id, 'edited', '--label', 'a=b', '--json']))).toMatchObject({ reason: 'unknown_option', message: 'Unknown option --label for vb edit.' })
     expect((await vb(['read', id, '--attach', attach])).stderr).toMatch(/^error: Unknown option --attach for vb read\./)
-    // Where it means something else, it says so: --text filters reads, and a schedule doesn't sync.
-    expect((await vb(['schedule', 'notes', 'hi', '--sync', 'slack:#x'])).stderr).toMatch(/^error: Can't use --sync with schedule\. A schedule posts where you point it\.\n/)
     expect(JSON.parse((await vb(['read', id, '--json'])).stdout).message).toMatchObject({ text: 'root', labels: {} })
     // Stdin is the text's, never an attachment's.
     expect((await vb(['reply', id, 'see attached', '--attach', '-'])).stderr).toMatch(/^error: Can't attach -: stdin is for the message's text\./)
@@ -325,11 +323,6 @@ describe('cli', () => {
     const reply = await vb(['reply', id, '-', '--as', 'claude'], {}, 'rolled back to d4e5f6\n')
     expect(reply.code).toBe(0)
     expect((await vb(['react', id, '👀'])).code).toBe(0)
-    // This board syncs nowhere, so typing shows nowhere, and that's fine.
-    expect(await vb(['typing', id])).toMatchObject({ code: 0, stdout: '', stderr: '' })
-    expect(await vb(['typing', id, 'running', 'tests…'])).toMatchObject({ code: 0, stdout: '', stderr: '' })
-    expect(await vb(['typing', id, 'a'.repeat(50)])).toMatchObject({ code: 0, stderr: '' })
-    expect(await vb(['typing', id, 'a'.repeat(51)])).toMatchObject({ code: 2, stderr: expect.stringContaining('50') })
     expect((await vb(['label', id, 'status=investigating'])).code).toBe(0)
 
     const read = await vb(['read', id])
@@ -409,9 +402,6 @@ describe('cli', () => {
     expect((await vb(['post', `#${id}`, 'and deployed'])).code).toBe(0)
     const thread = JSON.parse((await vb(['read', id, '--json'])).stdout)
     expect([thread.message, ...thread.replies].map((m: { text: string }) => m.text)).toEqual(['export is broken', 'fixed in a1b2c3', 'and deployed'])
-    const synced = await vb(['post', id, 'x', '--sync', 'slack:#incidents'])
-    expect(synced).toMatchObject({ code: 2, stderr: expect.stringMatching(/^error: Can't use --sync on a reply\./) })
-    expect(synced.stderr).toContain(`vb sync ${id} <TARGET>`)
   })
 
   it('labels a reply as it posts it', async () => {
@@ -735,9 +725,9 @@ describe('cli', () => {
 
 
   it('delivers all of a long read to a reader that falls behind', async () => {
-    const root = (await vb(['post', 'long-reads', 'a long thread', '--no-sync', '--json'])).stdout
+    const root = (await vb(['post', 'long-reads', 'a long thread', '--json'])).stdout
     const id = (JSON.parse(root) as { message: { id: number } }).message.id
-    expect((await vb(['reply', String(id), `note ${'x'.repeat(300)}`, '--no-sync'])).code).toBe(0)
+    expect((await vb(['reply', String(id), `note ${'x'.repeat(300)}`])).code).toBe(0)
     // The thread, as the board would send it with 1,500 replies: well past a pipe's buffer on any OS
     // (Linux's is bigger than macOS's), so a dropped tail shows. Posting that many takes the board half a minute.
     const long = await serve(async (request) => {
@@ -766,17 +756,6 @@ describe('cli', () => {
     } finally {
       await long.close()
     }
-  })
-
-  it('lists sources, and reads one only as `sources <key> read <target>`', async () => {
-    expect((await vb(['sources'])).stdout.trim()).toBe('no sources: this board has no sync configured')
-    const misuse = await vb(['sources', 'slack', '#general'])
-    expect(misuse).toMatchObject({ code: 2, stderr: expect.stringMatching(/^error: Unknown command #general for vb sources\./) })
-    // Only the board that runs a sync entry reads its source.
-    const unsynced = await vb(['sources', 'slack', 'read', '#general'])
-    expect(unsynced).toMatchObject({ code: 1, stderr: "error: Can't read #general on slack.\n  this board doesn't run sync entry slack: read it where its sync runs\n" })
-    const unjoined = await vb(['sources', 'slack', 'join', '#general'])
-    expect(unjoined).toMatchObject({ code: 1, stderr: "error: Can't join #general on slack.\n  this board doesn't run sync entry slack: join it where its sync runs\n" })
   })
 
   it('says so when the board is older than thread summaries, instead of crashing on its discovery document', async () => {
@@ -909,7 +888,6 @@ describe('cli', () => {
     // A file's name where download takes its ID says where the ID is.
     expect(await vb(['download', 'notes.txt'])).toMatchObject({ code: 2, stderr: expect.stringMatching(/^error: notes\.txt is a file's name, and download takes the attachment's ID/) })
     expect((await vb(['react', '1', 'not an emoji'])).code).toBe(2)
-    expect((await vb(['typing'])).code).toBe(2)
     expect((await vb(['frobnicate'])).code).toBe(2)
     expect((await vb(['inspect', '--port', 'nope'])).code).toBe(2)
   })

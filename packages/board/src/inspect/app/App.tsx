@@ -1,6 +1,6 @@
 import { ListTodo, PanelLeftOpen, X } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import type { MessageView, SyncedView } from '../../api/routes.ts'
+import type { MessageView } from '../../api/routes.ts'
 import * as board from './board.ts'
 import { setEditing } from './chrome.ts'
 import { Composer } from './composer.tsx'
@@ -263,13 +263,11 @@ export function App() {
   if (failed) return <div className="boot error">error: {failed}</div>
   if (!state.me || !viewer) return <div className="boot">connecting…</div>
 
-  const platforms = Object.fromEntries((state.discovery?.sync ?? []).map((entry) => [entry.key, entry.platform]))
   const names = namesOf(state)
-  const options: RowOptions = { me: state.me.actor, viewer, now, known, platforms, syncConfigured: Boolean(state.discovery?.sync.length), board: state, schemas: state.schemas, names, openThread: (id) => navigate(here({ thread: id })) }
+  const options: RowOptions = { me: state.me.actor, viewer, now, known, board: state, schemas: state.schemas, names, openThread: (id) => navigate(here({ thread: id })) }
   const filter = where.filter
   const setFilter = (next: Filter) => navigate(here({ filter: next }), true)
-  const sources = (state.discovery?.sync ?? []).map((entry) => entry.key)
-  const filters = { filter, setFilter, sources, known }
+  const filters = { filter, setFilter, known }
   const headerLead = narrow || sidebar.collapsed ? (
     <>
       <HomeEmblem />
@@ -403,10 +401,10 @@ function PauseBanner({ text }: { text: string | null }) {
 /** Your newest message among `messages`, for ↑ to edit. */
 const lastOwn = (messages: MessageView[], me: string) => [...messages].reverse().find((m) => m.by.actor === me && !m.deleted)
 
-type Filters = { filter: Filter; setFilter: (filter: Filter) => void; sources: string[]; known: KnownLabels }
+type Filters = { filter: Filter; setFilter: (filter: Filter) => void; known: KnownLabels }
 
 function FilterControls({ filters }: { filters: Filters }) {
-  return <FilterButton filter={filters.filter} onChange={filters.setFilter} sources={filters.sources} known={filters.known} />
+  return <FilterButton filter={filters.filter} onChange={filters.setFilter} known={filters.known} />
 }
 
 const NAMES = new WeakMap<State['actors'], WeakMap<State['identities'], Record<string, string>>>()
@@ -486,10 +484,9 @@ function Channel(props: { channel: string; state: State; options: RowOptions; kn
         role="main"
         placeholder={`message #${channel}…`}
         known={props.known}
-        syncConfigured={options.syncConfigured}
         mayLabel={() => options.viewer.may('label', channel)}
         tasks={{ state, always: true }}
-        onSend={({ text, noSync, labels, files, task, later }) => void board.send({ channel, re: null, text, noSync, labels, files, ...(task ? { task } : {}), ...(later ? { later } : {}) })}
+        onSend={({ text, labels, files, task, later }) => void board.send({ channel, re: null, text, labels, files, ...(task ? { task } : {}), ...(later ? { later } : {}) })}
         onEditLast={() => {
           const mine = lastOwn(roots, state.me!.actor)
           if (mine) setEditing(mine.id)
@@ -510,15 +507,9 @@ function ThreadPane(props: { id: string; state: State; viewer: Viewer; now: numb
   const read = state.paneThread?.id === id && state.paneThread.identity === identity ? state.paneThread : null
   const refused = typeof read?.result === 'object' ? read.result.refused : null
   const t = read?.result === 'readable' ? threadOf({ ...state, messages: read.messages }, id) : null
-  // Where the thread's copies are, on the platforms it syncs with.
-  const [synced, setSynced] = useState<SyncedView['targets']>([])
-  useEffect(() => {
-    void board.loadSynced(id).then(setSynced)
-  }, [id])
   const scheduled = threadSchedules(state, id)
-  const platforms = Object.fromEntries((state.discovery?.sync ?? []).map((entry) => [entry.key, entry.platform]))
   const names = namesOf(state)
-  const options: RowOptions = { me: state.me!.actor, viewer, now: props.now, known: props.known, platforms, syncConfigured: Boolean(state.discovery?.sync.length), schemas: state.schemas, names, chat: true }
+  const options: RowOptions = { me: state.me!.actor, viewer, now: props.now, known: props.known, schemas: state.schemas, names, chat: true }
   return (
     <>
       <Header lead={props.lead} title={isTask(t?.root) ? 'task' : 'thread'} meta={t ? `in #${t.root.channel}` : undefined}>
@@ -542,27 +533,8 @@ function ThreadPane(props: { id: string; state: State; viewer: Viewer; now: numb
       </Header>
       <div className="view-body">
       {t && !readOnly && isTask(t.root) && <TaskCard key={identity} root={t.root} state={state} viewer={viewer} />}
-      {t && (synced.length > 0 || scheduled.length > 0) && (
+      {t && scheduled.length > 0 && (
         <dl className="facts thread-facts" {...nativeMenu}>
-          {synced.length > 0 && (
-            <>
-              <dt>synced</dt>
-              <dd className="copies">
-                {synced.map((copy) => (
-                  <span key={copy.target}>
-                    {copy.url ? (
-                      <a href={copy.url} target="_blank" rel="noreferrer" className="text-link">
-                        {copy.target}
-                      </a>
-                    ) : (
-                      copy.target
-                    )}
-                    {copy.undelivered && <span className="error-text"> didn't arrive: {copy.undelivered}</span>}
-                  </span>
-                ))}
-              </dd>
-            </>
-          )}
           {scheduled.map((schedule) => (
             <div key={schedule.id} className="fact">
               <dt>later</dt>
@@ -598,9 +570,8 @@ function ThreadPane(props: { id: string; state: State; viewer: Viewer; now: numb
           role="thread"
           placeholder="reply to thread…"
           known={props.known}
-          syncConfigured={options.syncConfigured}
-          mayLabel={() => viewer.may('label', t.root.channel)}
-          onSend={({ text, noSync, labels, files, later }) => void board.send({ channel: t.root.channel, re: id, text, noSync, labels, files, ...(later ? { later } : {}) })}
+            mayLabel={() => viewer.may('label', t.root.channel)}
+          onSend={({ text, labels, files, later }) => void board.send({ channel: t.root.channel, re: id, text, labels, files, ...(later ? { later } : {}) })}
           onEditLast={() => {
             const mine = lastOwn([t.root, ...t.replies], state.me!.actor)
             if (mine) setEditing(mine.id)

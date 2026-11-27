@@ -1,8 +1,7 @@
-import type { AttentionView, BoardEventView, GrantView, Me, MessageView, OperationalMessage, PrincipalView, ScheduleView, SourceRead, SyncedView, TaskView, ThreadSummaryView } from '../api/routes.ts'
+import type { AttentionView, BoardEventView, GrantView, Me, MessageView, OperationalMessage, PrincipalView, ScheduleView, TaskView, ThreadSummaryView } from '../api/routes.ts'
 import { DEFAULT_TASK_PRIORITY, TaskPriority } from '../contract/schemas.ts'
 import { displayEmoji } from '../contract/emoji.ts'
 import { fileSize } from '../contract/files.ts'
-import { byVercelBot, displayText } from '../contract/bots.ts'
 import { extractMentions, isEmail, replaceMentions } from '../contract/mentions.ts'
 import { findBlocks } from '../contract/blocks.ts'
 import { shownName, type Via } from '../contract/profiles.ts'
@@ -104,16 +103,14 @@ export function mentionedIn(messages: MessageView[]): string[] {
 export const actorName = (actor: { name: string; via?: Via | undefined }): string => shownName(actor)
 
 /**
- * A message's text as a terminal shows it: a bot's in its readable form, and each block as one
- * line, its schema and its data, where its fence was. A message that is only a block is that line.
+ * A message's text as a terminal shows it: each block as one line, its schema and its data, where
+ * its fence was. A message that is only a block is that line.
  */
 function shownText(message: Pick<MessageView, 'text' | 'by' | 'blocks' | 'from' | 'author'>, handles: Map<string, string> = new Map()): string {
   // A mention is stored as `@[actor-id]`: it reads as the handle of who it mentions, which is what to type for
   // them, where they're known. `--json` has the ID.
-  const said = replaceMentions(message.text, (token) => (token.kind === 'actor' && handles.has(token.actor) ? `@${handles.get(token.actor)}` : null))
-  const text = displayText(said, byVercelBot(message, message.author))
-  // Only what the board lists as blocks: a fence in a platform's text stays as it was written.
-  if (!message.blocks?.length || text !== said) return text
+  const text = replaceMentions(message.text, (token) => (token.kind === 'actor' && handles.has(token.actor) ? `@${handles.get(token.actor)}` : null))
+  if (!message.blocks?.length) return text
   let out = ''
   let at = 0
   for (const found of findBlocks(text)) {
@@ -420,7 +417,7 @@ export function formatSchedule(schedule: ScheduleView, options: { pad?: string; 
         : 'done'
   const sent = schedule.sent > 0 ? ` · ${schedule.sent} sent` : ''
   const files = schedule.attachments.length ? ` · ${schedule.attachments.length} ${schedule.attachments.length === 1 ? 'file' : 'files'}` : ''
-  const text = displayText(schedule.text, byVercelBot(schedule, null))
+  const text = schedule.text
   return [
     `${pad}${schedule.id}  ${where} · ${repeat}${stop} · ${when}${sent}${files} · by ${authorName(schedule)}`,
     indent(text || '(no text)', `${pad}    `),
@@ -563,46 +560,6 @@ function taskEvent(event: Extract<BoardEventView, { type: `task.${string}` }>): 
       // Claimed, renewed, released, unblocked, reopened: what happened, and who did it.
       return `${event.type.slice('task.'.length)}${by}`
   }
-}
-
-/**
- * Where a thread is synced, for `vb sync <id>`: a row a target, its sync key and where it is, then
- * the link to the message's copy there, or why it didn't reach it.
- */
-export function formatSynced(targets: SyncedView['targets']): string {
-  const where = (row: SyncedView['targets'][number]) => row.target.slice(row.key.length + 1)
-  const keys = Math.max(...targets.map((row) => row.key.length))
-  const wheres = Math.max(...targets.map((row) => where(row).length))
-  return targets
-    .map((row) => {
-      const copy = row.undelivered !== null ? `didn't reach it: ${row.undelivered}` : (row.url ?? (row.message !== null ? `message ${row.message}` : 'no copy yet'))
-      return `${row.key.padEnd(keys)}  ${where(row).padEnd(wheres)}  ${terminalText(copy)}`
-    })
-    .join('\n')
-}
-
-/**
- * A channel or thread read with `vb sources <key> read`: a header, then each message under its ID,
- * with the target that reads its thread when it has replies.
- */
-export function formatSourceRead(key: string, read: SourceRead, now = Date.now(), cli = 'vb'): string {
-  const where = `${key}:${read.channel}${read.name ? ` (#${read.name})` : ''}${read.thread ? `, thread ${read.thread}` : ''}`
-  if (read.messages.length === 0) return `${where}\nno messages`
-  const blocks = read.messages.map((message) => {
-    const reply = read.thread !== null && message.id !== read.thread
-    const pad = reply ? '    ' : '      '
-    const when = message.createdAt ? ` · ${ago(message.createdAt, now)}` : ''
-    const replies = message.replies > 0 && read.thread === null ? `  (${message.replies} ${message.replies === 1 ? 'reply' : 'replies'}: ${cli} sources ${key} read ${message.thread})` : ''
-    return [
-      `${reply ? '  ↳ ' : ''}${message.id}  ${message.author}${when}${replies}`,
-      indent(message.text || '(no text)', pad),
-      ...message.files.map((file) => `${pad}file ${file.name}${file.url ? ` ${file.url}` : ''}`),
-    ].join('\n')
-  })
-  const more = read.next
-    ? [`(more not shown: ${cli} sources ${key} read ${read.thread ?? read.channel} --after ${read.next})`]
-    : read.more ? [`(${read.thread ? 'later replies' : 'older messages'} not shown: raise --limit, up to 200)`] : []
-  return [where, ...blocks, ...more].join('\n')
 }
 
 /**

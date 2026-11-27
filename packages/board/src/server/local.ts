@@ -71,7 +71,7 @@ export function lockLocalDirectory(dir: string, file = 'local'): () => void {
  * A board kept in this process: in SQLite under `.board/` (or `dir`), one file per board's name
  * (whatever `board({ team })` says: there's one team here),
  * its attachments next to it, and a scheduler whose timers run here, so schedules send, and
- * watchers and sync retry, while the process runs. `memory` keeps it all in memory, for tests.
+ * watchers retry, while the process runs. `memory` keeps it all in memory, for tests.
  * A restart drops pending timers, so it's for development, `vb serve`, tests, and working offline,
  * never serverless functions.
  */

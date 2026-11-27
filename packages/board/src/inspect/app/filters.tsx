@@ -13,7 +13,6 @@ export function describe(label: string): string {
 export function FilterButton(props: {
   filter: Filter
   onChange: (filter: Filter) => void
-  sources: string[]
   known: KnownLabels
 }) {
   const { filter, onChange } = props
@@ -58,7 +57,7 @@ export function FilterButton(props: {
         <div className="filter-row">
           <span className="filter-name">from</span>
           <div className="segments">
-            {['', 'board', ...props.sources].map((source) => (
+            {['', 'board'].map((source) => (
               <button
                 key={source || 'any'}
                 className={`segment${(filter.from ?? '') === source ? ' on' : ''}`}

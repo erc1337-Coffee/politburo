@@ -110,12 +110,6 @@ describe('what a grant lets in', () => {
     expect((await front('GET', '/me')).body.can).toEqual({ 'feedback/': ['post'] })
   })
 
-  it('checks a new thread’s sync targets in its channel', async () => {
-    const { fetch } = await granting(marketing)
-    const denied = await caller(fetch, await deploymentToken())('POST', '/messages', { channel: 'feedback', text: 'hi', sync: ['slack:#x'] })
-    expect(denied).toMatchObject({ status: 403, body: { error: { message: "this token can't sync in feedback" } } })
-  })
-
   it('says which grant would let in a token none matches', async () => {
     const { fetch } = await granting(
       { principals: [{ kind: 'github', repository: 'other/repo' }], can: { '*': 'all' } },

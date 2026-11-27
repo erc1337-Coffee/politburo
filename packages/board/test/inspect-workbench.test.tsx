@@ -5,10 +5,8 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterAll, afterEach, expect, it, vi } from 'vitest'
 import { createBoardClient, type ProfileOption } from '../src/client/client.ts'
 import { shell } from '../src/inspect/shell.ts'
-import { slack } from '../src/sync/slack.ts'
 import { BOARD_URL, localBoard, personToken } from './harness.ts'
 import { deploymentToken, localUserToken } from './tokens.ts'
-import { fakePlatform } from './sync-fixtures.ts'
 
 let visit = 0
 const browser = (window as unknown as import('happy-dom').Window).happyDOM
@@ -1926,22 +1924,6 @@ it('offers Cancel only to the schedule creator or a channel manager', async () =
     expect(cancel('Post results')).toBeUndefined()
     expect(threadCancel()).toBe('cancel')
   })
-})
-
-it('opens Sync from Settings and shows the selected inbox', async () => {
-  const { adapter } = fakePlatform('slack')
-  const { api, open } = await workbench({ sync: { alerts: slack({ adapter }, () => {}), support: slack({ adapter }, () => {}) } })
-  const inbound = await api.fetch(new Request(`${BOARD_URL}/webhooks/support`, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ type: 'message', threadId: 'slack:C1:100', id: '100', text: 'Can someone check my invoice?', user: 'U_ADA' }),
-  }))
-  expect(inbound.ok).toBe(true)
-  await open('/settings/access')
-  const sync = await vi.waitFor(() => link('sync'))
-  sync.click()
-  const support = await vi.waitFor(() => link('support slack'))
-  support.click()
-  await vi.waitFor(() => expect(mainText()).toContain('Can someone check my invoice?'))
 })
 
 const responders = { work: ['vercel:user:u_reader'] }

@@ -42,22 +42,3 @@ it('reads, acknowledges and archives operational messages over HTTP, with SDK-sh
   expect(archived).toMatchObject({ code: 1, stdout: '' })
   expect(JSON.parse(archived.stderr)).toMatchObject({ reason: 'operational_message_not_found', data: { error: { status: 404 } } })
 })
-
-it('preserves the raw sync inbox and escapes a reserved sync key with inbox raw', async () => {
-  await team.register({ watch: {}, sync: ['slack', 'read'].map((key) => ({ key, platform: 'slack' })) })
-  const event = (id: string, channel: string) => ({
-    id,
-    event: { kind: 'message' as const, channel, thread: `${channel}:1`, subthread: null, message: id, isRoot: id === '1', text: `from Slack ${id}`, context: null,
-      author: { id: `${channel.split(':')[0]}:user:U1`, handle: 'ada', name: 'Ada', avatar: null, isBot: false } },
-    raw: { id },
-  })
-  for (const key of ['slack', 'read']) await team.inboxPush(key, [event('1', `${key}:C1`), event('2', `${key}:C1`), event('3', `${key}:C2`)])
-  // Rows in one batch can share a timestamp. Check selection and SDK parity, not a tie order.
-  for (const [key, cmd] of [['slack', ['slack']], ['read', ['raw', 'read']]] as const) {
-    const channel = `${key}:C1`
-    const events = await team.inbox(key, { channel, limit: 1 })
-    expect(events).toHaveLength(1)
-    expect(events[0]).toMatchObject({ channel })
-    expect(await json('inbox', ...cmd, channel, '--limit', '1')).toEqual({ events })
-  }
-})

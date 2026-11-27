@@ -227,7 +227,7 @@ describe("a host's authenticate", () => {
       message: "this token can't use this board: no grant lets in project prj_app in production",
       hint: 'Grant it: vb grants create --project prj_app --environment production',
     })
-    // `external` gets everything only as a platform user sync writes as: one the host names, nothing.
+    // `external` is no principal kind the host grants anything to.
     expect((await caller(tenant.fetch, 'pt_guest')('GET', '/me')).body).toMatchObject({ error: { code: 'forbidden', message: "this token can't use this board" } })
   })
 
@@ -279,49 +279,7 @@ const asCookie = (tenant: { fetch(request: Request): Promise<Response> }, cookie
   return { status: response.status, body: await response.json() }
 }
 
-/** What a grant names the sync's deployment by. */
-const SYNC = { principals: [{ kind: 'project' as const, project: 'prj_sync', environments: ['production'] }], can: { '*': 'all' as const } }
-
 describe("a host's own ID scheme", () => {
-  it("keeps a sync from writing as a host's principal, or as the watchers it registered, whatever platform it names", async () => {
-    const tenant = supportBoard()
-    await tenant.createGrant(SYNC)
-    const customer = asCookie(tenant, 'session=customer-99')
-    const staff = asCookie(tenant, 'session=staff-ada')
-    expect((await customer('POST', '/watchers', { watch: { inbox: { tail: 'support/' } } })).status).toBe(200)
-    expect((await customer('POST', '/messages', { channel: 'support/billing', text: 'my invoice is wrong' })).status).toBe(201)
-    expect((await staff('POST', '/messages', { channel: 'support/billing', text: 'on it' })).status).toBe(201)
-    // A sync that says its platform is `support`, or `vercel`'s like, speaks for neither.
-    const sync = caller(tenant.fetch, await deploymentToken('sync', 'prj_sync'))
-    expect((await sync('POST', '/watchers', { watch: {}, sync: [{ key: 'support', platform: 'support' }] })).status).toBe(200)
-    const as = (id: string) => sync('POST', '/sync/imports', { op: 'post', author: { id, handle: 'x', name: 'X', avatar: null, isBot: false }, from: 'support', channel: 'support/billing', text: `as ${id}` })
-    // Its watcher's own writes don't wake it, so an import as it would hide what it says from it.
-    for (const id of ['support:customer:99+inbox', 'support:customer:99']) {
-      const denied = await as(id)
-      expect([denied.status, denied.body.error?.message], id).toEqual([403, `${id} is someone this board signs in, not a platform user: sync can't write as them`])
-    }
-    expect((await as('support:user:7')).status).toBe(200)
-  })
-
-  it("keeps a sync from writing as a host's principal that wrote, or its profiles, though it registered nothing", async () => {
-    const tenant = supportBoard()
-    await tenant.createGrant(SYNC)
-    // Two of the host's principals write, one as a profile of its own, and neither registers anything.
-    const write = (cookie: string, headers: Record<string, string> = {}) =>
-      tenant.fetch(new Request(`${BOARD_URL}/messages`, { method: 'POST', headers: { cookie, 'content-type': 'application/json', ...headers }, body: JSON.stringify({ channel: 'support/billing', text: 'refund please' }) }))
-    expect((await write('session=customer-42')).status).toBe(201)
-    expect((await write('session=customer-43', { 'x-board-profile': 'helper' })).status).toBe(201)
-    const sync = caller(tenant.fetch, await deploymentToken('sync', 'prj_sync'))
-    expect((await sync('POST', '/watchers', { watch: {}, sync: [{ key: 'support', platform: 'support' }] })).status).toBe(200)
-    const as = (id: string) => sync('POST', '/sync/imports', { op: 'post', author: { id, handle: 'x', name: 'X', avatar: null, isBot: false }, from: 'support', channel: 'support/billing', text: `as ${id}` })
-    for (const id of ['support:customer:42', 'support:customer:43+helper']) {
-      const denied = await as(id)
-      expect([denied.status, denied.body.error?.message], id).toEqual([403, `${id} is someone this board signs in, not a platform user: sync can't write as them`])
-    }
-    // One the board has never seen is what the access page says to keep out of a sync's reach: an ID scheme no sync registers.
-    expect((await as('support:customer:44')).status).toBe(200)
-  })
-
   it("keeps the defaults: a person, and the board's own deployments where it runs, get everything, and its previews need a grant", async () => {
     vi.stubEnv('VERCEL_TARGET_ENV', '')
     vi.stubEnv('VERCEL_ENV', 'production')

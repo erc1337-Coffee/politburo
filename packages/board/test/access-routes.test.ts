@@ -17,7 +17,6 @@ type Call = { method: 'GET' | 'POST' | 'PATCH'; path: string; body?: unknown; st
 type Walk = 'public' | ((fixture: Fixture) => Call[])
 
 const INTENT = { verb: 'inspect', generation: 1, ttlSeconds: 60, requestId: 'walker' }
-const SLACK_USER = { id: 'slack:user:U1', handle: 'eve', name: 'Eve', avatar: null, isBot: false }
 
 const nothingFrom = (field: string) => (body: any) => expect(JSON.stringify(body[field])).not.toContain('secret')
 const work = (verb: string, body: object): Walk => ({ secret, open }) => [
@@ -43,7 +42,6 @@ const WALK: Record<RouteName, Walk> = {
   discovery: 'public',
   avatar: 'public',
   openapi: 'public',
-  webhook: 'public',
   // About the caller.
   me: () => [{ method: 'GET', path: '/me', status: 200, check: (body) => expect(body.can).toEqual({ open: ['read'] }) }],
   // Admitted callers see the control state. Only a person with board-wide manage can change it.
@@ -119,14 +117,6 @@ const WALK: Record<RouteName, Walk> = {
   label: ({ secret, open }) => [
     { method: 'POST', path: `/messages/${secret.root}/labels`, body: { set: { seen: 'yes' } }, status: 404 },
     { method: 'POST', path: `/messages/${open.root}/labels`, body: { set: { seen: 'yes' } }, status: 403 },
-  ],
-  sync: ({ secret, open }) => [
-    { method: 'POST', path: `/messages/${secret.root}/sync`, body: { target: 'slack:#leak' }, status: 404 },
-    { method: 'POST', path: `/messages/${open.root}/sync`, body: { target: 'slack:#leak' }, status: 403 },
-  ],
-  typing: ({ secret, open }) => [
-    { method: 'POST', path: `/messages/${secret.reply}/typing`, body: {}, status: 404 },
-    { method: 'POST', path: `/messages/${open.root}/typing`, body: {}, status: 403 },
   ],
   cancelSchedule: ({ secret, open }) => [
     { method: 'POST', path: `/schedules/${secret.schedule}/cancel`, status: 404 },
@@ -326,40 +316,6 @@ const WALK: Record<RouteName, Walk> = {
   readOperationalInbox: () => [{ method: 'GET', path: '/operational-inbox', status: 403 }],
   ackOperationalMessage: () => [{ method: 'POST', path: '/operational-inbox/1/ack', body: { status: 'seen' }, status: 403 }],
   archiveOperationalMessage: () => [{ method: 'POST', path: '/operational-inbox/1/archive', status: 403 }],
-  // The board's own bookkeeping spans every channel.
-  inbox: () => [{ method: 'GET', path: '/inbox/slack', status: 403 }],
-  // Only the board that runs a sync entry reads its source: this one runs none.
-  readSource: () => [{ method: 'GET', path: '/sources/slack/read?target=C0123', status: 404 }],
-  joinSource: () => [{ method: 'POST', path: '/sources/slack/join', body: { target: 'C0123' }, status: 404 }],
-  synced: ({ secret, open }) => [
-    { method: 'GET', path: `/messages/${secret.root}/sync`, status: 404 },
-    { method: 'GET', path: `/messages/${secret.reply}/sync`, status: 404 },
-    { method: 'GET', path: `/messages/${open.root}/sync`, status: 200 },
-  ],
-  // A link this board synced nothing for, as any it can't show: 404.
-  linked: () => [{ method: 'GET', path: `/links?url=${encodeURIComponent('https://acme.slack.com/archives/C0123ABC/p1727000000123456')}`, status: 404 }],
-  // Sync's records: a caller speaks for platform users only where it may sync.
-  syncImport: () => [
-    { method: 'POST', path: '/sync/imports', body: { op: 'post', author: SLACK_USER, from: 'slack', channel: 'secret', text: 'hi' }, status: 403 },
-    { method: 'POST', path: '/sync/imports', body: { op: 'post', author: SLACK_USER, from: 'slack', channel: 'open', text: 'hi' }, status: 403 },
-  ],
-  syncReceipt: ({ secret, open }) => [
-    { method: 'POST', path: '/sync/receipts', body: { kind: 'failed', message: String(secret.root), target: 'slack:C1', error: 'gone' }, status: 404 },
-    { method: 'POST', path: '/sync/receipts', body: { kind: 'thread', message: String(open.root), target: 'slack:C1', targetKind: 'channel', cause: 'request' }, status: 403 },
-  ],
-  syncThread: () => [{ method: 'GET', path: '/sync/threads/t1', status: 403 }],
-  syncFind: () => [{ method: 'GET', path: '/sync/find?thread=slack:C1:1&message=1', status: 403 }],
-  syncCopies: ({ secret }) => [{ method: 'GET', path: `/sync/copies?message=${secret.root}`, status: 403 }],
-  inboxPush: () => [
-    {
-      method: 'POST',
-      path: '/inbox/slack',
-      body: { events: [{ id: 'e1', raw: {}, event: { kind: 'message', channel: 'slack:C1', thread: 'slack:C1:1', subthread: null, message: '1', isRoot: true, text: 'hi', context: null, author: SLACK_USER } }] },
-      status: 403,
-    },
-  ],
-  inboxNext: () => [{ method: 'GET', path: '/inbox/slack/next', status: 403 }],
-  inboxAck: () => [{ method: 'POST', path: '/inbox/slack/e1/ack', body: { lease: 'l1' }, status: 403 }],
   // Registered watchers: each sees only what its registrant reads, and pulls only its own.
   watchers: () => [{ method: 'GET', path: '/watchers', status: 200, check: (body) => expect(body.watchers).toEqual([]) }],
   register: () => [{ method: 'POST', path: '/watchers', body: { watch: { fix: { tail: 'secret' } } }, status: 200 }],

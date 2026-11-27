@@ -161,7 +161,7 @@ async function localIssuer() {
 }
 
 /**
- * A standalone `local()` board with SQLite and attachments under `dir` and no sync. `hosts` adds
+ * A standalone `local()` board with SQLite and attachments under `dir`. `hosts` adds
  * proxy names for discovery and auth. Normally it listens on loopback and writes a local JWT for
  * you. With `teamTokens` it serves only the API and trusts only that file's credentials, even on
  * loopback.

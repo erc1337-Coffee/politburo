@@ -38,7 +38,7 @@ export async function createPlan(target: string, text: string | undefined, path:
   if (text !== undefined) throw usage("Text is one task's: with --file, each task in the file has its own.")
   // What the file holds comes first: one task's text in it means these options are that task's, on stdin.
   const parsed = await planSource(path)
-  const own = (['label', 'needs', 'for', 'claim', 'lease', 'binding', 'no-sync', 'priority'] as const).find((name) => flags[name] !== undefined && flags[name] !== false)
+  const own = (['label', 'needs', 'for', 'claim', 'lease', 'binding', 'priority'] as const).find((name) => flags[name] !== undefined)
   if (own !== undefined) throw usage(`--${own} is one task's: with --file, each task in the file has its own.`)
   const board = client()
   const tasks = await planFrom(parsed, path, board)
@@ -75,7 +75,7 @@ export async function createPlan(target: string, text: string | undefined, path:
 }
 
 /** What a task of a plan's `--file` takes, as `tasks.createMany` does. */
-const PLAN_KEYS = ['key', 'text', 'labels', 'needs', 'for', 'noSync', 'attachments', 'priority']
+const PLAN_KEYS = ['key', 'text', 'labels', 'needs', 'for', 'attachments', 'priority']
 
 /** The help page that says what a plan holds. */
 const planHelp = (): Recovery => ({ instruction: 'See what a plan takes', argv: [...cli(), 'tasks', 'create', '--help'] })

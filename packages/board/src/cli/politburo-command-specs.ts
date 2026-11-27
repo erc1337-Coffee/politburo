@@ -144,16 +144,6 @@ export const inboxCommands = (option: Option): readonly CliCommand[] => [
     options: [],
     examples: [{ name: 'archive a message', value: 'inbox archive 812' }],
   },
-  {
-    name: 'raw',
-    description: 'read raw platform events, including for reserved sync keys',
-    arguments: [
-      { name: 'key', required: true, description: 'the sync entry' },
-      { name: 'channel', required: false, description: 'the board channel its events went to' },
-    ],
-    options: [option('limit', 'events to list')],
-    examples: [{ name: 'list events for a sync entry named read', value: 'inbox raw read' }],
-  },
 ]
 
 export const taskPriorityCommands = (task: TaskArgument, priorityDescription: string): readonly CliCommand[] => [

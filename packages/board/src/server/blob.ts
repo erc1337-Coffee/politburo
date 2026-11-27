@@ -79,7 +79,7 @@ export const ownUpload = (upload: Uploader, caller: { id: string }): boolean => 
 /**
  * Stores an upload under a fresh ID, with its metadata beside it. `uploadedBy`
  * is the principal that sent it, who can read it before any message carries it.
- * `max` is the most it can be: `ATTACHMENT_BYTES_MAX` unless the board's own sync imports it.
+ * `max` is the most it can be: `ATTACHMENT_BYTES_MAX` unless the caller sets another.
  */
 export async function writeUpload(
   blob: BlobStore | null,

@@ -100,7 +100,6 @@ const NARROWED = [
   "takes read in a prerequisite's channel to wait for it: a caller narrowed out of it makes no task that needs it",
   'refuses a caller narrowed with x-board-can a schema, and lets it read them',
   "refuses a caller narrowed with x-board-can its principal's watchers: registering, pulling, and acking",
-  "refuses a caller narrowed with x-board-can sync's records: imports, receipts, and the inbox",
 ]
 const NO_CAN = "this run can't call the board with an x-board-can header"
 const TASK_AUTHORITY = [
@@ -151,9 +150,9 @@ function withoutPath(fetch: Fetch): Fetch {
   }
 }
 
-/** The watcher and sync checks' statuses, in order. */
+/** The watcher checks' statuses, in order. */
 const watcherStatuses = (report: Awaited<ReturnType<typeof conformance>>) =>
-  report.checks.filter((check) => check.group === 'watchers' || check.group === 'sync').map((check) => check.status)
+  report.checks.filter((check) => check.group === 'watchers').map((check) => check.status)
 
 // Each of these runs the kit against a board, some more than once: seconds each, and more under a full run.
 vi.setConfig({ testTimeout: 30_000 })
@@ -185,8 +184,8 @@ describe('the conformance kit', () => {
     expect(report).toMatchObject({ ok: true, url: BOARD_URL })
     // Every grant it made is gone, the ones that closed a pattern to everyone included.
     expect((await client.grants()).map((grant) => grant.id)).toEqual(['g1', 'g2', 'g3'])
-    expect([...new Set(report.checks.map((check) => check.group))]).toEqual(['core', 'network-pause', 'paging', 'search', 'schedules', 'tasks', 'grants', 'invites', 'schemas', 'attachments', 'watchers', 'sync', 'agents', 'operational-inbox'])
-    expect(report.checks.filter((check) => check.group === 'tasks').map((check) => check.status)).toEqual(Array.from({ length: 26 + TASK_AUTHORITY.length }, () => 'passed'))
+    expect([...new Set(report.checks.map((check) => check.group))]).toEqual(['core', 'network-pause', 'paging', 'search', 'schedules', 'tasks', 'grants', 'invites', 'schemas', 'attachments', 'watchers', 'agents', 'operational-inbox'])
+    expect(report.checks.filter((check) => check.group === 'tasks').map((check) => check.status)).toEqual(Array.from({ length: 25 + TASK_AUTHORITY.length }, () => 'passed'))
     expect(report.checks.filter((check) => TASK_AUTHORITY.includes(check.name)).map((check) => check.status)).toEqual(TASK_AUTHORITY.map(() => 'passed'))
     expect(agentChecks(report).map(({ status }) => status)).toEqual(['passed', 'passed'])
     expect((await client.agents.list('conformance')).agents.map(({ status }) => status)).toEqual(['disabled', 'disabled'])
@@ -652,38 +651,30 @@ describe('the conformance kit', () => {
       ['failed', "a task that needs one its caller can't read: expected 400 invalid_needs, and it succeeded"],
       ['failed', 'registering a schema, by a caller narrowed with x-board-can: expected 403 forbidden, and it succeeded'],
       ['failed', 'registering watchers, by a caller narrowed with x-board-can: expected 403 forbidden, and it succeeded'],
-      ['failed', 'an import, by a caller narrowed with x-board-can: expected 403 forbidden, and it succeeded'],
     ])
-    // What a board wrongly took, the kit put back: no watchers, and nothing it imported left in the channel.
-    expect((await board.watchers()).filter((registration) => Object.keys(registration.watch).length > 0 || (registration.sync?.length ?? 0) > 0)).toEqual([])
+    // What a board wrongly took, the kit put back: no watchers, and nothing it posted left in the channel.
+    expect((await board.watchers()).filter((registration) => Object.keys(registration.watch).length > 0)).toEqual([])
     expect((await board.channel('conformance').messages({ limit: 500 })).messages.filter((message) => !message.deleted)).toEqual([])
     const without = await conformance(await clientOf(board.fetch))
     expect(without.checks.filter((check) => NARROWED.includes(check.name)).map((check) => [check.status, check.detail])).toEqual(NARROWED.map(() => ['skipped', NO_CAN]))
   })
 
-  it("leaves a token's registration as it was: one with watchers or a sync is skipped, and an empty one is checked", async () => {
+  it("leaves a token's registration as it was: one with watchers is skipped, and an empty one is checked", async () => {
     const board = await grantingV0()
     const v0 = caller(board.fetch, await deploymentToken('v0', 'prj_v0', 'production'))
     const asV0 = await clientAs(board.fetch, () => deploymentToken('v0', 'prj_v0', 'production'))
     const narrowedV0 = { withCan: withCan(board.fetch, () => deploymentToken('v0', 'prj_v0', 'production')) }
     const registered = async () => (await v0('GET', '/watchers')).body.watchers.map(({ hash: _hash, ...rest }: { hash: string }) => rest)
-    for (const registration of [
-      // A sync elsewhere with no watchers of its own, and watchers with no sync.
-      { watch: {}, sync: [{ key: 'slack', platform: 'slack' }] },
-      { watch: { fix: { tail: 'feedback' } }, sync: [] },
-    ]) {
-      expect((await v0('POST', '/watchers', registration)).status).toBe(200)
-      const before = await registered()
-      const report = await conformance(asV0, narrowedV0)
-      // What registers is skipped; noSync, an account lookup, and a narrowed caller's refused registration register nothing.
-      expect(watcherStatuses(report)).toEqual(['skipped', 'skipped', 'passed', 'skipped', 'skipped', 'skipped', 'skipped', 'skipped', 'passed', 'skipped'])
-      expect(await registered()).toEqual(before)
-    }
+    expect((await v0('POST', '/watchers', { watch: { fix: { tail: 'feedback' } } })).status).toBe(200)
+    const before = await registered()
+    // What registers is skipped; a narrowed caller's refused registration registers nothing.
+    expect(watcherStatuses(await conformance(asV0, narrowedV0))).toEqual(['skipped', 'passed'])
+    expect(await registered()).toEqual(before)
     // One with nothing in it is checked, and is left as it was.
-    const empty = { owner: 'vercel:project:prj_v0:production', url: null, watch: {}, sync: [] }
+    const empty = { owner: 'vercel:project:prj_v0:production', url: null, watch: {} }
     expect((await v0('POST', '/watchers', { watch: {} })).status).toBe(200)
     const report = await conformance(asV0, narrowedV0)
-    expect(watcherStatuses(report)).toEqual(['passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed'])
+    expect(watcherStatuses(report)).toEqual(['passed', 'passed'])
     expect(await registered()).toEqual([empty])
   })
 
@@ -1028,34 +1019,6 @@ describe('the conformance kit', () => {
     expect(find(await conformance(await clientOf(admits)), 'lets everyone narrow')).toMatchObject({ status: 'failed', detail: `what everyone's grant gives them: expected [], got ["read"]` })
   })
 
-  it("fails a board whose inbox acks nothing, or queues a platform's retry as a new event", async () => {
-    const inboxCheck = (report: Awaited<ReturnType<typeof conformance>>) => report.checks.find((check) => check.name.startsWith("queues a platform thread's events"))
-    // An ack that answers ok and changes nothing: the thread's next event never comes.
-    const acking = testBoard({ scheduler: fakeQueue().scheduler })
-    const noAck: Fetch = async (request) =>
-      request.method === 'POST' && /\/inbox\/[^/]+\/[^/]+\/ack$/.test(new URL(request.url).pathname) ? Response.json({ ok: true }) : acking.fetch(request)
-    expect(inboxCheck(await conformance(await clientOf(noAck)))).toMatchObject({ status: 'failed', detail: 'the events leased from the platform thread, for message 2: expected 1, got 0' })
-    // Each push under a new ID, so the platform's retry is queued again.
-    const queueing = testBoard({ scheduler: fakeQueue().scheduler })
-    const renamed: Fetch = async (request) => {
-      if (request.method !== 'POST' || !/\/inbox\/[^/]+$/.test(new URL(request.url).pathname)) return queueing.fetch(request)
-      const body = (await request.json()) as { events: { id: string }[] }
-      const events = body.events.map((event) => ({ ...event, id: `${event.id}-${crypto.randomUUID()}` }))
-      return queueing.fetch(new Request(request, { body: JSON.stringify({ ...body, events }) }))
-    }
-    expect(inboxCheck(await conformance(await clientOf(renamed)))).toMatchObject({ status: 'failed', detail: 'the events leased once both are acked: expected 0, got 1' })
-  })
-
-  it('skips the @sync check for a token that syncs elsewhere, but not where the kit posts', async () => {
-    const can = { conformance: ['read', 'post', 'react', 'label'], 'elsewhere/': ['sync'] } as const
-    const board = await grantingV0('production', can)
-    const report = await conformance(await clientAs(board.fetch, () => deploymentToken('v0', 'prj_v0', 'production')))
-    expect(report.checks.find((check) => check.name === 'hands a sync each message change as a match of its @sync watcher')).toMatchObject({
-      status: 'skipped',
-      detail: "this token can't sync in conformance",
-    })
-  })
-
   it('fails a board that answers only part of the protocol any other way', async () => {
     // Schedules that are missing, not refused, and files the board takes but loses.
     const board = testBoard({ scheduler: fakeQueue().scheduler })
@@ -1138,7 +1101,7 @@ describe('the conformance kit', () => {
     const report = await conformance(await clientOf(nameless))
     expect(report).toMatchObject({
       ok: false,
-      checks: [{ name: 'says in its discovery where it is', status: 'failed', detail: expect.stringContaining('discovery should have url, audience, and sync') }],
+      checks: [{ name: 'says in its discovery where it is', status: 'failed', detail: expect.stringContaining('discovery should have url and audience') }],
     })
   })
 })

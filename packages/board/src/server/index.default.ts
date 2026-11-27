@@ -9,7 +9,6 @@ export function board(options: BoardOptions = {}): Board {
     backend: () => {
       throw new Error("board: pass a backend, board({ backend: http(url) }): outside Node there's no BOARD_URL to find a board at")
     },
-    sync: () => import('../sync/engine.ts'),
     serving: null,
   })
 }

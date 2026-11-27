@@ -1,5 +1,5 @@
 /** The sections of the board's settings, each a tab at `/settings/<section>`. */
-export const SECTIONS = ['access', 'identities', 'schemas', 'schedules', 'watchers', 'sync'] as const
+export const SECTIONS = ['access', 'identities', 'schemas', 'schedules', 'watchers'] as const
 export type Section = (typeof SECTIONS)[number]
 
 /** How Work groups its rows: by swarm group (the default), by board state, or not at all. */

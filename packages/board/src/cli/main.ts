@@ -19,7 +19,7 @@ import { explainPrincipalOf, explanationLine, GrantMisuse, grantCanOf, KINDS, pa
 import { formatSchema, formatSchemas } from './schemas.ts'
 import { parseSchemaId } from '../contract/data-schemas.ts'
 import { block } from '../contract/blocks.ts'
-import { actorName, claimLine, formatAccess, formatAttention, formatConformance, formatEvent, formatGrants, grantRow, formatOperationalInbox, formatSchedule, formatTasks, grantCan, lineText, mentionedIn, reactionNames, formatSourceRead, formatSynced, formatThreadSummaries, formatThreads, terminalText, who } from './format.ts'
+import { actorName, claimLine, formatAccess, formatAttention, formatConformance, formatEvent, formatGrants, grantRow, formatOperationalInbox, formatSchedule, formatTasks, grantCan, lineText, mentionedIn, reactionNames, formatThreadSummaries, formatThreads, terminalText, who } from './format.ts'
 import { fileClaims, memoryClaims, tokenClaims, type ClaimProof, type Claims } from './claims.ts'
 import { runCommand } from './run.ts'
 import { AGENTS, allowRules, cliOf, disallow, installedHook, tilde, uninstallHook, type HookAgent } from './hooks.ts'
@@ -229,7 +229,7 @@ let sentLength = 0
 const setSentLength = (length: number) => { sentLength = length }
 
 /**
- * The help `words` ask for: a command's page when they name one (`read`, `sources read`), or with
+ * The help `words` ask for: a command's page when they name one (`read`, `schedule cancel`), or with
  * none, every command. A word that names no command is unknown, as it is without `--help`.
  */
 function help(words: readonly string[] = []): string {
@@ -308,7 +308,6 @@ function foreignOption(name: string, word: string): Failed {
   const renamed = renamedOption(name, word, typed)
   if (renamed) return renamed
   if (name === 'text' && TEXT.has(word)) return usage(`--text is a filter for read, tail, and wait. ${word} takes its text as an argument, in quotes.`)
-  if (name === 'sync' && word === 'schedule') return usage("Can't use --sync with schedule. A schedule posts where you point it.")
   if (name === 'attach' && word === 'edit') return usage("edit can't attach files: reply with the file instead.", { reason: 'unknown_option', next: [{ instruction: 'Reply with it', argv: [...cli(), 'reply', '<ID>', '<TEXT>', '--attach', '<FILE>'] }] })
   return usage(`Unknown option --${name} for ${named()} ${word}.`, { reason: 'unknown_option', next: [{ instruction: 'See all options', argv: [...cli(), word, '--help'] }] })
 }
@@ -781,7 +780,7 @@ function doing(): string {
   const message = a !== undefined && isMessageRef(a)
   switch (command) {
     case 'read':
-      return a === undefined ? 'read the board' : /^https?:\/\//i.test(a) ? 'read that link' : `read ${message ? ref(a) : a}`
+      return a === undefined ? 'read the board' : `read ${message ? ref(a) : a}`
     case 'post':
       return message ? `reply to ${ref(a)}` : `post to ${a ?? 'a channel'}`
     case 'reply':
@@ -792,10 +791,6 @@ function doing(): string {
       return `${command} ${ref(a)}`
     case 'react':
       return `react to ${ref(a)}`
-    case 'typing':
-      return `show typing in ${ref(a)}`
-    case 'sync':
-      return b === undefined ? `list where ${ref(a)} is synced` : `sync ${ref(a)} with ${b}`
     case 'schedule':
       return a === 'cancel' ? `cancel schedule ${b}` : `schedule a message in ${message ? ref(a) : (a ?? 'a channel')}`
     case 'channels':
@@ -815,8 +810,6 @@ function doing(): string {
       return a === 'create' ? (flags.file !== undefined ? 'create the grants' : 'create the grant') : a === 'update' ? `update grant ${b}` : a === 'explain' ? `explain ${b ?? 'the channel'}` : a === 'revoke' ? `revoke grant ${b}` : 'list grants'
     case 'schemas':
       return a === 'create' ? `register schema ${b ?? ''}`.trimEnd() : a === 'inspect' ? `read schema ${b ?? ''}`.trimEnd() : 'list schemas'
-    case 'sources':
-      return b === undefined ? 'list sources' : `${b} ${c ?? 'it'} on ${a}`
     case 'download':
       return `download ${a ?? 'the attachment'}`
     case 'inbox':
@@ -840,14 +833,13 @@ function doing(): string {
 }
 
 /** The commands whose first argument is always a message. */
-const ON_MESSAGE = new Set(['reply', 'edit', 'delete', 'react', 'label', 'typing', 'sync', 'schedules'])
+const ON_MESSAGE = new Set(['reply', 'edit', 'delete', 'react', 'label', 'schedules'])
 
 /** What a 404 means this run couldn't find, when its arguments name it: `message #812`. */
 function missing(): string | undefined {
   const { command = '', args } = current
   const [a, b] = args
   if (a === undefined) return undefined
-  if (command === 'read' && /^https?:\/\//i.test(a)) return "that link's message on this board"
   if (ON_MESSAGE.has(command) || (['read', 'post', 'schedule'].includes(command) && isMessageRef(a))) return `message ${ref(a)}`
   if (command === 'schedule' && a === 'cancel' && b !== undefined) return `schedule ${b}`
   // A task is its thread: one that isn't there is a message that isn't.
@@ -1028,8 +1020,7 @@ const UNINDEXED = ['--by', '--mentions', '--source', '--text']
 
 /**
  * What to run instead of what a board answered 501 to, by what this run asked for: the same without
- * the part a board may not do (a read's search filters or its every channel, a post's `--sync`, a
- * schedule's files). Nothing when it asked for none of them.
+ * the part a board may not do (a read's search filters or its every channel, a schedule's files). Nothing when it asked for none of them.
  */
 function unsupportedRecoveries(): Recovery[] {
   const { command, args } = current
@@ -1050,7 +1041,6 @@ function unsupportedRecoveries(): Recovery[] {
       { instruction: whole ? `Read one channel at a time${filtered.length ? `, without ${filtered.join(' or ')}` : ''}` : `Read it without ${filtered.join(' or ')}, and look through it`, argv },
     ]
   }
-  if ((command === 'post' || command === 'reply') && given('--sync')) return [{ instruction: 'Post it without --sync', argv: rerunWithout(['--sync']) }]
   if (command === 'schedule' && given('--attach')) return [{ instruction: 'Schedule the text without its files', argv: rerunWithout(['--attach']) }]
   return []
 }
@@ -1335,28 +1325,21 @@ async function run(command: string | undefined, args: string[]): Promise<number>
     case 'read': {
       const target = args[0]
       const board = client()
-      // A platform's link to a message (a Slack permalink, a GitHub comment) reads the board's thread it synced.
-      const link = target !== undefined && /^https?:\/\//i.test(target)
-      if (target && (link || isMessageRef(target))) {
+      if (target && isMessageRef(target)) {
         // A thread is read whole: what finds threads doesn't narrow one, and it's said before anything is read.
         const across = (['by', 'text', 'mentions', 'source', 're', 'before'] as const).find((name) => flags[name] !== undefined)
         if (across !== undefined) throw usage(`Can't use --${across} on one thread. It's read whole: --after and --label narrow its replies.`)
         // A board reads the replies after a message itself, so a long thread isn't read whole for its last few.
-        const after = !link && flags.after !== undefined ? flags.after.replace(/^#/, '') : undefined
-        const thread = link
-          ? await board.linked(target)
-          : await board.thread(messageId(target), after !== undefined && isMessageRef(after) ? { after: messageId(after) } : {}).catch((error: unknown) => {
-              // A message of another thread is no place in this one, which is the flag's to say.
-              if (error instanceof BoardError && error.status === 400 && /isn't a message of this thread/.test(error.message))
-                throw usage(`--after ${flags.after} isn't a message of this thread. On one thread, it takes one of its messages.`)
-              throw error
-            })
-        // A board older than this CLI answers /links with its discovery document. Its 404 stays: a
-        // current board's means the link isn't one it synced.
-        if (link && !Array.isArray((thread as { replies?: unknown }).replies)) throw outdated("This board can't read links.")
+        const after = flags.after !== undefined ? flags.after.replace(/^#/, '') : undefined
+        const thread = await board.thread(messageId(target), after !== undefined && isMessageRef(after) ? { after: messageId(after) } : {}).catch((error: unknown) => {
+          // A message of another thread is no place in this one, which is the flag's to say.
+          if (error instanceof BoardError && error.status === 400 && /isn't a message of this thread/.test(error.message))
+            throw usage(`--after ${flags.after} isn't a message of this thread. On one thread, it takes one of its messages.`)
+          throw error
+        })
         // What narrows it is narrowed here, from the replies it came with.
         const narrowed = flags.after !== undefined || (flags.label?.length ?? 0) > 0
-        const replies = narrowed ? narrowedReplies(thread, { after: link || after === undefined || !isMessageRef(after) }) : thread.replies
+        const replies = narrowed ? narrowedReplies(thread, { after: after === undefined || !isMessageRef(after) }) : thread.replies
         if (flags.json) return result({ ...thread, replies }), 0
         // Reactions name people who may not have written here: look up the ones that show.
         const authors = new Set([thread.message, ...replies].map((m) => m.by.actor))
@@ -1468,11 +1451,6 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       if (!target) throw usage('Missing the channel or message to post to.', { reason: 'missing_arguments' })
       oneText('post', target, args.slice(2))
       const re = isMessageRef(target) ? messageId(target) : undefined
-      if (re !== undefined && flags.sync?.length)
-        throw usage("Can't use --sync on a reply. It syncs whole threads.", {
-          next: [{ instruction: 'Sync the thread instead', argv: [...cli(), 'sync', re, '<TARGET>'] }],
-        })
-      if (flags.sync?.length && flags['no-sync']) throw usage("Can't use --sync with --no-sync.")
       if (re === undefined && flags.after !== undefined)
         throw usage("Can't use --after on a new thread. It's for replies: the thread's newest message.")
       const board = client()
@@ -1483,10 +1461,9 @@ async function run(command: string | undefined, args: string[]): Promise<number>
         ...(files.length ? { attachments: files } : {}),
         ...(flags.label?.length ? { labels: labelPairs(flags.label) } : {}),
         ...(flags['idempotency-key'] ? { id: flags['idempotency-key'] } : {}),
-        ...(flags['no-sync'] ? { noSync: true } : {}),
       }
       const message = re === undefined
-        ? await board.post(target, { ...options, ...(flags.sync?.length ? { sync: flags.sync } : {}) })
+        ? await board.post(target, options)
         : await board.reply(re, { ...options, ...(flags.after !== undefined ? { after: messageId(flags.after) } : {}) })
       printMessage(message)
       return 0
@@ -1503,7 +1480,6 @@ async function run(command: string | undefined, args: string[]): Promise<number>
         ...(files.length ? { attachments: files } : {}),
         ...(flags.label?.length ? { labels: labelPairs(flags.label) } : {}),
         ...(flags['idempotency-key'] ? { id: flags['idempotency-key'] } : {}),
-        ...(flags['no-sync'] ? { noSync: true } : {}),
         ...(flags.after !== undefined ? { after: messageId(flags.after) } : {}),
       })
       printMessage(message)
@@ -1530,7 +1506,6 @@ async function run(command: string | undefined, args: string[]): Promise<number>
         text: said,
         ...(files.length ? { attachments: files } : {}),
         ...(flags.label?.length ? { labels: labelPairs(flags.label) } : {}),
-        ...(flags['no-sync'] ? { noSync: true } : {}),
         ...(flags.in ? { in: flags.in } : {}),
         ...(flags.at ? { at: instant('at', flags.at) } : {}),
         ...(flags.every ? { every: flags.every } : {}),
@@ -1757,28 +1732,6 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       return 0
     }
 
-    case 'typing': {
-      const id = messageId(args[0])
-      const status = args.slice(1).join(' ').trim()
-      const targets = await client().typing(id, status || undefined)
-      if (flags.json) result({ targets })
-      return 0
-    }
-
-    case 'sync': {
-      const id = messageId(args[0])
-      if (!args[1]) {
-        const { targets } = await client().sync(id)
-        if (flags.json) return result({ targets }), 0
-        out(targets.length ? formatSynced(targets) : 'not synced anywhere')
-        return 0
-      }
-      const synced = await client().sync(id, args[1])
-      if (flags.json) result({ ...synced, outcome: synced.attached ? 'synced' : 'unchanged' })
-      else out(synced.attached ? `synced with ${synced.target}` : `already synced with ${synced.target}`)
-      return 0
-    }
-
     case 'download': {
       const id = args[0]
       if (!id) throw usage(`Missing the attachment to download: the ID \`${named()} read\` shows on a file line.`, { reason: 'missing_arguments' })
@@ -1812,28 +1765,6 @@ async function run(command: string | undefined, args: string[]): Promise<number>
 
     case 'inbox':
       return inbox(args)
-
-    case 'sources': {
-      const [key, sub, target] = args
-      if (!key) {
-        const { sync } = await client().discovery()
-        if (flags.json) return result({ sources: sync }), 0
-        if (sync.length === 0) return out('no sources: this board has no sync configured'), 0
-        for (const entry of sync) out(`${entry.key}  ${entry.platform}`)
-        return 0
-      }
-      if (sub === 'join' && target) {
-        const joined = await client().joinSource(key, target)
-        if (flags.json) return result({ ...joined, outcome: joined.joined ? 'joined' : 'unchanged' }), 0
-        const label = joined.name ? `#${joined.name}` : joined.channel
-        return out(joined.joined ? `joined ${label}` : `already in ${label}`), 0
-      }
-      if (sub !== 'read' && sub !== 'join') throw usage(sub === undefined ? `Missing what to do with ${key}: read or join.` : `Unknown command ${sub} for ${named()} sources.`, { reason: sub === undefined ? 'missing_arguments' : 'unknown_command' })
-      if (!target) throw usage(`Missing the channel, thread, or link to ${sub}.`, { reason: 'missing_arguments' })
-      const read = await client().readSource(key, target, { ...(flags.limit ? { limit: Number(flags.limit) } : {}), ...(flags.after ? { after: String(flags.after) } : {}) })
-      if (flags.json) return result(read), 0
-      return out(formatSourceRead(key, read, Date.now(), named())), 0
-    }
 
     case 'tail': {
       const controller = new AbortController()
@@ -2297,7 +2228,7 @@ async function tasks(args: string[]): Promise<number> {
     let made: Awaited<ReturnType<Board['tasks']['create']>>
     if (isMessageRef(target)) {
       // A thread that's there becomes a task as it is: what it says and wears are its author's.
-      const own = body !== undefined ? 'text' : (['label', 'no-sync', 'idempotency-key'] as const).find((name) => flags[name] !== undefined && flags[name] !== false)
+      const own = body !== undefined ? 'text' : (['label', 'idempotency-key'] as const).find((name) => flags[name] !== undefined)
       if (own !== undefined)
         throw usage(`${ref(target)} becomes a task as it is: ${own === 'text' ? 'text' : `--${own}`} is for a new thread.`, {
           next: [{ instruction: 'Make it a task as it is', argv: [...cli(), 'tasks', 'create', messageId(target)] }],
@@ -2310,7 +2241,6 @@ async function tasks(args: string[]): Promise<number> {
       made = await board.tasks.create(target, {
         text: said,
         ...(flags.label?.length ? { labels: labelPairs(flags.label) } : {}),
-        ...(flags['no-sync'] ? { noSync: true } : {}),
         ...(flags['idempotency-key'] ? { id: flags['idempotency-key'] } : {}),
         ...about,
       })
@@ -2980,13 +2910,13 @@ export async function main(argv: string[], options: App): Promise<number> {
 }
 
 /** The commands that change the board, whatever their arguments. */
-const WRITES = new Set(['post', 'reply', 'edit', 'delete', 'label', 'react', 'schedule', 'sync', 'pause', 'resume', 'join'])
+const WRITES = new Set(['post', 'reply', 'edit', 'delete', 'label', 'react', 'schedule', 'pause', 'resume', 'join'])
 
 /** What a run its caller's signal stopped says: a write it was making may have landed. */
 function stopped(reason: unknown): Failed {
   const timedOut = reason instanceof Error && reason.name === 'TimeoutError'
-  // A subcommand that writes is `channels create`'s first word, `sources <key> join`'s second.
-  const sub = current.command === 'sources' ? current.args[1] : current.args[0]
+  // A subcommand that writes is the first word after the command: `channels create`.
+  const sub = current.args[0]
   const writes = WRITES.has(current.command ?? '') || ['create', 'update', 'revoke', 'cancel', 'join'].includes(sub ?? '')
     || (current.command === 'tasks' && sub !== undefined && isTaskVerb(sub, current.args[1]) && !TASK_READS.has(sub))
     || (current.command === 'agents' && AGENT_WRITES.has(sub ?? ''))

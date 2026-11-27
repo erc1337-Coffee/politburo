@@ -158,7 +158,7 @@ describe('the inspector store', () => {
   })
 
   it('never shows a post twice when the stream beats the board\'s answer', () => {
-    const post: store.Pending = { key: 'k', channel: 'ops', re: null, text: 'four', noSync: false, labels: {}, createdAt: '', error: null }
+    const post: store.Pending = { key: 'k', channel: 'ops', re: null, text: 'four', labels: {}, createdAt: '', error: null }
     const other: store.Pending = { ...post, key: 'k2', text: 'five' }
     let state: store.State = { ...start, pending: [post, other] }
     state = store.applyEvent(state, postedEvent(message(17, { text: 'four' })))
@@ -234,7 +234,7 @@ describe('the inspector store', () => {
 
   it('groups a channel into threads, with pending posts', () => {
     let state = store.merge(start, [message(1), message(2, { re: '1' }), message(3), message(4, { channel: 'other' })])
-    state = { ...state, pending: [{ key: 'k', channel: 'ops', re: '3', text: 'soon', noSync: false, labels: {}, createdAt: '', error: null }] }
+    state = { ...state, pending: [{ key: 'k', channel: 'ops', re: '3', text: 'soon', labels: {}, createdAt: '', error: null }] }
     const { threads } = store.channelThreads(state, 'ops')
     expect(threads.map((t) => [t.root.id, t.replies.map((r) => r.id), t.pending.length])).toEqual([
       ['1', ['2'], 0],
@@ -610,7 +610,7 @@ it('shows only open decisions, oldest first, from readable task roots', () => {
   })
 
   it("keeps a post to send later through a message that lands saying the same", () => {
-    const post: store.Pending = { key: 'k', channel: 'ops', re: null, text: 'standup', noSync: false, labels: {}, createdAt: '', error: null }
+    const post: store.Pending = { key: 'k', channel: 'ops', re: null, text: 'standup', labels: {}, createdAt: '', error: null }
     const later: store.Pending = { ...post, key: 'k2', later: { in: '2h' } }
     // Yours, in the same place, saying the same: it stands for the post on its way, never for the one to send later.
     const state = store.applyEvent({ ...start, pending: [later, post] }, postedEvent(message(17, { text: 'standup' })))

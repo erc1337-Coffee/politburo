@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import { flushSync } from 'react-dom'
-import type { AttentionAnswerBody, BoardEventView, Explanation, GrantInput, GrantWriteOptions, InboxEntry, Me, MessageView, SchemaInput, SyncedView, TaskView } from '../../api/routes.ts'
+import type { AttentionAnswerBody, BoardEventView, Explanation, GrantInput, GrantWriteOptions, Me, MessageView, SchemaInput, TaskView } from '../../api/routes.ts'
 // `@vercel/board/access`, in an app of yours.
 import { compileAccess } from '../../server/access.ts'
 import { board, BoardError, type Attachment, type EventsState, type ExplainPrincipal, type PostOptions, type ScheduleTiming } from '../../server/index.default.ts'
@@ -515,7 +515,7 @@ const outgoing = new Map<string, File[]>()
  * retry schedules it again, so nothing typed is lost.
  */
 export async function send(
-  post: { channel: string; re: string | null; text: string; noSync: boolean; labels: Record<string, string>; files?: File[]; task?: store.Pending['task']; later?: ScheduleTiming },
+  post: { channel: string; re: string | null; text: string; labels: Record<string, string>; files?: File[]; task?: store.Pending['task']; later?: ScheduleTiming },
   key: string = crypto.randomUUID(),
 ) {
   const files = post.files ?? outgoing.get(key) ?? []
@@ -524,7 +524,6 @@ export async function send(
     channel: post.channel,
     re: post.re,
     text: post.text,
-    noSync: post.noSync,
     labels: post.labels,
     ...(files.length ? { files: files.map((f) => ({ name: f.name, size: f.size })) } : {}),
     ...(post.later ? { later: post.later } : {}),
@@ -541,7 +540,6 @@ export async function send(
     const content = {
       text: post.text,
       ...(attachments.length ? { attachments } : {}),
-      ...(post.noSync ? { noSync: true } : {}),
       ...(Object.keys(post.labels).length > 0 ? { labels: post.labels } : {}),
     }
     if (post.later) {
@@ -1211,9 +1209,7 @@ export async function cancelSchedule(id: string) {
   await loadSchedules()
 }
 
-// --- watchers and sync ---------------------------------------------------------------------
-
-export const loadInbox = (key: string): Promise<InboxEntry[]> => team.inbox(key, { limit: 100 })
+// --- watchers ------------------------------------------------------------------------------
 
 /** The watchers boards elsewhere registered here, and what each tails: all of them with `manage` everywhere, or else your own. */
 export async function loadWatchers() {
@@ -1223,15 +1219,5 @@ export async function loadWatchers() {
     set((s) => ({ ...s, watchers: { is: 'here', items: watchers } }))
   } catch (error) {
     set((s) => ({ ...s, watchers: { is: 'failed', why: said(error) } }))
-  }
-}
-
-/** Where a thread is synced: each target, and the platform's link to its copy there. Nothing, on a board that syncs nothing. */
-export async function loadSynced(id: string): Promise<SyncedView['targets']> {
-  if ((state.discovery?.sync ?? []).length === 0) return []
-  try {
-    return (await team.sync(id)).targets
-  } catch {
-    return []
   }
 }

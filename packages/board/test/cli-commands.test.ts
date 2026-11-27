@@ -53,7 +53,6 @@ describe("the CLI's commands, as data", () => {
       const page = (await capture(() => main([...path.map((command) => command.name), '--help'], app))).stdout
       expect(page.endsWith('\n\nglobal:   --json  --as <profile>  --url <url>\n          and the rest every command takes: board help\n'), path.map((command) => command.name).join(' ')).toBe(true)
     }
-    expect((await capture(() => main(['sources', 'slack', 'read', '--help'], app))).stdout).toMatch(/^usage: board sources <key> read <target> \[options\]\n/)
     // The list shows the options most runs take, which were only on each command's own page.
     const list = (await capture(() => main(['--help'], app))).stdout
     expect(list).toMatch(/\n  post <channel\|id> \[text\] \[--label k=v\]\.\.\. \[--attach file\]\.\.\./)
@@ -93,9 +92,9 @@ describe("the CLI's commands, as data", () => {
       const name = path.map((command) => command.name).join(' ')
       // These hold until stopped, or run a server.
       if (['tail', 'wait', 'serve', 'help'].includes(path[0]!.name)) continue
-      const argv = path.flatMap((command, at) => [
+      const argv = path.flatMap((command) => [
         command.name,
-        ...command.arguments.filter((argument) => argument.required || (command.argumentsBeforeSubcommand && at < path.length - 1)).map((argument) => (argument.name === 'url' ? 'http://127.0.0.1:9/api/board' : argument.name === 'id' ? '1' : 'x')),
+        ...command.arguments.filter((argument) => argument.required).map((argument) => (argument.name === 'url' ? 'http://127.0.0.1:9/api/board' : argument.name === 'id' ? '1' : 'x')),
       ])
       const ran = await capture(() => main(argv, app))
       expect(ran.stderr, name).not.toMatch(/unknown command/)

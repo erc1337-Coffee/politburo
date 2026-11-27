@@ -7,7 +7,7 @@ type Agents = ReturnType<typeof board>['agents']
 const mount = new URL(BOARD_URL).pathname
 const discovery: Discovery = {
   version: '0.53.0', url: BOARD_URL, audience: BOARD_URL, team_id: null, project_id: null,
-  sync: [], agent_ops: true, agent_intents: true,
+  agent_ops: true, agent_intents: true,
 }
 const remoteError = { status: 502, code: 'remote_error' }
 

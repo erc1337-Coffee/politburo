@@ -47,9 +47,7 @@ export type CliCommand = {
   readonly filtersNote?: string
   readonly examples: readonly CliExample[]
   readonly subcommands?: readonly CliCommand[]
-  /** Its arguments come before its subcommand, as in `sources <key> read <target>`. */
-  readonly argumentsBeforeSubcommand?: true
-  /** It does something without a subcommand too, as `sources` lists the sync entries. */
+  /** It does something without a subcommand too. */
   readonly runsWithoutSubcommand?: true
   /** The subcommand its command runs when given none, as `channels` runs `channels list`. */
   readonly default?: true
@@ -66,7 +64,7 @@ export const options = {
   by: { type: 'string', value: 'handle', description: 'by an author: a handle, me, or an actor ID' },
   mentions: { type: 'string', value: '@handle', optionalValue: true, description: 'mentioning a handle or email, or you without one' },
   label: { type: 'string', multiple: true, value: 'k[=v|w]', description: "with a label on the message or its thread's root" },
-  source: { type: 'string', value: 'source', description: 'from a source: a sync key such as slack, or board' },
+  source: { type: 'string', value: 'source', description: "from a source, as a message's from names it: board for the board itself" },
   text: { type: 'string', value: 'words', description: 'containing this text, as one phrase (a substring, not word search)' },
   after: { type: 'string', value: 'id', description: 'only what came after a message or a cursor (read and wait print one)' },
   // Global: every command takes them.
@@ -81,8 +79,6 @@ export const options = {
   last: { type: 'string', value: 'N', description: "start with the feed's newest N events (1 to 100)" },
   before: { type: 'string', value: 'older', description: "a channel's threads before a page: the older its read printed" },
   'idempotency-key': { type: 'string', value: 'key', description: 'sending the same one again posts once' },
-  sync: { type: 'string', multiple: true, value: 'target', description: 'sync the new thread to a target too, e.g. slack:#incidents' },
-  'no-sync': { type: 'boolean', description: 'keep it on the board: sync it nowhere' },
   attach: { type: 'string', multiple: true, value: 'file', description: 'attach a file: up to 10 per message, each up to 100 MB (4 MB on some boards)' },
   // What a command takes from a file: a message's text, a plan of tasks, several grants, a schema. Each says which.
   file: { type: 'string', value: 'path', description: 'from a file: - reads stdin' },
@@ -394,9 +390,9 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
     description: 'the latest threads, one each (root, replies, latest reply), or one thread, every message',
     arguments: [
       {
-        name: 'channel|id|link',
+        name: 'channel|id',
         required: false,
-        description: "a channel (every channel without one), a message's ID, or a Slack or GitHub link the board synced",
+        description: "a channel (every channel without one), or a message's ID",
       },
     ],
     options: [option('limit', 'threads to list (default: 50, at most 500)'), option('before')],
@@ -416,7 +412,7 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
     brief: '[--label k=v]... [--attach file]...',
     description: 'a new thread in a channel, or with an ID, a reply in its thread',
     arguments: [{ name: 'channel|id', required: true, description: 'a channel, or a message ID to reply in its thread' }, text()],
-    options: [option('label', 'label it', 'k=v'), option('file', 'the text, from a file: - reads stdin'), option('schema'), option('attach'), option('sync', "sync the new thread to a target too, e.g. slack:#incidents"), option('no-sync'), option('idempotency-key'), option('after', AFTER)],
+    options: [option('label', 'label it', 'k=v'), option('file', 'the text, from a file: - reads stdin'), option('schema'), option('attach'), option('idempotency-key'), option('after', AFTER)],
     examples: [
       { name: 'start a thread', value: 'post dev "deploys are green again"' },
       { name: 'start a labeled thread', value: 'post dev "checkout times out" --label kind=bug' },
@@ -428,7 +424,7 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
     name: 'reply',
     description: 'a reply in a thread',
     arguments: [id('the ID of a message in the thread'), text()],
-    options: [option('label', 'label it', 'k=v'), option('file', 'the text, from a file: - reads stdin'), option('schema'), option('attach'), option('idempotency-key'), option('no-sync'), option('after', AFTER)],
+    options: [option('label', 'label it', 'k=v'), option('file', 'the text, from a file: - reads stdin'), option('schema'), option('attach'), option('idempotency-key'), option('after', AFTER)],
     examples: [
       { name: 'reply in a thread', value: 'reply 812 "on it"' },
       { name: 'reply with a label', value: 'reply 812 "fixed in a1b2c3" --label step=fix' },
@@ -441,7 +437,7 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
     brief: '(--in 5m | --at time | --every 30m)',
     description: 'post later, as you: once (--in or --at), or repeating (--every) until a stop or until canceled',
     arguments: [{ name: 'channel|id', required: true, description: 'a channel, or a message ID to reply in its thread' }, text()],
-    options: [option('in'), option('at'), option('every'), option('until'), option('for'), option('times'), option('label', 'label it', 'k=v'), option('file', 'the text, from a file: - reads stdin'), option('schema'), option('attach', 'attach a file to what it posts'), option('no-sync')],
+    options: [option('in'), option('at'), option('every'), option('until'), option('for'), option('times'), option('label', 'label it', 'k=v'), option('file', 'the text, from a file: - reads stdin'), option('schema'), option('attach', 'attach a file to what it posts')],
     examples: [
       { name: 'reply in a thread tomorrow', value: 'schedule 812 "still broken?" --in 1d' },
       { name: 'post every morning', value: 'schedule dev "standup" --at 2026-11-02T09:00:00Z --every 1d' },
@@ -509,61 +505,12 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
   },
   {
     group: 'messages',
-    name: 'typing',
-    description: "show typing in the thread's synced platform threads",
-    arguments: [id(), { name: 'status', required: false, description: 'what Slack shows instead of "Typing…"' }],
-    options: [],
-    examples: [{ name: 'show typing while you work', value: 'typing 812 "looking into it"' }],
-  },
-  {
-    group: 'messages',
-    name: 'sync',
-    description: "where the thread is synced, or with a target, attach it there (backfilling it)",
-    arguments: [id(), { name: 'target', required: false, description: 'where to sync it, e.g. slack:#incidents' }],
-    options: [],
-    examples: [
-      { name: 'list where a thread is synced', value: 'sync 812' },
-      { name: 'sync a thread to a Slack channel', value: 'sync 812 slack:#incidents' },
-    ],
-  },
-  {
-    group: 'messages',
     name: 'inbox',
-    description: 'raw platform events, for debugging sync',
-    arguments: [
-      { name: 'key', required: true, description: 'the sync entry, e.g. slack; use raw for read, ack, archive, or raw' },
-      { name: 'channel', required: false, description: 'the board channel its events went to' },
-    ],
-    options: [option('limit', 'events to list')],
-    runsWithoutSubcommand: true,
-    examples: [{ name: "list Slack's latest events", value: 'inbox slack' }],
-    subcommands: fork.inboxCommands(option),
-  },
-  {
-    group: 'messages',
-    name: 'sources',
-    description: "the board's sources: its sync entries (slack, github, …)",
-    arguments: [{ name: 'key', required: false, description: 'a sync entry, e.g. slack' }],
+    description: 'your operational inbox',
+    arguments: [],
     options: [],
-    runsWithoutSubcommand: true,
-    argumentsBeforeSubcommand: true,
-    examples: [{ name: "list the board's sources", value: 'sources' }],
-    subcommands: [
-      {
-        name: 'read',
-        description: "read a source's channel, thread, or message link without syncing it (full access only)",
-        arguments: [{ name: 'target', required: true, description: "a channel ('#general'), a thread, or a message link" }],
-        options: [option('limit', 'messages to read'), option('after', "where the last read left off: the cursor it printed")],
-        examples: [{ name: 'read a Slack channel', value: "sources slack read '#general'" }, { name: "read a Linear project's issues", value: 'sources linear read https://linear.app/acme/project/checkout-a1b2c3' }],
-      },
-      {
-        name: 'join',
-        description: 'add the app to a public channel so it can be read, where the board opted in (full access only)',
-        arguments: [{ name: 'channel', required: true, description: 'a channel or its link' }],
-        options: [],
-        examples: [{ name: 'join a Slack channel', value: "sources slack join '#general'" }],
-      },
-    ],
+    examples: [{ name: 'read your operational inbox', value: 'inbox read' }],
+    subcommands: fork.inboxCommands(option),
   },
   {
     group: 'messages',
@@ -618,8 +565,7 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
           claimNow,
           option('lease', 'with --claim: how long to hold it'),
           option('binding', 'with --claim: assignment metadata as JSON'),
-          option('file', 'a plan, from a JSON file (- reads stdin): an array of tasks, each { key?, text, labels?, needs?, for?, priority?, noSync?, attachments? }, all made, in as many writes as it takes'),
-          option('no-sync'),
+          option('file', 'a plan, from a JSON file (- reads stdin): an array of tasks, each { key?, text, labels?, needs?, for?, priority?, attachments? }, all made, in as many writes as it takes'),
           option('idempotency-key', 'sending the same one again makes it once'),
         ],
         examples: [
@@ -858,11 +804,9 @@ export function usage(path: readonly CliCommand[]): string {
   path.forEach((command, at) => {
     const last = at === path.length - 1
     words.push(command.name)
-    // A parent's arguments show before its subcommand only when it takes them there, and then the subcommand needs them.
-    if (last || command.argumentsBeforeSubcommand)
+    if (last)
       for (const argument of command.arguments) {
-        const required = argument.required || !last
-        words.push(`${required ? `<${argument.name}>` : `[${argument.name}]`}${argument.multiple ? '...' : ''}`)
+        words.push(`${argument.required ? `<${argument.name}>` : `[${argument.name}]`}${argument.multiple ? '...' : ''}`)
       }
   })
   if (path.at(-1)?.filters) words.push('[filters]')

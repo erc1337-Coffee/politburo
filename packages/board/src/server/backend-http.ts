@@ -176,11 +176,9 @@ export function createHttp(url: string | undefined, options: HttpOptions, enviro
 
   /**
    * The client a call of this deployment's own code goes through: a handle's, as the token's holder
-   * with its profile; a watcher's or the middleware's, as this deployment with theirs; and sync's,
-   * as the deployment itself.
+   * with its profile; a watcher's or the middleware's, as this deployment with theirs.
    */
   function clientOf(caller: SelfCaller): BoardClient {
-    if (caller.origin.via?.kind === 'engine') return own
     if (caller.origin.via?.kind === 'client') {
       if (caller.self !== null) asProfile(caller.self)
       // The handle itself is whoever the environment picks; `as()` names its own, or none.
@@ -198,7 +196,7 @@ export function createHttp(url: string | undefined, options: HttpOptions, enviro
   }
 
   let discovered: Promise<Discovery> | null = null
-  /** The board it uses' discovery, for a handle here: who it is, and the sync entries it lists. */
+  /** The board it uses' discovery, for a handle here: who it is, and what it supports. */
   const discovery = () =>
     (discovered ??= fetchDiscovery()).catch((error: unknown) => {
       discovered = null
@@ -238,7 +236,7 @@ export function createHttp(url: string | undefined, options: HttpOptions, enviro
     const refuseRedirect = pathOverride === completeWithEvidencePath || method === 'submitWork' || method === 'recordEvidence' || method === 'overrideEvidence' || method === 'resolveWorkEdge'
     if (method === 'upload') {
       const { data, name, type } = input as Protocol['upload']['input']
-      // Too big for one request (a platform file sync imports): straight to the board's blob store,
+      // Too big for one request: straight to the board's blob store,
       // where it signs uploads. Elsewhere, refused here, so no body goes over the wire to be refused.
       if (data.byteLength > ATTACHMENT_BYTES_MAX) {
         const attachment = await client.upload({ data: data as Uint8Array<ArrayBuffer>, name: name ?? 'file', ...(type ? { type } : {}) }).catch(rethrow)
@@ -400,8 +398,6 @@ export function createHttp(url: string | undefined, options: HttpOptions, enviro
     bind(next: BoardBinding) {
       if (binding) throw new Error('http: this backend already serves a board: create one http() per board()')
       for (const [id, spec] of Object.entries(next.subscriptions)) {
-        // Sync runs where the board keeps its log: the board it uses' own config.
-        if (spec.kind === 'sync') throw new Error(`http: sync doesn't run on a board that uses ${remote}: sync from that board's own config`)
         if (!PROFILE.test(id)) throw new Error(`watch ${id}: ${PROFILE_RULE}`)
         const { filters, all } = compileWatcher(id, spec)
         tails[id] = { filters, all }

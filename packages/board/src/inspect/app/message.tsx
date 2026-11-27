@@ -24,15 +24,12 @@ const MENU_EMOJI = ['thumbs_up', 'heart', 'laugh', 'party', 'eyes', 'check']
 export type RowOptions = {
   me: string
   viewer: Viewer
-  syncConfigured: boolean
   now: number
   known: KnownLabels
   /** Opens a message's thread; unset inside the thread itself. */
   openThread?: (id: string) => void
   /** A root's replies, summarized under it. */
   summary?: (m: MessageView) => ReplySummary | undefined
-  /** Sync key → platform, for each message's source mark. */
-  platforms?: Record<string, string>
   /** The page's state, where a root that's a task shows it in a line; unset in a thread, whose pane shows it in full. */
   board?: State
   /** The board's schema registry, once read: what each block's fields mean. */
@@ -414,7 +411,7 @@ export function MessageRow({ m, options, continued = false }: { m: MessageView; 
         <>
           <MenuSeparator />
           <MenuItem onClick={() => setEditing(m.id)}>edit message</MenuItem>
-          <MenuItem danger onClick={() => confirm(`Delete #${m.id}?${options.syncConfigured ? ' This may also remove synced copies.' : ''}`) && void board.remove(m.id)}>
+          <MenuItem danger onClick={() => confirm(`Delete #${m.id}?`) && void board.remove(m.id)}>
             delete message
           </MenuItem>
         </>
@@ -433,7 +430,6 @@ export function MessageRow({ m, options, continued = false }: { m: MessageView; 
         {name}
       </span>
       <Ago iso={m.createdAt} />
-      {m.noSync && options.syncConfigured && <span className="badge">board only</span>}
       {m.schedule && (
         <span className="badge" title={`sent by schedule ${m.schedule.id}: send ${m.schedule.n + 1}`}>
           <Clock size={10} /> scheduled
@@ -455,7 +451,7 @@ export function MessageRow({ m, options, continued = false }: { m: MessageView; 
           ) : (
             <span className="avatar-wrap">
               <Avatar name={name} src={picture} />
-              {m.from && <SourceLogo platform={sourcePlatform(m, options.platforms) ?? m.from} />}
+              {m.from && <SourceLogo platform={sourcePlatform(m) ?? m.from} />}
             </span>
           )}
         </div>}

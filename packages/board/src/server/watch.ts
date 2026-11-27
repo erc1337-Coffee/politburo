@@ -6,9 +6,9 @@ import type { Board } from './board.ts'
 import { boardContract, watchContract, watchSession } from '../contract/contract.ts'
 import type { BoardEvent, BoardEvents } from '../contract/events.ts'
 import { actorsReducer } from '../contract/reducers.ts'
-import type { Message, MessagesState } from '../contract/folds.ts'
+import type { MessagesState } from '../contract/folds.ts'
 import { FULL_ACCESS, type Access } from './access.ts'
-import { compileFilter, eventActor, eventView, foldEvent, loadBefore, OWN_CODE, view as messageView } from './feed.ts'
+import { compileFilter, eventActor, eventView, foldEvent, loadBefore, OWN_CODE } from './feed.ts'
 import { compileWatcher, type Compiled } from './watch-spec.ts'
 import type { BoardReads } from './reads.ts'
 import type { Registration, RegistryState, StoredPrincipal } from './registry.ts'
@@ -59,11 +59,6 @@ const WATCHED = [
 /** Receipts and a claim's renewals: only a `--all` tail shows them. */
 const RECEIPTS = new Set(['message.synced', 'message.files_synced', 'task.renewed'])
 
-/**
- * What a registrant's sync gets, in every channel where it may sync: what it delivers to platforms,
- * and a thread's new targets. A tail never shows `thread.synced`, so no watcher gets it.
- */
-const SYNCED = new Set(['message.posted', 'message.edited', 'message.deleted', 'reaction.added', 'reaction.removed', 'labels.changed', 'thread.synced'])
 
 /** A watcher writes as `board:watch:<id>`, and its own writes never wake it, but for a schedule's sends. */
 const actorOf = (id: string) => `board:watch:${id}`
@@ -175,8 +170,8 @@ export function createWatchers(options: {
     const thread = (event.payload as { thread: string }).thread
     let view: BoardEventView | undefined
     /** Each session's matches, appended together: one append per watcher in config, one per registrant. */
-    const appends = new Map<string, { type: 'watch.matched'; id: string; payload: { thread: string; event: unknown; watcher?: string; sync?: true } }[]>()
-    const add = (session: string, matched: { type: 'watch.matched'; id: string; payload: { thread: string; event: unknown; watcher?: string; sync?: true } }) =>
+    const appends = new Map<string, { type: 'watch.matched'; id: string; payload: { thread: string; event: unknown; watcher?: string } }[]>()
+    const add = (session: string, matched: { type: 'watch.matched'; id: string; payload: { thread: string; event: unknown; watcher?: string } }) =>
       (appends.get(session) ?? appends.set(session, []).get(session)!).push(matched)
     const registered = await registrations()
     const targets = [...configured, ...registered.flatMap(compiledFor)]
@@ -188,6 +183,7 @@ export function createWatchers(options: {
       return found
     }
     for (const watcher of targets) {
+      // A tail never shows a thread's sync targets.
       if (event.type === 'thread.synced') break
       if (by === watcher.actor && !scheduled) continue
       if (RECEIPTS.has(event.type) && !watcher.all) continue
@@ -213,23 +209,6 @@ export function createWatchers(options: {
         payload: { thread, event: shown, ...(registration ? { watcher: watcher.id } : {}) },
       })
     }
-    // A registrant's sync, in the channels where it may sync: a thread's sync is about its root.
-    const syncing = SYNCED.has(event.type) ? registered.filter((registration) => registration.sync.length > 0) : []
-    if (syncing.length > 0) {
-      const about = event.type === 'thread.synced' ? await rootOf(event.payload.thread, event.index, ctx.signal) : message
-      for (const registration of syncing) {
-        const now = await accessOf(registration)
-        if (!now || !about || !now.can('sync', about.channel)) continue
-        const reader = await reads!.reader(now, [about, ...(before ? [before] : [])])
-        // A label change re-renders a copy only when the labels change what it shows: sync compares them.
-        const shown = { ...eventView(event, about, actors, reader), ...(event.type === 'labels.changed' && before ? { before: messageView(before, actors, reader) } : {}) }
-        add(registrantSession(registration.owner), {
-          type: 'watch.matched',
-          id: await idempotentId('board-watch', `@${registration.owner}/@sync`, event.id),
-          payload: { thread, event: shown, sync: true },
-        })
-      }
-    }
     await Promise.all(
       [...appends].map(async ([session, events]) => {
         try {
@@ -243,13 +222,6 @@ export function createWatchers(options: {
     )
   }
 
-  /** A thread's root, as the board has it once the tables reach `index`: the event that synced it comes after it. */
-  async function rootOf(thread: string, index: number, signal: AbortSignal): Promise<Message | undefined> {
-    if (!reads) throw new Error('watchers used before the board bound them')
-    await reads.ensure(index - 1, signal)
-    return (await reads.tables.byEventId(thread)) ?? undefined
-  }
-
   /** The message `event` concerns, and its thread's root, as they were just before it. */
   async function messagesBefore(event: BoardEvent, signal: AbortSignal): Promise<MessagesState> {
     if (!reads) throw new Error('watchers used before the board bound them')
@@ -257,9 +229,8 @@ export function createWatchers(options: {
   }
 
   /**
-   * Matches board events against the watchers, on the same per-thread lanes as
-   * sync's but with its own place in the log: a watcher that fails holds up
-   * neither sync nor any other thread.
+   * Matches board events against the watchers, on per-thread lanes with its
+   * own place in the log: a watcher that fails holds up no other thread.
    */
   const boardConsumer = consumer({
     contract: boardContract,

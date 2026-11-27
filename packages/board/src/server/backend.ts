@@ -1,8 +1,6 @@
 import type { ModelRoute, RepositoryView } from '../contract/channel-settings.ts'
 import type { Protocol } from '../api/protocol.ts'
-import type { MessageView, SourceJoin, SourceRead } from '../api/routes.ts'
 import type { ProfileOption } from '../client/client.ts'
-import type { ExternalEvent } from '../contract/external.ts'
 import type { Actor } from '../contract/folds.ts'
 import type { Author } from '../contract/schemas.ts'
 import type { Access } from './access.ts'
@@ -30,7 +28,7 @@ export type VerifiedCaller = { identity: Identity; origin: WriteOrigin }
 export type SelfCaller = {
   /**
    * A handle (`via: client`, with the profile from `as(profile)`, or null for the board's own), a
-   * watcher, the middleware's handle (`via: middleware`), or sync (`via: engine`). Each backend
+   * watcher, or the middleware's handle (`via: middleware`). Each backend
    * decides who that is on its board: `board:client` and `board:client:<profile>` on local(), the
    * token's holder with that profile elsewhere.
    */
@@ -67,64 +65,17 @@ export type BackendRoute = {
   handle(request: Request, context: { caller: Caller | null; param: string | null }): Promise<Response>
 }
 
-/** The subscription sync's outbound runs on, in `BoardBinding.subscriptions`. No watcher's ID starts with `@`. */
-export const SYNC = '@sync'
-
-/** What runs on a board's events. */
-export type Subscription =
-  /** A watcher: every event its tail prints. */
-  | { kind: 'tail'; tail: string }
-  /** Sync's outbound: every post, change, and thread sync in every channel, as its own code sees them. */
-  | { kind: 'sync' }
-
-/** One of board()'s sync entries: its key and its platform. */
-export type SyncEntry = { key: string; platform: string }
-
-/** A platform event sync pushed to an inbox, as the backend delivers it back. */
-export type InboxDelivery = { event: ExternalEvent; raw: unknown }
+/** What runs on a board's events: a watcher, on every event its tail prints. */
+export type Subscription = { kind: 'tail'; tail: string }
 
 /** What a backend gets from the board it serves: once, in memory, when board() is created. */
 export type BoardBinding = {
   /** Start a new board paused. A backend that uses another board leaves this unread. */
   initiallyPaused: boolean
-  /** What runs on this board's events, by ID: this project's watchers, and sync's outbound at `SYNC` when it syncs. */
+  /** What runs on this board's events, by ID: this board's watchers. */
   subscriptions: Record<string, Subscription>
-  /**
-   * Runs one subscription on an event. A throw is the backend's to retry; `attempt` counts tries
-   * from 1, and sync gives up on a delivery, and says so, before the backend stops trying it.
-   */
+  /** Runs one subscription on an event. A throw is the backend's to retry; `attempt` counts tries from 1. */
   run(id: string, event: WatcherContext['event'], meta: { trigger: string; attempt: number }): Promise<void>
-  /**
-   * Runs one platform event this board's sync pushed to the backend's inbox, for a backend that
-   * delivers them in-process: one platform thread at a time, in order. `id` is the event's in the
-   * inbox, which the writes it makes derive their IDs from. A throw is the backend's to retry.
-   */
-  receive(key: string, item: InboxDelivery, meta: { id: string; attempt: number; signal: AbortSignal }): Promise<void>
-  /** Pulls and runs what this board's sync queued in a backend's inbox, for one that queues them: http()'s, when it's woken. */
-  pull(): Promise<number>
-  /** board()'s sync entries: what its sync imports through, and what discovery lists. */
-  sync: readonly SyncEntry[]
-  /**
-   * Reads a platform channel or thread with sync entry `key`'s app, which only board() has: what
-   * `readSource` answers. 404 `not_synced_here` for an entry it doesn't run.
-   */
-  readSource(key: string, target: string, limit: number, after: string | null): Promise<SourceRead>
-  /** Adds sync entry `key`'s app to a channel, where it opted in: what `joinSource` answers. 404 `not_synced_here` likewise. */
-  joinSource(key: string, target: string): Promise<SourceJoin>
-  /**
-   * The message a platform link names, as each platform this board syncs reads it: the platform,
-   * and its own thread and message IDs, the message null for a link to a thread. Any entry of that
-   * platform may have synced it, so a lookup tries each. Empty when no entry here reads it. It asks
-   * no platform anything.
-   */
-  locate(url: string): { platform: string; thread: string; message: string | null }[]
-  /** The platform's link to a copy sync recorded, by entry `key` here: null when none runs it, or its platform has none. */
-  linkOf(key: string, thread: string, message: string): Promise<string | null>
-  /**
-   * Shows typing in the platform threads a board thread (`messages`, its root first) is synced to,
-   * through board()'s sync: what `typing` answers. Answers the threads that took it.
-   */
-  typing(messages: readonly MessageView[], status: string | undefined): Promise<string[]>
   /**
    * What a principal the backend stored may do now, under board()'s defaults and the board's grants:
    * a schedule's creator at each send, a registrant at each event and pull. Null once it may do nothing.
@@ -169,7 +120,7 @@ export type InviteMethod = 'invites' | 'createInvite' | 'revokeInvite' | 'redeem
 
 /**
  * Where a board lives. board() serves the protocol over HTTP: it routes, validates, verifies each
- * caller, applies `access`, runs the middleware, watchers, and sync, and calls these with the caller
+ * caller, applies `access`, runs the middleware and watchers, and calls these with the caller
  * it verified. A backend stores and answers, honoring what each caller may do. Backends without
  * the agent registry, operational inbox or work evidence can omit their methods; board() answers 501 for them.
  */
@@ -208,17 +159,11 @@ export interface Backend extends Omit<ProtocolMethods, InviteMethod | AgentOpsMe
    * False when left out, as for a backend that only stores, where board() settles them.
    */
   readonly settlesMentions?: boolean
-  /**
-   * Whether board()'s sync runs its entry `key` here: false for one another deployment holds, as vercel()'s
-   * deployments of one project hold each of its keys once (production takes one from a preview). Sync takes webhooks,
-   * pulls its inbox, starts threads, and delivers only through the keys it holds. Every key, when left out.
-   */
-  syncedHere?(key: string): Promise<boolean>
   /** Its grants, for a backend that keeps them (`local()`): board() checks requests against them. */
   readonly trust?: Trust
   /**
    * board() calls it once, when it's created, before any request: what background work needs
-   * from the board (its subscriptions, its sync, its policy, a handle through it). It does no I/O.
+   * from the board (its subscriptions, its policy, a handle through it). It does no I/O.
    */
   bind(board: BoardBinding): void
 }

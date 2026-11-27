@@ -41,7 +41,6 @@ export function board(options: BoardOptions): Board {
     backend: () => {
       throw new Error('a test passes board() its backend')
     },
-    sync: () => import('../src/sync/engine.ts'),
     serving: environment,
   })
 }
