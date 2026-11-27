@@ -8,7 +8,7 @@ import * as board from './board.ts'
 import { toast } from './chrome.ts'
 import { HomeEmblem } from './home-emblem.tsx'
 import { Avatar } from './message.tsx'
-import { Link, useLocation, type Route } from './nav.tsx'
+import { Link, navigate, useLocation, type Route } from './nav.tsx'
 import type { State } from './store.ts'
 import { ContextMenuArea, MenuItem } from './ui.tsx'
 import { nameFor, pictureFor } from './identity.ts'
@@ -73,7 +73,6 @@ export function Sidebar({ state, current, onHome, onCollapse }: { state: State; 
   const viewer = board.viewerOf(state.me!)
   const manages = (path: string) => viewer.may('manage', path)
   const isHidden = (path: string) => hidden.includes(path)
-  const toggleHidden = (path: string) => setHidden(isHidden(path) ? hidden.filter((p) => p !== path) : [...hidden, path])
   const groups = useMemo(() => {
     const out = new Map<string, ChannelView[]>()
     for (const channel of Object.values(state.channels).sort((a, b) => a.path.localeCompare(b.path))) {
@@ -84,6 +83,17 @@ export function Sidebar({ state, current, onHome, onCollapse }: { state: State; 
     }
     return [...out]
   }, [state.channels, hidden, showHidden, current])
+  const toggleHidden = (path: string) => {
+    if (isHidden(path)) return setHidden(hidden.filter((p) => p !== path))
+    setHidden([...hidden, path])
+    // Hiding the open channel opens the one listed above it, or below it when it is the first.
+    if (current.view !== 'channel' || current.channel !== path) return
+    const listed = groups.flatMap(([, channels]) => channels.map((channel) => channel.path))
+    const at = listed.indexOf(path)
+    const stays = (p: string) => p !== path && (showHidden || !isHidden(p))
+    const next = listed.slice(0, at).findLast(stays) ?? listed.slice(at + 1).find(stays)
+    navigate(next ? `/c/${next}` : '/')
+  }
   const questions = useMemo(() => attentionTasks(state).length, [state.messages])
   const where = boardWords(state.discovery)
   const { params } = useLocation()

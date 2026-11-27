@@ -2443,3 +2443,27 @@ it('keeps the answering overlay after HTTP success until the real feed confirms'
   await vi.waitFor(() => expect(decision(a.id).textContent).toContain('answered · Ship it'))
   expect(inboxCount()).toBeUndefined()
 })
+
+it('opens the channel above the open one when it is hidden, or the one below when it is the first', async () => {
+  const { client, open } = await workbench()
+  for (const channel of ['alpha', 'beta', 'gamma']) await client.post(channel, `In ${channel}`)
+  const row = (channel: string) => document.querySelector<HTMLAnchorElement>(`.sidebar a.item[title="${channel}"]`)
+  const hide = (channel: string) => row(channel)!.querySelector<HTMLElement>('.eye')!.click()
+  const listed = () => [...document.querySelectorAll<HTMLAnchorElement>('.sidebar section a.item')].map((a) => a.title)
+  const opened = () => document.querySelector('.sidebar section a.item[aria-current="page"]')?.getAttribute('title')
+
+  await open('/c/beta')
+  await vi.waitFor(() => expect(opened()).toBe('beta'))
+  hide('beta')
+  await vi.waitFor(() => expect([opened(), location.pathname.endsWith('/c/alpha')]).toEqual(['alpha', true]))
+  expect(listed()).toEqual(['alpha', 'gamma'])
+  hide('alpha')
+  await vi.waitFor(() => expect(opened()).toBe('gamma'))
+  expect(listed()).toEqual(['gamma'])
+  // Hiding a channel that is not open opens nothing else.
+  await client.post('delta', 'In delta')
+  await vi.waitFor(() => expect(row('delta')).not.toBeNull())
+  hide('delta')
+  await vi.waitFor(() => expect(listed()).toEqual(['gamma']))
+  expect(opened()).toBe('gamma')
+})
