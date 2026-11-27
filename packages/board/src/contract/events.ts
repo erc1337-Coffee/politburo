@@ -7,12 +7,6 @@ import {
   ATTACHMENTS_PER_MESSAGE_MAX,
   SeenActorKind,
   Author,
-  AgentGeneration,
-  AgentHarness,
-  AgentIntent,
-  AgentRole,
-  IntentOutcome,
-  IntentReceipt,
   ChannelPath,
   Emoji,
   Handle,
@@ -23,7 +17,6 @@ import {
   MESSAGE_TEXT_MAX,
   Ref,
   RemoteWatcherId,
-  CAN_MAX,
   storable,
   TASK_NEEDS_MAX,
   TaskHoldKind,
@@ -33,8 +26,6 @@ import {
 } from './schemas.ts'
 import { ExternalEvent, ExternalTarget, Link, LINKS_PER_MESSAGE_MAX, Origin } from './external.ts'
 import { AttentionDraft, AttentionReceipt } from './attention.ts'
-import { evidenceEvents } from './evidence.ts'
-import { operationalEvents } from './operational-inbox.ts'
 import { channelSettingsEvents } from './channel-settings.ts'
 import { identityEvents } from './identities.ts'
 import { TaskBinding, TaskHandoff, TaskPark } from './task-authority.ts'
@@ -59,7 +50,6 @@ const Until = z.string().datetime()
 
 /** The board's one log. Every board fact is an event in session `board`. */
 export const boardEvents = {
-    ...operationalEvents,
     ...channelSettingsEvents,
     ...identityEvents,
     'message.posted': z.object({
@@ -203,7 +193,6 @@ export const boardEvents = {
     'task.handoff': z.object({ ...Task, handoff: TaskHandoff }),
     /** Reason `deleted` when its root was. */
     'task.canceled': z.object({ ...Task, reason: TaskNote, by: Author }),
-    ...evidenceEvents,
     /** A failed task reopens, waiting only if it failed on an attention hold before its needs completed. */
     'task.reopened': z.object({ ...Task, by: Author, waiting: z.literal(true).optional() }),
     /** An audited work stage change. `result` belongs to the handoff only. */
@@ -211,40 +200,6 @@ export const boardEvents = {
     // Request and answer each change the task state in the same event as their attention fact.
     'task.attention_requested': z.object({ ...Task, requestId: Ref, epoch: AttentionEpoch, draft: AttentionDraft, by: Author, replaces: Ref.optional() }),
     'task.attention_answered': z.object({ ...Task, requestId: Ref, epoch: AttentionEpoch, by: Author, receipt: AttentionReceipt }),
-    /** The private registry's current record after a register, heartbeat, or retire. */
-    'ops.agent_changed': z.object({
-      agent: z.object({
-        id: Ref,
-        channel: ChannelPath,
-        role: AgentRole,
-        parent: Ref.nullable(),
-        harness: AgentHarness,
-        binding: Author.pick({ principal: true, profile: true }),
-        generation: AgentGeneration,
-        status: z.enum(['enabled', 'disabled']),
-        heartbeatAt: Until.nullable(),
-      }),
-    }),
-    /** One private atomic snapshot, with only the issuer facts needed for policy rechecks. */
-    'ops.intents_issued': z.object({
-      intents: z.array(AgentIntent).min(1).max(64),
-      requestKey: z.string(),
-      requestHash: z.string(),
-      issuer: z.object({
-        id: ActorId,
-        kind: z.enum(['person', 'deployment', 'workflow', 'external']),
-        handle: Handle,
-        facts: z.object({
-          issuer: z.enum(['vercel', 'github', 'oidc', 'host', 'joined']),
-          iss: z.string(),
-          claims: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])),
-        }).optional(),
-        scope: z.string().max(CAN_MAX).optional(),
-        expiresAt: Until.nullable(),
-      }),
-    }),
-    'ops.intent_taken': z.object({ intentId: Ref, receipt: IntentReceipt }),
-    'ops.intent_reported': z.object({ intentId: Ref, receipt: IntentReceipt.extend({ outcome: IntentOutcome }) }),
     'actor.seen': z.object({
       actor: ActorId,
       kind: SeenActorKind,
@@ -286,8 +241,3 @@ export type BoardEvent<K extends keyof BoardEvents & string = keyof BoardEvents 
     createdAt: Date
   }
 }[K]
-
-/** Registry and operational inbox records stay out of the generic feed, even with `all`. */
-export type PublicBoardEvent = Exclude<BoardEvent, { type: `ops.${string}` | keyof typeof operationalEvents }>
-export const isPublicBoardEvent = (event: BoardEvent): event is PublicBoardEvent =>
-  !event.type.startsWith('ops.') && !Object.hasOwn(operationalEvents, event.type)

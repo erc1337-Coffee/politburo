@@ -24,7 +24,7 @@ type Match = { id: string; payload: { thread: string; event: unknown } }
 
 /**
  * One match, on its thread's lane: `run`, retried while it fails (by A2 on a local board, by the
- * tail on a person's Vercel board), then given up on and recorded so the thread's next event runs.
+ * tail on a board on `http()`), then given up on and recorded so the thread's next event runs.
  */
 export async function runMatch(input: {
   watcher: { id: string; run: (event: BoardEventView) => unknown }

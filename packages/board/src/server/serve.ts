@@ -1,8 +1,6 @@
 import { DEFAULT_TASK_PRIORITY } from '../contract/schemas.ts'
 import {
   AckBody,
-  AckOperationalMessageBody,
-  SendOperationalMessageBody,
   AssignTaskBody,
   AttentionAnswerBody,
   RequestAttentionBody,
@@ -13,7 +11,6 @@ import {
   ClaimReadyTaskBody,
   ClaimTaskBody,
   CompleteTaskBody,
-  CompleteWithEvidenceBody,
   ControlBody,
   CreateTaskBody,
   CreateTasksBody,
@@ -23,10 +20,6 @@ import {
   ParkTaskBody,
   ReleaseTaskBody,
   RenewTaskBody,
-  SubmitWorkBody,
-  RecordEvidenceBody,
-  OverrideEvidenceBody,
-  ResolveWorkEdgeBody,
   ReopenTaskBody,
   ScopeTaskBody,
   StageTaskBody,
@@ -34,17 +27,8 @@ import {
   DeleteBody,
   EditBody,
   EventsQuery,
-  InboxAckBody,
-  InboxNextQuery,
-  InboxPushBody,
-  InboxQuery,
-  IssueOpsIntentBody,
-  IssueOpsRoleIntentBody,
   LabelBody,
-  ListOpsAgentsQuery,
-  ListOpsIntentsQuery,
   MatchesQuery,
-  OpsAgentGenerationBody,
   PostBody,
   ReactBody,
   ChannelMessagesQuery,
@@ -53,64 +37,48 @@ import {
   CreateChannelBody,
   Ref,
   RegisterBody,
-  RegisterOpsAgentBody,
-  ReportOpsIntentBody,
   ScheduleBody,
   CreateGrantsBody,
-  CreateInviteBody,
   GrantBody,
   RevokeGrantBody,
   UpdateGrantBody,
   ExplainQuery,
   SchemaBody,
   SchedulesQuery,
-  SourceJoinBody,
-  SourceReadQuery,
-  LinkedQuery,
-  SyncBody,
-  SyncCopiesQuery,
-  SyncFindQuery,
-  SyncImportBody,
   UploadStartBody,
-  SyncReceiptBody,
   TASK_CLAIM_HOLD_HEADER,
   ThreadQuery,
   ThreadsQuery,
-  TypingBody,
   type MessageView,
 } from '../api/routes.ts'
 import type { Method, Protocol } from '../api/protocol.ts'
 import { boundTaskPaths } from '../api/task-authority.ts'
-import type { ExternalAuthor } from '../contract/external.ts'
 import type { Actor } from '../contract/folds.ts'
 import { ATTACHMENT_BYTES_MAX, MESSAGE_TEXT_MAX, RESERVED_LABEL_PREFIX, TASK_BATCH_MAX, type Attachment, type Labels } from '../contract/schemas.ts'
 import { findBlocks } from '../contract/blocks.ts'
 import type { SchemaDefinition } from '../contract/data-schemas.ts'
 import { checkValue } from '../contract/data-values.ts'
-import type { SyncEvent } from '../sync/engine.ts'
-import { SYNC, type Caller, type InboxDelivery, type ProtocolMethods, type SelfCaller, type VerifiedCaller } from './backend.ts'
+import type { Caller, SelfCaller, VerifiedCaller } from './backend.ts'
 import { hostTrusted, type Board, type BoardContext } from './board.ts'
 import { derivedId, sha256 } from '../client/ids.ts'
-import { claimsOf, KNOWN_AGENTS, viaOf } from './actors.ts'
-import { importedHandle, userIdOf } from '../contract/profiles.ts'
+import { claimsOf, KNOWN_AGENTS } from './actors.ts'
 import type { CallerRequest } from './auth.ts'
-import { isJoinedCredential } from './policy.ts'
 import { avatarSvg } from './avatars.ts'
-import { badRequest, batchTooLarge, forbidden, HttpError, json, noAgentOps, noWorkEvidence, notFound, toErrorResponse, unauthorized } from './errors.ts'
+import { badRequest, batchTooLarge, forbidden, HttpError, json, notFound, toErrorResponse } from './errors.ts'
 import { extractMentions, settleMentions, type Mentioned, type MentionedActor } from '../contract/mentions.ts'
 import { DroppedError, runMiddleware, type Write, type WriteSource } from './middleware.ts'
 import { ConfigureChannelBody, RepositoriesQuery } from '../contract/channel-settings.ts'
 import { SetIdentityBody } from '../contract/identities.ts'
-import { ATTENTION_METHODS, createRouter, INVITE_METHODS, isAgentIntentMethod, isAgentOpsMethod, isOperationalInboxMethod, isWorkEvidenceMethod, METHODS, openapi, queryObject, readCapped, readJson, type BoardRoute } from './routing.ts'
+import { ATTENTION_METHODS, createRouter, openapi, queryObject, readCapped, readJson } from './routing.ts'
 import { authorize, compileAccess, FULL_ACCESS, parseCan, type Access } from './access.ts'
-import { syncTarget, type SyncTarget } from './targets.ts'
-import { SYNC_ACTOR, type WriteOrigin } from './origin.ts'
+import type { WriteOrigin } from './origin.ts'
 import type { WatcherContext } from './watcher.ts'
 import { VERSION } from '../version.ts'
-import { atAudience, CONTROL, noInvites, redeem, SECRET_RESPONSE } from './politburo-serve.ts'
 
 /** The methods whose answer is something new. */
-const CREATED = new Set<Method>(['post', 'schedule', 'createTask', 'createTasks', 'requestTaskAttention', 'upload', 'uploadFinish', 'createInvite', 'sendOperationalMessage'])
+const CREATED = new Set<Method>(['post', 'schedule', 'createTask', 'createTasks', 'requestTaskAttention', 'upload', 'uploadFinish'])
+/** The board's work admission control, which a backend may leave out. */
+const CONTROL = new Set<Method>(['status', 'pause', 'resume'])
 
 /**
  * Refuses a label write under `board.`: those keys are the board's own, which only its task writes
@@ -145,7 +113,7 @@ function attachmentResponse({ attachment, data }: Protocol['attachment']['output
 }
 
 /** A method's input, from the request: its path's `:id` or `:key`, its query, or its body, validated. */
-async function inputOf(name: Method, request: Request, url: URL, params: Record<string, string>, requiresWorkCommit?: true): Promise<unknown> {
+async function inputOf(name: Method, request: Request, url: URL, params: Record<string, string>): Promise<unknown> {
   const id = params.id ?? ''
   const key = params.key ?? ''
   const body = () => readJson(request)
@@ -158,34 +126,23 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
       return ActorsQuery.parse(queryObject(url))
     case 'watchers':
     case 'grants':
-    case 'invites':
     case 'schemas':
     case 'status':
-    case 'readOperationalInbox':
     case 'modelRoutes':
     case 'identities':
       return {}
     case 'pause':
     case 'resume':
       return ControlBody.parse(await body())
-    case 'sendOperationalMessage':
-      return SendOperationalMessageBody.parse(await body())
-    case 'ackOperationalMessage':
-      return { id: Ref.parse(id), ...AckOperationalMessageBody.parse(await body()) }
-    case 'archiveOperationalMessage':
-      return { id: Ref.parse(id) }
     case 'message':
       return { id, ...ThreadQuery.parse(queryObject(url)) }
     case 'posted':
-    case 'workEvidence':
-    case 'synced':
     case 'cancelSchedule':
     case 'unblockTask':
     case 'taskAttention':
     case 'schema':
     case 'attachment':
     case 'uploadFinish':
-    case 'revokeInvite':
       return { id }
     case 'channelMessages':
       return ChannelMessagesQuery.parse(queryObject(url))
@@ -193,25 +150,6 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
       return ThreadsQuery.parse(queryObject(url))
     case 'schedules':
       return SchedulesQuery.parse(queryObject(url))
-    case 'listOpsAgents':
-      return ListOpsAgentsQuery.parse(queryObject(url))
-    case 'registerOpsAgent':
-      return RegisterOpsAgentBody.parse(await body())
-    case 'heartbeatOpsAgent':
-    case 'retireOpsAgent':
-      return { agent: Ref.parse(params.agent), ...OpsAgentGenerationBody.parse(await body()) }
-    case 'issueOpsIntent':
-      return { agent: Ref.parse(params.agent), ...IssueOpsIntentBody.parse(await body()) }
-    case 'issueOpsRoleIntent':
-      return IssueOpsRoleIntentBody.parse(await body())
-    case 'listOpsIntents':
-      return { agent: Ref.parse(params.agent), ...ListOpsIntentsQuery.parse(queryObject(url)) }
-    case 'takeOpsIntent':
-      return { id: Ref.parse(id), ...OpsAgentGenerationBody.parse(await body()) }
-    case 'reportOpsIntent':
-      return { id: Ref.parse(id), ...ReportOpsIntentBody.parse(await body()) }
-    case 'getOpsHealth':
-      return { task: Ref.parse(params.task) }
     case 'matches':
       return MatchesQuery.parse(queryObject(url))
     case 'events': {
@@ -260,7 +198,7 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
     case 'releaseTask':
       return { id, ...ReleaseTaskBody.parse(await body()) }
     case 'completeTask':
-      return { id, ...(requiresWorkCommit ? CompleteWithEvidenceBody : CompleteTaskBody).parse(await body()) }
+      return { id, ...CompleteTaskBody.parse(await body()) }
     case 'failTask':
       return { id, ...FailTaskBody.parse(await body()) }
     case 'blockTask':
@@ -288,20 +226,10 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
       return { id, ...TaskPriorityBody.parse(await body()) }
     case 'cancelTask':
       return { id, ...CancelTaskBody.parse(await body()) }
-    case 'submitWork':
-      return { id, ...SubmitWorkBody.parse(await body()) }
-    case 'recordEvidence':
-      return { id, ...RecordEvidenceBody.parse(await body()) }
-    case 'overrideEvidence':
-      return { id, ...OverrideEvidenceBody.parse(await body()) }
-    case 'resolveWorkEdge':
-      return { id, ...ResolveWorkEdgeBody.parse(await body()) }
     case 'createGrant':
       return GrantBody.parse(await body())
     case 'createGrants':
       return CreateGrantsBody.parse(await body())
-    case 'createInvite':
-      return CreateInviteBody.parse(await body())
     case 'updateGrant':
       return { id, ...UpdateGrantBody.parse(await body()) }
     case 'revokeGrant':
@@ -334,65 +262,13 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
     }
     case 'uploadStart':
       return UploadStartBody.parse(await body())
-    case 'syncImport':
-      return SyncImportBody.parse(await body())
-    case 'syncReceipt':
-      return SyncReceiptBody.parse(await body())
-    case 'syncThread':
-      return { thread: params.thread ?? '' }
-    case 'syncFind':
-      return SyncFindQuery.parse(queryObject(url))
-    case 'syncCopies':
-      return SyncCopiesQuery.parse(queryObject(url))
-    case 'inboxPush':
-      return { key, ...InboxPushBody.parse(await body()) }
-    case 'inboxNext':
-      return { key, ...InboxNextQuery.parse(queryObject(url)) }
-    case 'inboxAck':
-      return { key, id, ...InboxAckBody.parse(await body()) }
-    case 'inbox':
-      return { key, ...InboxQuery.parse(queryObject(url)) }
-    case 'typing':
-      return { id, ...(TypingBody.parse(await body()) ?? {}) }
-    case 'readSource':
-      return { key, ...SourceReadQuery.parse(queryObject(url)) }
-    case 'joinSource':
-      return { key, ...SourceJoinBody.parse(await body()) }
-    case 'linked':
-      return LinkedQuery.parse(queryObject(url))
   }
 }
 
-/**
- * A sync callback's caller: the platform user its event came from, on sync entry `key`, and how to
- * answer them in the event's platform thread. Its client's writes are imports as that user, and the
- * rest it does as sync.
- */
-export type PlatformCaller = {
-  platform: { author: ExternalAuthor; key: string; respond: (text: string) => Promise<void> }
-  origin: WriteOrigin & { via: Extract<WriteSource, { kind: 'sync' }> }
-}
-
-/**
- * A platform user an import by `importer` is by, as the board records them: themselves for the
- * board's own sync on a board that keeps its log here, which checked them, and a profile of
- * anyone else's principal, whose word they are, under its name.
- */
-const externalActor = (author: ExternalAuthor, importer: { principal: string; actor: Actor }): Actor => {
-  const own = importer.principal === SYNC_ACTOR
-  return {
-    id: own ? author.id : `${importer.principal}+${author.id}`,
-    kind: 'external',
-    handle: own ? author.handle : importedHandle(viaOf({ id: importer.principal, handle: importer.actor.handle }).name, author.handle, userIdOf(author.id)),
-    name: author.name,
-    avatar: author.avatar,
-  }
-}
-
-/** A write's caller, as the middleware is told: where it came from. The middleware's own handle and sync's lookups skip it. */
+/** A write's caller, as the middleware is told: where it came from. The middleware's own handle skips it. */
 function sourceOf(caller: Caller): WriteSource | null {
   const via = caller.origin.via
-  if (via?.kind === 'middleware' || via?.kind === 'engine') return null
+  if (via?.kind === 'middleware') return null
   return via ?? { kind: 'api' }
 }
 
@@ -401,36 +277,25 @@ const MIDDLEWARE: SelfCaller = { self: 'middleware', origin: { via: { kind: 'mid
 /** board()'s own code, for what it looks up itself. */
 const OWN: SelfCaller = { self: null, origin: { via: { kind: 'client', name: null } } }
 
-/** board()'s server half, for its handle: what serving, watching, and syncing need, loaded on first use. */
+/** board()'s server half, for its handle: what serving and watching need, loaded on first use. */
 export type Serve = {
   /** Serves a request, or one of this deployment's own calls as `injected`. */
-  dispatch(request: Request, injected: Caller | PlatformCaller | null): Promise<Response>
+  dispatch(request: Request, injected: Caller | null): Promise<Response>
   /** An in-process client's call, as `caller`: its posts get IDs derived from `trigger`, counting `writes`. */
-  inject(request: Request, caller: Caller | PlatformCaller, trigger: string | null, writes: { made: number }): Promise<Response>
+  inject(request: Request, caller: Caller, trigger: string | null, writes: { made: number }): Promise<Response>
   run(id: string, event: WatcherContext['event'], meta: { trigger: string; attempt: number }): Promise<void>
-  receive(key: string, item: InboxDelivery, meta: { id: string; attempt: number; signal: AbortSignal }): Promise<void>
-  pull(): Promise<number>
-  /** What `readSource` reads with: sync entry `key`'s app, a 404 `not_synced_here` for one this board doesn't run. */
-  readSource(key: string, target: string, limit: number, after: string | null): Promise<Protocol['readSource']['output']>
-  /** What `joinSource` joins with: sync entry `key`'s app, a 404 `not_synced_here` for one this board doesn't run. */
-  joinSource(key: string, target: string): Promise<Protocol['joinSource']['output']>
-  /** What `typing` shows typing with: the platforms this board syncs. */
-  typing(messages: readonly MessageView[], status: string | undefined): Promise<string[]>
 }
 
 /**
  * The board, serving the protocol over HTTP on its backend: it routes and validates each request,
  * verifies its caller, applies `access`, runs the middleware, and calls the backend's method of the
- * same name with the caller it verified. Sync runs here too, for requests and for its own code.
+ * same name with the caller it verified.
  */
 export async function createServe(context: BoardContext): Promise<Serve> {
-  const { options, backend, runtime, policy } = context
-  const entries = options.sync ?? {}
-  // The sync engine, and the adapters it drives, only for a board that syncs.
-  const engine = Object.keys(entries).length > 0 ? (await runtime.sync()).createSyncEngine(entries) : null
+  const { options, backend, policy } = context
   const streamMaxMs = options.streamMaxMs ?? 280_000
   const route = createRouter(backend.routes, options.basePath)
-  const { state, ownUrl, clientAs, handleOf } = context
+  const { state, ownUrl, handleOf } = context
   const watch = options.watch ?? {}
   const middleware = options.middleware ?? []
 
@@ -440,7 +305,6 @@ export async function createServe(context: BoardContext): Promise<Serve> {
     const credential = header.match(/^Bearer\s+(.+)$/i)?.[1] ?? null
     // Only a token is checked against the audience: a request without one (a cookie, no one) needs no URL to be sure of.
     const audience = credential === null ? (options.url?.replace(/\/+$/, '') ?? at) : audienceOf(at)
-    if (backend.trust?.joined && isJoinedCredential(credential) && !atAudience(at, audience)) throw unauthorized('invalid board credential')
     return { credential, claims: claimsOf(request.headers), audience, headers: request.headers }
   }
 
@@ -458,7 +322,7 @@ export async function createServe(context: BoardContext): Promise<Serve> {
     if (options.url) return options.url.replace(/\/+$/, '')
     if (hostTrusted(options)) return at
     if (typeof process !== 'undefined' && process.env.NODE_ENV === 'production')
-      throw new HttpError(500, 'no_board_url', "this board has no URL to check a token's audience against, and outside Vercel a request's Host is its sender's to choose", {
+      throw new HttpError(500, 'no_board_url', "this board has no URL to check a token's audience against, and a request's Host is its sender's to choose", {
         hint: "Pass board({ url: 'https://<host>/api/board' }), the URL people reach it at.",
       })
     if (!warned) console.warn(`[board] no url: verifying tokens for ${at}, the host requests name. Pass board({ url }) before this serves in production.`)
@@ -466,52 +330,18 @@ export async function createServe(context: BoardContext): Promise<Serve> {
     return at
   }
 
-  /**
-   * What a board that serves no requests answers them: one that uses another board's. One on
-   * Vercel's still takes wake-ups and webhooks; one at `BOARD_URL` has neither.
-   */
-  const servesOnly = () =>
-    new HttpError(404, 'not_found', `${ownUrl() ?? 'this board'} answers ${backend.routes.length > 0 || engine ? 'only wake-ups and webhooks' : 'nothing itself'}`)
-
-  /**
-   * A sync target as the board that syncs it resolves it. One for an entry this board doesn't
-   * have goes on as it is, for the sync that does, unless this board syncs: then it's a mistake.
-   */
-  async function resolveTarget(target: string | SyncTarget): Promise<SyncTarget> {
-    if (typeof target !== 'string') return target
-    const at = target.indexOf(':')
-    if (at <= 0) throw badRequest(`sync targets look like <key>:<channel or thread>, got: ${target}`)
-    const key = target.slice(0, at)
-    if (engine && entries[key]) return engine.normalizeTarget(target)
-    if (engine) throw badRequest(`no sync entry named ${key}`)
-    return syncTarget(target)
-  }
+  /** What a board that serves no requests answers them: one that uses another board's, at `BOARD_URL`. */
+  const servesOnly = () => new HttpError(404, 'not_found', `${ownUrl() ?? 'this board'} answers nothing itself`)
 
   /**
    * What a verified caller may do, as board()'s `access` said when it verified them: board() checks
-   * it before it does anything for them past calling the backend (a platform call, sync's own write,
-   * reading an upload, the middleware), so a caller it won't let in starts none of it. Null for this
+   * it before it does anything for them past calling the backend (reading an upload, the
+   * middleware), so a caller it won't let in starts none of it. Null for this
    * deployment's own code, which may do everything, unless `as(profile, { can })` narrowed its
    * handle: then what that `can` leaves it, as a request narrowed with x-board-can is checked.
    */
   const accessOf = (caller: Caller): Access | null =>
     'identity' in caller ? caller.identity.principal.access : caller.can !== undefined ? FULL_ACCESS.narrow(parseCan(caller.can)) : null
-  /** Whether `caller` is narrowed with a `can`: a request's x-board-can, or a handle's from `as()`. */
-  const narrowed = (caller: Caller) => ('identity' in caller ? caller.identity.principal.scope !== undefined : caller.can !== undefined)
-
-  /**
-   * Whether board() may work for a write of `caller`'s that lands in `channel`, or in the thread of
-   * message `re`, which it must read: `post` there. One it may not goes to the backend as it came,
-   * for the backend to say why.
-   */
-  async function mayPost(caller: Caller, where: { channel?: string | undefined; re?: string | undefined }, signal: AbortSignal): Promise<{ access: Access | null; channel: string } | null> {
-    const access = accessOf(caller)
-    // This deployment's own code needs no lookup: it may.
-    if (access === null) return { access: null, channel: where.channel ?? '' }
-    const channel = where.channel ?? (where.re === undefined ? undefined : (await lookup(caller, where.re, signal))?.channel)
-    if (channel === undefined) return null
-    return access.can('post', channel) ? { access, channel } : null
-  }
 
   /** Who this deployment's own code is on its backend, asked once each: the middleware is told who's writing. */
   const selves = new Map<string, Promise<{ principal: string; actor: Actor }>>()
@@ -693,7 +523,7 @@ export async function createServe(context: BoardContext): Promise<Serve> {
 
   /**
    * A post through the middleware, then `send`: once board() knows it would land (a reply's root is
-   * there, and the caller may post, label, and sync where it does), with the files it may have. A
+   * there, and the caller may post and label where it does), with the files it may have. A
    * retry of one that landed stands, whatever the middleware would say now; one that wouldn't land
    * goes as it came, for the backend to say why.
    */
@@ -711,8 +541,7 @@ export async function createServe(context: BoardContext): Promise<Serve> {
     }
     const access = accessOf(caller)
     const labels = Object.keys(input.labels ?? {}).length > 0
-    const syncs = input.re === undefined && (input.sync?.length ?? 0) > 0
-    if (channel === undefined || (access && (!access.can('post', channel) || (labels && !access.can('label', channel)) || (syncs && !access.can('sync', channel)))))
+    if (channel === undefined || (access && (!access.can('post', channel) || (labels && !access.can('label', channel)))))
       return send(input)
     const attachments = await attachmentsOf(caller, input.attachments, signal)
     const { actor } = await whoIs(caller, signal)
@@ -808,122 +637,6 @@ export async function createServe(context: BoardContext): Promise<Serve> {
     return screen({ kind: 'edit', id: message.id, channel: message.channel, re: message.re, text: input.text }, actor, source, (write) => send({ ...input, text: write.text }))
   }
 
-  /**
-   * Where an import came from, as the middleware is told: the platform event sync says it's from,
-   * or what its entry and origin say. Null when it names an entry its caller doesn't sync, which
-   * the backend refuses.
-   */
-  async function importSource(
-    caller: Caller,
-    body: Extract<Protocol['syncImport']['input'], { op: 'post' | 'edit' }>,
-    found: MessageView | null,
-    signal: AbortSignal,
-  ): Promise<Extract<WriteSource, { kind: 'sync' }> | null> {
-    const key = body.source?.key ?? body.from
-    if (body.source) {
-      const known =
-        'identity' in caller
-          ? (await backend.watchers(caller, {}, signal)).watchers.some((registration) => registration.owner === caller.identity.principal.id && registration.sync.some((entry) => entry.key === key))
-          : entries[body.source.key] !== undefined
-      if (!known) return null
-    }
-    const origin = (body.op === 'post' ? body.origin : null) ?? found?.origin ?? null
-    return {
-      kind: 'sync',
-      key: key ?? '',
-      platform: body.author.id.slice(0, Math.max(0, body.author.id.indexOf(':'))),
-      channel: body.source?.channel ?? found?.origin?.channel ?? origin?.channel ?? '',
-      thread: body.source?.thread ?? (origin ? (origin.subthread ?? origin.thread) : ''),
-    }
-  }
-
-  /** The board message an import changes: the one it names, or the one its platform IDs are on the board as. */
-  async function importTarget(caller: Caller, body: Extract<Protocol['syncImport']['input'], { op: 'edit' }>, signal: AbortSignal): Promise<MessageView | null> {
-    let id = body.message ?? null
-    if (body.origin !== undefined) {
-      const { thread, message } = await backend.syncFind(caller, { thread: body.origin.thread, ...(body.origin.message !== undefined ? { message: body.origin.message } : {}) }, signal)
-      id = body.origin.message !== undefined ? message : thread === null ? null : (await backend.syncThread(caller, { thread }, signal)).root
-    }
-    return id === null ? null : lookup(caller, id, signal)
-  }
-
-  /**
-   * An import with only the platform users its text mentions, as it lands: one the sync function or
-   * the middleware wrote out of it isn't introduced to the board.
-   */
-  function introducing(body: Protocol['syncImport']['input']): Protocol['syncImport']['input'] {
-    if ((body.op !== 'post' && body.op !== 'edit') || !body.mentioned?.length) return body
-    const named = new Set(extractMentions(body.text).flatMap((token) => (token.kind === 'actor' ? [token.actor] : [])))
-    const { mentioned: all, ...rest } = body
-    const mentioned = all.filter((user) => named.has(user.id))
-    return mentioned.length ? { ...rest, mentioned } : rest
-  }
-
-  /**
-   * An import, through the middleware when it's a post or an edit that would land: what the
-   * middleware passed on, or what it responded when it dropped it, for sync to tell the author on
-   * the platform. A retry of one that landed stands.
-   */
-  async function syncImport(caller: Caller, body: Protocol['syncImport']['input'], signal: AbortSignal): Promise<Protocol['syncImport']['output']> {
-    if (body.op === 'post') ownLabels(body.labels)
-    if (body.op === 'labels') ownLabels(body.set, body.unset)
-    // What a sync writes on the board itself, as a platform user (`from: null`), is checked as any
-    // write, a sync callback's client's and a sync elsewhere's alike: only what came from a platform
-    // is text the board can't refuse. Checked again when the middleware changed it.
-    const written = (body.op === 'post' || body.op === 'edit') && body.from === null ? body.text : null
-    if (written !== null) await checkBlocks(written)
-    const send = async (patched: Protocol['syncImport']['input']) => {
-      if (written !== null && (patched.op === 'post' || patched.op === 'edit') && patched.text !== written) await checkBlocks(patched.text)
-      return backend.syncImport(caller, introducing(patched), signal)
-    }
-    if (middleware.length === 0 || caller.origin.via?.kind === 'middleware' || (body.op !== 'post' && body.op !== 'edit')) return send(body)
-    const access = accessOf(caller)
-    // One that can't import goes as it came, for the backend to say why: no sync, or narrowed with x-board-can.
-    if (access && (!access.anywhere('sync') || narrowed(caller))) return send(body)
-    const dropped = async (commit: () => Promise<Protocol['syncImport']['output']>) => {
-      try {
-        return await commit()
-      } catch (error) {
-        if (!(error instanceof DroppedError)) throw error
-        return { message: null, dropped: [...error.responses] }
-      }
-    }
-    if (body.op === 'post') {
-      if (body.id !== undefined && (await backend.syncFind(caller, { post: body.id }, signal)).message !== null) return send(body)
-      let channel = body.channel
-      let re: string | null = null
-      if (body.re !== undefined) {
-        const root = await lookup(caller, body.re, signal)
-        if (!root) return send(body)
-        channel = root.channel
-        re = root.re ?? root.id
-      }
-      if (channel === undefined || (access && !access.can('sync', channel))) return send(body)
-      const source = await importSource(caller, body, null, signal)
-      if (!source) return send(body)
-      const attachments = await attachmentsOf(caller, body.attachments, signal)
-      const author = externalActor(body.author, await whoIs(caller, signal))
-      return dropped(async () =>
-        screen({ kind: 'post', channel: channel!, re, text: body.text, labels: body.labels ?? {}, attachments }, author, source, async (write) =>
-          send({ ...body, text: write.text, labels: write.labels }),
-        ),
-      )
-    }
-    if ((body.origin === undefined) === (body.message === undefined)) return send(body)
-    const found = await importTarget(caller, body, signal)
-    const author = externalActor(body.author, await whoIs(caller, signal))
-    // Only an edit that would land reaches the middleware: the author's own, when it's named by board ID. A
-    // backend that names imports by the platform user alone (Vercel's, before profiles) stored them so.
-    const own = found !== null && (found.by.actor === author.id || found.by.actor === body.author.id)
-    if (!found || found.deleted || (access && !access.can('sync', found.channel)) || (body.message !== undefined && !own)) return send(body)
-    const source = await importSource(caller, body, found, signal)
-    if (!source) return send(body)
-    return dropped(async () =>
-      screen({ kind: 'edit', id: found.id, channel: found.channel, re: found.re, text: body.text }, author, source, async (write) => send({ ...body, text: write.text })),
-    )
-  }
-
-  /** A message as `caller` may read it, or null. */
   async function lookup(caller: Caller, id: string, signal: AbortSignal): Promise<MessageView | null> {
     try {
       const { message, replies } = await backend.message(caller, { id }, signal)
@@ -934,113 +647,14 @@ export async function createServe(context: BoardContext): Promise<Serve> {
     }
   }
 
-  /** A post, with the targets it names resolved once the caller may post and sync there, through the middleware. */
+  /** A post, through the middleware. */
   async function post(caller: Caller, input: Protocol['post']['input'], signal: AbortSignal): Promise<Protocol['post']['output']> {
     await checkWrite(caller, input.text, input.channel !== undefined ? { channel: input.channel } : { message: input.re! }, signal)
-    const send = (poster: Caller, body: Protocol['post']['input']) =>
-      screenPost(poster, body, signal, async (patched) => {
-        // What the middleware passed on is what's written: checked again when it changed the text.
-        if (patched.text !== input.text) await checkBlocks(patched.text)
-        return settling(poster, patched.text, async () => patched.re, signal, (text) => backend.post(poster, { ...patched, text }, signal), (answer) => answer.message.text)
-      })
-    // Without sync, nothing here calls a platform: its targets only take their shape.
-    if (!engine) return send(caller, input.sync?.length ? { ...input, sync: await Promise.all(input.sync.map(resolveTarget)) } : input)
-    const allowed = input.sync?.length ? await mayPost(caller, input, signal) : null
-    if (!allowed) return send(caller, input)
-    const { access, channel } = allowed
-    // A reply's targets are a mistake the backend names: only a new thread's go to the platform.
-    const syncs = input.re === undefined && (access === null || access.can('sync', channel))
-    return send(caller, syncs ? { ...input, sync: await Promise.all(input.sync!.map(resolveTarget)) } : input)
-  }
-
-  /**
-   * An import's answer, as a sync callback's client gets it: the message it wrote or changed, or the
-   * middleware's responses in the event's platform thread and a `DroppedError` when it dropped it.
-   */
-  async function landed(caller: PlatformCaller, answer: Protocol['syncImport']['output']): Promise<string | null> {
-    if (!answer.dropped) return answer.message
-    for (const text of answer.dropped) await caller.platform.respond(text)
-    throw new DroppedError(answer.dropped)
-  }
-
-  /**
-   * What a sync callback's client does, on any backend. Its own writes are imports, as the platform
-   * user the event came from, which the middleware sees as any import; everything else, its reads
-   * included, it does as sync. A change it names by ID is an import that names it so.
-   */
-  async function asPlatform(name: Method, caller: PlatformCaller, input: unknown, signal: AbortSignal): Promise<unknown> {
-    const sync = engine!
-    const me = sync.caller
-    const { author, key } = caller.platform
-    const { via } = caller.origin
-    const source = { key, channel: via.channel, thread: via.thread }
-    const change = async (body: Protocol['syncImport']['input']) => {
-      const message = await landed(caller, await syncImport(me, body, signal))
-      if (message === null) throw notFound(`message not found: #${(body as { message?: string }).message}`, 'message_not_found')
-      return { ok: true as const }
-    }
-    switch (name) {
-      case 'post':
-        return importPost(caller, input as Protocol['post']['input'], signal)
-      case 'edit': {
-        const { id, text, revision } = input as Protocol['edit']['input']
-        return change({ op: 'edit', author, from: null, message: id, text, source, ...(revision !== undefined ? { revision } : {}) })
-      }
-      case 'delete': {
-        const { id, revision } = input as Protocol['delete']['input']
-        return change({ op: 'delete', author, from: null, message: id, ...(revision !== undefined ? { revision } : {}) })
-      }
-      case 'react': {
-        const { id, emoji, remove } = input as Protocol['react']['input']
-        return change({ op: 'react', author, from: null, message: id, emoji, ...(remove !== undefined ? { remove } : {}) })
-      }
-      case 'label': {
-        const { id, set, unset, if: expected } = input as Protocol['label']['input']
-        return change({ op: 'labels', author, from: null, message: id, ...(set ? { set } : {}), ...(unset ? { unset } : {}), ...(expected ? { if: expected } : {}) })
-      }
-      default:
-        return invoke(name, me, input, signal)
-    }
-  }
-
-  /** A sync callback's post, as an import by its platform user: once per client ID, which the backend sees to. */
-  async function importPost(caller: PlatformCaller, input: Protocol['post']['input'], signal: AbortSignal): Promise<Protocol['post']['output']> {
-    const sync = engine!
-    const me = sync.caller
-    const { author, key } = caller.platform
-    const { via } = caller.origin
-    const read = async (id: string) => {
-      const message = await lookup(me, id, signal)
-      if (!message) throw notFound(`message not found: #${id}`, 'message_not_found')
-      return message
-    }
-    // A retry of one that landed: it stands, and its targets were recorded with it.
-    if (input.id !== undefined) {
-      const found = (await backend.syncFind(me, { post: input.id }, signal)).message
-      if (found !== null) return { message: await read(found) }
-    }
-    const targets = await Promise.all((input.sync ?? []).map(resolveTarget))
-    const message = await landed(
-      caller,
-      await syncImport(me, {
-        op: 'post',
-        author,
-        from: null,
-        origin: null,
-        source: { key, channel: via.channel, thread: via.thread },
-        ...(input.channel !== undefined ? { channel: input.channel } : { re: input.re! }),
-        text: input.text,
-        ...(input.labels ? { labels: input.labels } : {}),
-        ...(input.noSync ? { noSync: true } : {}),
-        ...(input.attachments?.length ? { attachments: input.attachments } : {}),
-        ...(input.id !== undefined ? { id: input.id } : {}),
-        ...(input.after !== undefined ? { after: input.after } : {}),
-      }, signal),
-    )
-    // The targets it asked for, as sync records a thread's.
-    for (const target of targets)
-      await backend.syncReceipt(me, { kind: 'thread', message: message!, target: target.target, targetKind: target.kind, cause: 'request' }, signal)
-    return { message: await read(message!) }
+    return screenPost(caller, input, signal, async (patched) => {
+      // What the middleware passed on is what's written: checked again when it changed the text.
+      if (patched.text !== input.text) await checkBlocks(patched.text)
+      return settling(caller, patched.text, async () => patched.re, signal, (text) => backend.post(caller, { ...patched, text }, signal), (answer) => answer.message.text)
+    })
   }
 
   let claims = Promise.resolve()
@@ -1088,15 +702,6 @@ export async function createServe(context: BoardContext): Promise<Serve> {
 
   /** The protocol method `name`, as board() serves it: what it posts, edits, and imports goes through the middleware. */
   async function invoke(name: Method, caller: Caller, input: unknown, signal: AbortSignal): Promise<unknown> {
-    if (isOperationalInboxMethod(name)) {
-      const permission = name === 'sendOperationalMessage' ? 'post' : 'read'
-      const access = accessOf(caller)
-      if (access !== null && !access.everywhere(permission))
-        throw forbidden(`this token needs ${permission} in every channel to use the operational inbox`)
-      const method = backend[name] as ((caller: Caller, input: unknown, signal: AbortSignal) => Promise<unknown>) | undefined
-      if (!method) throw new HttpError(501, 'no_operational_inbox', 'this board keeps no operational inbox')
-      return method.call(backend, caller, input, signal)
-    }
     switch (name) {
       case 'post':
         ownLabels((input as Protocol['post']['input']).labels)
@@ -1201,8 +806,6 @@ export async function createServe(context: BoardContext): Promise<Serve> {
           return settling(caller, patched.text, thread, signal, (text) => backend.edit(caller, { ...patched, text }, signal))
         })
       }
-      case 'syncImport':
-        return syncImport(caller, input as Protocol['syncImport']['input'], signal)
       case 'schedule': {
         const body = input as Protocol['schedule']['input']
         ownLabels(body.labels)
@@ -1212,73 +815,17 @@ export async function createServe(context: BoardContext): Promise<Serve> {
           ? screenSchedule(caller, body, signal)
           : settling(caller, body.text, async () => body.re, signal, (text) => backend.schedule(caller, { ...body, text }, signal))
       }
-      case 'inbox': {
-        const query = input as Protocol['inbox']['input']
-        // A channel by name, for an entry this board has: its platform ID, for a caller that may sync.
-        if (engine && entries[query.key] && query.channel !== undefined) {
-          const access = accessOf(caller)
-          if (access === null || access.anywhere('sync')) return backend.inbox(caller, { ...query, channel: await engine.inboxChannel(query.key, query.channel) }, signal)
-        }
-        return backend.inbox(caller, query, signal)
-      }
-      case 'completeTask': {
-        const body = input as Protocol['completeTask']['input']
-        // A read method is not proof the complete path checks the commit. A board that keeps its
-        // own log accepts a commit only when its backend says it enforces the evidence. A board
-        // on another one forwards the write, and that backend checks the remote's discovery.
-        if (body.commit !== undefined && backend.keeps === true) {
-          const enforces = (backend as { enforcesCommitEvidence?: boolean | (() => boolean | Promise<boolean>) }).enforcesCommitEvidence
-          const enforced = typeof enforces === 'function' ? await enforces() : enforces === true
-          if (!enforced) throw noWorkEvidence()
-        }
-        return backend.completeTask(caller, body, signal)
-      }
       default: {
         const method = backend[name] as unknown
         if (typeof method !== 'function') {
           if (CONTROL.has(name)) throw new HttpError(501, 'no_network_pause', 'this board does not support network pause')
           if (ATTENTION_METHODS.has(name)) throw new HttpError(501, 'no_task_attention', 'this board does not support task attention')
-          if (isWorkEvidenceMethod(name)) throw noWorkEvidence()
           throw notFound(`no route: ${name}`)
         }
         return (method as (caller: Caller, input: unknown, signal: AbortSignal) => Promise<unknown>).call(backend, caller, input, signal)
       }
     }
   }
-
-  /** board()'s own routes for a caller: sync's, which run where board() does. */
-  async function serve(name: BoardRoute, caller: Caller, request: Request, url: URL, params: Record<string, string>): Promise<Response> {
-    const signal = request.signal
-    switch (name) {
-      case 'sync': {
-        // Attaching a thread is a `thread` receipt, recorded as the caller: it needs `sync` where the thread is,
-        // which a request's caller shows before its target goes to the platform to resolve.
-        const body = SyncBody.parse(await readJson(request))
-        const id = params.id ?? ''
-        const access = accessOf(caller)
-        if (access && engine) {
-          const message = await lookup(caller, id, signal)
-          if (!message) throw notFound(`message not found: #${id}`, 'message_not_found')
-          if (!access.can('sync', message.channel)) throw forbidden(`this token can't sync in ${message.channel}`)
-        }
-        const target = await resolveTarget(body.target)
-        const { attached } = await backend.syncReceipt(caller, { kind: 'thread', message: id, target: target.target, targetKind: target.kind, cause: 'request' }, signal)
-        return json({ target: target.target, attached: attached ?? true })
-      }
-      default:
-        throw notFound(`no route: ${request.method} ${url.pathname}`)
-    }
-  }
-
-  // Sync reads and writes through the backend's methods, its imports through the middleware first.
-  const synced = Object.fromEntries(
-    METHODS.map((name) => [name, name === 'syncImport' ? syncImport : (caller: Caller, input: never, signal: AbortSignal) => (backend[name] as (...args: unknown[]) => unknown).call(backend, caller, input, signal)]),
-  ) as unknown as ProtocolMethods
-  engine?.bind({
-    backend: synced,
-    client: (platform, trigger) => clientAs({ platform: { author: platform.author, key: platform.key, respond: platform.respond }, origin: { via: platform.via } }, trigger),
-    syncedHere: async (key) => (backend.syncedHere ? backend.syncedHere(key) : true),
-  })
 
   /**
    * Server-sent events, from the backend's long-poll: each event's `id` is its cursor, so
@@ -1339,15 +886,14 @@ export async function createServe(context: BoardContext): Promise<Serve> {
 
   /**
    * Discovery, as a request reaches the board: who the board is to it (the URL a token must be minted
-   * for, and the project people mint them with), which is board()'s to say, and the sync entries
-   * accounts link on. Those are the backend's, where it keeps the board; a board on `http()` lists its own.
+   * for, and the project people mint them with), which is board()'s to say, and what the backend
+   * that keeps the board supports.
    */
   async function discovery(request: Request, url: string, signal: AbortSignal): Promise<Response> {
     const { projectId, teamId } = await policy.discoveryIdentity(request.headers)
     const capabilities = backend.keeps ? await backend.discovery(OWN, {}, signal) : null
-    const sync = capabilities?.sync ?? Object.entries(entries).map(([key, entry]) => ({ key, platform: entry.platform }))
     return json({
-      version: VERSION, url, audience: url, team_id: teamId, project_id: projectId, sync,
+      version: VERSION, url, audience: url, team_id: teamId, project_id: projectId,
       ...(capabilities?.workLifecycle === 1 ? { workLifecycle: 1 } : {}),
       ...(capabilities?.accessFence === 1 ? {
         accessFence: 1,
@@ -1355,14 +901,10 @@ export async function createServe(context: BoardContext): Promise<Serve> {
       } : {}),
       ...(backend.supportsTaskAuthority === true ? { task_authority: true } : {}),
       ...(capabilities?.task_attention === true ? { task_attention: true } : {}),
-      ...(capabilities?.agent_ops === true ? { agent_ops: true } : {}),
-      ...(capabilities?.workEvidence ? { workEvidence: capabilities.workEvidence } : {}),
-      ...(capabilities?.agent_intents === true ? { agent_intents: true } : {}),
-      ...(capabilities?.politburo === 1 ? { politburo: 1 } : {}),
     }, 200, capabilities?.task_claim_hold === true ? { [TASK_CLAIM_HOLD_HEADER]: '1' } : undefined)
   }
 
-  async function dispatch(request: Request, injected: Caller | PlatformCaller | null): Promise<Response> {
+  async function dispatch(request: Request, injected: Caller | null): Promise<Response> {
     try {
       const url = new URL(request.url)
       const match = route(request.method, url.pathname)
@@ -1373,11 +915,6 @@ export async function createServe(context: BoardContext): Promise<Serve> {
       if (!injected && !match.root && (state.learned === null || state.learned.startsWith(`${match.base}/`))) state.learned = match.base
       const at = `${url.origin}${match.base}`.replace(/\/+$/, '')
 
-      if (target.kind === 'board' && target.name === 'webhook') {
-        // A platform can't send a credential the board verifies: its adapter verifies the request.
-        if (!engine || !entries[match.params.key ?? '']) throw notFound(`no sync entry named ${match.params.key}`)
-        return await engine.handleWebhook(match.params.key!, request)
-      }
       if (target.kind === 'board' && target.name === 'avatar') {
         const name = match.param ?? ''
         if (!(KNOWN_AGENTS as readonly string[]).includes(name)) throw notFound(`no avatar: ${name}`)
@@ -1386,43 +923,29 @@ export async function createServe(context: BoardContext): Promise<Serve> {
         })
       }
       if (target.kind === 'board' && target.name === 'openapi') return json(openapi())
-      // A backend's own routes check what they need: a wake-up carries no credential the board verifies.
-      if (target.kind === 'backend') return await target.route.handle(request, { caller: injected && 'platform' in injected ? engine!.caller : injected, param: match.param })
+      // A backend's own routes check what they need: a scheduler's delivery carries no credential the board verifies.
+      if (target.kind === 'backend') return await target.route.handle(request, { caller: injected, param: match.param })
 
       // Everything else is for a caller: this deployment's own code, or a request, which a board that
       // uses another board's doesn't serve. Nothing runs for one before that.
-      const ops = target.kind === 'protocol' && isAgentOpsMethod(target.name)
-        ? (isAgentIntentMethod(target.name) ? 'intents' : 'registry')
-        : null
-      if (!injected && !policy.open) throw ops ? noAgentOps(ops) : servesOnly()
+      if (!injected && !policy.open) throw servesOnly()
       if (!injected && target.kind === 'protocol' && target.name === 'discovery') return await discovery(request, audienceOf(at), request.signal)
-      if (target.kind === 'protocol' && target.name === 'redeemInvite') return await redeem(request, at, injected !== null, backend, OWN, ownUrl, audienceOf)
       if (target.kind === 'protocol' && !CONTROL.has(target.name) && !ATTENTION_METHODS.has(target.name)
-        && !isOperationalInboxMethod(target.name) && !isWorkEvidenceMethod(target.name) && typeof backend[target.name] !== 'function') {
-        if (INVITE_METHODS.has(target.name)) throw noInvites()
-        throw ops ? noAgentOps(ops) : notFound(`no route: ${request.method} ${url.pathname}`)
-      }
-      // A sync callback's client does everything but its own writes as sync, except private mail.
-      if (injected && 'platform' in injected && target.kind === 'protocol' && isOperationalInboxMethod(target.name))
-        throw forbidden('platform callbacks cannot use the operational inbox')
-      const own = injected && 'platform' in injected ? engine!.caller : injected
-      const asked = own ? null : requestOf(request, at)
-      const caller: Caller = own ?? (await callerOf(asked!))
-      if (target.kind === 'board') return await serve(target.name, caller, request, url, match.params)
+        && typeof backend[target.name] !== 'function')
+        throw notFound(`no route: ${request.method} ${url.pathname}`)
+      const asked = injected ? null : requestOf(request, at)
+      const caller: Caller = injected ?? (await callerOf(asked!))
+      if (target.kind === 'board') throw notFound(`no route: ${request.method} ${url.pathname}`)
 
-      if (INVITE_METHODS.has(target.name) && narrowed(caller)) throw forbidden("this caller is narrowed and can't manage invites")
-      const input = await inputOf(target.name, request, url, match.params, match.requiresWorkCommit)
+      const input = await inputOf(target.name, request, url, match.params)
       if (match.requiresTaskBinding && !(input as { binding?: unknown }).binding) throw badRequest('a bound task request needs binding')
       if (target.name === 'events' && (request.headers.get('accept') ?? '').includes('text/event-stream'))
         return await sse(caller, input as Protocol['events']['input'], request, asked ? () => callerOf(asked) : null)
-      const output = injected && 'platform' in injected ? await asPlatform(target.name, injected, input, request.signal) : await invoke(target.name, caller, input, request.signal)
+      const output = await invoke(target.name, caller, input, request.signal)
       if (target.name === 'attachment') return attachmentResponse(output as Protocol['attachment']['output'])
       // A channel that was there already is answered, not created.
       const made = CREATED.has(target.name) || (target.name === 'createChannel' && (output as Protocol['createChannel']['output']).created)
-      // Pending intents and health can change with time alone; a poll must not reuse a cached answer.
-      const headers = target.name === 'createInvite' ? SECRET_RESPONSE
-        : (ops && request.method === 'GET') || isOperationalInboxMethod(target.name) ? { 'cache-control': 'private, no-store' } : undefined
-      return json(output, made ? 201 : 200, headers)
+      return json(output, made ? 201 : 200)
     } catch (error) {
       // Stopped by its caller (a page reloaded, a long-poll let go): no one reads the answer, and
       // the abort isn't the board's failure. Any other failure still is, caller there or not.
@@ -1444,24 +967,9 @@ export async function createServe(context: BoardContext): Promise<Serve> {
       return dispatch(request, caller)
     },
     async run(id, event, { trigger, attempt }) {
-      if (id === SYNC && engine) return engine.deliver(event as SyncEvent, { attempt })
       const watcher = watch[id]
       if (!watcher) throw new Error(`this board has no watcher ${id}`)
       await watcher.run({ event, board: handleOf({ self: id, origin: { via: { kind: 'watcher', id } } }, trigger) })
     },
-    async receive(key, item, { id, attempt }) {
-      if (!engine) throw new Error(`this board has no sync, so nothing reads ${key}'s inbox`)
-      await engine.receive(key, item, { id, attempt })
-    },
-    pull: () => (engine ? engine.pull() : Promise.resolve(0)),
-    async readSource(key, target, limit, after) {
-      if (!engine || !entries[key]) throw notFound(`this board doesn't run sync entry ${key}: read it where its sync runs`, 'not_synced_here')
-      return engine.readSource(key, target, limit, after)
-    },
-    async joinSource(key, target) {
-      if (!engine || !entries[key]) throw notFound(`this board doesn't run sync entry ${key}: join it where its sync runs`, 'not_synced_here')
-      return engine.joinSource(key, target)
-    },
-    typing: async (messages, status) => (engine ? engine.typing(messages, status) : []),
   }
 }

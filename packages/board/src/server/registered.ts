@@ -17,14 +17,9 @@ export const LEASE_MS = 5 * 60_000
 /** After an error, a match waits 1 second, doubling to 30. */
 export const retryDelay = (attempts: number) => Math.min(30_000, 1000 * 2 ** (attempts - 1))
 
-/** The queue a registrant's sync pulls: every event it delivers. Watcher IDs start with a letter, so none is this. */
-export const SYNC_QUEUE = '@sync'
-/** The queue of platform events a registrant pushed for sync key `key`. */
-export const inboxQueue = (key: string) => `@inbox:${key}`
-
 type Pending = {
   id: string
-  /** A registered watcher's ID, `SYNC_QUEUE`, or an `inboxQueue`. */
+  /** A registered watcher's ID. */
   queue: string
   thread: string
   event: unknown
@@ -56,8 +51,7 @@ function remove(state: QueueState, id: string) {
 function foldQueue(state: QueueState, event: ContractEvent<WatchEvents>): QueueState {
   switch (event.type) {
     case 'watch.matched': {
-      const { watcher, sync, inbox, thread } = event.payload
-      const queue = watcher ?? (sync ? SYNC_QUEUE : inbox !== undefined ? inboxQueue(inbox) : undefined)
+      const { watcher: queue, thread } = event.payload
       // A config watcher's match runs in-process; only registered ones queue here.
       if (queue === undefined || state.pending[event.id]) return state
       state.pending[event.id] = { id: event.id, queue, thread, event: event.payload.event, attempts: 0, lease: null, retryAt: null }
@@ -120,13 +114,9 @@ export type QueueSession = {
 
 const describe = (error: unknown) => ((error instanceof Error ? error.message : String(error)) || 'unknown error').slice(0, 500)
 
-/**
- * Whether `access` may see `event` now, as it was matched: a message's channel, or every channel for
- * none. Sync's queue gets what its registrant may sync, since it speaks for platform users there.
- */
-function readable(access: Access, event: unknown, queue: string) {
+/** Whether `access` may see `event` now, as it was matched: a message's channel, or every channel for none. */
+function readable(access: Access, event: unknown) {
   const channel = (event as BoardEventView).message?.channel
-  if (queue === SYNC_QUEUE) return channel === undefined ? access.everywhere('sync') : access.can('sync', channel)
   return channel === undefined ? access.readsAll : access.readable(channel)
 }
 
@@ -139,25 +129,13 @@ const free = (found: Pending, now: number) => !(found.lease && found.lease.until
 /** One item a pull leased: what was queued, and the lease its ack names. */
 export type Leased = { id: string; queue: string; thread: string; event: unknown; lease: string; attempt: number }
 
-/**
- * Hands out what the registrant's watchers and sync may run now: each queue's oldest match, if it's
- * free, leased to this pull. The inbox's queues are `pullInbox`'s.
- */
+/** Hands out what the registrant's watchers may run now: each queue's oldest match, if it's free, leased to this pull. */
 export async function pull(
   session: QueueSession,
   options: { access: Access; limit: number; now: number },
 ): Promise<MatchView[]> {
-  const leased = await lease(session, { ...options, queues: (queue) => !queue.startsWith('@inbox:'), visible: (event, queue) => readable(options.access, event, queue) })
+  const leased = await lease(session, { ...options, queues: () => true, visible: (event) => readable(options.access, event) })
   return leased.map(({ id, queue, thread, lease, attempt, event }) => ({ id, watcher: queue, thread, lease, attempt, event: event as BoardEventView }))
-}
-
-/**
- * Hands out the platform events the registrant pushed for sync key `key`: each platform thread's
- * oldest, if it's free, while the registrant may still sync somewhere.
- */
-export function pullInbox(session: QueueSession, key: string, options: { access: Access; limit: number; now: number }): Promise<Leased[]> {
-  const queue = inboxQueue(key)
-  return lease(session, { ...options, queues: (name) => name === queue, visible: () => options.access.anywhere('sync') })
 }
 
 /**

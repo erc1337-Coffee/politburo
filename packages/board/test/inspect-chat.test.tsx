@@ -96,7 +96,7 @@ const message = (id: string, actor: string, name: string, text: string, blocks: 
   }) as unknown as MessageView
 
 const options = (chat: boolean): RowOptions => ({
-  me, now: at, syncConfigured: false, known: {} as RowOptions['known'], chat,
+  me, now: at, known: {} as RowOptions['known'], chat,
   viewer: { actor: me, principal: me, profile: null, may: () => false, manages: false, person: true } as unknown as RowOptions['viewer'],
 })
 

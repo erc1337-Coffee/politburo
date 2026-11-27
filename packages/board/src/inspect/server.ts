@@ -29,7 +29,7 @@ export type InspectorPage = {
 
 export const DEFAULT_PORT = 4747
 
-/** What a proxy adds to a request it forwards: Tailscale's sets `X-Forwarded-Host`, most others `X-Forwarded-For`. */
+/** What a proxy adds to a request it forwards: `X-Forwarded-Host`, `X-Forwarded-For`, and the like. */
 const FORWARDED = ['forwarded', 'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto', 'x-real-ip']
 
 /** The prebuilt UI where board is installed, read only when an inspector starts without one. */
@@ -42,16 +42,13 @@ const bundle = async () => (await import('./page.ts')).page()
  * the per-run token that only the page has, and writes must also come from its
  * origin. Your credential for the board never leaves this process. `hosts` adds
  * names a proxy in front of it serves the page on: whoever reaches the page there
- * acts as you, unless `visitor` says who a request is: a client that acts as them,
- * or null for one it can't name, which the proxy then refuses. A request a proxy
- * forwarded must name one of them: the server's own name is this machine's alone,
- * and a caller behind a proxy can send it too.
+ * acts as you. A request a proxy forwarded must name one of them: the server's own
+ * name is this machine's alone, and a caller behind a proxy can send it too.
  */
 export async function createInspector(options: {
   client: BoardClient
   page?: string
   hosts?: string[]
-  visitor?: (request: IncomingMessage) => BoardClient | null | undefined
   /** The orchestrator status and spend ledger the operations view reads. */
   operations?: OperationsOptions
 }): Promise<InspectorPage> {
@@ -77,8 +74,6 @@ export async function createInspector(options: {
   async function operationsRead(request: IncomingMessage, response: ServerResponse, url: URL) {
     if (!sameSecret(String(request.headers['x-inspect-token'] ?? ''), token))
       return json(response, 403, { error: { code: 'forbidden', message: "the operations view is reachable only from the inspector's own page" } })
-    if (options.visitor?.(request) === null)
-      return json(response, 401, { error: { code: 'unauthorized', message: 'the proxy in front of this page names no one for this request' } })
     const controller = new AbortController()
     streams.add(controller)
     response.on('close', () => controller.abort())
@@ -95,11 +90,6 @@ export async function createInspector(options: {
       return json(response, 403, { error: { code: 'forbidden', message: "the board is reachable only from the inspector's own page" } })
     const path = url.pathname.slice('/board'.length) || '/'
     if (relative(path)) return json(response, 400, { error: { code: 'bad_path', message: 'no relative paths' } })
-    // Whose page this is: yours, or where the proxy in front names its visitors, theirs.
-    const visiting = options.visitor?.(request)
-    if (visiting === null)
-      return json(response, 401, { error: { code: 'unauthorized', message: "the proxy in front of this page names no one for this request, so there's no one to act as" } })
-    const acting = visiting ?? client
     const controller = new AbortController()
     streams.add(controller)
     response.on('close', () => controller.abort())
@@ -119,7 +109,7 @@ export async function createInspector(options: {
           return json(response, 400, { error: { code: 'invalid_profile', message: error.message } })
         }
       }
-      const upstream = await acting.request(`${path}${url.search}`, {
+      const upstream = await client.request(`${path}${url.search}`, {
         as,
         method: request.method ?? 'GET',
         headers: {

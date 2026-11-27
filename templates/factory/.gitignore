@@ -1,8 +1,0 @@
-node_modules
-.next
-.eve
-.output
-.vercel
-.env*
-next-env.d.ts
-*.tsbuildinfo

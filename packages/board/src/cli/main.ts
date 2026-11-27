@@ -2,41 +2,34 @@ import { spawn } from 'node:child_process'
 import { readFile, stat, writeFile } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { parseArgs } from 'node:util'
-import { CHANNELS_LIMIT_MAX, GRANT_BATCH_MAX, THREADS_LIMIT_DEFAULT, THREADS_LIMIT_MAX, type AgentView, type GrantInput, type Me, type MessageView } from '../api/routes.ts'
+import { CHANNELS_LIMIT_MAX, GRANT_BATCH_MAX, THREADS_LIMIT_DEFAULT, THREADS_LIMIT_MAX, type GrantInput, type Me, type MessageView } from '../api/routes.ts'
 import { everyChannel } from '../client/channels.ts'
 import { withMentions } from '../api/tail.ts'
 import { BoardError, type ClaimedTask, type Filters, type ProfileOption, type Written } from '../client/client.ts'
 import type { Mentioned } from '../contract/mentions.ts'
-import { boardUrl, connect, environmentProfile, handFetch, handLogin, handToken, JOINED, PASSED, vercelProjectFile } from '../client/node.ts'
+import { boardUrl, connect, environmentProfile } from '../client/node.ts'
 import { http } from '../backend-http/index.ts'
-import { credentialed, credentialSource, handTeam, vercel } from '../backend-vercel/index.ts'
 import { board as boardAt, type Board } from '../server/index.ts'
-import { isBoardName } from '../server/board.ts'
-import { apiThreadRoot, isApiMessageId } from '../server/backend-vercel.ts'
 import { normalizeEmoji } from '../contract/emoji.ts'
-import { AttestationGate, Commit, Verdict } from '../contract/evidence.ts'
-import { AgentRole, ATTACHMENTS_PER_MESSAGE_MAX, DIRECT_UPLOAD_BYTES_MAX, IntentOutcome, IntentVerb, MESSAGE_TEXT_MAX, type AgentIntent, type Attachment, AttachmentId, TaskPriority, WorkStageTarget } from '../contract/schemas.ts'
+import { ATTACHMENTS_PER_MESSAGE_MAX, DIRECT_UPLOAD_BYTES_MAX, MESSAGE_TEXT_MAX, type Attachment, AttachmentId, TaskPriority, WorkStageTarget } from '../contract/schemas.ts'
 import { TaskBinding, TaskPacket } from '../contract/task-authority.ts'
 import { VERSION } from '../version.ts'
 import { explainPrincipalOf, explanationLine, GrantMisuse, grantCanOf, KINDS, patternsIn, principalsIn, type OptionToken } from './grants.ts'
 import { formatSchema, formatSchemas } from './schemas.ts'
 import { parseSchemaId } from '../contract/data-schemas.ts'
 import { block } from '../contract/blocks.ts'
-import { actorName, claimLine, formatAccess, formatAttention, formatConformance, formatEvent, formatGrants, grantRow, formatOperationalInbox, formatSchedule, formatTasks, grantCan, lineText, mentionedIn, reactionNames, formatSourceRead, formatSynced, formatThreadSummaries, formatThreads, terminalText, who } from './format.ts'
+import { actorName, claimLine, formatAccess, formatAttention, formatConformance, formatEvent, formatGrants, grantRow, formatSchedule, formatTasks, grantCan, lineText, mentionedIn, reactionNames, formatThreadSummaries, formatThreads, terminalText, who } from './format.ts'
 import { fileClaims, memoryClaims, tokenClaims, type ClaimProof, type Claims } from './claims.ts'
-import { runCommand } from './run.ts'
-import { AGENTS, allowRules, cliOf, disallow, installedHook, tilde, uninstallHook, type HookAgent } from './hooks.ts'
 import { commands, filters as filterOptions, globalOptions, options, type CliCommand } from './commands.ts'
 import { commandHelp, commandPath, rootHelp } from './help.ts'
 import { closest, commandLine, exitCode, failureDocument, formatFailure, type Failure, type Recovery, type Warning } from './failure.ts'
-import { AGENT_WRITES, agentConflictRecovery, doingAgents, formatAgent, missingAgent } from './politburo-agents.ts'
-import { checkConformance, inviteFailure, outputText, redactCredentials, runInvite, runJoin } from './politburo-invites.ts'
-import { boardStatus, doingInbox, inbox, portFlag } from './politburo-operations.ts'
+import { checkConformance } from './conformance.ts'
+import { boardStatus, portFlag } from './politburo-operations.ts'
 import { AttentionAnswerBody } from '../contract/attention.ts'
 import { attentionFrom, createPlan, doingTasks, heldBy, priorityOf, readyLabels, resetTaskBoard } from './politburo-tasks.ts'
 
 // Internal live bindings for the fork's command modules. They read these only when called.
-export { cli, client, connection, current, doing, failureOf, flags, io, isMessageRef, labelPairs, messageId, messageRef, named, onSameBoard, onThisBoard, ordered, out, profileFlag, ref, rerun, rerunWithout, result, seconds, sent, setSentLength, specOf, stateCommand, stopOn, taskId, typed, usage, vercelBoard }
+export { cli, client, connection, current, doing, failureOf, flags, io, isMessageRef, labelPairs, messageId, messageRef, named, onSameBoard, onThisBoard, ordered, out, profileFlag, ref, rerun, rerunWithout, result, seconds, sent, setSentLength, specOf, stateCommand, stopOn, taskId, typed, usage }
 
 /** A failure this run says in its own words: what a command throws to stop with it. */
 export class Failed extends Error {
@@ -58,7 +51,7 @@ function usage(message: string, options: { reason?: string; next?: Recovery[] } 
 /** A command's help page, which says how to use it. */
 const helpRecovery = (command = current.command): Recovery => ({ instruction: 'See how to use it', argv: [...cli(), ...(command ? [command] : []), '--help'] })
 
-/** This CLI's name as argv, to build a command a person runs: `['vb']`, `['vercel', 'board']`. */
+/** This CLI's name as argv, to build a command a person runs: `['vb']`. */
 const cli = () => named().split(' ')
 
 /** This run's command as typed, with `extra` where options go: before any `--`, after which everything is text. */
@@ -134,12 +127,12 @@ function markAttachmentId(args: string[]): string[] {
   }
   return args
 }
-/** Commands that are gone, and what to run instead. Their flags don't matter: an old hook's `vb update --skip` gets this too. */
+/** Commands that are gone, and what to run instead. Their flags don't matter. */
 function removedCommand(word: string): Failed | undefined {
   const gone = (next: Recovery[], why = '') => usage(`\`${named()} ${word}\` is gone.${why}`, { reason: 'unknown_command', next })
   const url: Recovery[] = [
     { instruction: "Pass the board's URL", argv: [...cli(), 'read', 'dev', '--url', '<URL>'] },
-    { instruction: "Or, in a Vercel project, its team's board needs no URL" },
+    { instruction: 'Or set BOARD_URL' },
   ]
   const removed: Record<string, () => Failed> = {
     update: () =>
@@ -199,43 +192,14 @@ export type CommandContext = {
   openBrowser: (url: string) => void
 }
 
-/**
- * The CLI an app runs: its name, as help, usage, and errors say it (`board`, `vercel board`),
- * and its own commands.
- */
+/** The CLI an app runs: its name, as help, usage, and errors say it (`board`), and its own commands. */
 export type App = {
   name: string
   commands: Record<string, Command>
-  /**
-   * With no board URL, it talks to the team's board in Vercel's API even outside a Vercel project:
-   * your login's team, as `vercel board` does. Without it, only in one (or with `--scope`).
-   */
-  teamBoard?: boolean
   /** Shows a failure as this app shows its own; without it, the CLI prints `error: …`, or with `--json`, its JSON document. */
   onError?: (failure: Failure, mode: { json: boolean }) => void
   /** Shows a warning, outside `--json` (where it's in the result's `warnings`); without it, the CLI prints `warning: …`. */
   onWarning?: (warning: Warning) => void
-  /**
-   * Your Vercel login, asked for only when a request needs it: the app's own, refreshed when it's
-   * asked. It's who every command runs as, wherever the app runs: nothing the environment holds
-   * goes ahead of it, a deployment's own token and `BOARD_TOKEN` included.
-   */
-  login?: () => Promise<string>
-  /**
-   * A Vercel token someone passed the app for this run (`vercel board --token`): the login to use
-   * in place of `login`. Board sends it itself, as a Bearer token, never through `fetch`.
-   */
-  token?: string
-  /**
-   * How board's requests to Vercel's API go with that login: the app's own fetch, which adds the
-   * login's credentials (a DPoP proof, say). Without it, board sends the login as a Bearer token.
-   */
-  fetch?: typeof fetch
-  /**
-   * The team whose board to use when `--scope` names none, as the app resolves its own (its link,
-   * its saved team), asked for only when a request needs it. Null is your login's default team.
-   */
-  team?: () => Promise<string | null>
 }
 
 type Flags = ReturnType<typeof parseAll>['values']
@@ -254,8 +218,6 @@ let typed: string[] = []
 let warnings: Warning[] = []
 /** The board this run reached by its URL, for a failure to name. */
 let reached: string | null = null
-/** The team whose default board this run reached, nothing naming one of its boards: `--scope`'s, or the one the environment finds. */
-let teamDefault: { team: string | undefined } | null = null
 /** Where the credential this run sent came from, as `whoami` says it, for a refusal to say which to replace. */
 let sent: () => string | null = () => null
 /** How long the message text this run sends is, for a backend's refusal of it to say what to do instead. */
@@ -263,7 +225,7 @@ let sentLength = 0
 const setSentLength = (length: number) => { sentLength = length }
 
 /**
- * The help `words` ask for: a command's page when they name one (`read`, `sources read`), or with
+ * The help `words` ask for: a command's page when they name one (`read`, `schedule cancel`), or with
  * none, every command. A word that names no command is unknown, as it is without `--help`.
  */
 function help(words: readonly string[] = []): string {
@@ -296,8 +258,6 @@ function parse(argv: string[]) {
     flags = parsed.values
     positionals = parsed.positionals.map((arg) => (arg.startsWith(MARK) ? arg.slice(MARK.length) : arg))
   } catch (error) {
-    // Unknown flags and values can themselves be the invite, even when it's malformed.
-    if (word === 'join' || word === 'invite') throw usage(`Invalid options for ${word}.`)
     throw parseFailure(error as Error & { code?: string }, argv, word)
   }
   // An option only another command takes would be dropped without a word (`edit --attach`): it's unknown here too.
@@ -342,7 +302,6 @@ function foreignOption(name: string, word: string): Failed {
   const renamed = renamedOption(name, word, typed)
   if (renamed) return renamed
   if (name === 'text' && TEXT.has(word)) return usage(`--text is a filter for read, tail, and wait. ${word} takes its text as an argument, in quotes.`)
-  if (name === 'sync' && word === 'schedule') return usage("Can't use --sync with schedule. A schedule posts where you point it.")
   if (name === 'attach' && word === 'edit') return usage("edit can't attach files: reply with the file instead.", { reason: 'unknown_option', next: [{ instruction: 'Reply with it', argv: [...cli(), 'reply', '<ID>', '<TEXT>', '--attach', '<FILE>'] }] })
   return usage(`Unknown option --${name} for ${named()} ${word}.`, { reason: 'unknown_option', next: [{ instruction: 'See all options', argv: [...cli(), word, '--help'] }] })
 }
@@ -447,11 +406,11 @@ const TERMINAL: Io = {
 let io: Io = TERMINAL
 
 // What a person reads can't drive their terminal; JSON otherwise keeps what the board said.
-const out = (text: string) => io.write(`${outputText(terminalText(text))}\n`)
+const out = (text: string) => io.write(`${terminalText(text)}\n`)
 /** `--json`'s result: one document, with what the run's writes warned about, indented at a terminal. */
-const result = (value: object) => io.write(`${outputText(JSON.stringify(warnings.length ? { ...value, warnings } : value, null, io.tty ? 2 : undefined))}\n`)
+const result = (value: object) => io.write(`${JSON.stringify(warnings.length ? { ...value, warnings } : value, null, io.tty ? 2 : undefined)}\n`)
 /** One line of a JSON stream (`tail`): compact, wherever it goes. */
-const line = (value: object) => io.write(`${outputText(JSON.stringify(value))}\n`)
+const line = (value: object) => io.write(`${JSON.stringify(value)}\n`)
 
 /** A message's ID as you'd write it: `#812` or `812`. It's passed to the board as it is. */
 function messageId(value: string | undefined, what = 'message ID'): string {
@@ -459,7 +418,7 @@ function messageId(value: string | undefined, what = 'message ID'): string {
   if (value === undefined) throw usage(`Missing the ${what}.`, { reason: 'missing_arguments' })
   if (!/^[^\s/]+$/.test(id)) throw usage(`${value} isn't a ${what}.`)
   // A thread's own ID, as a message's `thread` gives it, names its root.
-  return apiThreadRoot(id) ?? id
+  return id
 }
 
 /** Characters that change how a name reads without showing: invisible formatting (bidi overrides, zero-width), and line and paragraph separators. */
@@ -476,8 +435,8 @@ const exists = (path: string) =>
 const tooLarge = (path: string) =>
   new Failed({ class: 'limit', reason: 'payload_too_large', message: `Can't attach ${path}. It's over ${DIRECT_UPLOAD_BYTES_MAX / 1024 / 1024} MB, the most an attachment can be.` })
 
-/** Whether an ID goes in and out bare: a number, or one Vercel's API hands out (`msg_…`, or a thread's `thr_…`), a message even where a channel has its name. */
-const bareId = (value: string) => /^\d+$/.test(value) || isApiMessageId(value) || apiThreadRoot(value) !== null
+/** Whether an ID goes in and out bare: a number, a message even where a channel has its name. */
+const bareId = (value: string) => /^\d+$/.test(value)
 
 /** Whether an argument names a message rather than a channel: `#<id>`, or an ID that goes bare. */
 const isMessageRef = (value: string) => /^#[^\s/]+$/.test(value) || bareId(value)
@@ -657,11 +616,7 @@ async function namingSelf(error: unknown): Promise<never> {
 }
 
 /** The options that say which board this run acts on, as it was given them: a command suggested for the same board carries them. */
-const onSameBoard = (): string[] => [
-  ...(flags.url !== undefined ? ['--url', flags.url] : []),
-  ...(flags.scope !== undefined || flags.team !== undefined ? ['--scope', (flags.scope ?? flags.team)!] : []),
-  ...(flags.name !== undefined ? ['--name', flags.name] : []),
-]
+const onSameBoard = (): string[] => (flags.url !== undefined ? ['--url', flags.url] : [])
 
 /**
  * The ways out of a grant change the board refused as a lockout. A new grant: first, the grant
@@ -732,25 +687,20 @@ function filters(channel?: string): Filters & { after?: string } {
   }
 }
 
-/**
- * The board the environment points at. With none, the team's board for an app that has one
- * (null), or else how to point at one, with the commands this app has.
- */
-function configuredUrl(): string | null {
+/** The board the environment points at (`BOARD_URL`), or how to point at one. */
+function configuredUrl(): string {
   try {
     return boardUrl()
   } catch (error) {
     if (!(error instanceof BoardError) || error.code !== 'no_board') throw error
-    // In a Vercel project, its team's board.
-    if (app.teamBoard || process.env.VERCEL_ORG_ID || vercelProjectFile()) return null
     throw new Failed({
       class: 'missing_input',
-      reason: 'missing_scope',
+      reason: 'missing_board',
       actionRequired: true,
-      message: "No board to use. Nothing sets one, and this directory isn't in a Vercel project.",
+      message: 'No board to use. Nothing sets one.',
       next: [
-        { instruction: "Use a team's board", argv: rerun('--scope', '<TEAM>') },
-        { instruction: 'Or a board at a URL', argv: rerun('--url', '<URL>') },
+        { instruction: 'Use a board at a URL', argv: rerun('--url', '<URL>') },
+        { instruction: 'Or set BOARD_URL' },
       ],
     })
   }
@@ -824,7 +774,7 @@ function doing(): string {
   const message = a !== undefined && isMessageRef(a)
   switch (command) {
     case 'read':
-      return a === undefined ? 'read the board' : /^https?:\/\//i.test(a) ? 'read that link' : `read ${message ? ref(a) : a}`
+      return a === undefined ? 'read the board' : `read ${message ? ref(a) : a}`
     case 'post':
       return message ? `reply to ${ref(a)}` : `post to ${a ?? 'a channel'}`
     case 'reply':
@@ -835,10 +785,6 @@ function doing(): string {
       return `${command} ${ref(a)}`
     case 'react':
       return `react to ${ref(a)}`
-    case 'typing':
-      return `show typing in ${ref(a)}`
-    case 'sync':
-      return b === undefined ? `list where ${ref(a)} is synced` : `sync ${ref(a)} with ${b}`
     case 'schedule':
       return a === 'cancel' ? `cancel schedule ${b}` : `schedule a message in ${message ? ref(a) : (a ?? 'a channel')}`
     case 'channels':
@@ -846,24 +792,14 @@ function doing(): string {
     case 'schedules':
     case 'actors':
       return `list ${command}`
-    case 'agents':
-      return doingAgents(a, b)
     case 'tasks':
       return doingTasks(a, b)
-    case 'join':
-      return 'join the board'
-    case 'invite':
-      return a === 'create' ? 'create the invite' : a === 'revoke' ? 'revoke the invite' : 'list invites'
     case 'grants':
       return a === 'create' ? (flags.file !== undefined ? 'create the grants' : 'create the grant') : a === 'update' ? `update grant ${b}` : a === 'explain' ? `explain ${b ?? 'the channel'}` : a === 'revoke' ? `revoke grant ${b}` : 'list grants'
     case 'schemas':
       return a === 'create' ? `register schema ${b ?? ''}`.trimEnd() : a === 'inspect' ? `read schema ${b ?? ''}`.trimEnd() : 'list schemas'
-    case 'sources':
-      return b === undefined ? 'list sources' : `${b} ${c ?? 'it'} on ${a}`
     case 'download':
       return `download ${a ?? 'the attachment'}`
-    case 'inbox':
-      return doingInbox(a, b)
     case 'tail':
       return `follow ${a ?? 'the board'}`
     case 'wait':
@@ -883,35 +819,31 @@ function doing(): string {
 }
 
 /** The commands whose first argument is always a message. */
-const ON_MESSAGE = new Set(['reply', 'edit', 'delete', 'react', 'label', 'typing', 'sync', 'schedules'])
+const ON_MESSAGE = new Set(['reply', 'edit', 'delete', 'react', 'label', 'schedules'])
 
 /** What a 404 means this run couldn't find, when its arguments name it: `message #812`. */
 function missing(): string | undefined {
   const { command = '', args } = current
   const [a, b] = args
   if (a === undefined) return undefined
-  if (command === 'read' && /^https?:\/\//i.test(a)) return "that link's message on this board"
   if (ON_MESSAGE.has(command) || (['read', 'post', 'schedule'].includes(command) && isMessageRef(a))) return `message ${ref(a)}`
   if (command === 'schedule' && a === 'cancel' && b !== undefined) return `schedule ${b}`
   // A task is its thread: one that isn't there is a message that isn't.
   if (command === 'tasks' && TASK_VERBS.has(a) && b !== undefined && isMessageRef(b)) return `message ${ref(b)}`
   if (command === 'grants' && (a === 'revoke' || a === 'update') && b !== undefined) return `grant ${b}`
   if (command === 'schemas' && a === 'inspect' && b !== undefined) return `schema ${b}`
-  if (command === 'agents' && b !== undefined) return missingAgent(a, b)
   if (command === 'download') return `attachment ${a}`
-  if (command === 'inbox' && (a === 'ack' || a === 'archive') && b !== undefined) return `inbox message ${b}`
   return undefined
 }
 
 /**
- * What `error` means for this run, in the Vercel CLI's terms. What the handle raised itself says
+ * What `error` means for this run. What the handle raised itself says
  * what and why, and its hint what fixes it. What a board answered is said by what this run was
  * doing, with the board's words under it and in `data`, never in what to run: a board can answer
  * with any code, the handle's own included.
  */
 function failureOf(error: unknown, hold: TaskHold = 'unknown'): Failure {
   if (error instanceof Failed) return error.failure
-  if (current.command === 'invite' || current.command === 'join') return inviteFailure(error)
   const message = error instanceof Error ? error.message : String(error)
   const { code, status, hint, origin, retryAfter } = error as { code?: unknown; status?: unknown; hint?: unknown; origin?: unknown; retryAfter?: unknown }
   // Not the board's or the handle's: the system's (a file it couldn't write), or a bug.
@@ -925,52 +857,18 @@ function failureOf(error: unknown, hold: TaskHold = 'unknown'): Failure {
       class: kind, reason, message, ...(next.length ? { next } : {}), data: said,
     })
     switch (code) {
-      case 'not_logged_in':
-        return { class: 'auth', reason: 'login_required', message: "You're not logged in to Vercel.", next: [{ instruction: 'Log in', argv: ['vercel', 'login'] }], data: said }
-      case 'no_access':
-        return own('permission', 'permission_denied')
-      case 'wrong_project':
-        return own('permission', 'wrong_project')
-      case 'protected':
-        return own('permission', 'deployment_protected')
-      case 'no_project':
-        return own('platform', 'no_project')
       case 'no_token':
         return own('auth', 'token_unavailable')
-      case 'no_agent_ops':
-        return own('platform', code)
       case 'no_board':
-        // A person's named board that isn't there, or that they can't see: this command again makes it.
-        return own('not_found', 'board_not_found', [{ instruction: 'Check the name, or make it', argv: rerun('--ensure') }])
-      case 'board_name_taken':
+        return own('not_found', 'board_not_found')
       case 'board_dir_locked':
         return own('conflict', code)
-      case 'board_not_granted':
-        return own('permission', 'board_not_granted')
-      case 'watchers_need_project':
-        return own('permission', 'watchers_need_project')
-      case 'missing_team':
-        return {
-          // A CI log is read widely: this names the option without the command's text.
-          ...own('missing_input', 'missing_scope', [
-            { instruction: "Use a team's board: add --scope <TEAM_ID>" },
-            { instruction: 'Or set VERCEL_ORG_ID to its ID' },
-          ]),
-          actionRequired: true,
-        }
-      case 'invalid_board_name':
-        return own('usage', 'invalid_arguments', [helpRecovery()])
       case 'too_many_redirects':
         return own('network', 'network_error')
       case 'invalid_duration':
         return own('usage', 'invalid_arguments', [helpRecovery()])
-      case 'wrong_audience':
-      case 'redirected':
-        return own('usage', 'wrong_url')
       case 'too_large':
         return { ...own('limit', 'payload_too_large'), message: `Can't ${doing()}. ${sentence(message)}` }
-      case 'no_team':
-        return { ...own('platform', 'api_error'), message: "Couldn't tell which team's board to use.", details: [message] }
       case 'upload_failed':
         return { ...own('platform', 'upload_failed'), message: `Failed to ${doing()}.`, details: [message] }
       case 'channel_exists':
@@ -1009,8 +907,7 @@ function failureOf(error: unknown, hold: TaskHold = 'unknown'): Failure {
   if (status === 400 && code === 'schema_not_found' && current.command !== 'schemas')
     return theirs('usage', code, `Can't ${doing()}.`, [{ instruction: 'See the schemas this board has', argv: [...cli(), 'schemas'] }])
   // Too much text: what it can't hold goes in a file, on a message that can take one (an edit can't).
-  // Vercel's API says it as `invalid_message`, which also means empty text: only text over the limit is too long.
-  if (status === 400 && (code === 'text_too_long' || (code === 'invalid_message' && sentLength > MESSAGE_TEXT_MAX)))
+  if (status === 400 && code === 'text_too_long')
     return {
       ...theirs('limit', 'payload_too_large', `Can't ${doing()}. A message's text is at most ${MESSAGE_TEXT_MAX.toLocaleString('en-US')} characters.`, [
         // A task's root takes no file, and neither does an edit: the long part goes in a reply that does.
@@ -1025,28 +922,6 @@ function failureOf(error: unknown, hold: TaskHold = 'unknown'): Failure {
       ]),
       details: [],
     }
-  // A limit on the team's boards, which the team's plan sets: no argument fixes it, and the team's own board is still there.
-  if (code === 'too_many_boards')
-    return theirs(
-      'limit',
-      code,
-      `Can't ${doing()}. The team has all the boards it can.`,
-      current.command === 'conformance'
-        ? [
-            // It refuses the team's board unnamed: another board by its URL, or the team's own by its name, which it posts to and changes the grants of.
-            { instruction: 'Check a board by its URL, such as one from vb serve', argv: [...rerunWithout(['--name', '--scope']).filter((arg) => arg !== '--ensure'), '--url', '<URL>'] },
-            { instruction: "Or the team's own board, which it posts to and changes the grants of", argv: [...rerunWithout(['--name']).filter((arg) => arg !== '--ensure'), '--name', 'General'] },
-          ]
-        : flags.name !== undefined
-        ? [{ instruction: "Use the team's board instead", argv: rerunWithout(['--name']).filter((arg) => arg !== '--ensure') }]
-        : process.env.BOARD_NAME
-          ? [{ instruction: "Use the team's board instead: unset BOARD_NAME, then run", argv: rerunWithout([]).filter((arg) => arg !== '--ensure') }]
-          : [],
-    )
-  if (code === 'private_boards_unavailable')
-    return theirs('limit', code, `Can't ${doing()}. This team's plan has no private boards.`, [
-      { instruction: 'Keep the board open to the whole team, or move the team to a plan with private boards' },
-    ])
   // What the board said is what to fix.
   if (status === 400) return theirs('usage', specific('invalid_arguments'), `Can't ${doing()}.`)
   if (status === 401)
@@ -1054,17 +929,12 @@ function failureOf(error: unknown, hold: TaskHold = 'unknown'): Failure {
       'auth',
       'login_required',
       "The board didn't accept your credentials.",
-      // A token you passed is yours to replace, and so is BOARD_TOKEN: logging in changes nothing while either is the one
-      // sent, or a workflow's own, where there's no login.
-      sent() === PASSED
-        ? [{ instruction: 'Pass a token it accepts' }]
-        : sent() === 'BOARD_TOKEN'
-          ? [{ instruction: 'Pass a token it accepts in BOARD_TOKEN, or unset it' }]
-          : sent() === JOINED
-            ? [{ instruction: 'Ask for a new invite and join again' }]
-            : sent() === 'GitHub Actions OIDC'
-              ? [{ instruction: 'Pass a token it accepts in BOARD_TOKEN' }]
-              : [{ instruction: 'Log in again', argv: ['vercel', 'login'] }],
+      // A token in BOARD_TOKEN is yours to replace.
+      sent() === 'BOARD_TOKEN'
+        ? [{ instruction: 'Pass a token it accepts in BOARD_TOKEN, or unset it' }]
+        : sent() === 'vb serve'
+          ? [{ instruction: 'Restart vb serve, which writes a new token' }]
+          : [{ instruction: 'Pass a token it accepts in BOARD_TOKEN' }],
     )
   if (status === 403) return theirs('permission', 'permission_denied', `You can't ${doing()}.`, refusedRecoveries())
   if (status === 404) {
@@ -1075,10 +945,6 @@ function failureOf(error: unknown, hold: TaskHold = 'unknown'): Failure {
   if (status === 409) {
     // A grant change this caller couldn't take back: it keeps itself in, or says to go ahead.
     if (code === 'grant_lockout' && current.command === 'grants') return theirs('conflict', code, `Can't ${doing()}: it would lock you out.`, lockoutRecoveries())
-    if (code === 'agent_generation_conflict' && current.command === 'agents') {
-      const recovery = agentConflictRecovery()
-      return theirs('conflict', code, `Can't ${doing()}.`, recovery)
-    }
     // A reply's --after: what's newer is in its thread, after the message it named.
     const { args } = current
     const newer = code === 'newer_message' && flags.after !== undefined && args[0] !== undefined
@@ -1106,10 +972,6 @@ function failureOf(error: unknown, hold: TaskHold = 'unknown'): Failure {
     return theirs('rate_limit', 'rate_limited', `Can't ${doing()}. Too many requests to the board.`, [
       { instruction: wait !== undefined ? `Wait ${waitFor(wait)}, then run it again` : 'Wait a minute, then run it again' },
     ])
-  if (status === 501 && code === 'no_agent_ops' && current.command === 'agents')
-    return theirs('platform', code, `Can't ${doing()}. This board doesn't keep an agent registry.`, [
-      { instruction: 'Use a local board started with vb serve --agent-ops' },
-    ])
   if (status === 501) return theirs('platform', specific('not_supported'), `Can't ${doing()}. This board doesn't support it.`, unsupportedRecoveries())
   if (code === 'unreachable') return theirs('network', 'network_error', "Couldn't reach the board.")
   return theirs('platform', 'api_error', `Failed to ${doing()}.`)
@@ -1129,8 +991,7 @@ const UNINDEXED = ['--by', '--mentions', '--source', '--text']
 
 /**
  * What to run instead of what a board answered 501 to, by what this run asked for: the same without
- * the part a board may not do (a read's search filters or its every channel, a post's `--sync`, a
- * schedule's files). Nothing when it asked for none of them.
+ * the part a board may not do (a read's search filters or its every channel, a schedule's files). Nothing when it asked for none of them.
  */
 function unsupportedRecoveries(): Recovery[] {
   const { command, args } = current
@@ -1151,7 +1012,6 @@ function unsupportedRecoveries(): Recovery[] {
       { instruction: whole ? `Read one channel at a time${filtered.length ? `, without ${filtered.join(' or ')}` : ''}` : `Read it without ${filtered.join(' or ')}, and look through it`, argv },
     ]
   }
-  if ((command === 'post' || command === 'reply') && given('--sync')) return [{ instruction: 'Post it without --sync', argv: rerunWithout(['--sync']) }]
   if (command === 'schedule' && given('--attach')) return [{ instruction: 'Schedule the text without its files', argv: rerunWithout(['--attach']) }]
   return []
 }
@@ -1162,48 +1022,12 @@ const waitFor = (seconds: number) => (seconds < 120 ? `${Math.max(1, seconds)}s`
 /** How this run ends with `failure`: shown on stderr, or by the app, and its exit code. */
 function report(failure: Failure, json: boolean): number {
   if (app.onError) {
-    const encoded = JSON.stringify(failure)
-    const safe = redactCredentials(encoded)
-    app.onError(safe === encoded ? failure : JSON.parse(safe) as Failure, { json })
-  } else if (json) io.error(`${redactCredentials(JSON.stringify(failureDocument(failure)))}\n`)
+    app.onError(failure, { json })
+  } else if (json) io.error(`${JSON.stringify(failureDocument(failure))}\n`)
   else {
-    const escapeLine = isEvidenceCommand() || failure.reason === 'evidence_required' ? lineText : undefined
-    io.error(`${redactCredentials(terminalText(formatFailure(failure, escapeLine)))}\n`)
+    io.error(`${terminalText(formatFailure(failure))}\n`)
   }
   return exitCode(failure)
-}
-
-/**
- * A team's board in Vercel's API, by the URL its discovery names it with
- * (`https://api.vercel.com/v1/messageboard/boards/<board>?teamId=<team>`): its board and team.
- */
-function vercelBoard(url: string): { board: string; team?: string } | null {
-  let parsed: URL
-  try {
-    parsed = new URL(url)
-  } catch {
-    return null
-  }
-  const found = /^\/v1\/messageboard\/boards\/([^/]+)\/?$/.exec(parsed.pathname)
-  if (parsed.origin !== 'https://api.vercel.com' || !found) return null
-  const team = parsed.searchParams.get('teamId')
-  return { board: decodeURIComponent(found[1]!), ...(team ? { team } : {}) }
-}
-
-/**
- * Whether this run's board is a team's board in Vercel's API, as its flags and environment say,
- * without a request: undefined when they don't say (an in-process handle, or no board to use).
- */
-function onTeamBoard(): boolean | undefined {
-  if (io.board) return undefined
-  try {
-    if (flags.url !== undefined) return vercelBoard(flags.url) !== null
-    if (flags.scope !== undefined || flags.team !== undefined || flags.name !== undefined) return true
-    const url = configuredUrl()
-    return url === null || vercelBoard(url) !== null
-  } catch {
-    return undefined
-  }
 }
 
 /** Who the handle writes as: `--as`'s profile (with `--avatar`), or what the environment says (`BOARD_PROFILE`), else yourself. */
@@ -1214,85 +1038,18 @@ function profileFlag(): ProfileOption | undefined {
 }
 
 /**
- * The board this command talks to, as `--as` says: a handle on it, where it is (null until its
- * discovery says, for a team's board), and how it reaches it. It's `--url`'s; a team's board in
- * Vercel's API for `--scope` or `--team`; the one the environment points at; or the team's board
- * of the Vercel project it runs in, or, for an app with a team board, your login's.
+ * The board this command talks to, as `--as` says: a handle on it, where it is, and how it reaches
+ * it. It's `--url`'s, or the one the environment points at (`BOARD_URL`).
  */
 function connection(url: string | undefined = flags.url, options: { token?: string; can?: string; headers?: Record<string, string> } = {}) {
   const profile = profileFlag()
-  const team = flags.scope ?? flags.team
-  const name = boardNameFlag(url, team)
-  // A name names a team's board as --scope does, so it goes before BOARD_URL too.
-  const configured = url ?? (team === undefined && name === undefined ? configuredUrl() : null)
-  if (configured === null) {
-    if (name === undefined) teamDefault = { team }
-    const board = boardAt({ backend: vercel({ ...(team !== undefined ? { team } : {}), ...sending(options.token, options.can, options.headers) }), ...(name !== undefined ? { name, ensure: flags.ensure === true } : {}) })
-    sent = credentialSource
-    return { url: null, transport: { source: credentialSource }, board: profile !== undefined ? board.as(profile) : board }
-  }
-  const at = configured.replace(/\/+$/, '')
+  const at = (url ?? configuredUrl()).replace(/\/+$/, '')
   reached = at
-  // A team's board in Vercel's API (what `whoami` prints for one) is reached through the API, as `--scope` is.
-  const onVercel = vercelBoard(at)
-  if (onVercel) {
-    const board = boardAt({ backend: vercel({ ...onVercel, ...sending(options.token, options.can, options.headers) }) })
-    sent = credentialSource
-    return { url: at as string | null, transport: { source: credentialSource }, board: profile !== undefined ? board.as(profile) : board }
-  }
   const extra = { ...options.headers, ...(options.can !== undefined ? { 'x-board-can': options.can } : {}) }
   const transport = connect(at, { ...(options.token !== undefined ? { token: options.token } : {}), ...(Object.keys(extra).length > 0 ? { fetch: withHeaders(extra) } : {}) })
   const board = boardAt({ backend: http(at, { fetch: transport.fetch }) })
   sent = transport.source
   return { url: at as string | null, transport: transport as { source(): string | null }, board: profile !== undefined ? board.as(profile) : board }
-}
-
-/**
- * The team's board this run names: `--name`, or `BOARD_NAME`, on `--scope`'s team or the one the
- * environment finds. A URL names a board itself, its team included. `BOARD_NAME` is read only
- * where it picks the board: beside `BOARD_URL`, which names another, nothing says which one.
- */
-function boardNameFlag(url: string | undefined, team: string | undefined): string | undefined {
-  if (flags.name !== undefined && flags.url !== undefined)
-    throw usage("--name names a team's board, and --url a board by its URL: pass one of them.", { reason: 'conflicting_options' })
-  if (team !== undefined && flags.url !== undefined)
-    throw usage("--url names its board, its team included, and --scope a team's board: pass one of them.", { reason: 'conflicting_options' })
-  if (flags.ensure && flags.url !== undefined)
-    throw usage("--ensure makes a team's board by its name, and --url names a board by its URL: pass one of them.", { reason: 'conflicting_options' })
-  if (url !== undefined) return undefined
-  const named = process.env.BOARD_NAME || undefined
-  if (flags.name === undefined && team === undefined && named !== undefined && process.env.BOARD_URL?.trim())
-    throw usage("BOARD_NAME names a team's board, and BOARD_URL a board by its URL: unset one.", { reason: 'conflicting_options' })
-  const given = flags.name ?? named
-  if (given === undefined && flags.ensure) throw usage('--ensure makes the board --name names: pass --name too.', { reason: 'missing_arguments' })
-  if (given === undefined) return undefined
-  const from = flags.name !== undefined ? '--name' : 'BOARD_NAME'
-  if (given.includes('/')) {
-    // Another team's board is its team, with --scope, and its name.
-    const [owner, ...rest] = given.split('/')
-    const argv = rerunWithout(['--name', '--scope', '--team'], '--scope', owner || '<TEAM>', '--name', rest.join('/') || '<NAME>')
-    throw usage(`${from} takes a board's name alone, not its team's.`, {
-      next: [flags.name !== undefined ? { instruction: 'Pass its team with --scope', argv } : { instruction: 'Set BOARD_NAME to the name alone, and pass its team with --scope' }],
-    })
-  }
-  if (!isBoardName(given)) throw usage(`${from} ${given} isn't a board's name: one is 1 to 64 characters.`)
-  return given
-}
-
-/** For Vercel's API, `token` in place of your own credentials, `can` narrowing them, and `headers` beside them. */
-function sending(token: string | undefined, can?: string, extra: Record<string, string> = {}): { fetch?: typeof fetch } {
-  if (token === undefined && can === undefined && Object.keys(extra).length === 0) return {}
-  return {
-    fetch: (input, init = {}) => {
-      // The headers go in init: vercel()'s own fetch builds its credentials onto init's, and a Request's would be lost.
-      const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined))
-      if (token !== undefined) headers.set('authorization', `Bearer ${token}`)
-      if (can !== undefined) headers.set('x-board-can', can)
-      for (const [name, value] of Object.entries(extra)) headers.set(name, value)
-      // Without a token of its own, it goes with the credentials vercel() would find.
-      return (token === undefined ? credentialed() : globalThis.fetch)(input, { ...init, headers })
-    },
-  }
 }
 
 /** A fetch that adds `headers` to each request to a board on HTTP, as a proxy holding its credentials would: `x-board-can`, say. */
@@ -1317,18 +1074,11 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString('utf8')
 }
 
-function hookAgents(names: string[]): HookAgent[] {
-  const known = Object.keys(AGENTS) as HookAgent[]
-  for (const name of names)
-    if (!known.includes(name as HookAgent)) throw usage(`Unknown agent ${name}. The agents are ${known.join(', ')}.`)
-  return names.length ? (names as HookAgent[]) : known
-}
-
 /** Says what a write that went through had to say: in its JSON result with `--json`, on stderr otherwise. */
 function warn(warning: Warning) {
   if (flags.json) warnings.push(warning)
-  else if (app.onWarning) app.onWarning({ reason: outputText(warning.reason), message: outputText(warning.message) })
-  else io.error(`${outputText(terminalText(`warning: ${warning.message}`))}\n`)
+  else if (app.onWarning) app.onWarning(warning)
+  else io.error(`${terminalText(`warning: ${warning.message}`)}\n`)
 }
 
 /**
@@ -1429,12 +1179,6 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       return 0
     }
 
-    case 'invite':
-      return runInvite(args)
-
-    case 'join':
-      return runJoin(args)
-
     case 'status':
     case 'pause':
     case 'resume':
@@ -1442,15 +1186,12 @@ async function run(command: string | undefined, args: string[]): Promise<number>
 
     case 'conformance': {
       if (args.length > 0) throw usage('conformance takes no arguments: pass its channel with --channel.')
-      // It posts and changes grants, so it checks a board someone named, never the team's by default.
-      const named = flags.name !== undefined || flags.url !== undefined || Boolean(process.env.BOARD_URL?.trim()) || Boolean(process.env.BOARD_NAME)
+      // It posts and changes grants, so it checks a board someone named.
+      const named = flags.url !== undefined || Boolean(process.env.BOARD_URL?.trim())
       if (!io.board && !named)
         throw usage('conformance posts and changes grants, so name a scratch board for it.', {
           reason: 'needs_scratch_board',
-          next: [
-            { instruction: 'Check a scratch board on this team, by its name', argv: rerun('--name', '<BOARD>') },
-            { instruction: 'Or a board by its URL', argv: rerun('--url', '<URL>') },
-          ],
+          next: [{ instruction: 'Check a board by its URL', argv: rerun('--url', '<URL>') }],
         })
       return checkConformance()
     }
@@ -1539,28 +1280,21 @@ async function run(command: string | undefined, args: string[]): Promise<number>
     case 'read': {
       const target = args[0]
       const board = client()
-      // A platform's link to a message (a Slack permalink, a GitHub comment) reads the board's thread it synced.
-      const link = target !== undefined && /^https?:\/\//i.test(target)
-      if (target && (link || isMessageRef(target))) {
+      if (target && isMessageRef(target)) {
         // A thread is read whole: what finds threads doesn't narrow one, and it's said before anything is read.
         const across = (['by', 'text', 'mentions', 'source', 're', 'before'] as const).find((name) => flags[name] !== undefined)
         if (across !== undefined) throw usage(`Can't use --${across} on one thread. It's read whole: --after and --label narrow its replies.`)
         // A board reads the replies after a message itself, so a long thread isn't read whole for its last few.
-        const after = !link && flags.after !== undefined ? flags.after.replace(/^#/, '') : undefined
-        const thread = link
-          ? await board.linked(target)
-          : await board.thread(messageId(target), after !== undefined && isMessageRef(after) ? { after: messageId(after) } : {}).catch((error: unknown) => {
-              // A message of another thread is no place in this one, which is the flag's to say.
-              if (error instanceof BoardError && error.status === 400 && /isn't a message of this thread/.test(error.message))
-                throw usage(`--after ${flags.after} isn't a message of this thread. On one thread, it takes one of its messages.`)
-              throw error
-            })
-        // A board older than this CLI answers /links with its discovery document. Its 404 stays: a
-        // current board's means the link isn't one it synced.
-        if (link && !Array.isArray((thread as { replies?: unknown }).replies)) throw outdated("This board can't read links.")
+        const after = flags.after !== undefined ? flags.after.replace(/^#/, '') : undefined
+        const thread = await board.thread(messageId(target), after !== undefined && isMessageRef(after) ? { after: messageId(after) } : {}).catch((error: unknown) => {
+          // A message of another thread is no place in this one, which is the flag's to say.
+          if (error instanceof BoardError && error.status === 400 && /isn't a message of this thread/.test(error.message))
+            throw usage(`--after ${flags.after} isn't a message of this thread. On one thread, it takes one of its messages.`)
+          throw error
+        })
         // What narrows it is narrowed here, from the replies it came with.
         const narrowed = flags.after !== undefined || (flags.label?.length ?? 0) > 0
-        const replies = narrowed ? narrowedReplies(thread, { after: link || after === undefined || !isMessageRef(after) }) : thread.replies
+        const replies = narrowed ? narrowedReplies(thread, { after: after === undefined || !isMessageRef(after) }) : thread.replies
         if (flags.json) return result({ ...thread, replies }), 0
         // Reactions name people who may not have written here: look up the ones that show.
         const authors = new Set([thread.message, ...replies].map((m) => m.by.actor))
@@ -1610,14 +1344,8 @@ async function run(command: string | undefined, args: string[]): Promise<number>
             class: 'not_found',
             reason: 'channel_not_found',
             message: `Couldn't find channel ${target}.${guess ? ` Did you mean ${guess}?` : ''}`,
-            details: [
-              'A channel appears with its first post: one nobody has posted in yet is not there to read.',
-              ...(teamDefault ? [`This is ${teamDefault.team ?? 'the team'}'s default board: --name reads another of its boards.`] : []),
-            ],
-            next: [
-              { instruction: 'See its channels', argv: [...cli(), 'channels', ...(teamDefault?.team !== undefined ? ['--scope', teamDefault.team] : [])] },
-              ...(teamDefault ? [{ instruction: "Read it on another of the team's boards", argv: rerun('--name', '<BOARD>') }] : []),
-            ],
+            details: ['A channel appears with its first post: one nobody has posted in yet is not there to read.'],
+            next: [{ instruction: 'See its channels', argv: [...cli(), 'channels'] }],
           })
         }
       }
@@ -1678,11 +1406,6 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       if (!target) throw usage('Missing the channel or message to post to.', { reason: 'missing_arguments' })
       oneText('post', target, args.slice(2))
       const re = isMessageRef(target) ? messageId(target) : undefined
-      if (re !== undefined && flags.sync?.length)
-        throw usage("Can't use --sync on a reply. It syncs whole threads.", {
-          next: [{ instruction: 'Sync the thread instead', argv: [...cli(), 'sync', re, '<TARGET>'] }],
-        })
-      if (flags.sync?.length && flags['no-sync']) throw usage("Can't use --sync with --no-sync.")
       if (re === undefined && flags.after !== undefined)
         throw usage("Can't use --after on a new thread. It's for replies: the thread's newest message.")
       const board = client()
@@ -1693,10 +1416,9 @@ async function run(command: string | undefined, args: string[]): Promise<number>
         ...(files.length ? { attachments: files } : {}),
         ...(flags.label?.length ? { labels: labelPairs(flags.label) } : {}),
         ...(flags['idempotency-key'] ? { id: flags['idempotency-key'] } : {}),
-        ...(flags['no-sync'] ? { noSync: true } : {}),
       }
       const message = re === undefined
-        ? await board.post(target, { ...options, ...(flags.sync?.length ? { sync: flags.sync } : {}) })
+        ? await board.post(target, options)
         : await board.reply(re, { ...options, ...(flags.after !== undefined ? { after: messageId(flags.after) } : {}) })
       printMessage(message)
       return 0
@@ -1713,7 +1435,6 @@ async function run(command: string | undefined, args: string[]): Promise<number>
         ...(files.length ? { attachments: files } : {}),
         ...(flags.label?.length ? { labels: labelPairs(flags.label) } : {}),
         ...(flags['idempotency-key'] ? { id: flags['idempotency-key'] } : {}),
-        ...(flags['no-sync'] ? { noSync: true } : {}),
         ...(flags.after !== undefined ? { after: messageId(flags.after) } : {}),
       })
       printMessage(message)
@@ -1740,7 +1461,6 @@ async function run(command: string | undefined, args: string[]): Promise<number>
         text: said,
         ...(files.length ? { attachments: files } : {}),
         ...(flags.label?.length ? { labels: labelPairs(flags.label) } : {}),
-        ...(flags['no-sync'] ? { noSync: true } : {}),
         ...(flags.in ? { in: flags.in } : {}),
         ...(flags.at ? { at: instant('at', flags.at) } : {}),
         ...(flags.every ? { every: flags.every } : {}),
@@ -1894,34 +1614,6 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       return 0
     }
 
-    case 'hooks': {
-      const [action, ...names] = args
-      if (action !== 'uninstall')
-        throw usage(`\`${`${named()} hooks ${action ?? ''}`.trimEnd()}\` is gone. Turn-end hooks were removed.`, {
-          reason: 'unknown_command',
-          next: [{ instruction: 'Clear an earlier install', argv: [...cli(), 'hooks', 'uninstall'] }],
-        })
-      const agents = hookAgents(names)
-      const width = Math.max(...agents.map((agent) => AGENTS[agent].name.length))
-      const hooks: { agent: string; outcome: string; file: string | null }[] = []
-      for (const agent of agents) {
-        const installed = installedHook(agent)
-        const by = installed ? cliOf(installed) : null
-        const rules = by ? allowRules(agent, by) : null
-        if (rules) disallow(rules.file, rules.rules)
-        const removed = uninstallHook(agent)
-        hooks.push({ agent, outcome: removed ? 'removed' : 'unchanged', file: installed ? AGENTS[agent].file() : null })
-        if (!flags.json) out([AGENTS[agent].name.padEnd(width), removed ? 'removed' : 'not installed', installed ? tilde(AGENTS[agent].file()) : ''].join('  ').trimEnd())
-      }
-      if (flags.json) result({ hooks })
-      return 0
-    }
-
-    // What an earlier board's turn-end hook still runs: it does nothing, so those turns end as they would without it.
-    // `hooks uninstall` clears it.
-    case 'hook':
-      return 0
-
     case 'edit': {
       const id = messageId(args[0])
       const { mentions } = await client().edit(id, await content(args[1]), ifRevision())
@@ -1967,28 +1659,6 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       return 0
     }
 
-    case 'typing': {
-      const id = messageId(args[0])
-      const status = args.slice(1).join(' ').trim()
-      const targets = await client().typing(id, status || undefined)
-      if (flags.json) result({ targets })
-      return 0
-    }
-
-    case 'sync': {
-      const id = messageId(args[0])
-      if (!args[1]) {
-        const { targets } = await client().sync(id)
-        if (flags.json) return result({ targets }), 0
-        out(targets.length ? formatSynced(targets) : 'not synced anywhere')
-        return 0
-      }
-      const synced = await client().sync(id, args[1])
-      if (flags.json) result({ ...synced, outcome: synced.attached ? 'synced' : 'unchanged' })
-      else out(synced.attached ? `synced with ${synced.target}` : `already synced with ${synced.target}`)
-      return 0
-    }
-
     case 'download': {
       const id = args[0]
       if (!id) throw usage(`Missing the attachment to download: the ID \`${named()} read\` shows on a file line.`, { reason: 'missing_arguments' })
@@ -2018,31 +1688,6 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       if (flags.json) result({ attachment: { id }, path, outcome: 'downloaded' })
       else out(path)
       return 0
-    }
-
-    case 'inbox':
-      return inbox(args)
-
-    case 'sources': {
-      const [key, sub, target] = args
-      if (!key) {
-        const { sync } = await client().discovery()
-        if (flags.json) return result({ sources: sync }), 0
-        if (sync.length === 0) return out('no sources: this board has no sync configured'), 0
-        for (const entry of sync) out(`${entry.key}  ${entry.platform}`)
-        return 0
-      }
-      if (sub === 'join' && target) {
-        const joined = await client().joinSource(key, target)
-        if (flags.json) return result({ ...joined, outcome: joined.joined ? 'joined' : 'unchanged' }), 0
-        const label = joined.name ? `#${joined.name}` : joined.channel
-        return out(joined.joined ? `joined ${label}` : `already in ${label}`), 0
-      }
-      if (sub !== 'read' && sub !== 'join') throw usage(sub === undefined ? `Missing what to do with ${key}: read or join.` : `Unknown command ${sub} for ${named()} sources.`, { reason: sub === undefined ? 'missing_arguments' : 'unknown_command' })
-      if (!target) throw usage(`Missing the channel, thread, or link to ${sub}.`, { reason: 'missing_arguments' })
-      const read = await client().readSource(key, target, { ...(flags.limit ? { limit: Number(flags.limit) } : {}), ...(flags.after ? { after: String(flags.after) } : {}) })
-      if (flags.json) return result(read), 0
-      return out(formatSourceRead(key, read, Date.now(), named())), 0
     }
 
     case 'tail': {
@@ -2098,8 +1743,6 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       return 0
     }
 
-    case 'agents':
-      return agents(args)
     case 'tasks':
       return tasks(args)
 
@@ -2119,8 +1762,7 @@ function unknownCommand(command: string): Failed {
   const guess = closest(command, commandNames())
   // What people and agents type for a command that goes by another name here.
   const other = Object.hasOwn(OTHER_NAMES, command.toLowerCase()) ? OTHER_NAMES[command.toLowerCase()] : undefined
-  // On a team's board, what works there; where nothing says which board, what works on every one.
-  const said = other?.teams && onTeamBoard() !== false ? other.teams : other
+  const said = other
   return usage(`Unknown command ${command} for ${named()}.${said ? '' : guess ? ` Did you mean ${guess}?` : ''}`, {
     reason: 'unknown_command',
     next: [
@@ -2130,153 +1772,16 @@ function unknownCommand(command: string): Failed {
   })
 }
 
-function formatIntent(intent: AgentIntent): string {
-  const { id, agent, generation, verb, run, state, expiresAt, report } = intent
-  return [
-    `${lineText(id)}  ${verb} ${state}`,
-    `  agent       ${lineText(agent)}`,
-    `  generation  ${generation}`,
-    `  expires     ${lineText(expiresAt)}`,
-    ...(run ? [`  task        ${lineText(run.task)}`, `  epoch       ${run.epoch}`] : []),
-    ...(report ? [`  outcome     ${report.outcome.replaceAll('_', ' ')}`] : []),
-  ].join('\n')
-}
-
-async function agents(args: string[]): Promise<number> {
-  const [verb, ...given] = args
-  if (verb === undefined) throw usage('Missing the agent command.', { reason: 'missing_arguments' })
-  const sub = specOf('agents')?.subcommands?.find(({ name }) => name === verb)
-  if (!sub) throw usage(`Unknown agent command ${verb}.`, { reason: 'unknown_command' })
-  const next = [{ instruction: 'See how to use it', argv: [...cli(), 'agents', verb, '--help'] }]
-  const missing = sub.arguments.find((arg, i) => arg.required && !given[i])
-  if (missing) throw usage(`Missing <${missing.name}>.`, { reason: 'missing_arguments', next })
-  if (given.length > sub.arguments.length) throw usage(`Too many arguments for agents ${verb}.`, { next })
-  const target = given[0]!
-  const seen = new Set<string>()
-  for (const { name } of ordered) {
-    if (globalOptions.some((option) => option.name === name)) continue
-    if (!sub.options.some((option) => option.name === name))
-      throw usage(`Unknown option --${name} for ${named()} agents ${verb}.`, { reason: 'unknown_option', next })
-    if (seen.has(name)) throw usage(`Pass --${name} once.`, { next })
-    seen.add(name)
-  }
-  if (verb === 'list') {
-    const { agents } = await client().agents.list(target)
-    if (flags.json) result({ agents })
-    else out(agents.length ? agents.map(formatAgent).join('\n\n') : 'no agents registered')
-    return 0
-  }
-
-  if (verb === 'intents') {
-    const page = await client().agents.intents(target, flags.after === undefined ? undefined : { after: flags.after })
-    if (flags.json) result(page)
-    else {
-      out(page.intents.length ? page.intents.map(formatIntent).join('\n\n') : 'no pending intents on this page')
-      if (page.next !== null) out(`next  ${commandLine(rerunWithout(['--after'], `--after=${page.next}`))}`)
-    }
-    return 0
-  }
-  if (verb === 'health') {
-    const id = taskId(target)
-    const health = await client().agents.health(id)
-    if (flags.json) result({ health })
-    else out(`${lineText(id)}  ${health.state === 'working' ? `working until ${lineText(health.validUntil)}` : 'stale'}`)
-    return 0
-  }
-
-  function positive(flag: 'generation' | 'epoch'): number {
-    const value = flags[flag]
-    if (value === undefined) throw usage(`Missing --${flag}.`, { reason: 'missing_arguments', next })
-    const number = Number(value)
-    if (!/^\d+$/.test(value) || !Number.isSafeInteger(number) || number < 1) throw usage(`--${flag} takes a positive integer.`, { next })
-    return number
-  }
-
-  if (verb === 'issue-intent' || verb === 'issue-role-intent') {
-    const byRole = verb === 'issue-role-intent'
-    const command = IntentVerb.safeParse(given[byRole ? 2 : 1])
-    if (!command.success) throw usage('Pass one of the intent verbs shown in help.', { next })
-    if ((flags.task === undefined) !== (flags.epoch === undefined)) throw usage('Pass --task and --epoch together.', { next })
-    const run = flags.task === undefined ? undefined : { task: taskId(flags.task), epoch: positive('epoch') }
-    if (run && command.data !== 'status') throw usage('Only status takes --task and --epoch.', { next })
-    const generation = positive('generation')
-    const max = run ? 30 : 60
-    if (flags.ttl === undefined) throw usage('Missing --ttl.', { reason: 'missing_arguments', next })
-    const ttlSeconds = seconds('ttl')!
-    if (!Number.isInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > max)
-      throw usage(`--ttl takes a whole number of seconds from 1s to ${max}s.`, { next })
-    const input = {
-      verb: command.data,
-      ...(run ? { run } : {}),
-      generation,
-      ttlSeconds,
-      requestId: flags['idempotency-key'] ?? crypto.randomUUID(),
-    }
-    const role = byRole ? AgentRole.safeParse(given[1]) : undefined
-    if (role && !role.success) throw usage('Pass a role as agents list shows it.', { next })
-    const issued = role
-      ? await client().agents.issueRoleIntent({ channel: target, role: role.data, ...input })
-      : await client().agents.issueIntent(target, input)
-    if (flags.json) result(issued)
-    else out(issued.intents.map(formatIntent).join('\n\n'))
-    return 0
-  }
-  if (verb === 'take-intent' || verb === 'report-intent') {
-    const generation = positive('generation')
-    let intent: AgentIntent
-    if (verb === 'report-intent') {
-      const outcome = IntentOutcome.safeParse(given[1])
-      if (!outcome.success) throw usage('Pass one of the outcomes shown in help.', { next })
-      intent = await client().agents.reportIntent(target, generation, outcome.data)
-    } else intent = await client().agents.takeIntent(target, generation)
-    if (flags.json) result({ intent })
-    else out(formatIntent(intent))
-    return 0
-  }
-
-  let agent: AgentView
-  if (verb === 'register') {
-    const { harness, parent } = flags
-    if (!flags.role) throw usage('Missing --role.', { reason: 'missing_arguments', next })
-    if (!harness) throw usage('Missing --harness.', { reason: 'missing_arguments', next })
-    const role = AgentRole.safeParse(flags.role)
-    if (!role.success) throw usage('--role takes one of the roles shown in help.', { next })
-    agent = await client().agents.register({
-      channel: target,
-      role: role.data,
-      harness,
-      ...(parent !== undefined ? { parent } : {}),
-      ...(flags.generation !== undefined ? { ifGeneration: positive('generation') } : {}),
-    })
-  } else {
-    const generation = positive('generation')
-    agent = verb === 'heartbeat' ? await client().agents.heartbeat(target, generation) : await client().agents.retire(target, generation)
-  }
-  if (flags.json) result({ agent })
-  else out(formatAgent(agent))
-  return 0
-}
-
 /** What `tasks` does to a task, by the word after it: any other word is a channel to list. */
-const TASK_EVIDENCE_VERBS = new Set(['submit', 'evidence', 'attest', 'override', 'resolve'])
-const TASK_VERBS = new Set(['create', 'claim', 'run', 'renew', 'release', 'complete', 'fail', 'block', 'ask', 'attention', 'answer', 'unblock', 'park', 'unpark', 'handoff', 'scope', 'stage', 'reopen', 'assign', 'needs', 'priority', 'show', 'cancel', ...TASK_EVIDENCE_VERBS])
-const TASK_READS = new Set(['show', 'attention', 'evidence'])
-// Evidence verbs take a task ID. A bare word still names the channel to list.
-const isTaskVerb = (word: string, target: string | undefined) =>
-  TASK_VERBS.has(word) && (target !== undefined || !TASK_EVIDENCE_VERBS.has(word))
-
-function isEvidenceCommand(): boolean {
-  const { command, args: [verb, target] } = current
-  return command === 'tasks' && verb !== undefined && target !== undefined
-    && (TASK_EVIDENCE_VERBS.has(verb) || (verb === 'complete' && flags.commit !== undefined))
-}
+const TASK_VERBS = new Set(['create', 'claim', 'renew', 'release', 'complete', 'fail', 'block', 'ask', 'attention', 'answer', 'unblock', 'park', 'unpark', 'handoff', 'scope', 'stage', 'reopen', 'assign', 'needs', 'priority', 'show', 'cancel'])
+const TASK_READS = new Set(['show', 'attention'])
 const TASK_STATES = ['waiting', 'ready', 'claimed', 'blocked', 'completed', 'failed', 'canceled']
 
 /** A task's ID as you'd write it: `#812` or `812`. */
 const taskId = (value: string | undefined) => messageId(value, 'task ID')
 
 /** A duration in seconds: a number and a unit, as `schedule` takes a duration. A lease is 30s to 1h. */
-function seconds(flag: 'wait' | 'lease' | 'ttl'): number | undefined {
+function seconds(flag: 'wait' | 'lease'): number | undefined {
   const value = flags[flag]
   if (value === undefined) return undefined
   const found = /^(\d+(?:\.\d+)?)(s|m|h|d)$/.exec(value)
@@ -2372,7 +1877,7 @@ async function withClaim<T>(claims: Claims, id: string, proof: ClaimProof, write
  * keeps the claim. With nothing ready it fails: `nothing_ready`, or `timeout` once `--wait` ran
  * out, as `wait` does. Stopped while it waits, it answers the exit code instead.
  */
-async function claimFor(board: Board, claims: Claims, target: string | undefined, verb: 'claim' | 'run', binding?: TaskBinding): Promise<ClaimedTask | number> {
+async function claimFor(board: Board, claims: Claims, target: string | undefined, verb: 'claim', binding?: TaskBinding): Promise<ClaimedTask | number> {
   const lease = seconds('lease')
   const options = {
     ...(lease !== undefined ? { lease } : {}),
@@ -2433,10 +1938,10 @@ async function claimFor(board: Board, claims: Claims, target: string | undefined
 /** `tasks`: the list, or what the word after it does to a task. */
 async function tasks(args: string[]): Promise<number> {
   const [verb, ...rest] = args
-  if (flags.binding !== undefined && verb !== 'claim' && verb !== 'run' && verb !== 'create')
-    throw usage('--binding goes with tasks claim, tasks run, or tasks create --claim.')
+  if (flags.binding !== undefined && verb !== 'claim' && verb !== 'create')
+    throw usage('--binding goes with tasks claim, or tasks create --claim.')
   if (flags.supersedes !== undefined && verb !== 'handoff') throw usage('--supersedes goes with tasks handoff.')
-  if (verb === undefined || !isTaskVerb(verb, rest[0])) {
+  if (verb === undefined || !TASK_VERBS.has(verb)) {
     if (rest.length > 0) {
       // Two words, the first no verb: the list takes one channel, so it's a command this one doesn't have.
       const guess = closest(verb!, TASK_VERBS)
@@ -2508,7 +2013,7 @@ async function tasks(args: string[]): Promise<number> {
     let made: Awaited<ReturnType<Board['tasks']['create']>>
     if (isMessageRef(target)) {
       // A thread that's there becomes a task as it is: what it says and wears are its author's.
-      const own = body !== undefined ? 'text' : (['label', 'no-sync', 'idempotency-key'] as const).find((name) => flags[name] !== undefined && flags[name] !== false)
+      const own = body !== undefined ? 'text' : (['label', 'idempotency-key'] as const).find((name) => flags[name] !== undefined)
       if (own !== undefined)
         throw usage(`${ref(target)} becomes a task as it is: ${own === 'text' ? 'text' : `--${own}`} is for a new thread.`, {
           next: [{ instruction: 'Make it a task as it is', argv: [...cli(), 'tasks', 'create', messageId(target)] }],
@@ -2521,7 +2026,6 @@ async function tasks(args: string[]): Promise<number> {
       made = await board.tasks.create(target, {
         text: said,
         ...(flags.label?.length ? { labels: labelPairs(flags.label) } : {}),
-        ...(flags['no-sync'] ? { noSync: true } : {}),
         ...(flags['idempotency-key'] ? { id: flags['idempotency-key'] } : {}),
         ...about,
       })
@@ -2547,75 +2051,6 @@ async function tasks(args: string[]): Promise<number> {
     if (typeof claim === 'number') return claim
     printClaim(claim.task, claim)
     return 0
-  }
-
-  if (verb === 'run') {
-    // What follows `--` is the command, whole: the parser hands it over as arguments, after the task or the channel.
-    const dash = typed.indexOf('--')
-    const command = dash === -1 ? [] : typed.slice(dash + 1)
-    if (command.length === 0)
-      throw usage('Missing the command to run: put it after --.', { reason: 'missing_arguments', next: [{ instruction: 'Run a command on a task', argv: [...cli(), 'tasks', 'run', '<ID>', '--', '<COMMAND>'] }] })
-    const before = rest.slice(0, rest.length - command.length)
-    if (before.length > 1) throw usage(`tasks run takes one ${flags.ready ? 'channel' : 'task'} before --: ${before[1]} is one too many.`)
-    if (!flags.ready && before[0] === undefined) throw usage('Missing the task to run it on: its ID, or --ready and a channel.', { reason: 'missing_arguments' })
-    // It runs a command on this machine, and holds every other call for as long as it runs.
-    if (io.board) throw usage("tasks run isn't available in-process: it runs a command on this machine.", { reason: 'not_available', next: [] })
-    const binding = bindingFlag()
-    const { board, claims } = tasksOn()
-    const claim = await claimFor(board, claims, before[0], 'run', binding)
-    if (typeof claim === 'number') return claim
-    const id = claim.task.id
-    const lease = seconds('lease')
-    // Settle and drop with the latest proof this run saved, not a reread of the file.
-    let held = claim
-    const ran = await runCommand(command, {
-      env: { ...process.env, BOARD_TASK: id },
-      // With --json this run's stdout is one document: what the command prints goes to stderr.
-      ...(flags.json ? { stdout: 'stderr' as const } : {}),
-      // A third of the lease the board gave, so two renewals can fail before it runs out.
-      every: (Date.parse(claim.until) - Date.now()) / 3,
-      async renew() {
-        try {
-          const renewed = await held.renew(lease)
-          await claims.put(id, { epoch: renewed.epoch, token: renewed.token, until: renewed.until })
-          held = renewed
-          return true
-        } catch (error) {
-          // Lost, the command works a task that's someone else's now: it stops. Anything else is tried again at the next turn.
-          return !(error instanceof BoardError && error.code === 'claim_lost')
-        }
-      },
-    })
-    if (ran.how === 'lost') {
-      await claims.drop(id, held)
-      throw new Failed({
-        class: 'conflict',
-        reason: 'claim_lost',
-        message: `Lost the claim on task ${ref(id)} while the command ran, so it was stopped.`,
-        next: [{ instruction: 'See where the task stands', argv: [...cli(), 'read', id] }],
-      })
-    }
-    if (ran.how === 'unstarted') {
-      // Nothing ran, so the task goes back as it was.
-      await held.release().catch(() => {})
-      await claims.drop(id, held)
-      throw new Failed({ class: 'not_found', reason: 'command_not_found', message: `Couldn't run ${command[0]}. ${sentence(ran.why)}`, details: [`Task ${ref(id)} was released.`] })
-    }
-    if (ran.how === 'interrupted') {
-      await withClaim(claims, id, held, () => held.release())
-      await claims.drop(id, held)
-      // 130 for Ctrl-C, 143 for a supervisor's SIGTERM: what the signal would have said had it ended this process.
-      return ran.code
-    }
-    // A command's failure can settle a legacy task, but cannot reject staged work.
-    const staged = held.task.task?.work !== undefined
-    const settled = await withClaim(claims, id, held, () => ran.code === 0
-      ? held.complete(flags.result)
-      : staged ? held.release() : held.fail(ran.signal ? `killed by ${ran.signal}` : `exited ${ran.code}`))
-    await claims.drop(id, held)
-    const outcome = ran.code === 0 ? completionOutcome(settled) : staged ? 'released' : 'failed'
-    printTask(settled, outcome, ran.code === 0 ? {} : { code: ran.code })
-    return ran.code
   }
 
   const id = taskId(rest[0])
@@ -2651,76 +2086,7 @@ async function tasks(args: string[]): Promise<number> {
     return 0
   }
   const { board, claims } = tasksOn()
-  const required = (flag: 'commit' | 'round' | 'artifact' | 'expires-at' | 'if-version') => {
-    const value = flags[flag]
-    if (!value?.trim()) throw usage(`Pass --${flag}.`, { reason: 'missing_arguments' })
-    return value
-  }
-  const number = (flag: 'round' | 'if-version') => {
-    const value = required(flag)
-    if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value))) throw usage(`--${flag} takes a positive integer.`)
-    return Number(value)
-  }
-  const commit = () => {
-    const parsed = Commit.safeParse(required('commit'))
-    if (!parsed.success) throw usage('--commit takes a full lowercase Git commit ID.')
-    return parsed.data
-  }
-
   switch (verb) {
-    case 'submit': {
-      one(rest[1], 'one task')
-      const sha = commit()
-      const artifact = required('artifact')
-      const held = await heldBy(board, claims, id)
-      printTask(await withClaim(claims, id, held, () => held.submit(sha, artifact)), 'submitted')
-      return 0
-    }
-    case 'evidence': {
-      one(rest[1], 'one task')
-      const work = await board.tasks.evidence(id)
-      if (flags.json) result({ work })
-      else {
-        if (work.submission) {
-          out(lineText(`commit  ${work.submission.commit}`))
-          out(lineText(`round   ${work.submission.round}`))
-        } else out('no current submission')
-        if (work.required.length) out(lineText(`gates   ${work.required.join(', ')}`))
-        for (const record of [...(work.submission ? [work.submission] : []), ...work.evidence]) {
-          out(lineText(`#${record.id}  ${record.gate} ${record.verdict}${record.expiresAt ? ` until ${record.expiresAt}` : ''}`))
-          out(lineText(`  ${record.artifactRef}`))
-        }
-        for (const record of work.overrides) {
-          out(lineText(`#${record.id}  ${record.gate} overridden until ${record.expiresAt}`))
-          out(lineText(`  ${record.by.principal}: ${record.reason}`))
-        }
-        for (const edge of work.releases) out(lineText(`#${edge.needId}  released with #${edge.evidenceId}`))
-      }
-      return 0
-    }
-    case 'attest':
-    case 'override': {
-      one(rest[3], 'a task, gate, and verdict or reason')
-      const gate = AttestationGate.safeParse(rest[1])
-      if (!gate.success) throw usage('Name a gate: tests, review, browserQA, acceptance, or publication.')
-      const target = { commit: commit(), round: number('round'), gate: gate.data }
-      if (verb === 'override') {
-        if (!rest[2]?.trim()) throw usage('Give a reason for the override.', { reason: 'missing_arguments' })
-        printTask(await board.tasks.overrideEvidence(id, { ...target, reason: rest[2], expiresAt: required('expires-at') }), 'overridden')
-      } else {
-        const verdict = Verdict.safeParse(rest[2])
-        if (!verdict.success) throw usage('Give a verdict: pass or fail.')
-        printTask(await board.tasks.recordEvidence(id, { ...target, verdict: verdict.data, artifactRef: required('artifact'), ...(flags['expires-at'] !== undefined ? { expiresAt: required('expires-at') } : {}) }), 'attested')
-      }
-      return 0
-    }
-    case 'resolve': {
-      one(rest[3], 'a task, prerequisite, and evidence ID')
-      const needId = taskId(rest[1])
-      const evidenceId = messageId(rest[2], 'evidence ID')
-      printTask(await board.tasks.resolve(id, { needId, evidenceId, ifVersion: number('if-version') }), 'resolved')
-      return 0
-    }
     case 'show': {
       one(rest[1], 'one task')
       const { message, replies } = await board.thread(id)
@@ -2762,8 +2128,7 @@ async function tasks(args: string[]): Promise<number> {
     case 'complete': {
       one(rest[2], 'a task and its result, quoted')
       const held = await heldBy(board, claims, id)
-      const options = flags.commit === undefined ? undefined : { commit: commit() }
-      const task = await withClaim(claims, id, held, () => held.complete(rest[1], options))
+      const task = await withClaim(claims, id, held, () => held.complete(rest[1]))
       await claims.drop(id, held)
       printTask(task, completionOutcome(task))
       return 0
@@ -2924,26 +2289,15 @@ async function taskHold(): Promise<TaskHold> {
 function taskFailure(code: string, status: number, hold: TaskHold): { class: Failure['class']; message: string; next: Recovery[]; whole?: true } | null {
   const { command, args } = current
   const named = namedTask()
-  const evidenceWrite = command === 'tasks' && (args[0] === 'submit' || (args[0] === 'complete' && flags.commit !== undefined))
   const board = onSameBoard()
   const profile = asTyped()
-  const recovery = (instruction: string, words: string[], asProfile = evidenceWrite): Recovery =>
+  const recovery = (instruction: string, words: string[], asProfile = false): Recovery =>
     ({ instruction, argv: [...cli(), ...words, ...board, ...(asProfile ? profile : [])] })
-  const read = (instruction: string, asProfile = evidenceWrite): Recovery[] =>
+  const read = (instruction: string, asProfile = false): Recovery[] =>
     named === undefined ? [] : [recovery(instruction, ['read', named], asProfile)]
   const also = (instruction: string, verb: string, words: string[] = [], asProfile = true): Recovery[] =>
     named === undefined ? [] : [recovery(instruction, ['tasks', verb, named, ...words], asProfile)]
   switch (code) {
-    case 'evidence_required':
-    case 'stale_candidate':
-    case 'already_submitted':
-      return { class: 'conflict', message: `Can't ${doing()}. Check the current submission and its gates.`, next: also('See the evidence', 'evidence') }
-    case 'invalid_evidence':
-      return { class: 'conflict', message: `Can't ${doing()}. Use current passing evidence from the completed prerequisite.`, next: [] }
-    case 'stale_task':
-      return { class: 'conflict', message: `Can't ${doing()}. The task changed.`, next: read('See the current task', true) }
-    case 'no_work_evidence':
-      return status === 501 ? { class: 'platform', message: `Can't ${doing()}. This board does not support that work evidence operation.`, next: [] } : null
     case 'task_claimed':
       return { class: 'conflict', message: `Can't ${doing()}. Someone holds it.`, next: read('See who holds it, and until when') }
     case 'task_assigned':
@@ -3065,19 +2419,12 @@ function stateCommand(): Recovery[] {
   return []
 }
 
-type OtherName = { instruction: string; argv: string[]; teams?: { instruction: string; argv: string[] } }
+type OtherName = { instruction: string; argv: string[] }
 
-/** Search: a filter on read. Vercel's board keeps no index of text, so there it looks through a page of a channel's threads. */
-const SEARCH: OtherName = {
-  instruction: 'Search is a filter on read',
-  argv: ['read', '<CHANNEL>', '--text', '<PHRASE>'],
-  teams: { instruction: "Search a channel's latest threads, a page at a time, since this board keeps no text search", argv: ['read', '<CHANNEL>', '--text', '<PHRASE>'] },
-}
+/** Search: a filter on read. */
+const SEARCH: OtherName = { instruction: 'Search is a filter on read', argv: ['read', '<CHANNEL>', '--text', '<PHRASE>'] }
 
-/**
- * Words for a command this CLI names otherwise, and the command they mean: on a team's board in
- * Vercel's API, `teams`, where it reads one channel's page (or when nothing says which board).
- */
+/** Words for a command this CLI names otherwise, and the command they mean. */
 const OTHER_NAMES: Record<string, OtherName> = {
   search: SEARCH,
   find: SEARCH,
@@ -3107,11 +2454,7 @@ const OTHER_NAMES: Record<string, OtherName> = {
   assign: { instruction: "Keep a task for one of its owner's profiles", argv: ['tasks', 'assign', '<ID>', '<PROFILE>'] },
   tag: { instruction: 'Set labels on a message', argv: ['label', '<ID>', '<KEY=VALUE>'] },
   labels: { instruction: 'Set labels on a message', argv: ['label', '<ID>', '<KEY=VALUE>'] },
-  mentions: {
-    instruction: 'Mentions are a filter on read and wait',
-    argv: ['read', '--mentions'],
-    teams: { instruction: "Read what mentions you in a channel's latest threads, then wait from where it stops", argv: ['read', '<CHANNEL>', '--mentions'] },
-  },
+  mentions: { instruction: 'Mentions are a filter on read and wait', argv: ['read', '--mentions'] },
   watch: { instruction: 'Block for the next match with wait, or follow live with tail', argv: ['wait', '<CHANNEL>', '--after', '<CURSOR>'] },
   follow: { instruction: 'Block for the next match with wait, or follow live with tail', argv: ['wait', '<CHANNEL>', '--after', '<CURSOR>'] },
   subscribe: { instruction: 'Block for the next match with wait, or follow live with tail', argv: ['wait', '<CHANNEL>', '--after', '<CURSOR>'] },
@@ -3156,22 +2499,6 @@ const context = (): CommandContext => ({
  * stopped.
  */
 export async function main(argv: string[], options: App): Promise<number> {
-  // The app's login and team are the run's, and only the run's.
-  handLogin(options.login ?? null)
-  handToken(options.token ?? null)
-  handTeam(options.team ?? null)
-  handFetch(options.fetch ?? null)
-  try {
-    return await runOnce(argv, options)
-  } finally {
-    handLogin(null)
-    handToken(null)
-    handTeam(null)
-    handFetch(null)
-  }
-}
-
-async function runOnce(argv: string[], options: App): Promise<number> {
   app = options
   typed = argv
   flags = {} as Flags
@@ -3179,7 +2506,6 @@ async function runOnce(argv: string[], options: App): Promise<number> {
   warnings = []
   reached = null
   resetTaskBoard()
-  teamDefault = null
   sent = () => null
   sentLength = 0
   self = null
@@ -3199,7 +2525,7 @@ async function runOnce(argv: string[], options: App): Promise<number> {
     const command = canonical(word)
     current = { command, args }
     if (io.board) {
-      const given = flags.url ? 'url' : flags.name !== undefined ? 'name' : flags.ensure ? 'ensure' : null
+      const given = flags.url ? 'url' : null
       if (given) throw usage(`--${given} doesn't apply in-process: the board handle you pass says which board and who.`, { next: [] })
       if (command !== undefined && MACHINE.has(command))
         throw usage(`${command} isn't available in-process: it's about the machine ${named()} runs on.`, { reason: 'not_available', next: [] })
@@ -3219,17 +2545,15 @@ async function runOnce(argv: string[], options: App): Promise<number> {
 }
 
 /** The commands that change the board, whatever their arguments. */
-const WRITES = new Set(['post', 'reply', 'edit', 'delete', 'label', 'react', 'schedule', 'sync', 'pause', 'resume', 'join'])
+const WRITES = new Set(['post', 'reply', 'edit', 'delete', 'label', 'react', 'schedule', 'pause', 'resume'])
 
 /** What a run its caller's signal stopped says: a write it was making may have landed. */
 function stopped(reason: unknown): Failed {
   const timedOut = reason instanceof Error && reason.name === 'TimeoutError'
-  // A subcommand that writes is `channels create`'s first word, `sources <key> join`'s second.
-  const sub = current.command === 'sources' ? current.args[1] : current.args[0]
-  const writes = WRITES.has(current.command ?? '') || ['create', 'update', 'revoke', 'cancel', 'join'].includes(sub ?? '')
-    || (current.command === 'tasks' && sub !== undefined && isTaskVerb(sub, current.args[1]) && !TASK_READS.has(sub))
-    || (current.command === 'agents' && AGENT_WRITES.has(sub ?? ''))
-    || (current.command === 'inbox' && (sub === 'ack' || sub === 'archive'))
+  // A subcommand that writes is the first word after the command: `channels create`.
+  const sub = current.args[0]
+  const writes = WRITES.has(current.command ?? '') || ['create', 'update', 'revoke', 'cancel'].includes(sub ?? '')
+    || (current.command === 'tasks' && sub !== undefined && TASK_VERBS.has(sub) && !TASK_READS.has(sub))
   return new Failed({
     class: timedOut ? 'timeout' : 'canceled',
     reason: timedOut ? 'timeout' : 'canceled',
@@ -3239,7 +2563,7 @@ function stopped(reason: unknown): Failed {
 }
 
 /** The commands about the machine the CLI runs on, not the board: none of them run in-process. */
-const MACHINE = new Set(['whoami', 'hooks', 'hook', 'serve', 'inspect', 'join'])
+const MACHINE = new Set(['whoami', 'serve', 'inspect'])
 
 /** `main()` with `io` in place of the terminal, for `vb()`. One run at a time, as `main()`'s. */
 export async function mainWith(argv: string[], options: App, with_: Io): Promise<number> {

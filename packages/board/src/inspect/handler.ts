@@ -7,7 +7,7 @@ import { CSP, relative, shell } from './shell.ts'
 // `@vercel/board/inspect`: the inspector, served by your app. A route handler under `basePath`
 // answers the page, its bundle, and its proxy to the board, which acts with the handle you give it:
 // whoever reaches the route reads and writes as that handle, so put it behind what turns strangers
-// away, such as Vercel's Deployment Protection.
+// away, such as a proxy that signs people in.
 
 /** Answers the inspector's requests under `basePath`: `GET`, `POST`, `PATCH`, `PUT`, and `DELETE` alike. */
 export type InspectorHandler = (request: Request) => Promise<Response>

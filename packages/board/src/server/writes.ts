@@ -12,7 +12,6 @@ import { authorize, FULL_ACCESS, type Access, type Permission, type Proof } from
 import { actorSeen, ownedActor } from './actors.ts'
 import type { AccessFence } from '../store/fence.ts'
 import { replaceMentions } from '../contract/mentions.ts'
-import { syncTarget, type SyncTarget } from './targets.ts'
 import type { BoardSession } from './a2.ts'
 import type { BoardReads } from './reads.ts'
 import { badRequest, duplicateId, forbidden, HttpError, noAccessFence, notFound } from './errors.ts'
@@ -23,8 +22,6 @@ import type { Via, WriteOrigin } from './origin.ts'
 import { workOpen, type createControl } from './control.ts'
 import { appendRefusal, type SingleWriter } from '../store/single-writer.ts'
 import { expiredClaim } from './task-lease.ts'
-
-export { syncTarget, type SyncTarget }
 
 import type { Identity } from './backend.ts'
 import type { ChannelSettings } from '../contract/channel-settings.ts'
@@ -155,11 +152,11 @@ export async function authorizeOwn(
 }
 
 /**
- * What a post was proved for: `post` where it lands, and `label` and `sync`
- * when it carries them. A reply's also carry the message it answers, as the
- * board looked it up.
+ * What a post was proved for: `post` where it lands, and `label` when it
+ * carries labels. A reply's also carry the message it answers, as the board
+ * looked it up.
  */
-export type PostProofs = { post: Proof<'post'>; label?: Proof<'label'>; sync?: Proof<'sync'>; re?: Message }
+export type PostProofs = { post: Proof<'post'>; label?: Proof<'label'>; re?: Message }
 
 const hasLabels = (labels: Labels | undefined) => Object.keys(labels ?? {}).length > 0
 
@@ -172,7 +169,7 @@ const hasLabels = (labels: Labels | undefined) => Object.keys(labels ?? {}).leng
 export async function authorizePost(
   ctx: WriteContext,
   access: Access,
-  input: { channel?: string | undefined; re?: number | undefined; labels?: Labels | undefined; sync?: readonly unknown[] | undefined },
+  input: { channel?: string | undefined; re?: number | undefined; labels?: Labels | undefined },
 ): Promise<PostProofs> {
   let channel: string
   let re: Message | undefined
@@ -187,7 +184,6 @@ export async function authorizePost(
     post: authorize(access, 'post', channel),
     ...(re ? { re } : {}),
     ...(hasLabels(input.labels) ? { label: authorize(access, 'label', channel) } : {}),
-    ...(input.sync?.length ? { sync: authorize(access, 'sync', channel) } : {}),
   }
 }
 
@@ -200,7 +196,7 @@ function spend(proof: Proof | undefined, permission: Permission, target: { chann
     throw new Error(`a ${permission} write in ${target.channel} needs a proof for that channel`)
 }
 
-/** Full-access proofs for the board's own code (sync), still checked against the channel each write lands in. */
+/** Full-access proofs for the board's own code, still checked against the channel each write lands in. */
 export const trusted = {
   message: <P extends Permission>(ctx: WriteContext, permission: P, id: number) => authorizeMessage(ctx, FULL_ACCESS, permission, id),
   post: (ctx: WriteContext, input: Parameters<typeof authorizePost>[2]) => authorizePost(ctx, FULL_ACCESS, input),
@@ -216,8 +212,6 @@ export type PostInput = WriteOrigin & {
   labels?: Labels | undefined
   noSync?: boolean | undefined
   id?: string | undefined
-  /** Targets the new thread starts with, as the board that syncs them resolved them; a plain one's kind goes by its shape. */
-  sync?: (string | SyncTarget)[] | undefined
   origin?: Origin | null
   from?: string | null
   /** Files the board stored, as it recorded them. */
@@ -266,18 +260,14 @@ export async function writePost(ctx: WriteContext, input: PostInput): Promise<Me
     replyTo = target.id === re ? null : target.id
     channel = target.channel
     thread = target.thread
-    if (input.sync?.length)
-      throw badRequest('sync attaches whole threads: use `board sync <id> <target>`')
   } else {
     if (!channel) throw badRequest('a post needs a channel')
-    if (input.noSync && input.sync?.length) throw badRequest('`noSync` and `sync` contradict each other')
     if (input.after !== undefined) throw badRequest('`after` is for replies', 'invalid_after')
     thread = id!
   }
   if (input.with && re !== null) throw new Error('only a new thread is posted with more: a reply has no task to be')
   spend(input.proofs.post, 'post', { channel })
   if (hasLabels(input.labels)) spend(input.proofs.label, 'label', { channel })
-  if (input.sync?.length) spend(input.proofs.sync, 'sync', { channel })
 
   // A retry of a write that landed (only a caller's own ID can be one): what's on the board
   // stands, whatever its `after` says now.
@@ -348,23 +338,7 @@ async function commitPost(
   const { identity } = input
   const { channel, re, replyTo, thread, id, sent } = placed
   const { state: actors } = await ctx.session.state(actorsReducer)
-  // The targets it asks for.
-  const targets: { target: string; kind: 'channel' | 'thread'; cause: 'request' }[] = []
-  if (re === null) {
-    for (const requested of input.sync ?? []) {
-      const target = syncTarget(requested)
-      if (!targets.some((t) => t.target === target.target)) targets.push({ ...target, cause: 'request' })
-    }
-  }
-
   const seen = seenFor(identity, actors)
-  const synced = await Promise.all(
-    targets.map(async ({ target, kind, cause }) => ({
-      type: 'thread.synced' as const,
-      id: await derivedId('board', thread, 'sync', target),
-      payload: { thread, target, kind, cause, by: identity.author },
-    })),
-  )
   const events: Events = [
     ...(seen ? [seen] : []),
     ...metBy(input.introduces, actors, identity.actor.id),
@@ -389,7 +363,6 @@ async function commitPost(
         ...(input.importedBy !== undefined ? { importedBy: input.importedBy } : {}),
       },
     },
-    ...synced,
   ]
   let rows: Awaited<ReturnType<BoardSession['append']>>
   try {
@@ -400,8 +373,6 @@ async function commitPost(
       rows = await appendFrom(ctx, async (now) => {
         const { position, events: more } = await along(now)
         if (input.workEpoch !== undefined) workOpen((await ctx.work.at(position)).status, input.workEpoch)
-        // As of the same index the batch is conditioned on: see `unclaimedAt`.
-        for (const target of targets) await unclaimed(ctx, target, thread, identity.principal.access)
         const came = more({ id: position + 1 + before, thread })
         // The post says how many came with it, so a replay tells its own append from what was written since.
         const batch = events.map((event) => (event.type === 'message.posted' ? { ...event, payload: { ...event.payload, along: came.length } } : event)) as Events
@@ -413,10 +384,7 @@ async function commitPost(
         workOpen(status, input.workEpoch)
         return index
       }, events)
-    } else if (targets.some((target) => target.kind === 'thread'))
-      // A thread it claims must still be unclaimed as the append lands: two posts can't both take one.
-      rows = await appendWhile(ctx, unclaimedAt(ctx, targets, thread, identity.principal.access), events)
-    else rows = input.after === undefined || re === null ? await ctx.session.append(...events) : await appendWhile(ctx, nothingAfter(ctx, re, input.after), events)
+    } else rows = input.after === undefined || re === null ? await ctx.session.append(...events) : await appendWhile(ctx, nothingAfter(ctx, re, input.after), events)
   } catch (error) {
     // The same request sent twice at once: what came after `after`, or took its ID, may be the other one.
     const twice = (error instanceof HttpError && error.code === 'newer_message') || (input.with !== undefined && duplicateEvent(error))
@@ -569,34 +537,6 @@ const shownTo = (shown: MessageView, access: Access, sent: string): MessageView 
 
 /** The writer, as the reader of the view its write returns. Only a link to a board message needs a lookup. */
 const readerFor = (ctx: WriteContext, access: Access, message: Message): Promise<Reader> => ctx.reads.reader(access, [message])
-
-/**
- * Refuses an external thread another board thread is synced with: taking it
- * over would send its replies away from that thread, to a caller who may not
- * read it. A reader of that thread's channel learns which thread it is. It
- * reads the tables as they are: it runs inside an append's look, whose
- * `appendFrom` has them apply the log first, and whose append lands only if
- * nothing, another claim included, landed since.
- */
-async function unclaimed(ctx: WriteContext, target: SyncTarget, thread: string, access: Access) {
-  if (target.kind !== 'thread') return
-  const owner = await ctx.reads.tables.threadOf(target.target)
-  if (owner === null || owner === thread) return
-  const synced = await ctx.reads.tables.syncOf(owner)
-  const which = synced && access.readable(synced.channel) ? `#${synced.root}` : 'another thread'
-  throw new HttpError(409, 'already_synced', `${target.target} is already synced with ${which}`)
-}
-
-/**
- * An append's condition that none of `targets` is another thread's, as `unclaimed` refuses: it
- * returns the index its reads reflect at least, so the append lands only if nothing, another
- * claim included, landed since.
- */
-const unclaimedAt = (ctx: WriteContext, targets: readonly SyncTarget[], thread: string, access: Access) => async () => {
-  const position = await ctx.reads.tables.position()
-  for (const target of targets) await unclaimed(ctx, target, thread, access)
-  return position
-}
 
 /**
  * Waits until the tables hold a write, so any read after it includes it. Most often
@@ -767,19 +707,6 @@ async function commitEdit(ctx: WriteContext, input: EditInput, message: Message)
   await untilApplied(ctx, rows)
 }
 
-/** A message's links, replaced: a platform edit or unfurl changed what it links to. */
-export async function writeLinks(
-  ctx: WriteContext,
-  input: { identity: Identity; authorized: Authorized<'post'>; links: Link[]; from: string | null },
-) {
-  const message = spent(input.authorized, 'post')
-  if (message.deleted) return
-  await untilApplied(ctx, await ctx.session.append({
-    type: 'message.linked',
-    payload: { id: message.id, thread: message.thread, links: input.links, by: input.identity.author, from: input.from },
-  }))
-}
-
 export async function writeDelete(
   ctx: WriteContext,
   input: { identity: Identity; authorized: Authorized<'post'>; from?: string | null; asAuthor?: boolean; revision?: number | undefined },
@@ -934,33 +861,6 @@ const labelsAre = (ctx: WriteContext, id: number, expected: Record<string, strin
     throw new HttpError(409, 'label_conflict', wanted === null ? `${key} is set` : now === undefined ? `${key} isn't set` : `${key} isn't ${wanted}`)
   }
   return position
-}
-
-/**
- * Syncs a message's thread with a target, resolved by the sync that delivers it. Attaching twice
- * is a no-op; a platform thread another board thread is synced with is a 409.
- */
-export async function writeAttach(
-  ctx: WriteContext,
-  input: { identity: Identity; authorized: Authorized<'sync'>; target: SyncTarget; cause: 'config' | 'request' },
-): Promise<{ attached: boolean }> {
-  const message = spent(input.authorized, 'sync')
-  const { target, kind } = input.target
-  const event = {
-    type: 'thread.synced' as const,
-    id: await derivedId('board', message.thread, 'sync', target),
-    payload: { thread: message.thread, target, kind, cause: input.cause, by: input.identity.author },
-  }
-  // Only while no other thread has claimed it since it looked: two attaches can't both take one.
-  const rows = await appendFrom(ctx, async () => {
-    const position = await ctx.reads.tables.position()
-    if ((await ctx.reads.tables.syncOf(message.thread))?.targets.includes(target)) return { position, events: [] }
-    await unclaimed(ctx, input.target, message.thread, input.identity.principal.access)
-    return { position, events: [event] }
-  })
-  // Applied before it answers, so replies from the platform thread find it at once.
-  await untilApplied(ctx, rows)
-  return { attached: rows.length > 0 }
 }
 
 /**

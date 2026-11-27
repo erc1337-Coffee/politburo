@@ -2,7 +2,7 @@ import { carried } from './carried.ts'
 import type { z } from 'zod'
 import type { ActorView, Filters, LinkView, MessageView, BoardEventView, TaskView } from '../api/routes.ts'
 import type { ParsedFilters } from '../api/routes.ts'
-import { isPublicBoardEvent, type BoardEvent, type PublicBoardEvent } from '../contract/events.ts'
+import type { BoardEvent } from '../contract/events.ts'
 import type { Link } from '../contract/external.ts'
 import { FULL_ACCESS, type Access } from './access.ts'
 import { hasCriteria } from './watch-spec.ts'
@@ -116,7 +116,7 @@ export const indexOf = (value: string): number | null => (/^(0|[1-9]\d{0,15})$/.
 
 /** A task as every reader sees it: the tasks it waits for as refs, and its claim without the token, hashed or not. */
 export function taskView(task: Task): TaskView {
-  const { needs, claim, attention, handoff, parked, evidence: _evidence, releases: _releases, ...shown } = task
+  const { needs, claim, attention, handoff, parked, ...shown } = task
   return {
     ...shown,
     priority: task.priority ?? DEFAULT_TASK_PRIORITY,
@@ -347,7 +347,7 @@ export const eventActor = (event: BoardEvent) => event.type === 'task.handoff'
   : (event.payload as { by?: { actor?: string } }).by?.actor
 
 /** An event as subscribers receive it, with its message as it is afterwards. */
-export function eventView(event: PublicBoardEvent, after: Message | undefined, actors: ActorsState, reader: Reader): BoardEventView {
+export function eventView(event: BoardEvent, after: Message | undefined, actors: ActorsState, reader: Reader): BoardEventView {
   const by = eventActor(event)
   const actor = by ? own(actors.byId, by) : undefined
   const { links } = event.payload as { links?: Link[] }
@@ -369,8 +369,7 @@ function payloadView(event: BoardEvent, links: LinkView[] | undefined): Record<s
   // Only `task.claimed` carries a `token`: its hash is the board's to check claims against, and no reader's.
   // A post or an edit from before mentions were text alone carries the actor IDs they resolved to.
   // A post's `along` is the board's own count of what its append carried.
-  // Cross-channel release pointers are available only from the evidence read, after checking access.
-  const { token: _token, mentions: _mentions, along: _along, needId: _needId, evidenceId: _evidenceId, ...shown }: Record<string, unknown> = payload
+  const { token: _token, mentions: _mentions, along: _along, ...shown }: Record<string, unknown> = payload
   for (const key of ['id', 're', 'replyTo'] as const) if (typeof shown[key] === 'number') shown[key] = ref(shown[key])
   if (Array.isArray(shown.needs)) shown.needs = (shown.needs as number[]).map(ref)
   if (typeof shown.by === 'object' && shown.by !== null) shown.by = authorView(shown.by as Author)
@@ -444,22 +443,10 @@ export class FeedProjection {
   }
 
   async step(event: BoardEvent, signal?: AbortSignal): Promise<FeedItem> {
-    if (!isPublicBoardEvent(event)) return { index: event.index, view: null }
     await loadInto(this.reads, this.messages, this.loaded, event, signal)
     const { id, before, after } = foldEvent(this.messages, this.actors, event)
     const message = after ?? before
     const readable = id === null ? this.access.readsAll : message !== undefined && this.access.readable(message.channel)
-    if (event.type === 'task.work_resolved' && readable && !this.access.readsAll) {
-      const needId = event.payload.needId
-      let need = this.messages.byId[needId]
-      if (!need && !this.loaded.has(needId)) {
-        const found = await this.reads.messagesAt([needId], event.index, signal)
-        need = found.get(needId)
-        this.loaded.add(needId)
-        if (need) this.messages.byId[needId] = need
-      }
-      if (!need || !this.access.readable(need.channel)) return { index: event.index, view: null }
-    }
     const hidden = HIDDEN.has(event.type) && !this.all
     const visible = readable && !hidden && (this.criteria ? this.match(before) || this.match(after) : id !== null || this.all)
     if (!visible) return { index: event.index, view: null }

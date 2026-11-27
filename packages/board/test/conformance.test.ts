@@ -40,19 +40,6 @@ function stagedBoard(...scopers: string[]) {
 const clientAs = async (fetch: Fetch, token: () => Promise<string>) =>
   board({ backend: http(BOARD_URL, { fetch: bearer((input, init) => fetch(new Request(input, init)), token) }) }).as(null)
 
-/** Same fixed in-memory endpoint as the admin, with no credential fallback or redirects. */
-const boardWithInviteToken = (fetch: Fetch, token: string) =>
-  board({
-    backend: http(BOARD_URL, {
-      fetch: (input, init) => {
-        const request = new Request(input, { ...init, redirect: 'error' })
-        if (request.url !== BOARD_URL && !request.url.startsWith(`${BOARD_URL}/`)) throw new Error('unexpected invite endpoint')
-        request.headers.set('authorization', `Bearer ${token}`)
-        return fetch(request)
-      },
-    }),
-  }).as(null)
-
 /** The same handle as `token` gives, narrowed with `x-board-can`, as `vb conformance` opens one. */
 const withCan =
   (fetch: Fetch, token: () => Promise<string> = () => personToken()) =>
@@ -89,9 +76,6 @@ const HEADERS = [
   'ignores x-board-session: who writes is the principal and its profile',
 ]
 const NO_HEADERS = "this run can't call the board with headers of its own"
-const INVITE_RACE = 'redeems an invite for only one of the callers that race for it'
-const INVITE_ACCESS = 'lets a joined caller read and post only as granted'
-const NO_INVITE_TOKEN = "this run can't call the board with a joined caller's token"
 
 /** The checks of a caller narrowed with x-board-can, which a run that can't send the header skips. */
 const NARROWED = [
@@ -100,7 +84,6 @@ const NARROWED = [
   "takes read in a prerequisite's channel to wait for it: a caller narrowed out of it makes no task that needs it",
   'refuses a caller narrowed with x-board-can a schema, and lets it read them',
   "refuses a caller narrowed with x-board-can its principal's watchers: registering, pulling, and acking",
-  "refuses a caller narrowed with x-board-can sync's records: imports, receipts, and the inbox",
 ]
 const NO_CAN = "this run can't call the board with an x-board-can header"
 const TASK_AUTHORITY = [
@@ -122,7 +105,6 @@ const OWN_PROFILES = ['keeps a task assigned to a profile for that actor alone',
 const NEVER_LOCKED_OUT = ["refuses a grant its maker couldn't take back, unless it says lockMeOut", "nothing locks this run out of a channel, so no grant it makes is a lockout: it owns the board, or it's the board's own code"]
 const LOCKED_OUT = ['lets a member grant on a pattern after a lock under it', "a run can't be shut out by a lock and lift it afterwards: the board's own tests check it"]
 const skipped = (report: Awaited<ReturnType<typeof conformance>>) => report.checks.filter((check) => check.status !== 'passed').map((check) => [check.name, check.detail])
-const agentChecks = (report: Awaited<ReturnType<typeof conformance>>) => report.checks.filter((check) => check.group === 'agents')
 
 /** The grants checks of a caller narrowed with x-board-can, which a run that can't send the header skips too. */
 const GRANTS_NARROWED = [
@@ -151,66 +133,25 @@ function withoutPath(fetch: Fetch): Fetch {
   }
 }
 
-/**
- * A board in front of `fetch` that wakes by path, as the team board does: it refuses a path from a
- * person, and keeps each owner's path (and a preview's branch) itself, beside the registration the
- * board under it holds, which wakes nothing.
- */
-function wakingByPath(fetch: Fetch): Fetch {
-  const paths = new Map<string, { path: string; branch?: string }>()
-  const shown = (found: { owner: string }) => ({ ...found, ...paths.get(found.owner) })
-  return async (request) => {
-    const url = new URL(request.url)
-    if (request.method === 'POST' && url.pathname.endsWith('/watchers')) {
-      const { path, branch, ...body } = await request.json()
-      const claims = JSON.parse(Buffer.from(request.headers.get('authorization')!.split('.')[1]!, 'base64url').toString())
-      if (path && claims.user_id) return Response.json({ error: { code: 'not_a_project', message: "a path is on the caller's own project" } }, { status: 403 })
-      const response = await fetch(new Request(request, { body: JSON.stringify(body) }))
-      if (!response.ok) return response
-      const made = await response.json()
-      if (path) paths.set(made.owner, { path, ...(branch ? { branch } : {}) })
-      else paths.delete(made.owner)
-      return Response.json(shown(made))
-    }
-    const response = await fetch(request)
-    if (!response.headers.get('content-type')?.includes('application/json')) return response
-    if (request.method === 'GET' && url.pathname.endsWith('/watchers')) {
-      const { watchers } = await response.json()
-      return Response.json({ watchers: watchers.map(shown) }, { status: response.status })
-    }
-    if (request.method === 'GET' && url.pathname.replace(/\/$/, '') === new URL(BOARD_URL).pathname)
-      return Response.json({ wake_by_path: true, ...(await response.json()) }, { status: response.status })
-    return response
-  }
-}
-
-/** The watcher and sync checks' statuses, in order. */
+/** The watcher checks' statuses, in order. */
 const watcherStatuses = (report: Awaited<ReturnType<typeof conformance>>) =>
-  report.checks.filter((check) => check.group === 'watchers' || check.group === 'sync').map((check) => check.status)
+  report.checks.filter((check) => check.group === 'watchers').map((check) => check.status)
 
 // Each of these runs the kit against a board, some more than once: seconds each, and more under a full run.
 vi.setConfig({ testTimeout: 30_000 })
 
 describe('the conformance kit', () => {
   it('passes the whole protocol over HTTP against an opted-in local board and deletes what it posted', async ({ onTestFinished }) => {
-    const board = localBoard({ agentOps: true })
+    const board = localBoard()
     onTestFinished(() => board.close())
     const client = await clientOf(board.fetch)
     const report = await conformance(client, {
       withHeaders: withHeaders(board.fetch),
-      withInviteToken: (token) => boardWithInviteToken(board.fetch, token),
       networkPause: true,
     })
     expect(report.checks.filter((check) => check.status === 'failed')).toEqual([])
     expect(report.checks.filter((check) => check.group === 'network-pause').map((check) => check.status)).toEqual(['passed'])
     expect(await client.status()).toMatchObject({ paused: false, pauseEpoch: 1 })
-    expect(report.checks.filter((check) => check.group === 'invites').map(({ name, status }) => [name, status])).toEqual([
-      ['lists a pending invite and refuses it once revoked', 'passed'],
-      ['lists a short-lived invite as expired and refuses it', 'passed'],
-      [INVITE_RACE, 'passed'],
-      [INVITE_ACCESS, 'passed'],
-    ])
-    expect((await client.invites()).some((invite) => invite.state === 'pending')).toBe(false)
     // withHeaders stands in for withCan, so the narrowing checks run too.
     expect(report.checks.filter((check) => [...NARROWED, ...GRANTS_NARROWED].includes(check.name)).map((check) => check.status)).toEqual([...NARROWED, ...GRANTS_NARROWED].map(() => 'passed'))
     expect(report.checks.filter((check) => [...HEADERS, 'shows no session on a message, its event, or you'].includes(check.name)).map((check) => check.status)).toEqual(Array(5).fill('passed'))
@@ -218,11 +159,9 @@ describe('the conformance kit', () => {
     expect(report).toMatchObject({ ok: true, url: BOARD_URL })
     // Every grant it made is gone, the ones that closed a pattern to everyone included.
     expect((await client.grants()).map((grant) => grant.id)).toEqual(['g1', 'g2', 'g3'])
-    expect([...new Set(report.checks.map((check) => check.group))]).toEqual(['core', 'network-pause', 'paging', 'search', 'schedules', 'tasks', 'grants', 'invites', 'schemas', 'attachments', 'watchers', 'sync', 'agents', 'operational-inbox'])
-    expect(report.checks.filter((check) => check.group === 'tasks').map((check) => check.status)).toEqual(Array.from({ length: 26 + TASK_AUTHORITY.length }, () => 'passed'))
+    expect([...new Set(report.checks.map((check) => check.group))]).toEqual(['core', 'network-pause', 'paging', 'search', 'schedules', 'tasks', 'grants', 'schemas', 'attachments', 'watchers'])
+    expect(report.checks.filter((check) => check.group === 'tasks').map((check) => check.status)).toEqual(Array.from({ length: 25 + TASK_AUTHORITY.length }, () => 'passed'))
     expect(report.checks.filter((check) => TASK_AUTHORITY.includes(check.name)).map((check) => check.status)).toEqual(TASK_AUTHORITY.map(() => 'passed'))
-    expect(agentChecks(report).map(({ status }) => status)).toEqual(['passed', 'passed'])
-    expect((await client.agents.list('conformance')).agents.map(({ status }) => status)).toEqual(['disabled', 'disabled'])
     const { messages } = await client.channel('conformance').messages({ limit: 500 })
     expect(messages.filter((message) => !message.deleted)).toEqual([])
     // Every task it made went with its root: none is left open, and none still wears a state.
@@ -234,7 +173,7 @@ describe('the conformance kit', () => {
     const store = { ...memory(), fence: undefined }
     onTestFinished(() => store.close())
     const scopers = ['vercel:user:u_julian']
-    const backend = a2({ store, workLifecycle: { scopers }, agentOps: true, attentionResponders: { conformance: scopers } })
+    const backend = a2({ store, workLifecycle: { scopers }, attentionResponders: { conformance: scopers } })
     const team = testMount({ url: BOARD_URL, backend, authenticate: oidcTokens(testAuth) })
     const client = await clientOf(team.fetch)
     const info = await client.discovery()
@@ -250,7 +189,7 @@ describe('the conformance kit', () => {
     expect(lifecycle.filter((check) => check.status === 'skipped')).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'pins the scoped revision, hands off a live claim, and audits authorized moves', detail: 'needs the access fence' }),
     ]))
-    for (const group of ['tasks', 'agents', 'network-pause']) {
+    for (const group of ['tasks', 'network-pause']) {
       expect(report.checks.filter((check) => check.group === group)).toContainEqual(expect.objectContaining({ status: 'skipped', detail: 'needs the access fence' }))
     }
     expect(report.ok).toBe(true)
@@ -372,11 +311,10 @@ describe('the conformance kit', () => {
   })
 
   it("passes through an opted-in local board's own handle, in-process", async ({ onTestFinished }) => {
-    const team = localBoard({ agentOps: true })
+    const team = localBoard()
     onTestFinished(() => team.close())
     const report = await conformance(team)
     expect(report.checks.some((check) => check.group === 'network-pause')).toBe(false)
-    expect(agentChecks(report)).toMatchObject([{ status: 'passed' }, { status: 'skipped', detail: 'this run has no verified agent credential' }])
     // The board's own code needs no grant to keep it in what it closes, and no proxy narrows it. Each
     // of its profiles is a principal of its own there, so none is an actor a task of its own could be for.
     expect(skipped(report)).toEqual([
@@ -392,53 +330,10 @@ describe('the conformance kit', () => {
       NEVER_LOCKED_OUT,
       LOCKED_OUT,
       CROSS_TEAM,
-      [INVITE_ACCESS, NO_INVITE_TOKEN],
       [NARROWED[3], NO_CAN],
       [NARROWED[4], NO_CAN],
-      [NARROWED[5], NO_CAN],
-      ['confirms a claimed run only through a taken and reported status probe', 'this run has no verified agent credential'],
     ])
     expect((await team.me()).actor).toBe('board:client')
-  })
-
-  it('keeps credentials out of the report even when a board echoes them in errors', async () => {
-    const team = testBoard({ scheduler: fakeQueue().scheduler })
-    let echoed = ''
-    const leaking: Fetch = async (request) => {
-      const response = await team.fetch(request.clone())
-      if (request.method !== 'POST' || !new URL(request.url).pathname.endsWith('/invites/redeem') || !response.ok) return response
-      const { token } = await response.json()
-      echoed = token
-      return Response.json({ error: { code: token, message: token, hint: token } }, { status: 500 })
-    }
-    const client = await clientOf(leaking)
-    const report = await conformance(client)
-    expect(echoed.length > 0).toBe(true)
-    expect(JSON.stringify(report).includes(echoed)).toBe(false)
-    expect(report.checks.find((check) => check.name === INVITE_RACE)?.status).toBe('failed')
-    // The write succeeded, despite the failed response. Cleanup still takes back its grant.
-    expect((await client.grants()).some((grant) => grant.principals.some((principal) => principal.kind === 'invitee'))).toBe(false)
-  })
-
-  it('fails a board that returns a successful redemption more than once', async () => {
-    const team = testBoard({ scheduler: fakeQueue().scheduler })
-    // A transport that replays the same answer to concurrent uses of the same invite, as if joins
-    // were idempotent. It keeps sensitive request and response bodies in memory, never in assertions.
-    const answered = new Map<string, Promise<Response>>()
-    const replay: Fetch = async (request) => {
-      if (request.method !== 'POST' || !new URL(request.url).pathname.endsWith('/invites/redeem')) return team.fetch(request)
-      const key = await request.clone().text()
-      let answer = answered.get(key)
-      if (!answer) answered.set(key, (answer = team.fetch(request)))
-      return (await answer).clone()
-    }
-    const client = await clientOf(replay)
-    const report = await conformance(client)
-    expect(report.checks.filter((check) => check.group === 'invites' && check.status === 'failed').map(({ name, detail }) => [name, detail])).toEqual([
-      [INVITE_RACE, 'exactly one redemption should succeed, got 3'],
-    ])
-    expect(report.ok).toBe(false)
-    expect((await client.grants()).some((grant) => grant.principals.some((principal) => principal.kind === 'invitee'))).toBe(false)
   })
 
   it('skips an opted-in network-pause check on a backend that declares it unsupported', async () => {
@@ -685,79 +580,31 @@ describe('the conformance kit', () => {
       ['failed', "a task that needs one its caller can't read: expected 400 invalid_needs, and it succeeded"],
       ['failed', 'registering a schema, by a caller narrowed with x-board-can: expected 403 forbidden, and it succeeded'],
       ['failed', 'registering watchers, by a caller narrowed with x-board-can: expected 403 forbidden, and it succeeded'],
-      ['failed', 'an import, by a caller narrowed with x-board-can: expected 403 forbidden, and it succeeded'],
     ])
-    // What a board wrongly took, the kit put back: no watchers, and nothing it imported left in the channel.
-    expect((await board.watchers()).filter((registration) => Object.keys(registration.watch).length > 0 || (registration.sync?.length ?? 0) > 0)).toEqual([])
+    // What a board wrongly took, the kit put back: no watchers, and nothing it posted left in the channel.
+    expect((await board.watchers()).filter((registration) => Object.keys(registration.watch).length > 0)).toEqual([])
     expect((await board.channel('conformance').messages({ limit: 500 })).messages.filter((message) => !message.deleted)).toEqual([])
     const without = await conformance(await clientOf(board.fetch))
     expect(without.checks.filter((check) => NARROWED.includes(check.name)).map((check) => [check.status, check.detail])).toEqual(NARROWED.map(() => ['skipped', NO_CAN]))
   })
 
-  it("leaves a token's registration as it was: one with watchers or a sync is skipped, and an empty one is checked", async () => {
+  it("leaves a token's registration as it was: one with watchers is skipped, and an empty one is checked", async () => {
     const board = await grantingV0()
     const v0 = caller(board.fetch, await deploymentToken('v0', 'prj_v0', 'production'))
     const asV0 = await clientAs(board.fetch, () => deploymentToken('v0', 'prj_v0', 'production'))
     const narrowedV0 = { withCan: withCan(board.fetch, () => deploymentToken('v0', 'prj_v0', 'production')) }
     const registered = async () => (await v0('GET', '/watchers')).body.watchers.map(({ hash: _hash, ...rest }: { hash: string }) => rest)
-    for (const registration of [
-      // A sync elsewhere with no watchers of its own, and watchers with no sync.
-      { watch: {}, sync: [{ key: 'slack', platform: 'slack' }] },
-      { watch: { fix: { tail: 'feedback' } }, sync: [] },
-    ]) {
-      expect((await v0('POST', '/watchers', registration)).status).toBe(200)
-      const before = await registered()
-      const report = await conformance(asV0, narrowedV0)
-      // What registers is skipped; noSync, an account lookup, and a narrowed caller's refused registration register nothing.
-      expect(watcherStatuses(report)).toEqual(['skipped', 'skipped', 'passed', 'skipped', 'skipped', 'skipped', 'skipped', 'skipped', 'passed', 'skipped'])
-      expect(await registered()).toEqual(before)
-    }
+    expect((await v0('POST', '/watchers', { watch: { fix: { tail: 'feedback' } } })).status).toBe(200)
+    const before = await registered()
+    // What registers is skipped; a narrowed caller's refused registration registers nothing.
+    expect(watcherStatuses(await conformance(asV0, narrowedV0))).toEqual(['skipped', 'passed'])
+    expect(await registered()).toEqual(before)
     // One with nothing in it is checked, and is left as it was.
-    const empty = { owner: 'vercel:project:prj_v0:production', url: null, watch: {}, sync: [] }
+    const empty = { owner: 'vercel:project:prj_v0:production', watch: {} }
     expect((await v0('POST', '/watchers', { watch: {} })).status).toBe(200)
     const report = await conformance(asV0, narrowedV0)
-    expect(watcherStatuses(report)).toEqual(['passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed'])
+    expect(watcherStatuses(report)).toEqual(['passed', 'passed'])
     expect(await registered()).toEqual([empty])
-  })
-
-  it('replaces nothing on a board from before `path`, which reads one as a registration with nothing in it', async () => {
-    const older = withoutPath((await grantingV0()).fetch)
-    const v0 = caller(older, await deploymentToken('v0', 'prj_v0', 'production'))
-    const asV0 = await clientAs(older, () => deploymentToken('v0', 'prj_v0', 'production'))
-    const narrowedV0 = { withCan: withCan(older, () => deploymentToken('v0', 'prj_v0', 'production')) }
-    const watching = { url: null, watch: { fix: { tail: 'feedback' } }, sync: [] }
-    expect((await v0('POST', '/watchers', watching)).status).toBe(200)
-    expect(watcherStatuses(await conformance(asV0, narrowedV0))).toEqual(['skipped', 'skipped', 'passed', 'skipped', 'skipped', 'skipped', 'skipped', 'skipped', 'passed', 'skipped'])
-    expect((await v0('GET', '/watchers')).body.watchers).toMatchObject([watching])
-    // An empty one fails the check, since the board took the path, and is left as it was.
-    expect((await v0('POST', '/watchers', { watch: {} })).status).toBe(200)
-    const report = await conformance(asV0, narrowedV0)
-    expect(report.checks.filter((check) => check.status === 'failed')).toMatchObject([
-      { name: 'wakes by path only where its discovery says so, and only a Vercel project', detail: 'a path, on a board that wakes nothing: expected 501 no_wake_by_path, and it succeeded' },
-    ])
-    expect((await v0('GET', '/watchers')).body.watchers).toMatchObject([{ url: null, watch: {} }])
-  })
-
-  it("passes a board that wakes by path, which a project registers on and gets back, and refuses anyone else's", async () => {
-    const byPath = wakingByPath((await grantingV0()).fetch)
-    const v0 = caller(byPath, await deploymentToken('v0', 'prj_v0', 'production'))
-    expect((await v0('POST', '/watchers', { path: '/api/board', watch: {} })).status).toBe(200)
-    const report = await conformance(await clientAs(byPath, () => deploymentToken('v0', 'prj_v0', 'production')), { withCan: withCan(byPath, () => deploymentToken('v0', 'prj_v0', 'production')) })
-    expect(watcherStatuses(report)).toEqual(['passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed'])
-    expect((await v0('GET', '/watchers')).body.watchers).toMatchObject([{ url: null, path: '/api/board', watch: {} }])
-    // A person's token names no project to wake.
-    const personal = wakingByPath(testBoard({ scheduler: fakeQueue().scheduler }).fetch)
-    const person = await conformance(await clientOf(personal), { withCan: withCan(personal) })
-    expect(watcherStatuses(person)).toEqual(['passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed'])
-  })
-
-  it("checks a preview's path with its branch, and gives the branch back", async () => {
-    const byPath = wakingByPath((await grantingV0('preview')).fetch)
-    const preview = caller(byPath, await deploymentToken('v0', 'prj_v0', 'preview'))
-    expect((await preview('POST', '/watchers', { path: '/api/board', branch: 'jb/watchers', watch: {} })).status).toBe(200)
-    const report = await conformance(await clientAs(byPath, () => deploymentToken('v0', 'prj_v0', 'preview')), { withCan: withCan(byPath, () => deploymentToken('v0', 'prj_v0', 'preview')) })
-    expect(watcherStatuses(report)).toEqual(['passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed'])
-    expect((await preview('GET', '/watchers')).body.watchers).toMatchObject([{ url: null, path: '/api/board', branch: 'jb/watchers', watch: {} }])
   })
 
   it('skips paging back on a board from before `older`, and fails one that lists a thread twice', async () => {
@@ -811,7 +658,7 @@ describe('the conformance kit', () => {
     expect(messages.filter((message) => !message.deleted)).toEqual([])
   })
 
-  it('skips unsupported schedules, files, and agent operations', async () => {
+  it('skips unsupported schedules and files', async () => {
     // A board on a2() with only its store answers 501 for each, and the kit reads that.
     const bare = testBoard({ blob: undefined })
     const report = await conformance(await clientOf(bare.fetch), { withHeaders: withHeaders(bare.fetch) })
@@ -823,12 +670,9 @@ describe('the conformance kit', () => {
       ['grants', 'skipped', NO_APPS[1]],
       ['grants', 'skipped', LOCKED_OUT[1]],
       ['grants', 'skipped', CROSS_TEAM[1]],
-      ['invites', 'skipped', NO_INVITE_TOKEN],
       ['attachments', 'skipped', 'not kept here: this board keeps no files'],
       ['attachments', 'skipped', 'not kept here: this board keeps no files'],
       ['attachments', 'skipped', 'not kept here: this board keeps no files'],
-      ['agents', 'skipped', expect.stringMatching(/^not kept here:/)],
-      ['agents', 'skipped', expect.stringMatching(/^not kept here:/)],
     ])
   })
 
@@ -846,12 +690,10 @@ describe('the conformance kit', () => {
     expect(report.ok).toBe(true)
     const tasks = report.checks.filter((check) => check.group === 'tasks')
     expect(tasks.map((check) => check.name)).toEqual(expect.arrayContaining(TASK_AUTHORITY))
-    expect(tasks).toHaveLength(26 + TASK_AUTHORITY.length)
+    expect(tasks).toHaveLength(25 + TASK_AUTHORITY.length)
     // The one that needs no task route is about labels, which a board has either way.
     expect(tasks.filter((check) => check.status !== 'skipped').map((check) => check.name)).toEqual([])
     expect([...new Set(tasks.map((check) => check.detail))]).toEqual(['not kept here: this board keeps no tasks'])
-    // The check that imports from a platform asks about tasks first, so nothing was imported for it.
-    expect((await board.channel('conformance').messages({ limit: 500 })).messages.filter((message) => message.text.includes('to make a task'))).toEqual([])
     expect(asked.length).toBeGreaterThan(0)
   })
 
@@ -1101,34 +943,6 @@ describe('the conformance kit', () => {
     expect(find(await conformance(await clientOf(admits)), 'lets everyone narrow')).toMatchObject({ status: 'failed', detail: `what everyone's grant gives them: expected [], got ["read"]` })
   })
 
-  it("fails a board whose inbox acks nothing, or queues a platform's retry as a new event", async () => {
-    const inboxCheck = (report: Awaited<ReturnType<typeof conformance>>) => report.checks.find((check) => check.name.startsWith("queues a platform thread's events"))
-    // An ack that answers ok and changes nothing: the thread's next event never comes.
-    const acking = testBoard({ scheduler: fakeQueue().scheduler })
-    const noAck: Fetch = async (request) =>
-      request.method === 'POST' && /\/inbox\/[^/]+\/[^/]+\/ack$/.test(new URL(request.url).pathname) ? Response.json({ ok: true }) : acking.fetch(request)
-    expect(inboxCheck(await conformance(await clientOf(noAck)))).toMatchObject({ status: 'failed', detail: 'the events leased from the platform thread, for message 2: expected 1, got 0' })
-    // Each push under a new ID, so the platform's retry is queued again.
-    const queueing = testBoard({ scheduler: fakeQueue().scheduler })
-    const renamed: Fetch = async (request) => {
-      if (request.method !== 'POST' || !/\/inbox\/[^/]+$/.test(new URL(request.url).pathname)) return queueing.fetch(request)
-      const body = (await request.json()) as { events: { id: string }[] }
-      const events = body.events.map((event) => ({ ...event, id: `${event.id}-${crypto.randomUUID()}` }))
-      return queueing.fetch(new Request(request, { body: JSON.stringify({ ...body, events }) }))
-    }
-    expect(inboxCheck(await conformance(await clientOf(renamed)))).toMatchObject({ status: 'failed', detail: 'the events leased once both are acked: expected 0, got 1' })
-  })
-
-  it('skips the @sync check for a token that syncs elsewhere, but not where the kit posts', async () => {
-    const can = { conformance: ['read', 'post', 'react', 'label'], 'elsewhere/': ['sync'] } as const
-    const board = await grantingV0('production', can)
-    const report = await conformance(await clientAs(board.fetch, () => deploymentToken('v0', 'prj_v0', 'production')))
-    expect(report.checks.find((check) => check.name === 'hands a sync each message change as a match of its @sync watcher')).toMatchObject({
-      status: 'skipped',
-      detail: "this token can't sync in conformance",
-    })
-  })
-
   it('fails a board that answers only part of the protocol any other way', async () => {
     // Schedules that are missing, not refused, and files the board takes but loses.
     const board = testBoard({ scheduler: fakeQueue().scheduler })
@@ -1211,7 +1025,7 @@ describe('the conformance kit', () => {
     const report = await conformance(await clientOf(nameless))
     expect(report).toMatchObject({
       ok: false,
-      checks: [{ name: 'says in its discovery where it is', status: 'failed', detail: expect.stringContaining('discovery should have url, audience, and sync') }],
+      checks: [{ name: 'says in its discovery where it is', status: 'failed', detail: expect.stringContaining('discovery should have url and audience') }],
     })
   })
 })

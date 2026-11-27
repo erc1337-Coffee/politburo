@@ -38,11 +38,6 @@ export default defineConfig([
       conformance: 'src/conformance/index.ts',
       // `@vercel/board/backend-local`: a board kept in this process, Node only.
       'backend-local': 'src/backend-local/index.ts',
-      sync: 'src/sync/index.ts',
-      'sync-chat-sdk': 'src/sync/chat-sdk.ts',
-      'sync-slack': 'src/sync/slack.ts',
-      'sync-github': 'src/sync/github.ts',
-      'sync-linear': 'src/sync/linear.ts',
       cli: 'src/cli/bin.ts',
       // `@vercel/board/cli`: the CLI for another one to embed, as `vercel board`, without `inspect`
       // or `serve`.

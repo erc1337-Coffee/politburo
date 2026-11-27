@@ -2,33 +2,24 @@ import { useEffect, useMemo, useState, type KeyboardEvent, type ReactNode } from
 import { keyAction, selectionAfter, type Selection } from './attention-keys.ts'
 import { attentionFor, attentionRows, NO_ATTENTION } from './attention-store.ts'
 import * as board from './board.ts'
+import { inboxRows, SECTIONS, type InboxRow } from './inbox-rows.ts'
 import { Ago, here, Link, RelativeTime, useTypeToFocus } from './nav.tsx'
-import type { State, TaskRoot, Viewer } from './store.ts'
+import { nameOf, type State, type TaskRoot, type Viewer } from './store.ts'
 import { Header } from './ui.tsx'
-import { Row } from './work-view.tsx'
-import { projectWork, type WorkGroup } from './work.ts'
 import { ago, firstLine, left } from './words.ts'
-
-/** What needs a person, beside the questions: Work's own groups, so the two never disagree. */
-const SECTIONS: readonly { group: WorkGroup; title: string }[] = [
-  { group: 'needs', title: 'Needs you' },
-  { group: 'repair', title: 'Repair or reconcile' },
-  { group: 'review', title: 'Ready to review' },
-]
 
 /** The home page: questions to answer, then the tasks that need a person. */
 export function Inbox({ state, viewer, lead, now }: { state: State; viewer: Viewer; lead: ReactNode; now: number }) {
   useTypeToFocus('main')
   useEffect(board.openNeeds, [])
-  const records = board.swarmRecords()
   const taskViewer = useMemo(() => state.openTaskMe && board.viewerOf(state.openTaskMe), [state.openTaskMe])
-  const work = useMemo(() => projectWork(state, records, taskViewer, now), [state, records, taskViewer, now])
+  const open = useMemo(() => inboxRows(state, now), [state, now])
   // Only tasks of the accepted read, so a revoked or omitted task leaves with it.
   const questions = useMemo(() => attentionRows(state).filter(({ id }) => Object.hasOwn(state.openTaskRoots, id)),
     [state.messages, state.attention, state.openTaskRoots])
   const asked = new Set(questions.map(({ id }) => id))
   const sections = SECTIONS.map(({ group, title }) => ({
-    group, title, rows: work.groups.find((entry) => entry.group === group)?.rows.filter(({ root }) => !asked.has(root.id)) ?? [],
+    group, title, rows: open.get(group)!.filter(({ root }) => !asked.has(root.id)),
   })).filter(({ rows }) => rows.length > 0)
   const items = questions.flatMap((root) => {
     const { held, attention } = attentionFor(state, root, viewer)
@@ -97,6 +88,24 @@ export function Inbox({ state, viewer, lead, now }: { state: State; viewer: View
         {[...errors].map((error) => <p key={error} role="status" className="error">{error}</p>)}
       </div>
     </>
+  )
+}
+
+/** One task that needs a person: its priority, ID, title, party, claimant, why, and its claim's time. */
+function Row({ row, state }: { row: InboxRow; state: State }) {
+  const { root } = row
+  return (
+    <li data-task-id={root.id} data-work-row={`queue:${root.id}`} tabIndex={0}>
+      <small>{row.priority}</small>
+      <small>{row.workId}</small>
+      <Link to={here({ thread: root.id })}>{row.title || `Task #${root.id}`}</Link>
+      <small><span>{row.party ?? 'external'}</span></small>
+      <small>{row.claimant ? nameOf(state, row.claimant) : 'unclaimed'}</small>
+      <small>{row.reason}</small>
+      {row.claimText && <small title={root.task.claim?.until}>{row.claimText}</small>}
+      <small>no PR</small>
+      <small>spend unknown</small>
+    </li>
   )
 }
 

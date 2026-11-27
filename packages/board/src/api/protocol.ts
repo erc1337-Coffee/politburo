@@ -1,29 +1,13 @@
 import type { z } from 'zod'
 import type { Actor } from '../contract/folds.ts'
-import type { EvidenceStatus } from '../contract/evidence.ts'
 import type { Mentioned } from '../contract/mentions.ts'
 import type { Attachment } from '../contract/schemas.ts'
 import type { ConfigureChannelBody, ModelRoute, RepositoriesQuery, RepositoryView } from '../contract/channel-settings.ts'
 import type { IdentityView, SetIdentityBody } from '../contract/identities.ts'
 import type {
   AckBody,
-  AckOperationalMessageBody,
   ActorsQuery,
   ActorView,
-  OperationalMessage,
-  SendOperationalMessageBody,
-  AgentHealth,
-  AgentIntent,
-  AgentView,
-  IssueOpsIntentBody,
-  IssueOpsRoleIntentBody,
-  ListOpsAgentsQuery,
-  ListOpsIntentsQuery,
-  OpsAgentGenerationBody,
-  OpsIntentsIssued,
-  OpsIntentsPage,
-  RegisterOpsAgentBody,
-  ReportOpsIntentBody,
   AssignTaskBody,
   AttentionAnswerBody,
   AttentionView,
@@ -53,10 +37,6 @@ import type {
   ScopeTaskBody,
   StageTaskBody,
   TaskClaim,
-  SubmitWorkBody,
-  RecordEvidenceBody,
-  OverrideEvidenceBody,
-  ResolveWorkEdgeBody,
   TasksPage,
   TasksQuery,
   CreateChannelBody,
@@ -67,22 +47,11 @@ import type {
   CreateGrantsBody,
   GrantBody,
   RevokeGrantBody,
-  CreateInviteBody,
-  CreatedInvite,
-  InviteView,
-  Joined,
   GrantView,
   UpdateGrantBody,
   ExplainQuery,
   Explanation,
   EventsQuery,
-  InboxAckBody,
-  InboxEntry,
-  InboxItem,
-  InboxNextQuery,
-  InboxPushBody,
-  InboxQuery,
-  LinkedQuery,
   LabelBody,
   MatchesQuery,
   MatchView,
@@ -98,30 +67,16 @@ import type {
   ScheduleView,
   SchemaBody,
   SchemaView,
-  SourceJoin,
-  SourceJoinBody,
-  SourceRead,
-  SourceReadQuery,
   ThreadsPage,
-  SyncCopiesQuery,
-  SyncCopiesView,
-  SyncFindQuery,
-  SyncFindView,
-  SyncImportBody,
-  SyncReceiptBody,
-  SyncThreadView,
-  SyncedView,
   ThreadQuery,
   ThreadsQuery,
   ThreadView,
-  TypingBody,
   UploadStartBody,
   UploadTicket,
 } from './routes.ts'
 
 type Input<S extends z.ZodType> = NonNullable<z.output<S>>
 type Id = { id: string }
-type OpsAgentId = { agent: string }
 type Key = { key: string }
 type Nothing = Record<string, never>
 
@@ -130,7 +85,7 @@ type Nothing = Record<string, never>
  * board() serves each at its route in `routes` and calls the backend's method of the same name.
  */
 export type Protocol = {
-  /** Where the board is and what it syncs, for a client to mint a token from: it needs none itself. */
+  /** Where the board is, for a client to mint a token from: it needs none itself. */
   discovery: { input: Nothing; output: Discovery }
   me: { input: Nothing; output: Me }
   /** Work admission and its pause epoch, for any admitted caller. 501 `no_network_pause` when unsupported. */
@@ -165,19 +120,6 @@ export type Protocol = {
   schedule: { input: Input<typeof ScheduleBody>; output: { schedule: ScheduleView; mentions?: Mentioned[] } }
   schedules: { input: Input<typeof SchedulesQuery>; output: { schedules: ScheduleView[] } }
   cancelSchedule: { input: Id; output: { schedule: ScheduleView; canceled: boolean } }
-  /** Fork-only agent registry. 501 `no_agent_ops` on a board without it. */
-  listOpsAgents: { input: Input<typeof ListOpsAgentsQuery>; output: { agents: AgentView[] } }
-  registerOpsAgent: { input: Input<typeof RegisterOpsAgentBody>; output: AgentView }
-  heartbeatOpsAgent: { input: OpsAgentId & Input<typeof OpsAgentGenerationBody>; output: AgentView }
-  retireOpsAgent: { input: OpsAgentId & Input<typeof OpsAgentGenerationBody>; output: AgentView }
-  issueOpsIntent: { input: OpsAgentId & Input<typeof IssueOpsIntentBody>; output: OpsIntentsIssued }
-  issueOpsRoleIntent: { input: Input<typeof IssueOpsRoleIntentBody>; output: OpsIntentsIssued }
-  /** Pending intents, oldest first, with expiry and generation fences applied. */
-  listOpsIntents: { input: OpsAgentId & Input<typeof ListOpsIntentsQuery>; output: OpsIntentsPage }
-  takeOpsIntent: { input: Id & Input<typeof OpsAgentGenerationBody>; output: AgentIntent }
-  reportOpsIntent: { input: Id & Input<typeof ReportOpsIntentBody>; output: AgentIntent }
-  /** Health from a status probe's report for the exact live task claim. */
-  getOpsHealth: { input: { task: string }; output: AgentHealth }
   /** Tasks, oldest first, each as its thread's summary. 501 `no_tasks` where the board keeps none. */
   tasks: { input: Input<typeof TasksQuery>; output: TasksPage }
   /** `task` is the task's root. `claim` comes with a task made with `claim`; a retry of one that landed gets the task without it. */
@@ -225,19 +167,8 @@ export type Protocol = {
   setTaskNeeds: { input: Id & Input<typeof TaskNeedsBody>; output: { task: MessageView } }
   setTaskPriority: { input: Id & Input<typeof TaskPriorityBody>; output: { task: MessageView } }
   cancelTask: { input: Id & Input<typeof CancelTaskBody>; output: { task: MessageView } }
-  workEvidence: { input: Id; output: EvidenceStatus }
-  submitWork: { input: Id & Input<typeof SubmitWorkBody>; output: { task: MessageView } }
-  recordEvidence: { input: Id & Input<typeof RecordEvidenceBody>; output: { task: MessageView } }
-  overrideEvidence: { input: Id & Input<typeof OverrideEvidenceBody>; output: { task: MessageView } }
-  resolveWorkEdge: { input: Id & Input<typeof ResolveWorkEdgeBody>; output: { task: MessageView } }
   /** The board's grants: needs `manage` at `*`, or a team owner. 501 `no_grants` where the board keeps none. */
   grants: { input: Nothing; output: { grants: GrantView[] } }
-  /** Invite management needs board-wide admin access. A board not keeping invites answers 501 `no_invites`. */
-  invites: { input: Nothing; output: { invites: InviteView[] } }
-  createInvite: { input: Input<typeof CreateInviteBody>; output: CreatedInvite }
-  revokeInvite: { input: Id; output: { revoked: boolean } }
-  /** No existing caller. The audience is set by board(), never by the body. */
-  redeemInvite: { input: { secret: string; audience: string }; output: Joined }
   /**
    * A new grant, always: the same principals again are another. Needs `manage` at each pattern its
    * `can` names. One its caller couldn't take back is 409 `grant_lockout`, unless it says `lockMeOut`.
@@ -273,45 +204,6 @@ export type Protocol = {
   ack: { input: Id & Input<typeof AckBody>; output: { ok: true } }
   /** Long-polls with `wait`. board() serves SSE from it, so a backend has one way to read events. */
   events: { input: Input<typeof EventsQuery>; output: EventsPage }
-  /** Typing in the platform threads the message's thread is synced to: needs `post` there. Answers the threads that took it. */
-  typing: { input: Id & Input<typeof TypingBody>; output: { targets: string[] } }
-  /** A platform channel or thread, read with sync entry `key`'s app where that sync runs: needs `manage` everywhere. */
-  readSource: { input: Key & Input<typeof SourceReadQuery>; output: SourceRead }
-  /** Adds sync entry `key`'s app to a public channel, where that sync runs and opted in: needs `manage` everywhere. */
-  joinSource: { input: Key & Input<typeof SourceJoinBody>; output: SourceJoin }
-  /** Where a message's thread is synced, and its copy on each target, from sync's records: needs `read` where it is. */
-  synced: { input: Id; output: SyncedView }
-  /**
-   * The thread of the board message a platform link names, from sync's records: the platform is
-   * never asked. 404 `message_not_found` for a link the board didn't sync, or one the caller can't read.
-   */
-  linked: { input: Input<typeof LinkedQuery>; output: ThreadView }
-
-  // Sync's records, which sync in board() keeps through these wherever the board lives. Each needs `sync`.
-  /**
-   * A platform's write as its platform author, idempotent per platform event. `dropped`: the
-   * middleware kept a post or an edit off the board, and what it responded, for sync to tell the
-   * author on the platform.
-   */
-  syncImport: { input: Input<typeof SyncImportBody>; output: { message: string | null; dropped?: string[] } }
-  /** A delivery, its files, a failure, or a thread's new target. `attached` is false for a target the thread had. */
-  syncReceipt: { input: Input<typeof SyncReceiptBody>; output: { ok: true; attached?: boolean } }
-  syncThread: { input: { thread: string }; output: SyncThreadView }
-  syncFind: { input: Input<typeof SyncFindQuery>; output: SyncFindView }
-  /** Messages' copies on platforms that the caller's sync recorded, by target: another sync's never show. */
-  syncCopies: { input: Input<typeof SyncCopiesQuery>; output: SyncCopiesView }
-  /** Private mail to a verified principal or a configured role. A board that keeps none answers 501 `no_operational_inbox`. */
-  sendOperationalMessage: { input: Input<typeof SendOperationalMessageBody>; output: { message: OperationalMessage } }
-  readOperationalInbox: { input: Nothing; output: { messages: OperationalMessage[] } }
-  ackOperationalMessage: { input: Id & Input<typeof AckOperationalMessageBody>; output: { message: OperationalMessage } }
-  archiveOperationalMessage: { input: Id; output: { message: OperationalMessage } }
-  /** Platform events into the caller's inbox, deduplicated by their platform IDs. */
-  inboxPush: { input: Key & Input<typeof InboxPushBody>; output: { ok: true } }
-  /** The caller's next inbox events, leased, one platform thread at a time and in order. */
-  inboxNext: { input: Key & Input<typeof InboxNextQuery>; output: { items: InboxItem[] } }
-  inboxAck: { input: Key & Id & Input<typeof InboxAckBody>; output: { ok: true } }
-  /** Raw platform events, newest first, for debugging sync. */
-  inbox: { input: Key & Input<typeof InboxQuery>; output: { events: InboxEntry[] } }
 }
 
 export type Method = keyof Protocol

@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Politburo · Relay</title>
+<link rel="stylesheet" href="assets/politburo.css">
+</head>
+<body>
+<nav>
+  <a class="brand" href="index.html"><img src="assets/politburo-emblem.png" alt="">Politburo</a>
+  <div class="group">System</div>
+  <a href="index.html">Overview</a>
+  <a href="task-lifecycle.html">Task lifecycle</a>
+  <a href="deployment.html">Deployment</a>
+  <div class="group">Services</div>
+  <a href="board.html">Board</a>
+  <a href="orchestrator.html">Orchestrator</a>
+  <a href="relay.html">Relay</a>
+  <a href="worker.html">Worker</a>
+</nav>
+<main>
+<h1>Relay</h1>
+<p class="lead">Stores and forwards messages between the orchestrator and its workers. The only public part of the system. It checks tokens and decides nothing.</p>
+
+<dl class="facts">
+  <dt>Package</dt><dd><code>packages/relay</code> · <code>@remilia/politburo-relay</code>, no runtime dependency</dd>
+  <dt>Runs</dt><dd>Public host behind a TLS proxy. Image: <code>node src/cli.ts serve --database /data/relay.sqlite --host 0.0.0.0</code></dd>
+  <dt>Reads</dt><dd><code>RELAY_VERIFICATION_KEY</code> (Ed25519 public key, PEM), <code>PORT</code> (8790)</dd>
+  <dt>Stores</dt><dd>One SQLite file. A message expires 24 h after its sender's token; expired rows are deleted every 60 s.</dd>
+  <dt>Commands</dt><dd><code>keygen --directory</code>, <code>token</code>, <code>serve</code></dd>
+</dl>
+
+<h2>One channel per attempt</h2>
+<p>A channel has two append-only directions with their own sequence numbers: <code>commands</code> from the orchestrator to the worker, <code>telemetry</code> from the worker to the orchestrator. Receivers follow an SSE stream and resume with <code>Last-Event-ID</code>; there is no acknowledgement route.</p>
+<figure class="schematic">
+<svg viewBox="0 0 1000 300" role="img" aria-label="Message flow through one relay channel">
+  <rect class="zone" x="340" y="30" width="320" height="250" rx="8"/><text class="zone-label" x="352" y="22">Relay · channel task-N-aK-xxxxxxxx</text>
+  <g class="node key" id="r-orchestrator"><rect x="20" y="100" width="200" height="90" rx="4"/><text class="title" x="32" y="122">Orchestrator</text><text class="detail" x="32" y="142">signs tokens</text><text class="detail" x="32" y="158">role orchestrator</text><text class="detail" x="32" y="174">TTL 900 s, per request</text></g>
+  <g class="node" id="r-commands"><rect x="370" y="70" width="260" height="60" rx="4"/><text class="title" x="382" y="92">commands</text><text class="detail" x="382" y="112">start · credentials · instruct ·</text><text class="detail" x="382" y="124">answer · renew · stop</text></g>
+  <g class="node" id="r-telemetry"><rect x="370" y="180" width="260" height="60" rx="4"/><text class="title" x="382" y="202">telemetry</text><text class="detail" x="382" y="222">heartbeat · progress · question ·</text><text class="detail" x="382" y="234">bundle_part · result</text></g>
+  <g class="node key" id="r-worker"><rect x="780" y="100" width="200" height="90" rx="4"/><text class="title" x="792" y="122">Worker</text><text class="detail" x="792" y="142">token from the prompt</text><text class="detail" x="792" y="158">role worker</text><text class="detail" x="792" y="174">TTL 3600 s, renewed</text></g>
+  <polyline class="link command" id="m-post-command" points="220,120 300,120 300,100 370,100"/>
+  <polyline class="link command" id="m-stream-command" points="630,100 710,100 710,120 780,120"/>
+  <polyline class="link telemetry" id="m-post-telemetry" points="780,170 710,170 710,210 630,210"/>
+  <polyline class="link telemetry" id="m-stream-telemetry" points="370,210 300,210 300,170 220,170"/>
+  <text class="link-label" x="232" y="94">POST</text><text class="link-label" x="720" y="94">SSE</text>
+  <text class="link-label" x="720" y="232">POST</text><text class="link-label" x="232" y="232">SSE</text>
+</svg>
+<script type="application/json" class="steps">[
+  {"text": "<code>POST /channels/&lt;channel&gt;/commands</code> with a Bearer token for that channel and role <code>orchestrator</code>. The relay stores the JSON body and answers <code>201 {\"seq\": n}</code>.", "links": ["m-post-command"], "label": "start", "kind": "command", "nodes": ["r-orchestrator", "r-commands"]},
+  {"text": "The worker's <code>GET /channels/&lt;channel&gt;/commands</code> stream replays every stored message after <code>Last-Event-ID</code>, then pushes new ones.", "links": ["m-stream-command"], "label": "seq 1", "kind": "command", "nodes": ["r-worker"]},
+  {"text": "The worker posts telemetry with its own token. Bodies are at most 64 KiB; larger results go as bundle parts.", "links": ["m-post-telemetry"], "label": "heartbeat", "kind": "telemetry", "nodes": ["r-telemetry"]},
+  {"text": "The orchestrator's telemetry stream delivers it. A stream ends when its token expires; the client reconnects with a new token and the last sequence number.", "links": ["m-stream-telemetry"], "label": "seq 1", "kind": "telemetry", "nodes": ["r-orchestrator"]},
+  {"text": "Every 15 s an idle stream gets a keepalive comment. 24 h after the sender's token expires, the message is gone.", "links": [], "nodes": ["r-commands", "r-telemetry"]}
+]</script>
+</figure>
+
+<h2>API</h2>
+<table>
+  <tr><th>Route</th><th>Token role</th><th>Answer</th></tr>
+  <tr><td><code>POST /channels/{channel}/commands</code></td><td>orchestrator</td><td><code>201 {"seq": n}</code></td></tr>
+  <tr><td><code>POST /channels/{channel}/telemetry</code></td><td>worker</td><td><code>201 {"seq": n}</code></td></tr>
+  <tr><td><code>GET /channels/{channel}/commands</code></td><td>worker</td><td>SSE: <code>id: seq</code>, <code>data: {"seq","at","body"}</code></td></tr>
+  <tr><td><code>GET /channels/{channel}/telemetry</code></td><td>orchestrator</td><td>SSE</td></tr>
+  <tr><td><code>DELETE /channels/{channel}</code></td><td>orchestrator</td><td><code>204</code>; deletes the channel and ends its streams</td></tr>
+  <tr><td><code>GET /stats</code></td><td>statistics</td><td>Counts, bytes, last sequence and open streams per channel; refusals by status. At most one read per second per token.</td></tr>
+</table>
+<p>Errors: <code>400 invalid_json</code>, <code>400 invalid_last_event_id</code>, <code>401 unauthorized</code> (missing, forged, expired or other channel: one answer for all), <code>403 forbidden</code> (wrong role for the direction), <code>413 message_too_large</code>, <code>429 too_many_requests</code>. Channel names: <code>[A-Za-z0-9_-]{1,100}</code>.</p>
+
+<h2>Tokens</h2>
+<ul>
+  <li>Format: <code>base64url(claims).base64url(Ed25519 signature)</code>. Claims: <code>{v: 1, channel, role, iat, exp}</code>.</li>
+  <li>The orchestrator holds the signing key (<code>/orchestrator/keys/relay_signing_key.pem</code>); the relay holds only the public key. The relay can check a token but cannot make one.</li>
+  <li>Accepted clock skew for <code>iat</code>: 60 s.</li>
+  <li>Worker tokens live 3600 s. The orchestrator sends <code>renew</code> with a new one at half life. The worker stops itself 120 s before expiry without a renewal.</li>
+  <li><code>relay keygen</code> writes the key pair. The orchestrator container makes it on first start and prints the public key for <code>RELAY_VERIFICATION_KEY</code>.</li>
+</ul>
+
+<h2>What the relay can read</h2>
+<p>Every message body is stored as JSON text: briefs, instructions, answers, progress, results and git bundles. The relay does not validate the message schema; the orchestrator and the worker do. The one exception is <code>credentials</code>.</p>
+<figure class="schematic">
+<svg viewBox="0 0 1000 250" role="img" aria-label="Sealed credentials">
+  <g class="node key" id="c-orchestrator"><rect x="20" y="60" width="240" height="130" rx="4"/><text class="title" x="32" y="82">Orchestrator</text><text class="detail" x="32" y="104">ephemeral X25519 key pair</text><text class="detail" x="32" y="122">ECDH with worker public key</text><text class="detail" x="32" y="140">HKDF-SHA256 → 32-byte key</text><text class="detail" x="32" y="158">AES-256-GCM, 12-byte nonce</text><text class="detail" x="32" y="176">info = channel-bound label</text></g>
+  <g class="node" id="c-relay"><rect x="390" y="60" width="220" height="130" rx="4"/><text class="title" x="402" y="82">Relay</text><text class="detail" x="402" y="104">sees: public keys,</text><text class="detail" x="402" y="122">nonce, ciphertext</text><text class="detail" x="402" y="148">cannot open it</text></g>
+  <g class="node key" id="c-worker"><rect x="740" y="60" width="240" height="130" rx="4"/><text class="title" x="752" y="82">Worker</text><text class="detail" x="752" y="104">X25519 key made at start</text><text class="detail" x="752" y="122">private key in memory only</text><text class="detail" x="752" y="140">opens → Pi environment</text><text class="detail" x="752" y="158">only names are logged</text></g>
+  <polyline class="link telemetry" id="c-key-relay" points="740,95 610,95"/>
+  <polyline class="link telemetry" id="c-key-orchestrator" points="390,95 260,95"/>
+  <polyline class="link command" id="c-seal-relay" points="260,160 390,160"/>
+  <polyline class="link command" id="c-seal-worker" points="610,160 740,160"/>
+</svg>
+<script type="application/json" class="steps">[
+  {"text": "Each worker process makes an X25519 key pair. Every heartbeat carries the public key until credentials are opened.", "links": ["c-key-relay", "c-key-orchestrator"], "label": "public_key", "kind": "telemetry", "nodes": ["c-worker"]},
+  {"text": "For a public key it has not sealed for, the orchestrator makes an ephemeral key, derives a shared key and encrypts the provider variables of the routes.", "links": [], "nodes": ["c-orchestrator"]},
+  {"text": "The <code>credentials</code> command carries only the ephemeral public key, the nonce and the ciphertext with its tag.", "links": ["c-seal-relay", "c-seal-worker"], "label": "sealed", "kind": "command", "nodes": ["c-relay"]},
+  {"text": "The worker opens it with its private key and the channel name. Another key or channel, or any change, fails. The variables go only into Pi's environment.", "links": [], "nodes": ["c-worker"]}
+]</script>
+</figure>
+<p>A restarted worker makes a new key, so the orchestrator seals again. Variables: <code>CLAUDE_CODE_OAUTH_TOKEN</code> for <code>claude-cli</code> routes, <code>&lt;PROVIDER&gt;_API_KEY</code> for others, only those set in the orchestrator's environment.</p>
+
+<h2>Messages</h2>
+<p>Envelope: <code>{v: 1, id, type, task, channel, sent_at, data}</code>. The <code>id</code> is unique; a retried POST reuses it and receivers drop duplicates. Schemas are closed: unknown fields, wrong types and oversized texts are refused by the receiver.</p>
+<table>
+  <tr><th>Type</th><th>Direction</th><th>Content and limits</th></tr>
+  <tr><td><code>start</code></td><td>command</td><td>Task, brief (40,000), repository URL, base commit, branch <code>claude/task-*</code>, limits, model and fallback routes, checks (20), telemetry settings, credentials flag</td></tr>
+  <tr><td><code>credentials</code></td><td>command</td><td>Sealed environment (ciphertext ≤ 48,000)</td></tr>
+  <tr><td><code>instruct</code></td><td>command</td><td>Round ≥ 2, text (32,000), mode <code>next_round</code></td></tr>
+  <tr><td><code>answer</code></td><td>command</td><td>Question id, text (8,000)</td></tr>
+  <tr><td><code>renew</code></td><td>command</td><td>New token and expiry</td></tr>
+  <tr><td><code>stop</code></td><td>command</td><td>Reason, <code>send_bundle</code></td></tr>
+  <tr><td><code>heartbeat</code></td><td>telemetry</td><td>State, round, last command sequence, token expiry, Pi alive, public key</td></tr>
+  <tr><td><code>progress</code></td><td>telemetry</td><td>Up to 50 items of kind thinking, tool, output, say, error, usage, warning (1,024 each)</td></tr>
+  <tr><td><code>question</code></td><td>telemetry</td><td>Text (4,096), up to 10 options</td></tr>
+  <tr><td><code>bundle_part</code></td><td>telemetry</td><td>Round, index, count, base64 data (48,000)</td></tr>
+  <tr><td><code>result</code></td><td>telemetry</td><td>Exit reason, summary (8,192), branch, head and base commits, bundle digest, diff stat, checks, models with tokens and cost</td></tr>
+</table>
+</main>
+<script src="assets/schematic.js"></script>
+</body>
+</html>

@@ -83,7 +83,7 @@ describe("the inspector's page, sending later", () => {
   it('keeps a schedule the board refused, with everything typed, and schedules it again on retry', async () => {
     next.set('POST /schedules', [refuse(403, 'forbidden', "this token can't post in dev")])
     const file = new File(['trace'], 'trace.log', { type: 'text/plain' })
-    await page.send({ channel: 'dev', re: null, text: 'Morning recap', noSync: true, labels: { kind: 'recap' }, files: [file], later: { in: '2h', every: '1d' } })
+    await page.send({ channel: 'dev', re: null, text: 'Morning recap', labels: { kind: 'recap' }, files: [file], later: { in: '2h', every: '1d' } })
 
     // Nothing is lost: it's a post that didn't go, as a refused send is, with why and what it would have sent.
     const [kept] = page.getState().pending
@@ -91,7 +91,6 @@ describe("the inspector's page, sending later", () => {
       channel: 'dev',
       re: null,
       text: 'Morning recap',
-      noSync: true,
       labels: { kind: 'recap' },
       files: [{ name: 'trace.log', size: 5 }],
       later: { in: '2h', every: '1d' },
@@ -102,7 +101,7 @@ describe("the inspector's page, sending later", () => {
     await page.retry(kept!)
     // The retry asked for the same schedule, its file with it, and the board kept it: nothing is pending.
     expect(page.getState().pending).toEqual([])
-    const wanted = { channel: 'dev', text: 'Morning recap', noSync: true, labels: { kind: 'recap' }, attachments: ['a'.repeat(22)], in: '2h', every: '1d' }
+    const wanted = { channel: 'dev', text: 'Morning recap', labels: { kind: 'recap' }, attachments: ['a'.repeat(22)], in: '2h', every: '1d' }
     expect(posts('/schedules')).toEqual([wanted, wanted])
     // A schedule is not a post: nothing was sent to the channel on the way.
     expect(posts('/messages')).toEqual([])
@@ -110,14 +109,14 @@ describe("the inspector's page, sending later", () => {
 
   it('leaves no pending post behind a schedule the board kept, and a reply later names its thread', async () => {
     asked.length = 0
-    await page.send({ channel: 'dev', re: '812', text: 'Still broken?', noSync: false, labels: {}, later: { at: '2026-10-02T09:00:00.000Z' } })
+    await page.send({ channel: 'dev', re: '812', text: 'Still broken?', labels: {}, later: { at: '2026-10-02T09:00:00.000Z' } })
     expect(page.getState().pending).toEqual([])
     expect(posts('/schedules')).toEqual([{ re: '812', text: 'Still broken?', at: '2026-10-02T09:00:00.000Z' }])
   })
 
   it('discards one you give up on', async () => {
     next.set('POST /schedules', [refuse(400, 'invalid_request', 'durations look like 30s, 30m, 12h, or 1d')])
-    await page.send({ channel: 'dev', re: null, text: 'Typo', noSync: false, labels: {}, later: { in: '2h' } })
+    await page.send({ channel: 'dev', re: null, text: 'Typo', labels: {}, later: { in: '2h' } })
     const [kept] = page.getState().pending
     expect(kept).toMatchObject({ text: 'Typo', error: 'durations look like 30s, 30m, 12h, or 1d' })
     page.discard(kept!.key)
@@ -129,7 +128,7 @@ describe("the inspector's page, starting a task", () => {
   it('keeps a task the board refused, with what it needs, and starts it again on retry', async () => {
     next.set('POST /tasks', [refuse(400, 'invalid_needs', "needs: #9999 isn't a task")])
     const file = new File(['trace'], 'trace.log', { type: 'text/plain' })
-    await page.send({ channel: 'work', re: null, text: 'publish the release', noSync: false, labels: { step: 'ship' }, files: [file], task: { needs: ['9999'], for: null } })
+    await page.send({ channel: 'work', re: null, text: 'publish the release', labels: { step: 'ship' }, files: [file], task: { needs: ['9999'], for: null } })
 
     // As a refused send: the post stays, with why, and with what made it a task.
     const [kept] = page.getState().pending

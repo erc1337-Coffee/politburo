@@ -1,9 +1,6 @@
 import type { Protocol } from '../api/protocol.ts'
 import type {
   ActorView,
-  AgentHealth,
-  AgentIntent,
-  AgentView,
   AttentionAnswerBody,
   BoardEventView,
   BoardStatus,
@@ -11,26 +8,6 @@ import type {
   Discovery,
   EventsPage,
   FiltersInput,
-  InboxEntry,
-  InboxItem,
-  IntentOutcome,
-  IssueOpsIntentInput,
-  IssueOpsRoleIntentInput,
-  ListOpsIntentsInput,
-  OpsIntentsIssued,
-  OpsIntentsPage,
-  OperationalMessage,
-  OperationalStatus,
-  SendOperationalMessageInput,
-  SyncCopiesView,
-  SyncFindInput,
-  SyncFindView,
-  SyncImportInput,
-  SyncReceiptInput,
-  SyncThreadView,
-  SourceJoin,
-  SourceRead,
-  SyncedView,
   Me,
   PrincipalInput,
   MatchView,
@@ -40,7 +17,6 @@ import type {
   MessagesPage,
   MessageView,
   RegisterInput,
-  RegisterOpsAgentInput,
   RegistrationView,
   RequestAttentionBody,
   ScheduleView,
@@ -52,10 +28,6 @@ import type {
   TasksPage,
   TasksQueryInput,
   GrantInput,
-  CreateInviteInput,
-  CreatedInvite,
-  InviteView,
-  Joined,
   GrantWriteOptions,
   GrantView,
   UpdateGrantInput,
@@ -67,7 +39,6 @@ import type {
   ThreadsQueryInput,
   ThreadSummaryView,
   ThreadView,
-  TypingResult,
 } from '../api/routes.ts'
 import { ACTORS_BY_ID_MAX, readDiscovery } from '../api/routes.ts'
 import { boundTaskPaths } from '../api/task-authority.ts'
@@ -150,17 +121,15 @@ export type Written<T> = T & { mentions?: Mentioned[] }
 export type PostOptions = {
   text: string
   labels?: Record<string, string>
-  /** Keep this message on the board: no configured sync targets. */
+  /** Stored on the message as `noSync`: kept on the board only. */
   noSync?: boolean
-  /** External targets the new thread starts with: `slack:#incidents` starts one, `github:owner/repo:12` joins one. */
-  sync?: string[]
   /** Makes retries idempotent: the same id never posts twice. */
   id?: string
   /** Files from `upload`, or their IDs. */
   attachments?: (Attachment | string)[]
 }
 
-export type ReplyOptions = Omit<PostOptions, 'sync'> & {
+export type ReplyOptions = PostOptions & {
   /**
    * Posts only while this is the thread's newest message: the ID of the last one you read. If
    * another has come after it, nothing is posted, and it throws a 409 `newer_message`.
@@ -183,7 +152,7 @@ export type ScheduleTiming = {
   times?: number
 }
 
-export type ScheduleOptions = Omit<PostOptions, 'sync' | 'id'> & ScheduleTiming
+export type ScheduleOptions = Omit<PostOptions, 'id'> & ScheduleTiming
 
 const scheduleBody = (input: ScheduleOptions) => {
   const { at, until, ...rest } = messageBody(input) as ScheduleOptions
@@ -237,9 +206,7 @@ export type HeldTask = {
   renew(lease?: number): Promise<ClaimedTask>
   /** Gives the task back: it's ready again. */
   release(): Promise<MessageView>
-  /** Records the exact commit and artifact for this claim's round. */
-  submit(commit: string, artifactRef: string): Promise<MessageView>
-  complete(result?: string, options?: { commit?: string }): Promise<MessageView>
+  complete(result?: string): Promise<MessageView>
   fail(reason: string): Promise<MessageView>
   /** Lowers the priority without ending the claim. A claim cannot raise it. */
   priority(priority: TaskPriority): Promise<MessageView>
@@ -440,7 +407,6 @@ export function createBoardClient(options: ClientOptions) {
   /** One write to task `id`, which answers its root. */
   const taskWrite = async (id: string, verb: string, body: object = {}, claim = false) =>
     (await call<{ task: MessageView }>('POST', `/tasks/${path(id)}/${verb}`, { body, claim })).task
-  const workWrite = async (id: string, verb: string, body: object) => (await call<{ task: MessageView }>('POST', `/work/v1/tasks/${path(id)}/${verb}`, { body })).task
   const taskVersion = async (id: string, sent: number | undefined) => sent ?? (await call<ThreadView>('GET', `/messages/${path(id)}?limit=1`)).message.version
 
   /** What a claim on task `id` does, with the `epoch` and `token` the claim answered. */
@@ -454,8 +420,7 @@ export function createBoardClient(options: ClientOptions) {
         return claimed(task, { epoch, token, until, ...(holdUntil ? { holdUntil } : {}), ...(pauseEpoch === undefined ? {} : { pauseEpoch }), ...(binding ? { binding } : {}) })
       },
       release: () => taskWrite(id, 'release', { epoch, token }, true),
-      submit: (commit, artifactRef) => workWrite(id, 'submit', { epoch, token, commit, artifactRef }),
-      complete: (result, options) => taskWrite(id, 'complete', { epoch, token, ...(result !== undefined ? { result } : {}), commit: options?.commit }, true),
+      complete: (result) => taskWrite(id, 'complete', { epoch, token, ...(result !== undefined ? { result } : {}) }, true),
       fail: (reason) => taskWrite(id, 'fail', { epoch, token, reason }, true),
       priority: (priority) => taskWrite(id, 'priority', { epoch, token, priority }, true),
       block: (reason, opts = {}) => taskWrite(id, 'block', { epoch, token, reason, ...opts }, true),
@@ -759,21 +724,6 @@ export function createBoardClient(options: ClientOptions) {
     /** Stops a schedule: yours, or any with manage in its channel. `canceled` is false when it was already done or canceled. */
     cancelSchedule: (id: string) =>
       call<{ schedule: ScheduleView; canceled: boolean }>('POST', `/schedules/${path(id)}/cancel`, { body: {} }),
-    /** The fork's agent registry, command intents, and task health. Boards that don't opt in answer 501 `no_agent_ops`. */
-    agents: {
-      list: (channel: string) => call<{ agents: AgentView[] }>('GET', `/ops/agents${queryString({ channel })}`),
-      register: (input: RegisterOpsAgentInput) => call<AgentView>('POST', '/ops/agents', { body: input }),
-      heartbeat: (id: string, generation: number) => call<AgentView>('POST', `/ops/agents/${path(id)}/heartbeat`, { body: { generation } }),
-      retire: (id: string, generation: number) => call<AgentView>('POST', `/ops/agents/${path(id)}/retire`, { body: { generation } }),
-      issueIntent: (agent: string, input: IssueOpsIntentInput) => call<OpsIntentsIssued>('POST', `/ops/agents/${path(agent)}/intents`, { body: input }),
-      issueRoleIntent: (input: IssueOpsRoleIntentInput) => call<OpsIntentsIssued>('POST', '/ops/intents', { body: input }),
-      /** The agent's pending intents, oldest first. Pass the returned `next` as `after` to read on. */
-      intents: (agent: string, query: ListOpsIntentsInput = {}) => call<OpsIntentsPage>('GET', `/ops/agents/${path(agent)}/intents${queryString(query)}`),
-      takeIntent: (id: string, generation: number) => call<AgentIntent>('POST', `/ops/intents/${path(id)}/take`, { body: { generation } }),
-      reportIntent: (id: string, generation: number, outcome: IntentOutcome) => call<AgentIntent>('POST', `/ops/intents/${path(id)}/report`, { body: { generation, outcome } }),
-      /** Whether a fresh run probe reported that this task's current claim is working. */
-      health: (task: string) => call<AgentHealth>('GET', `/ops/health/${path(task)}`),
-    },
     /**
      * Tasks: threads someone's agents are to do, with a state the board keeps. A task's ID is its
      * root's, and its root's `task` says its state, whose it is, what it waits for, and who holds
@@ -790,10 +740,6 @@ export function createBoardClient(options: ClientOptions) {
       list: (query: Omit<TasksQueryInput, 'label' | 'latest'> & { label?: Record<string, string> | string[]; latest?: boolean } = {}) => call<TasksPage>('GET', `/tasks${queryString(query)}`),
       create: createTask,
       createMany: createTasks,
-      evidence: (id: string) => call<Protocol['workEvidence']['output']>('GET', `/work/v1/tasks/${path(id)}/evidence`),
-      recordEvidence: (id: string, input: Omit<Protocol['recordEvidence']['input'], 'id'>) => workWrite(id, 'evidence', input),
-      overrideEvidence: (id: string, input: Omit<Protocol['overrideEvidence']['input'], 'id'>) => workWrite(id, 'override', input),
-      resolve: (id: string, input: Omit<Protocol['resolveWorkEdge']['input'], 'id'>) => workWrite(id, 'resolve', input),
       claim: claimTask,
       /** What a claim you hold does, from the `epoch` and `token` it answered: for a process that kept them, as `vb` does between commands. */
       held,
@@ -873,12 +819,6 @@ export function createBoardClient(options: ClientOptions) {
     },
     /** The board's grants. Needs manage at `*`, or a team owner. */
     grants: async () => (await call<{ grants: GrantView[] }>('GET', '/grants')).grants,
-    /** Creates a single-use invite. Deliver `secret` privately; it never comes back in a list. */
-    createInvite: ({ can, ...input }: CreateInviteInput) => call<CreatedInvite>('POST', '/invites', { body: { ...input, ...(can !== undefined ? { can: wireCan(can) } : {}) } }),
-    invites: async () => (await call<{ invites: InviteView[] }>('GET', '/invites')).invites,
-    revokeInvite: (id: string) => call<{ revoked: boolean }>('POST', `/invites/${path(id)}/revoke`),
-    /** Redeems an invite on this board. Keep the returned bearer token private. */
-    join: (secret: string) => call<Joined>('POST', '/invites/redeem', { body: { secret }, auth: false, redirect: 'error' }),
     /** `revoked` is false when it was already gone. Its principals' next requests are refused. */
     revokeGrant: (id: string, options: GrantWriteOptions = {}) => call<{ revoked: boolean }>('POST', `/grants/${path(id)}/revoke`, { body: goAhead(options) }),
     /** Every schema: the built-ins, then the board's own, by name and version. */
@@ -943,42 +883,6 @@ export function createBoardClient(options: ClientOptions) {
      */
     label: (id: string, change: { set?: Record<string, string>; unset?: string[]; if?: Record<string, string | null> }) =>
       call<{ ok: true }>('POST', `/messages/${path(id)}/labels`, { body: change }),
-    /**
-     * Shows typing in the platform threads the message's thread is synced to.
-     * Ephemeral: nothing goes in the log. Answers the external threads that took it.
-     * `status` replaces "Typing…" on Slack ("running tests…").
-     */
-    typing: async (id: string, status?: string) =>
-      (await call<TypingResult>('POST', `/messages/${path(id)}/typing`, { body: status ? { status } : {} })).targets,
-    /**
-     * With a target, attaches the message's thread to it, backfilling it: attaching twice is a no-op.
-     * Without one, where the thread is synced, and this message's copy on each target, with its link.
-     */
-    sync: ((id: string, target?: string) =>
-      target === undefined
-        ? call<SyncedView>('GET', `/messages/${path(id)}/sync`)
-        : call<{ target: string; attached: boolean }>('POST', `/messages/${path(id)}/sync`, { body: { target } })) as {
-      (id: string): Promise<SyncedView>
-      (id: string, target: string): Promise<{ target: string; attached: boolean }>
-    },
-    /**
-     * The thread of the board message a platform link names (a Slack permalink, a GitHub comment's
-     * URL), from what the board synced: the platform is never asked. 404 for one it didn't sync.
-     */
-    linked: (url: string) => call<ThreadView>('GET', `/links${queryString({ url })}`),
-    /** Raw platform events for a sync entry, newest first. */
-    inbox: async (key: string, opts: { channel?: string; limit?: number } = {}) =>
-      (await call<{ events: InboxEntry[] }>('GET', `/inbox/${key}${queryString(opts)}`)).events,
-    /** Private operational messages, separate from the raw sync inbox. */
-    operationalInbox: {
-      send: (input: SendOperationalMessageInput) =>
-        call<{ message: OperationalMessage }>('POST', '/operational-inbox', { body: input }),
-      read: () => call<{ messages: OperationalMessage[] }>('GET', '/operational-inbox'),
-      ack: (id: string, status: OperationalStatus) =>
-        call<{ message: OperationalMessage }>('POST', `/operational-inbox/${path(id)}/ack`, { body: { status } }),
-      archive: (id: string) =>
-        call<{ message: OperationalMessage }>('POST', `/operational-inbox/${path(id)}/archive`),
-    },
     /** Registers the caller's watchers, replacing its last registration: what a board on `http()` does. */
     register: (input: RegisterInput) =>
       call<RegistrationView>('POST', '/watchers', { body: input }),
@@ -992,42 +896,8 @@ export function createBoardClient(options: ClientOptions) {
     /** How a pulled match went: done, an error to try again, or `skip` to drop it. */
     ack: (id: string, body: { lease: string; error?: string; skip?: boolean }) =>
       call<{ ok: true }>('POST', `/watchers/matches/${encodeURIComponent(id)}/ack`, { body }),
-    /**
-     * Reads a platform channel (`#name`, an ID), thread (`C0123:1727000000.123456`),
-     * or message permalink on demand, without syncing or storing it. Full access only.
-     */
-    readSource: (key: string, target: string, opts: { limit?: number; after?: string } = {}) =>
-      call<SourceRead>('GET', `/sources/${key}/read${queryString({ target, ...opts })}`),
-    /** Adds the app to a public channel so `readSource` can read it, where the sync opted in with `join`. Full access only. */
-    joinSource: (key: string, target: string) =>
-      call<SourceJoin>('POST', `/sources/${key}/join`, { body: { target } }),
 
     poll,
-
-    // Sync's records: what a sync running elsewhere reads and writes here. Each needs `sync`
-    // where it lands: the board trusts the caller to speak for platform users there.
-
-    /** A platform's write, as its platform author: idempotent per platform event for a post, found from its origin otherwise. */
-    syncImport: (body: SyncImportInput) => call<{ message: string | null; dropped?: string[] }>('POST', '/sync/imports', { body }),
-    /** What sync did on a platform: a delivery, its files, a failure, or a thread's new target. */
-    syncReceipt: (body: SyncReceiptInput) => call<{ ok: true; attached?: boolean }>('POST', '/sync/receipts', { body }),
-    /** A board thread's sync, by its key. */
-    syncThread: (thread: string) => call<SyncThreadView>('GET', `/sync/threads/${path(thread)}`),
-    /** What platform IDs are on the board: a thread, or a message. */
-    syncFind: (query: SyncFindInput, opts: { signal?: AbortSignal } = {}) =>
-      call<SyncFindView>('GET', `/sync/find${queryString(query)}`, opts.signal ? { signal: opts.signal } : {}),
-    /** Messages' copies on platforms, by message and target. */
-    syncCopies: async (messages: string[]) =>
-      (await call<SyncCopiesView>('GET', `/sync/copies?${messages.map((id) => `message=${encodeURIComponent(id)}`).join('&')}`)).copies,
-    /** Pushes platform events into your inbox for sync key `key`; each platform ID lands once. */
-    inboxPush: (key: string, events: { id: string; event: InboxItem['event']; raw: unknown }[]) =>
-      call<{ ok: true }>('POST', `/inbox/${path(key)}`, { body: { events } }),
-    /** Your next inbox events for `key`, leased to you until you ack them, one platform thread at a time. */
-    inboxNext: async (key: string, opts: { limit?: number } = {}) =>
-      (await call<{ items: InboxItem[] }>('GET', `/inbox/${path(key)}/next${queryString(opts)}`)).items,
-    /** How an inbox event went: done, or an error to try it again. */
-    inboxAck: (key: string, id: string, body: { lease: string; error?: string }) =>
-      call<{ ok: true }>('POST', `/inbox/${path(key)}/${path(id)}/ack`, { body }),
 
     /** Live events. Reconnects from the last seen index whenever the stream closes, and tells `onState` whether it's live or retrying. */
     async *events(
@@ -1098,7 +968,7 @@ export type { ActorView, BoardEventView, ChannelView, Discovery, EventsPage, Me,
 function claimFetch(doFetch: typeof fetch, url: string): typeof fetch {
   return async (input, init) => {
     const response = await doFetch(input, { ...init, redirect: 'manual' })
-    // A caller that asked for the redirect handles it. Evidence completion does, so its error can name the write.
+    // A caller that asked for the redirect handles it, so its error can name the write.
     if (init?.redirect === 'manual') return response
     // A browser's manual redirect is opaque (status 0); 304 sends nowhere.
     if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400 && response.status !== 304)) {

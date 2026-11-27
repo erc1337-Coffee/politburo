@@ -10,22 +10,14 @@ import { fakeQueue } from './queue.ts'
  * 403. A new route fails the first test until it has an entry here.
  */
 type Fixture = {
-  secret: { root: number; reply: number; schedule: number; file: string; task: number; agent: string; intent: string }
-  open: { root: number; schedule: number; task: number; agent: string; intent: string }
+  secret: { root: number; reply: number; schedule: number; file: string; task: number }
+  open: { root: number; schedule: number; task: number }
 }
 type Call = { method: 'GET' | 'POST' | 'PATCH'; path: string; body?: unknown; status: number; check?: (body: any) => void }
 type Walk = 'public' | ((fixture: Fixture) => Call[])
 
-const INTENT = { verb: 'inspect', generation: 1, ttlSeconds: 60, requestId: 'walker' }
-const SLACK_USER = { id: 'slack:user:U1', handle: 'eve', name: 'Eve', avatar: null, isBot: false }
 
 const nothingFrom = (field: string) => (body: any) => expect(JSON.stringify(body[field])).not.toContain('secret')
-const work = (verb: string, body: object): Walk => ({ secret, open }) => [
-  { method: 'POST', path: `/work/v1/tasks/${secret.task}/${verb}`, body, status: 404 },
-  { method: 'POST', path: `/work/v1/tasks/${open.task}/${verb}`, body, status: 403 },
-]
-const candidate = { commit: 'a'.repeat(40), round: 1, gate: 'tests' }
-const artifactRef = 'build/1'
 
 const commit = 'a'.repeat(40)
 const draft = (id: number) => ({
@@ -43,7 +35,6 @@ const WALK: Record<RouteName, Walk> = {
   discovery: 'public',
   avatar: 'public',
   openapi: 'public',
-  webhook: 'public',
   // About the caller.
   me: () => [{ method: 'GET', path: '/me', status: 200, check: (body) => expect(body.can).toEqual({ open: ['read'] }) }],
   // Admitted callers see the control state. Only a person with board-wide manage can change it.
@@ -120,14 +111,6 @@ const WALK: Record<RouteName, Walk> = {
     { method: 'POST', path: `/messages/${secret.root}/labels`, body: { set: { seen: 'yes' } }, status: 404 },
     { method: 'POST', path: `/messages/${open.root}/labels`, body: { set: { seen: 'yes' } }, status: 403 },
   ],
-  sync: ({ secret, open }) => [
-    { method: 'POST', path: `/messages/${secret.root}/sync`, body: { target: 'slack:#leak' }, status: 404 },
-    { method: 'POST', path: `/messages/${open.root}/sync`, body: { target: 'slack:#leak' }, status: 403 },
-  ],
-  typing: ({ secret, open }) => [
-    { method: 'POST', path: `/messages/${secret.reply}/typing`, body: {}, status: 404 },
-    { method: 'POST', path: `/messages/${open.root}/typing`, body: {}, status: 403 },
-  ],
   cancelSchedule: ({ secret, open }) => [
     { method: 'POST', path: `/schedules/${secret.schedule}/cancel`, status: 404 },
     { method: 'POST', path: `/schedules/s${open.schedule}/cancel`, status: 403 },
@@ -174,14 +157,6 @@ const WALK: Record<RouteName, Walk> = {
     { method: 'POST', path: `/tasks/${secret.task}/complete`, body: { epoch: 1, token: 'guess' }, status: 404 },
     { method: 'POST', path: `/tasks/${open.task}/complete`, body: { epoch: 1, token: 'guess' }, status: 403 },
   ],
-  workEvidence: ({ secret, open }) => [
-    { method: 'GET', path: `/work/v1/tasks/${secret.task}/evidence`, status: 404 },
-    { method: 'GET', path: `/work/v1/tasks/${open.task}/evidence`, status: 200, check: (body) => expect(body.submission).toBeNull() },
-  ],
-  submitWork: work('submit', { epoch: 1, token: 'guess', commit: candidate.commit, artifactRef }),
-  recordEvidence: work('evidence', { ...candidate, verdict: 'pass', artifactRef }),
-  overrideEvidence: work('override', { ...candidate, reason: 'why', expiresAt: '2099-01-01T00:00:00Z' }),
-  resolveWorkEdge: work('resolve', { needId: '2', evidenceId: '3', ifVersion: 1 }),
   failTask: ({ secret, open }) => [
     { method: 'POST', path: `/tasks/${secret.task}/fail`, body: { epoch: 1, token: 'guess', reason: 'mine now' }, status: 404 },
     { method: 'POST', path: `/tasks/${open.task}/fail`, body: { epoch: 1, token: 'guess', reason: 'mine now' }, status: 403 },
@@ -246,29 +221,6 @@ const WALK: Record<RouteName, Walk> = {
     { method: 'POST', path: `/tasks/${secret.task}/cancel`, body: { reason: 'mine now' }, status: 404 },
     { method: 'POST', path: `/tasks/${open.task}/cancel`, body: { reason: 'mine now' }, status: 403 },
   ],
-  listOpsAgents: ({ open }) => [
-    { method: 'GET', path: '/ops/agents?channel=secret', status: 403 },
-    { method: 'GET', path: '/ops/agents?channel=open', status: 200, check: (body) => expect(body.agents).toMatchObject([{ id: open.agent }]) },
-  ],
-  registerOpsAgent: () => ['secret', 'open'].map((channel) => ({ method: 'POST', path: '/ops/agents', body: { channel, role: 'reviewer', harness: 'shell' }, status: 403 })),
-  // Even where an agent is visible, it is no target for another caller's writes.
-  heartbeatOpsAgent: ({ secret, open }) => [secret.agent, open.agent].map((id) => ({ method: 'POST', path: `/ops/agents/${encodeURIComponent(id)}/heartbeat`, body: { generation: 1 }, status: 404 })),
-  retireOpsAgent: ({ secret, open }) => [secret.agent, open.agent].map((id) => ({ method: 'POST', path: `/ops/agents/${encodeURIComponent(id)}/retire`, body: { generation: 1 }, status: 404 })),
-  issueOpsIntent: ({ secret, open }) => [
-    { method: 'POST', path: `/ops/agents/${encodeURIComponent(secret.agent)}/intents`, body: INTENT, status: 404 },
-    { method: 'POST', path: `/ops/agents/${encodeURIComponent(open.agent)}/intents`, body: INTENT, status: 403 },
-  ],
-  issueOpsRoleIntent: () => [
-    { method: 'POST', path: '/ops/intents', body: { ...INTENT, role: 'reviewer', channel: 'secret' }, status: 404 },
-    { method: 'POST', path: '/ops/intents', body: { ...INTENT, role: 'reviewer', channel: 'open' }, status: 403 },
-  ],
-  listOpsIntents: ({ secret, open }) => [secret.agent, open.agent].map((id) => ({ method: 'GET', path: `/ops/agents/${encodeURIComponent(id)}/intents`, status: 404 })),
-  takeOpsIntent: ({ secret, open }) => [secret.intent, open.intent].map((id) => ({ method: 'POST', path: `/ops/intents/${encodeURIComponent(id)}/take`, body: { generation: 1 }, status: 404 })),
-  reportOpsIntent: ({ secret, open }) => [secret.intent, open.intent].map((id) => ({ method: 'POST', path: `/ops/intents/${encodeURIComponent(id)}/report`, body: { generation: 1, outcome: 'ok' }, status: 404 })),
-  getOpsHealth: ({ secret, open }) => [
-    { method: 'GET', path: `/ops/health/${secret.task}`, status: 404 },
-    { method: 'GET', path: `/ops/health/${open.task}`, status: 200, check: (body) => expect(body).toEqual({ state: 'not_confirmed' }) },
-  ],
   // Listing grants takes manage at *, and changing one manage at each pattern it names: g1 names *.
   grants: () => [{ method: 'GET', path: '/grants', status: 403 }],
   createGrant: () => [
@@ -290,11 +242,6 @@ const WALK: Record<RouteName, Walk> = {
     { method: 'GET', path: '/grants/explain?channel=open&user=u_julian', status: 403 },
   ],
   revokeGrant: () => [{ method: 'POST', path: '/grants/g1/revoke', status: 403 }],
-  invites: () => [{ method: 'GET', path: '/invites', status: 403 }],
-  createInvite: () => [{ method: 'POST', path: '/invites', body: { name: 'teammate' }, status: 403 }],
-  revokeInvite: () => [{ method: 'POST', path: '/invites/unknown/revoke', status: 403 }],
-  // The invite secret itself is the credential, not access to any channel.
-  redeemInvite: 'public',
   // Schemas are the whole board's and hold no channel's messages: anyone the board let in reads them, and only manage at * registers one.
   schemas: () => [{ method: 'GET', path: '/schemas', status: 200, check: (body) => expect(body.schemas.map((schema: any) => schema.id)).toEqual(['git-commit@1', 'vercel-deployment@1']) }],
   schema: () => [{ method: 'GET', path: '/schemas/git-commit@1', status: 200 }],
@@ -321,45 +268,6 @@ const WALK: Record<RouteName, Walk> = {
   uploadStart: () => [{ method: 'POST', path: '/attachments/uploads', body: { name: 'big.mp4', type: 'video/mp4', size: 10_000_000 }, status: 403 }],
   // Only its uploader finishes an upload: anyone else's is as if it didn't exist.
   uploadFinish: () => [{ method: 'POST', path: '/attachments/uploads/AAAAAAAAAAAAAAAAAAAAAA', body: {}, status: 404 }],
-  // The operational inbox needs board-wide permissions, even for an unknown ID.
-  sendOperationalMessage: () => [{ method: 'POST', path: '/operational-inbox', body: { to: { role: 'reviewer' }, topic: 'review', text: 'review this' }, status: 403 }],
-  readOperationalInbox: () => [{ method: 'GET', path: '/operational-inbox', status: 403 }],
-  ackOperationalMessage: () => [{ method: 'POST', path: '/operational-inbox/1/ack', body: { status: 'seen' }, status: 403 }],
-  archiveOperationalMessage: () => [{ method: 'POST', path: '/operational-inbox/1/archive', status: 403 }],
-  // The board's own bookkeeping spans every channel.
-  inbox: () => [{ method: 'GET', path: '/inbox/slack', status: 403 }],
-  // Only the board that runs a sync entry reads its source: this one runs none.
-  readSource: () => [{ method: 'GET', path: '/sources/slack/read?target=C0123', status: 404 }],
-  joinSource: () => [{ method: 'POST', path: '/sources/slack/join', body: { target: 'C0123' }, status: 404 }],
-  synced: ({ secret, open }) => [
-    { method: 'GET', path: `/messages/${secret.root}/sync`, status: 404 },
-    { method: 'GET', path: `/messages/${secret.reply}/sync`, status: 404 },
-    { method: 'GET', path: `/messages/${open.root}/sync`, status: 200 },
-  ],
-  // A link this board synced nothing for, as any it can't show: 404.
-  linked: () => [{ method: 'GET', path: `/links?url=${encodeURIComponent('https://acme.slack.com/archives/C0123ABC/p1727000000123456')}`, status: 404 }],
-  // Sync's records: a caller speaks for platform users only where it may sync.
-  syncImport: () => [
-    { method: 'POST', path: '/sync/imports', body: { op: 'post', author: SLACK_USER, from: 'slack', channel: 'secret', text: 'hi' }, status: 403 },
-    { method: 'POST', path: '/sync/imports', body: { op: 'post', author: SLACK_USER, from: 'slack', channel: 'open', text: 'hi' }, status: 403 },
-  ],
-  syncReceipt: ({ secret, open }) => [
-    { method: 'POST', path: '/sync/receipts', body: { kind: 'failed', message: String(secret.root), target: 'slack:C1', error: 'gone' }, status: 404 },
-    { method: 'POST', path: '/sync/receipts', body: { kind: 'thread', message: String(open.root), target: 'slack:C1', targetKind: 'channel', cause: 'request' }, status: 403 },
-  ],
-  syncThread: () => [{ method: 'GET', path: '/sync/threads/t1', status: 403 }],
-  syncFind: () => [{ method: 'GET', path: '/sync/find?thread=slack:C1:1&message=1', status: 403 }],
-  syncCopies: ({ secret }) => [{ method: 'GET', path: `/sync/copies?message=${secret.root}`, status: 403 }],
-  inboxPush: () => [
-    {
-      method: 'POST',
-      path: '/inbox/slack',
-      body: { events: [{ id: 'e1', raw: {}, event: { kind: 'message', channel: 'slack:C1', thread: 'slack:C1:1', subthread: null, message: '1', isRoot: true, text: 'hi', context: null, author: SLACK_USER } }] },
-      status: 403,
-    },
-  ],
-  inboxNext: () => [{ method: 'GET', path: '/inbox/slack/next', status: 403 }],
-  inboxAck: () => [{ method: 'POST', path: '/inbox/slack/e1/ack', body: { lease: 'l1' }, status: 403 }],
   // Registered watchers: each sees only what its registrant reads, and pulls only its own.
   watchers: () => [{ method: 'GET', path: '/watchers', status: 200, check: (body) => expect(body.watchers).toEqual([]) }],
   register: () => [{ method: 'POST', path: '/watchers', body: { watch: { fix: { tail: 'secret' } } }, status: 200 }],
@@ -369,7 +277,7 @@ const WALK: Record<RouteName, Walk> = {
 }
 
 async function setup() {
-  const board = testBoard({ scheduler: fakeQueue().scheduler, attentionResponders: {}, agentOps: true, workEvidence: { releaseDependencies: true } })
+  const board = testBoard({ scheduler: fakeQueue().scheduler, attentionResponders: {} })
   await board.createGrant({ principals: [{ kind: 'github', repository: 'acme/web' }], can: { open: ['read'] } })
   const keeper = caller(board.fetch, await personToken('u_keeper'), {})
   const host = caller(board.fetch, await personToken('u_host'), {})
@@ -397,14 +305,9 @@ async function setup() {
   // And a batch of them under an id, which finds it again for whoever made it, and no one else.
   expect((await keeper('POST', '/tasks/batch', { channel: 'secret', id: 'secret-plan', tasks: [{ text: 'hush, a plan', labels: { private: 'yes' } }] })).status).toBe(201)
   expect((await keeper('GET', '/tasks/batch/secret-plan')).body.tasks).toMatchObject([{ text: 'hush, a plan' }])
-  const agentAndIntent = async (send: typeof keeper, channel: string) => {
-    const { body: agent } = await send('POST', '/ops/agents', { channel, role: 'reviewer', harness: 'shell' })
-    const { body: { intents: [intent] } } = await send('POST', `/ops/agents/${encodeURIComponent(agent.id)}/intents`, INTENT)
-    return { agent: agent.id as string, intent: intent.id as string }
-  }
   const fixture: Fixture = {
-    secret: { root, reply, schedule, file, task, ...await agentAndIntent(keeper, 'secret') },
-    open: { root: openRoot, schedule: openSchedule, task: openTask, ...await agentAndIntent(host, 'open') },
+    secret: { root, reply, schedule, file, task },
+    open: { root: openRoot, schedule: openSchedule, task: openTask },
   }
   return { board, fixture, outsider: caller(board.fetch, await workflowToken()) }
 }

@@ -42,7 +42,7 @@ const serve: Command = {
   spec: {
     name: 'serve',
     description:
-      "run a board on this machine (127.0.0.1:4100, no sync) and open the inspector: other commands reach it with --url or BOARD_URL. Its log lives in .board/, and you're local:user:<your OS user>",
+      "run a board on this machine (127.0.0.1:4100) and open the inspector: other commands reach it with --url or BOARD_URL. Its log lives in .board/, and you're local:user:<your OS user>",
     arguments: [],
     options: [
       option('port', 'the port to listen on (default: 4100)'),
@@ -51,17 +51,13 @@ const serve: Command = {
       option('team-tokens'),
       option('no-inspect'),
       option('no-open'),
-      option('agent-ops'),
       option('model-routes'),
       option('operations-url'), option('ledger-file'),
-      option('swarm'), option('responder'),
+      option('responder'),
       option('allow-host', 'also answer requests for this host, from a proxy in front: the board is at its URL there, and whoever reaches the inspector there acts as you'),
-      option('tailscale'),
     ],
     examples: [
       { name: 'run a board here, and open it', value: 'serve' },
-      { name: 'run a board with an agent registry', value: 'serve --agent-ops' },
-      { name: 'share it on your tailnet, behind tailscale serve', value: 'serve --tailscale box.tailnet.ts.net' },
       { name: 'serve the API for a team behind a TLS proxy', value: 'serve --team-tokens /path/to/tokens.json --allow-host box.example.com' },
       { name: 'serve it behind another proxy, on another name', value: 'serve --allow-host box.example.com' },
     ],
@@ -70,25 +66,18 @@ const serve: Command = {
     if (args.length > 0) throw usage('serve takes no arguments: pass its port with --port, and its directory with --dir.')
     const port = portFlag()
     const hosts = allowedHosts({ flags, usage })
-    const tailscale = allowedHosts({ flags, usage }, 'tailscale')
     const teamTokens = flags['team-tokens']
     const host = flags.host
     const shareHosts = teamTokens === undefined ? [] : [...new Set((flags['allow-host'] ?? []).map((named) => new URL(`https://${named}`).host))]
-    // Another proxy to the same port could carry a caller's own Tailscale-User-Login, at Tailscale's host.
-    if (teamTokens === undefined && tailscale.length > 0 && hosts.length > 0)
-      throw usage("--tailscale takes Tailscale's word for who's calling, which another proxy in front could forge: it doesn't go with --allow-host.")
     const root = projectDir()
     const { serveLocal } = await import('./serve.ts')
     const local = await serveLocal({
       dir: flags.dir ?? join(root, '.board'),
       hosts: [...hosts, ...shareHosts],
-      tailscale,
       ...(port !== undefined ? { port } : {}),
       ...(host !== undefined ? { host } : {}),
       ...(teamTokens !== undefined ? { teamTokens } : {}),
-      ...(flags['agent-ops'] ? { agentOps: true } : {}),
       ...(flags['model-routes'] !== undefined ? { modelRoutes: flags['model-routes'] } : {}),
-      ...(flags.swarm ? { swarm: true } : {}),
       ...(flags.responder ? { responders: flags.responder } : {}),
     })
     let inspector: { close(): void } | null = null
@@ -102,9 +91,6 @@ const serve: Command = {
       }
       out(`serving a local board at ${local.url} as ${local.principal}, its log in ${local.dir}  (Ctrl-C to stop)`)
       out(`reach it with --url ${local.url}, or BOARD_URL=${local.url}`)
-      // What to hand the people on it, and the one command that puts Tailscale in front.
-      for (const host of new Set(tailscale.map((named) => new URL(`https://${named}`).host)))
-        out(`on your tailnet, behind tailscale serve --bg ${local.port}: BOARD_URL=https://${host}/api/board`)
       if (!flags['no-inspect']) {
         // With this board's token, whatever BOARD_TOKEN says, and on the board's own server: one port to open, or to proxy.
         const { board } = connection(local.url, { token: local.token })
@@ -115,7 +101,7 @@ const serve: Command = {
             throw usage('--operations-url must be an http URL on this machine (127.0.0.1).')
         }
         const operations = { url: operationsUrl ?? null, ledgerFile: flags['ledger-file'] ?? null }
-        const page = (await createInspector({ client: board.as(null), hosts: [...hosts, ...tailscale], visitor: local.visitor, operations })).at(local.port)
+        const page = (await createInspector({ client: board.as(null), hosts, operations })).at(local.port)
         inspector = page
         local.page(page.handle)
         const at = new URL(local.url).origin

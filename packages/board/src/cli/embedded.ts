@@ -1,4 +1,4 @@
-// `@vercel/board/cli`: board's CLI, to run inside another one, as `vercel board`. It has every
+// `@vercel/board/cli`: board's CLI, to run inside another one. It has every
 // command but `inspect` and `serve`, which run something on this machine, so neither the inspector
 // nor A2 reaches an app that bundles it.
 import { stoppedBy } from '../server/board.ts'
@@ -13,49 +13,28 @@ export type { Failure, FailureClass, Recovery, Warning } from './failure.ts'
 export type { Claims, HeldClaim } from './claims.ts'
 
 /**
- * Board's CLI as `appName` names it in help, usage, and errors (`vercel board`). With no board
- * URL anywhere, it talks to the team's board in Vercel's API: `VERCEL_ORG_ID`'s, the nearest linked
- * project's team's (`.vercel`), your login's, or `--scope`'s. `run` takes what follows the name, and answers the exit code:
- * 0 success, 1 error (a `wait` that timed out included), 2 misuse, 130 when Ctrl-C stops it. It never exits the process itself. One `run`
- * at a time: a run's flags are the CLI's while it runs.
+ * Board's CLI as `appName` names it in help, usage, and errors. It reaches the board `--url` or
+ * `BOARD_URL` names. `run` takes what follows the name, and answers the exit code: 0 success, 1
+ * error (a `wait` that timed out included), 2 misuse, 130 when Ctrl-C stops it. It never exits the
+ * process itself. One `run` at a time: a run's flags are the CLI's while it runs.
  *
  * A failure goes to `onError`, with whether the run asked for `--json`, to show as the app shows
  * its own, and a warning to `onWarning` (with `--json`, it's in the result). Without them, the CLI
- * prints its own on stderr. `login` is the app's Vercel login and `team` the team it resolves
- * (`--scope` still wins): board asks for each only when a request needs it, so help, a typo, or
- * misuse never refreshes a login or looks a team up. With `fetch`, board's requests to Vercel's API
- * with that login go through the app's own, which adds its credentials (a DPoP proof, say).
- *
- * The app says who its commands run as: its `login` is the one that goes, wherever the app runs,
- * and nothing the environment holds goes ahead of it, a deployment's own token and `BOARD_TOKEN`
- * included. Those are `vb`'s to send, and this CLI's only when the app gives it no login.
- *
- * `token` is a Vercel token someone passed the app for this run, as `vercel board --token` takes
- * one: the login to use in place of `login`. Board sends it itself, as a Bearer token, never
- * through `fetch`, which would add the app's own login's.
+ * prints its own on stderr.
  */
 export function createApp(options: {
   appName: string
   onError?: (failure: Failure, mode: { json: boolean }) => void
   onWarning?: (warning: Warning) => void
-  login?: () => Promise<string>
-  token?: string
-  team?: () => Promise<string | null>
-  fetch?: typeof globalThis.fetch
 }): { run(args: string[]): Promise<number> } {
-  const { appName, onError, onWarning, login, token, team, fetch } = options
+  const { appName, onError, onWarning } = options
   return {
     run: (args) =>
       main(args, {
         name: appName,
         commands: {},
-        teamBoard: true,
         ...(onError ? { onError } : {}),
         ...(onWarning ? { onWarning } : {}),
-        ...(login ? { login } : {}),
-        ...(token ? { token } : {}),
-        ...(team ? { team } : {}),
-        ...(fetch ? { fetch } : {}),
       }),
   }
 }
@@ -117,7 +96,7 @@ let queue: Promise<unknown> = Promise.resolve()
  * Runs the vb command `argv` (`['read', '42']`, `['reply', '42', 'on it']`) on `board`, in this
  * process, and returns what the CLI would print. `board` already says which board and who, so
  * `--url` doesn't apply, and the commands about your machine (`whoami`, `identity`,
- * `hooks`, `serve`, `inspect`) answer 2. Calls run one at a time, in order, so
+ * `serve`, `inspect`) answer 2. Calls run one at a time, in order, so
  * `tail` and `wait`, which hold the rest until they end, need `options.signal`; it bounds any
  * other call too: `{ signal: AbortSignal.timeout(30_000) }`.
  */

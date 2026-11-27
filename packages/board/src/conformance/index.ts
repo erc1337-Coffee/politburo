@@ -1,5 +1,5 @@
 import { everyChannel } from '../client/channels.ts'
-import { INBOX_EVENT_ID_MAX, type AttentionDraft, type BoardEventView, type CreatedInvite, type Discovery, type Explanation, type GrantView, type InviteView, type Joined, type Me, type MessageView, type RegistrationView } from '../api/routes.ts'
+import { type AttentionDraft, type BoardEventView, type Discovery, type Explanation, type GrantView, type Me, type MessageView, type RegistrationView } from '../api/routes.ts'
 import { BoardError, type ExplainPrincipal, type Filters, type NewTaskOptions, type TaskInBatch, type TaskOptions } from '../client/client.ts'
 import { block } from '../contract/blocks.ts'
 import { canonical } from '../contract/data-schemas.ts'
@@ -10,21 +10,17 @@ import { politburo, type Made } from './politburo.ts'
 /**
  * Checks that a board speaks the protocol, through a handle on it (`conformance(board())`), as
  * `vb` and agents use it: every board answers all of it. A board may keep no schedules, tasks,
- * invites, or files, or no index to find threads by what their messages say or who wrote them, and
- * says so with a 501, which the kit reports as not kept here. A board may also answer 501
- * `no_operational_inbox` to the inbox read. Where supported, the kit sends short-lived operational
- * messages to the run's own principal and archives the latest. It writes ordinary messages to one
+ * or files, or no index to find threads by what their messages say or who wrote them, and
+ * says so with a 501, which the kit reports as not kept here. It writes ordinary messages to one
  * channel (`conformance` by default), and for the tasks checks that need two, to `tasks` under it,
  * keeps every post on the board, and deletes what it posted: only where and as whom it made it. A delete of
  * a message that isn't the one the run created (a mount pointed at another board mid-run, with a message
  * under the same ID) is skipped, and the check that made it reports what stays. The one schema it registers,
- * `conformance@1`, stays: a schema version is never removed. Invite checks leave terminal invite
- * records, but revoke the grants they make. On boards that opt into agent operations, the kit
- * retires its test agent; the disabled entries and private intent facts remain on the board.
+ * `conformance@1`, stays: a schema version is never removed.
  */
 
 /** What a check is about, for the report's headings. */
-export type CheckGroup = 'core' | 'network-pause' | 'paging' | 'search' | 'schedules' | 'tasks' | 'work-evidence' | 'work-lifecycle' | 'grants' | 'invites' | 'schemas' | 'attachments' | 'watchers' | 'sync' | 'agents' | 'operational-inbox'
+export type CheckGroup = 'core' | 'network-pause' | 'paging' | 'search' | 'schedules' | 'tasks' | 'work-lifecycle' | 'grants' | 'schemas' | 'attachments' | 'watchers'
 
 export type CheckResult = {
   group: CheckGroup
@@ -47,12 +43,6 @@ export type ConformanceOptions = {
   /** Also check network pause. Use an isolated, running board: a pause fences all existing claims. */
   networkPause?: boolean
   /**
-   * A handle on the same board for a different principal that its policy lets record passing
-   * `tests` and `review` evidence and resolve edges. The run's principal submits and completes.
-   * The check skips if other attestation gates are advertised, since it cannot override them.
-   */
-  workEvidence?: { second: Board }
-  /**
    * The same board, with this run's credential and an `x-board-can` header that narrows it to
    * `can` (`conformance=read`), as a proxy holding the credential sends it: the checks of a
    * narrowed caller call it so. Without it, they're skipped.
@@ -65,13 +55,6 @@ export type ConformanceOptions = {
    * skipped, and it stands in for `withCan` when that's left out.
    */
   withHeaders?: (headers: Record<string, string>) => Board
-  /**
-   * The same board using only the freshly joined caller's bearer. Bind the transport to the URL
-   * you configured (not the board's discovery response), allow that URL itself (the run reads the
-   * board's discovery with it to tell which board it deletes on), reject redirects, and never log or
-   * persist the token. Without this opt-in, only the check of the joined caller's access is skipped.
-   */
-  withInviteToken?: (token: string) => Board
   /**
    * Whom the grants checks name. A board that verifies tokens itself (`vb serve`) takes the made-up
    * IDs they use without it; one that looks names up, as Vercel's API does, needs real ones on its
@@ -159,12 +142,6 @@ async function narrowedOut(attempt: Promise<unknown>, what: string) {
   throw new Mismatch(`${what}, by a caller narrowed with x-board-can: expected 403 forbidden, and it succeeded`)
 }
 
-/** Where a registration is woken, to put back after a check replaces it: its path (and branch) on a board that wakes by path, or nowhere. */
-function wokenAt(registered: RegistrationView | undefined): { path?: undefined } | { path: string; branch?: string } {
-  if (!registered?.path) return {}
-  return { path: registered.path, ...(registered.branch ? { branch: registered.branch } : {}) }
-}
-
 /** An ID or cursor as the protocol shapes them: a string of 1 to 128 characters. */
 function isRef(value: unknown, what: string) {
   check(typeof value === 'string' && value.length >= 1 && value.length <= 128, `${what} should be a string of 1 to 128 characters, got ${show(value)}`)
@@ -186,16 +163,11 @@ export type Context = {
   running: string
   withCan?: (can: string) => Board
   withHeaders?: (headers: Record<string, string>) => Board
-  withInviteToken?: ConformanceOptions['withInviteToken']
   principals: Principals
   /** The board's own Vercel team, as its discovery names it. */
   team: string | null
-  workEvidence?: Discovery['workEvidence']
-  workEvidenceSecond?: Board
   workLifecycle: boolean
   accessFence: boolean
-  agentOps: boolean
-  agentIntents?: boolean
   taskClaimHold: boolean
 }
 
@@ -212,10 +184,6 @@ export type Check = {
   /** Omit the check when it does not apply to this configuration. */
   applies?: (ctx: Context) => boolean
   run: (ctx: Context) => Promise<void | string>
-  /** This check needs to complete a task with only the run's own principal. */
-  needsUngatedCompletion?: true
-  /** This check expects completion alone to make a dependent ready. */
-  needsAutomaticRelease?: true
 }
 
 /**
@@ -226,10 +194,7 @@ export type Check = {
  * under a pattern at once: a board with no index for either, as Vercel's has none, answers
  * `not_supported`. A board that's meant to keep something and doesn't yet answers otherwise, and fails.
  */
-// Advertised work evidence is not optional, including a 501 from a release.
 const OPTIONAL = new Set<CheckGroup>(['search', 'schedules', 'tasks', 'grants', 'schemas', 'attachments'])
-
-const hasGatedReleases = (ctx: Context) => !!(ctx.workEvidence?.gates.length && ctx.workEvidence.releaseDependencies)
 
 const needRoot = (ctx: Context) => {
   check(ctx.root && ctx.reply, "posting failed, so there's nothing to read")
@@ -428,27 +393,6 @@ async function register(ctx: Context): Promise<{ made: Awaited<ReturnType<Board[
     if (error instanceof BoardError && error.status === 403) return { skip: "this token can't register schemas" }
     throw error
   }
-}
-
-/** The sync key the sync checks register, a platform of their own, so nothing reaches a real one. */
-const SYNC_KEY = 'conformance'
-
-/**
- * Registers a sync on `SYNC_KEY` for a check, and says where to put the token's registration back
- * after: or why it can't, since registering replaces the token's watchers.
- */
-async function registerSync(ctx: Context): Promise<{ where: ReturnType<typeof wokenAt> } | { skip: string }> {
-  const registered = (await ctx.board.watchers()).find((registration) => registration.owner === ctx.me.principal)
-  if (registered && (Object.keys(registered.watch).length > 0 || (registered.sync?.length ?? 0) > 0))
-    return { skip: 'this token has watchers or a sync registered here, which registering would replace' }
-  const where = wokenAt(registered)
-  try {
-    await ctx.board.register({ watch: {}, sync: [{ key: SYNC_KEY, platform: SYNC_KEY }] })
-  } catch (error) {
-    if (error instanceof BoardError && error.status === 403) return { skip: "this token can't register a sync here" }
-    throw error
-  }
-  return { where }
 }
 
 async function post(ctx: Context, text: string, extra: { id?: string; attachments?: string[] } = {}) {
@@ -803,7 +747,7 @@ const NETWORK_PAUSE: Check = {
 const helpers = { Mismatch, Skip, alike, check, isRef, needRoot, refused, rejects, reply, same, show, task, taskBatch }
 export type PolitburoHelpers = typeof helpers
 
-const { finishCleanup, inviteError, keep, onMade, remove, requestFailure, inviteChecks } =
+const { finishCleanup, keep, onMade, remove, requestFailure } =
   politburo(helpers)
 
 const CHECKS: Check[] = [
@@ -1400,7 +1344,6 @@ const CHECKS: Check[] = [
   {
     group: 'tasks',
     name: 'gives a task to one of the claims that race for it, and takes its result',
-    needsUngatedCompletion: true,
     run: async (ctx) => {
       const { task: root } = await task(ctx, 'conformance: a task to race for')
       const racing = await Promise.allSettled([1, 2, 3].map(() => ctx.board.tasks.claim(root.id, { lease: 60 })))
@@ -1474,89 +1417,8 @@ const CHECKS: Check[] = [
     },
   },
   {
-    group: 'work-evidence',
-    name: 'refuses completion without commit evidence on a gated board',
-    async run(ctx) {
-      if (!ctx.workEvidence?.gates.length) return 'completion gates not enabled here'
-      const { task: root } = await task(ctx, 'conformance: evidence required')
-      const claim = await ctx.board.tasks.claim(root.id)
-      await rejects(claim.complete(), 409, 'evidence_required', 'completion without a submission')
-      const commit = 'a'.repeat(40)
-      await claim.submit(commit, 'conformance/submission')
-      const work = await ctx.board.tasks.evidence(root.id)
-      same(work.submission?.commit, commit, 'the submitted commit')
-      same(work.submission?.by.principal, ctx.me.principal, 'the verified submitter')
-      await rejects(claim.complete(undefined, { commit }), 409, 'evidence_required', 'completion with only a submission')
-      await claim.release()
-    },
-  },
-  {
-    group: 'work-evidence',
-    name: 'keeps a dependent waiting after completion and readies it on explicit release',
-    applies: (ctx) => !hasGatedReleases(ctx),
-    async run(ctx) {
-      if (!ctx.workEvidence?.releaseDependencies) return 'evidence releases not enabled here'
-      const { task: need } = await task(ctx, 'conformance: prerequisite with evidence')
-      const { task: dependent } = await task(ctx, 'conformance: explicit release', { needs: [need.id] })
-      const claim = await ctx.board.tasks.claim(need.id)
-      const commit = 'a'.repeat(40)
-      await claim.submit(commit, 'conformance/prerequisite')
-      await claim.complete(undefined, { commit })
-      await rejects(ctx.board.tasks.claim(dependent.id), 409, 'task_waiting', 'claiming an unresolved dependent')
-      same((await ctx.board.tasks.evidence(dependent.id)).releases.length, 0, 'releases after completion alone')
-      const { submission } = await ctx.board.tasks.evidence(need.id)
-      check(submission, 'the completed prerequisite should have its submission')
-      const { message: waiting } = await ctx.board.thread(dependent.id)
-      const release = { needId: need.id, evidenceId: submission.id }
-      const resolved = await ctx.board.tasks.resolve(dependent.id, { ...release, ifVersion: waiting.version })
-      same(resolved.task?.state, 'ready', 'the dependent after explicit release')
-      alike((await ctx.board.tasks.evidence(dependent.id)).releases, [release], 'the recorded release')
-    },
-  },
-  {
-    group: 'work-evidence',
-    name: 'releases a dependency explicitly after gated completion',
-    applies: hasGatedReleases,
-    async run(ctx) {
-      const second = ctx.workEvidenceSecond
-      if (!second) return 'pass workEvidence.second to check gated completion and explicit release'
-      const gates = ctx.workEvidence!.gates
-      if (gates.some((gate) => gate !== 'submission' && gate !== 'tests' && gate !== 'review'))
-        return 'this check cannot override additional attestation gates'
-      check((await second.me()).principal !== ctx.me.principal, 'workEvidence.second must use a different principal')
-      const { task: need } = await task(ctx, 'conformance: gated prerequisite')
-      const { task: dependent } = await task(ctx, 'conformance: explicit release after gates', { needs: [need.id] })
-      const claim = await ctx.board.tasks.claim(need.id)
-      let completed = false
-      try {
-        const commit = 'a'.repeat(40)
-        await claim.submit(commit, 'conformance/submission')
-        for (const gate of gates) {
-          if (gate === 'tests' || gate === 'review')
-            await second.tasks.recordEvidence(need.id, { commit, round: claim.epoch, gate, verdict: 'pass', artifactRef: `conformance/${gate}` })
-        }
-        same((await claim.complete(undefined, { commit })).task?.state, 'completed', 'the prerequisite after gated completion')
-        completed = true
-        const { message: waiting } = await ctx.board.thread(dependent.id)
-        same(waiting.task?.state, 'waiting', 'the dependent after gated completion alone')
-        same((await ctx.board.tasks.evidence(dependent.id)).releases.length, 0, 'releases after completion alone')
-        const { submission } = await ctx.board.tasks.evidence(need.id)
-        check(submission, 'the completed prerequisite should have its submission')
-        const release = { needId: need.id, evidenceId: submission.id }
-        const resolved = await second.tasks.resolve(dependent.id, { ...release, ifVersion: waiting.version })
-        same(resolved.task?.state, 'ready', 'the dependent after explicit release')
-        same((await ctx.board.thread(dependent.id)).message.task?.state, 'ready', 'the dependent re-read after explicit release')
-        alike((await ctx.board.tasks.evidence(dependent.id)).releases, [release], 'the recorded release')
-      } finally {
-        if (!completed) await claim.release().catch(() => {})
-      }
-    },
-  },
-  {
     group: 'tasks',
     name: 'holds a task until the tasks it needs complete, which a failed or canceled one never does',
-    needsUngatedCompletion: true,
-    needsAutomaticRelease: true,
     run: async (ctx) => {
       const { task: first } = await task(ctx, 'conformance: a prerequisite')
       const { task: second } = await task(ctx, 'conformance: a task that waits for it', { needs: [first.id] })
@@ -1651,8 +1513,6 @@ const CHECKS: Check[] = [
   {
     group: 'tasks',
     name: 'says task.ready each time a task that needs others becomes ready: right after it is made or unblocked, once they have completed',
-    needsUngatedCompletion: true,
-    needsAutomaticRelease: true,
     run: async (ctx) => {
       const { task: first } = await task(ctx, 'conformance: a prerequisite that completes first')
       await (await ctx.board.tasks.claim(first.id, { lease: 60 })).complete()
@@ -1703,8 +1563,6 @@ const CHECKS: Check[] = [
   {
     group: 'tasks',
     name: 'changes what a task needs: it waits for the new ones, is ready once they have completed, and at once with none',
-    needsUngatedCompletion: true,
-    needsAutomaticRelease: true,
     run: async (ctx) => {
       const { task: done } = await task(ctx, 'conformance: a prerequisite that has completed')
       await (await ctx.board.tasks.claim(done.id, { lease: 60 })).complete()
@@ -1786,7 +1644,6 @@ const CHECKS: Check[] = [
   {
     group: 'tasks',
     name: 'changes what a task needs only while no one holds it and it has not finished',
-    needsUngatedCompletion: true,
     run: async (ctx) => {
       const { task: other } = await task(ctx, 'conformance: something to wait for')
       const { task: root } = await task(ctx, 'conformance: a task someone holds, whose needs stay')
@@ -1813,8 +1670,6 @@ const CHECKS: Check[] = [
   {
     group: 'tasks',
     name: 'makes several tasks in one write, in the order given: each waits for the ones it names, of the batch or there already, and an id makes them once',
-    needsUngatedCompletion: true,
-    needsAutomaticRelease: true,
     run: async (ctx) => {
       const { task: done } = await task(ctx, 'conformance: a prerequisite that has completed')
       await (await ctx.board.tasks.claim(done.id, { lease: 60 })).complete()
@@ -1990,14 +1845,9 @@ const CHECKS: Check[] = [
       same(second.epoch, first.epoch + 1, 'the next generation')
       check(second.token === first.token && first.token === token, 'both generations should use the supplied token')
       await rejects(first.complete(), 409, 'claim_lost', 'settling a previous generation with the current token')
-      if (ctx.workEvidence?.gates.length) {
-        await rejects(second.complete(), 409, 'evidence_required', 'completing a bound claim without evidence')
-        same((await second.release()).task?.state, 'ready', 'the result of releasing the current generation')
-      } else {
-        const settled = await second.complete()
-        if (ctx.workLifecycle) same(settled.task?.work?.stage, 'handoff', 'the stage after settling the current generation')
-        else same(settled.task?.state, 'completed', 'the result of settling the current generation')
-      }
+      const settled = await second.complete()
+      if (ctx.workLifecycle) same(settled.task?.work?.stage, 'handoff', 'the stage after settling the current generation')
+      else same(settled.task?.state, 'completed', 'the result of settling the current generation')
     },
   },
   {
@@ -2222,9 +2072,7 @@ const CHECKS: Check[] = [
       for (const { message } of [urgent!, laterUrgent!, high!, first!, low!, lowest!]) {
         const claim = await ctx.board.tasks.claim({ channel: ctx.channel, label: labels })
         same(claim?.task.id, message.id, 'the next task by priority and age')
-        // Take it out of the queue without requiring an independent attester on a gated board.
-        if (ctx.workEvidence?.gates.length) await claim!.fail('conformance: priority checked')
-        else await claim!.complete()
+        await claim!.complete()
       }
     },
   },
@@ -2254,8 +2102,6 @@ const CHECKS: Check[] = [
   {
     group: 'tasks',
     name: 'shows a feed that filters on board.task=ready a task becoming ready and being claimed, and never a token',
-    needsUngatedCompletion: true,
-    needsAutomaticRelease: true,
     run: async (ctx) => {
       const { task: first } = await task(ctx, 'conformance: a prerequisite to watch')
       const { task: second } = await task(ctx, 'conformance: a task to watch become ready', { needs: [first.id] })
@@ -2296,49 +2142,6 @@ const CHECKS: Check[] = [
       await rejects(ctx.board.label(root.id, { set: { seen: 'no' }, if: { 'board.task': null } }), 409, 'label_conflict', 'a label write that holds on there being no task, on a task')
       await rejects(ctx.board.label(root.id, { set: { seen: 'no' }, if: { 'board.task': 'claimed' } }), 409, 'label_conflict', "a label write that holds on a state the task isn't in")
       same((await ctx.board.thread(root.id)).message.labels.seen, 'yes', 'the label, after the writes its `if` refused')
-    },
-  },
-  {
-    group: 'tasks',
-    name: 'holds a task when anyone but its owner edits its root, which ends its claim',
-    run: async (ctx) => {
-      // A board that keeps no tasks says so before anything is imported.
-      await ctx.board.tasks.list({ channel: ctx.channel, limit: 1 })
-      // The run owns every task it makes and writes every root it posts, so the other author is a
-      // platform's: a thread imported as its user, made a task, then edited on the platform.
-      const key = SYNC_KEY
-      const thread = `${key}:${ctx.labels.conformance}:task`
-      const author = { id: `${key}:user:${ctx.labels.conformance}`, handle: 'conformance', name: 'Conformance', avatar: null, isBot: false }
-      const origin = { thread, message: '1' }
-      const registered = await registerSync(ctx)
-      if ('skip' in registered) return registered.skip
-      let id: string | null
-      try {
-        ;({ message: id } = await ctx.board.syncImport({
-          op: 'post', author, from: key, channel: ctx.channel, text: 'conformance: from a platform, to make a task', labels: ctx.labels, noSync: true,
-          origin: { channel: `${key}:${ctx.labels.conformance}`, thread, subthread: null, message: '1', context: null },
-        }))
-      } catch (error) {
-        await ctx.board.register({ ...registered.where, watch: {} }).catch(() => {})
-        if (error instanceof BoardError && error.status === 403) return `this token can't sync in ${ctx.channel}`
-        throw error
-      }
-      try {
-        isRef(id, "an import's message")
-        await ctx.board.tasks.create({ re: id! })
-        const claim = await ctx.board.tasks.claim(id!, { lease: 60 })
-        await ctx.board.syncImport({ op: 'edit', author, from: key, origin, text: 'conformance: edited on the platform' })
-        const edited = (await ctx.board.thread(id!)).message
-        same(edited.text, 'conformance: edited on the platform', "the root's text, once edited")
-        same(edited.task?.state, 'blocked', 'the task, once its root was edited by someone else')
-        same(edited.task?.blocked?.kind, 'edited', 'what it is held for')
-        await rejects(claim.complete(), 409, 'claim_lost', "the claim's complete, once the edit held the task")
-        same((await ctx.board.tasks.unblock(id!)).task?.state, 'ready', 'the task, once its owner unblocked it')
-      } finally {
-        // Its author is the platform user: only an import can take it down.
-        await ctx.board.syncImport({ op: 'delete', author, from: key, origin }).catch(() => {})
-        await ctx.board.register({ ...registered.where, watch: {} }).catch(() => {})
-      }
     },
   },
   {
@@ -2639,7 +2442,6 @@ const CHECKS: Check[] = [
     // A skip, saying why, so a report shows it's left out on purpose.
     run: async () => "grants across teams aren't specified yet: what a project on another team needs, and what all-projects means for one, comes later",
   },
-  ...inviteChecks,
   {
     group: 'schemas',
     name: 'lists the built-in schemas first, and reads a schema by its ID',
@@ -2788,10 +2590,8 @@ const CHECKS: Check[] = [
     run: async (ctx) => {
       const registered = (await ctx.board.watchers()).find((r) => r.owner === ctx.me.principal)
       // Registering replaces a principal's watchers: never on one that has some.
-      if (registered && (Object.keys(registered.watch).length > 0 || (registered.sync?.length ?? 0) > 0))
-        return 'this token has watchers or a sync registered here, and checking would replace them'
-      // Nothing's woken while it checks, and an empty one gets back where it's woken after.
-      const where = wokenAt(registered)
+      if (registered && Object.keys(registered.watch).length > 0)
+        return 'this token has watchers registered here, and checking would replace them'
       await ctx.board.register({ watch: { conformance: { tail: `${ctx.channel} --label conformance=${ctx.labels.conformance}` } } })
       try {
         const message = await post(ctx, 'conformance: for a watcher')
@@ -2803,35 +2603,7 @@ const CHECKS: Check[] = [
         await ctx.board.ack(match.id, { lease: match.lease })
         await rejects(ctx.board.ack(match.id, { lease: match.lease }), 404, 'no_match', 'acking a match twice')
       } finally {
-        await ctx.board.register({ ...where, watch: {} })
-      }
-    },
-  },
-  {
-    group: 'watchers',
-    name: 'wakes by path only where its discovery says so, and only a Vercel project',
-    run: async (ctx) => {
-      // Even a refusal can replace them: a board that doesn't know `path` reads one as a registration with nothing in it.
-      const registered = (await ctx.board.watchers()).find((r) => r.owner === ctx.me.principal)
-      if (registered && (Object.keys(registered.watch).length > 0 || (registered.sync?.length ?? 0) > 0))
-        return 'this token has watchers or a sync registered here, and checking would replace them'
-      const byPath = (await ctx.board.discovery()).wake_by_path
-      // A path wakes a project's deployment in any environment, a preview's by its branch when it names one.
-      const environment = /^vercel:project:[^:]+:(.+)$/.exec(ctx.me.principal)?.[1] ?? null
-      const where = wokenAt(registered)
-      const branch = environment === 'preview' ? { branch: 'conformance' } : {}
-      const attempt = () => ctx.board.register({ path: '/conformance', ...branch, watch: {} })
-      try {
-        if (!byPath) await rejects(attempt(), 501, 'no_wake_by_path', 'a path, on a board that wakes nothing')
-        else if (environment === null) await rejects(attempt(), 403, 'not_a_project', "a path, from a token that isn't a Vercel project's")
-        else {
-          const view = await attempt()
-          same(view.path, '/conformance', "the registration's path")
-          same(view.url, null, "the registration's url")
-          same(view.branch ?? null, environment === 'preview' ? 'conformance' : null, "the registration's branch")
-        }
-      } finally {
-        await ctx.board.register({ ...where, watch: {} })
+        await ctx.board.register({ watch: {} })
       }
     },
   },
@@ -2843,442 +2615,10 @@ const CHECKS: Check[] = [
       const narrowed = ctx.withCan(`${ctx.channel}=all`)
       const registered = (await ctx.board.watchers()).find((r) => r.owner === ctx.me.principal)
       // What's registered now, so a board that wrongly takes it leaves the registration as it was.
-      const now = { ...wokenAt(registered), watch: registered?.watch ?? {}, ...(registered?.sync ? { sync: registered.sync } : {}) }
+      const now = { watch: registered?.watch ?? {} }
       await narrowedOut(narrowed.register(now), 'registering watchers')
       await narrowedOut(narrowed.matches(), 'pulling matches')
       await narrowedOut(narrowed.ack(`conformance-${ctx.labels.conformance}`, { lease: 'conformance' }), 'acking a match')
-    },
-  },
-  {
-    group: 'sync',
-    name: "keeps sync's records: an import as a profile of its importer, its lookups by platform ID, a receipt, and where it's synced",
-    run: async (ctx) => {
-      const key = SYNC_KEY
-      const thread = `${key}:${ctx.labels.conformance}:1`
-      const author = { id: `${key}:user:${ctx.labels.conformance}`, handle: 'conformance', name: 'Conformance', avatar: null, isBot: false }
-      const origin = { thread, message: '1' }
-      // A sync names its entries when it registers.
-      const registered = await registerSync(ctx)
-      if ('skip' in registered) return registered.skip
-      const { where } = registered
-      let imported: { message: string | null }
-      try {
-        imported = await ctx.board.syncImport({
-          op: 'post', author, from: key, channel: ctx.channel, text: 'conformance: from a platform', labels: ctx.labels, noSync: true,
-          origin: { channel: `${key}:${ctx.labels.conformance}`, thread, subthread: null, message: '1', context: null },
-          id: `conformance-sync-${ctx.labels.conformance}`,
-        })
-      } catch (error) {
-        await ctx.board.register({ ...where, watch: {} }).catch(() => {})
-        if (error instanceof BoardError && error.status === 403) return `this token can't sync in ${ctx.channel}`
-        throw error
-      }
-      const id = imported.message
-      isRef(id, "an import's message")
-      try {
-        const message = (await ctx.board.thread(id!)).message
-        // A sync elsewhere's word: the platform user as a profile of its principal, shown through it.
-        same(message.by.actor, `${ctx.me.principal}+${author.id}`, "the import's author")
-        same(message.by.principal, ctx.me.principal, "the import's principal")
-        same(message.by.profile, author.id, "the import's profile")
-        same(message.author?.name, author.name, "the import's author's name")
-        check(message.author?.via !== undefined, `the import's author should say who it's via, got ${show(message.author)}`)
-        same(message.from, key, "the import's from")
-        same(message.origin?.thread, thread, "the import's origin")
-        const found = await ctx.board.syncFind({ thread, message: '1' })
-        same(found.message, id, 'the message found by its platform IDs')
-        check(found.thread !== null, 'the thread found by its platform thread')
-        same((await ctx.board.syncThread(found.thread!)).root, id, "the synced thread's root")
-        const again = await ctx.board.syncImport({ op: 'post', author, from: key, channel: ctx.channel, text: 'conformance: from a platform', noSync: true, id: `conformance-sync-${ctx.labels.conformance}` })
-        same(again.message, id, 'the same import, sent again')
-        // A platform thread is one board thread's: another import can't take it over.
-        await rejects(
-          ctx.board.syncImport({ op: 'post', author, from: key, channel: ctx.channel, text: 'conformance: a second root', noSync: true, origin: { thread, subthread: null, message: '3', context: null } }),
-          409,
-          'already_synced',
-          'an import from a platform thread another board thread syncs with',
-        )
-        // A delivery is to one of its thread's targets.
-        const external = { thread: `${key}:${ctx.labels.conformance}:2`, message: '2' }
-        await ctx.board.syncReceipt({ kind: 'thread', message: id!, target: external.thread, targetKind: 'thread', cause: 'request' })
-        await ctx.board.syncReceipt({ kind: 'message', message: id!, target: external.thread, external })
-        same(JSON.stringify((await ctx.board.syncCopies([id!]))[id!]?.[external.thread]), JSON.stringify(external), 'the copy its receipt recorded')
-        // Readers see where it's synced from the same records, and a link no sync here knows names nothing.
-        const { targets } = await ctx.board.sync(id!)
-        check(targets.some((row) => row.target === external.thread && row.message === external.message), `where the thread is synced should show the copy its receipt recorded, got ${show(targets)}`)
-        await rejects(ctx.board.linked(`https://conformance.invalid/${ctx.labels.conformance}`), 404, 'message_not_found', 'a link no sync here knows')
-      } finally {
-        // Its author is the platform user: only an import can take it down.
-        await ctx.board.syncImport({ op: 'delete', author, from: key, origin }).catch(() => {})
-        // And a second root, on a board that took one.
-        await ctx.board.syncImport({ op: 'delete', author, from: key, origin: { thread, message: '3' } }).catch(() => {})
-        await ctx.board.register({ ...where, watch: {} }).catch(() => {})
-      }
-    },
-  },
-  {
-    group: 'sync',
-    name: "meets a platform user an import's text mentions: an actor as one who wrote would be, whom the text names by that actor's ID",
-    run: async (ctx) => {
-      const key = SYNC_KEY
-      const thread = `${key}:${ctx.labels.conformance}:mentioned`
-      const author = { id: `${key}:user:${ctx.labels.conformance}`, handle: 'conformance', name: 'Conformance', avatar: null, isBot: false }
-      // Someone the platform knows, who has written nothing here.
-      const cc = { id: `${key}:user:${ctx.labels.conformance}-cc`, handle: 'conformance-cc', name: 'Conformance Cc', avatar: null, isBot: false }
-      const origin = { thread, message: '1' }
-      const registered = await registerSync(ctx)
-      if ('skip' in registered) return registered.skip
-      const { where } = registered
-      try {
-        let imported: { message: string | null }
-        try {
-          imported = await ctx.board.syncImport({
-            op: 'post', author, from: key, channel: ctx.channel, text: `conformance: cc @[${cc.id}]`, mentioned: [cc], labels: ctx.labels, noSync: true,
-            origin: { channel: `${key}:${ctx.labels.conformance}`, thread, subthread: null, message: '1', context: null },
-            id: `conformance-mentioned-${ctx.labels.conformance}`,
-          })
-        } catch (error) {
-          if (error instanceof BoardError && error.status === 403) return `this token can't sync in ${ctx.channel}`
-          throw error
-        }
-        isRef(imported.message, "an import's message")
-        // A sync elsewhere's user is a profile of its principal, mentioned or writing.
-        const actor = `${ctx.me.principal}+${cc.id}`
-        same((await ctx.board.thread(imported.message!)).message.text, `conformance: cc @[${actor}]`, "the import's text, its mention by the actor's ID")
-        const met = (await ctx.board.actors()).find((known) => known.id === actor)
-        check(met !== undefined, `the board should know the user the import mentioned as ${actor}`)
-        same(met?.name, cc.name, "the mentioned user's name")
-      } finally {
-        await ctx.board.syncImport({ op: 'delete', author, from: key, origin }).catch(() => {})
-        await ctx.board.register({ ...where, watch: {} }).catch(() => {})
-      }
-    },
-  },
-  {
-    group: 'sync',
-    name: "queues a platform thread's events in its sync's inbox once, and leases each after the one before is acked",
-    run: async (ctx) => {
-      const registered = await registerSync(ctx)
-      if ('skip' in registered) return registered.skip
-      try {
-        const run = ctx.labels.conformance
-        const author = { id: `${SYNC_KEY}:user:${run}`, handle: 'conformance', name: 'Conformance', avatar: null, isBot: false }
-        const thread = `${SYNC_KEY}:${run}:inbox`
-        const eventOf = (message: string) => ({
-          id: `conformance-inbox-${run}-${message}`,
-          event: { kind: 'message' as const, channel: `${SYNC_KEY}:${run}`, thread, subthread: null, message, isRoot: message === '1', text: `conformance: inbox event ${message}`, context: null, author },
-          raw: { conformance: run, message },
-        })
-        const pushed = [eventOf('1'), eventOf('2')]
-        await ctx.board.inboxPush(SYNC_KEY, pushed)
-        // A platform's retry of an event lands once.
-        await ctx.board.inboxPush(SYNC_KEY, [pushed[0]!])
-        const lease = async () => (await ctx.board.inboxNext(SYNC_KEY, { limit: 50 })).filter((item) => item.thread === thread)
-        // A platform thread's events come one at a time, in order: each only once the one before is acked.
-        for (const { event, raw } of pushed) {
-          const leased = await lease()
-          same(leased.length, 1, `the events leased from the platform thread, for message ${event.message}`)
-          const item = leased[0]!
-          same(item.event.kind === 'message' ? item.event.message : null, event.message, 'the platform message leased next')
-          same(JSON.stringify(item.raw), JSON.stringify(raw), "the leased event's raw payload")
-          await ctx.board.inboxAck(SYNC_KEY, item.id, { lease: item.lease })
-        }
-        same((await lease()).length, 0, 'the events leased once both are acked')
-      } finally {
-        await ctx.board.register({ ...registered.where, watch: {} }).catch(() => {})
-      }
-    },
-  },
-  {
-    group: 'sync',
-    name: "takes an edit of a long message in its sync's inbox, under the longest event ID the protocol allows, and refuses a longer one",
-    run: async (ctx) => {
-      const registered = await registerSync(ctx)
-      if ('skip' in registered) return registered.skip
-      try {
-        const run = ctx.labels.conformance
-        const author = { id: `${SYNC_KEY}:user:${run}`, handle: 'conformance', name: 'Conformance', avatar: null, isBot: false }
-        const thread = `${SYNC_KEY}:${run}:long`
-        const location = { channel: `${SYNC_KEY}:${run}`, thread, subthread: null, message: '1', author }
-        // A deployment comment, edited from Building to Ready: thousands of characters, as platforms send them.
-        const text = (status: string) => `conformance: ${status}\n${'| project | deployment | preview | updated |\n'.repeat(250)}`
-        const idOf = (kind: string) => `conformance-inbox-${run}-long-${kind}-`.padEnd(INBOX_EVENT_ID_MAX, 'x')
-        const pushed = [
-          { id: idOf('message'), event: { kind: 'message' as const, ...location, isRoot: true, text: text('Building'), context: null }, raw: null },
-          { id: idOf('edited'), event: { kind: 'edited' as const, ...location, text: text('Ready') }, raw: null },
-        ]
-        for (const event of pushed) await ctx.board.inboxPush(SYNC_KEY, [event])
-        await refused(
-          ctx.board.inboxPush(SYNC_KEY, [{ ...pushed[1]!, id: `${pushed[1]!.id}x` }]),
-          400,
-          `an inbox event ID over ${INBOX_EVENT_ID_MAX} characters`,
-        )
-        for (const { event } of pushed) {
-          const leased = (await ctx.board.inboxNext(SYNC_KEY, { limit: 50 })).filter((item) => item.thread === thread)
-          same(leased.length, 1, `the events leased from the platform thread, for its ${event.kind} event`)
-          const item = leased[0]!
-          same(item.event.kind, event.kind, 'the platform event leased next')
-          same('text' in item.event ? item.event.text : null, event.text, `the ${event.kind} event's text`)
-          await ctx.board.inboxAck(SYNC_KEY, item.id, { lease: item.lease })
-        }
-      } finally {
-        await ctx.board.register({ ...registered.where, watch: {} }).catch(() => {})
-      }
-    },
-  },
-  {
-    group: 'sync',
-    name: 'hands a sync each message change as a match of its @sync watcher',
-    run: async (ctx) => {
-      // A token that syncs elsewhere but not here gets no match for a post here. One that names no
-      // sync anywhere, as a board that lists no permissions, is checked.
-      const access = compileAccess(ctx.me.can)
-      if (access.anywhere('sync') && !access.can('sync', ctx.channel)) return `this token can't sync in ${ctx.channel}`
-      const registered = await registerSync(ctx)
-      if ('skip' in registered) return registered.skip
-      try {
-        const message = await post(ctx, 'conformance: for a sync')
-        const deadline = Date.now() + 10_000
-        let match: Awaited<ReturnType<Board['matches']>>[number] | undefined
-        while (!match && Date.now() < deadline) match = (await ctx.board.matches({ wait: 5 })).find((m) => m.watcher === '@sync' && m.event.message?.id === message.id)
-        check(match, "a pull should hand the sync a match for the post, as its @sync watcher's")
-        same(match.event.type, 'message.posted', "the sync's match")
-        await ctx.board.ack(match.id, { lease: match.lease })
-      } finally {
-        await ctx.board.register({ ...registered.where, watch: {} }).catch(() => {})
-      }
-    },
-  },
-  {
-    group: 'sync',
-    name: 'keeps noSync on a post and a reply, so sync sends neither',
-    run: async (ctx) => {
-      const { root, reply } = needRoot(ctx)
-      const thread = await ctx.board.thread(root.id)
-      same(thread.message.noSync, true, "a post's noSync, read back")
-      same(thread.replies.find((m) => m.id === reply.id)?.noSync, true, "a reply's noSync, read back")
-    },
-  },
-  {
-    group: 'sync',
-    name: "refuses a caller narrowed with x-board-can sync's records: imports, receipts, and the inbox",
-    run: async (ctx) => {
-      if (!ctx.withCan) return NO_CAN
-      const { root } = needRoot(ctx)
-      const registered = await registerSync(ctx)
-      if ('skip' in registered) return registered.skip
-      const run = ctx.labels.conformance
-      const author = { id: `${SYNC_KEY}:user:${run}`, handle: 'conformance', name: 'Conformance', avatar: null, isBot: false }
-      const thread = `${SYNC_KEY}:${run}:narrowed`
-      try {
-        const narrowed = ctx.withCan(`${ctx.channel}=all`)
-        await narrowedOut(
-          narrowed.syncImport({
-            op: 'post', author, from: SYNC_KEY, channel: ctx.channel, text: 'conformance: a narrowed import', labels: ctx.labels, noSync: true,
-            origin: { channel: `${SYNC_KEY}:${run}`, thread, subthread: null, message: '1', context: null },
-          }),
-          'an import',
-        )
-        await narrowedOut(narrowed.syncReceipt({ kind: 'failed', message: root.id, target: thread, error: 'conformance' }), 'a receipt')
-        const event = { kind: 'message' as const, channel: `${SYNC_KEY}:${run}`, thread, subthread: null, message: '1', isRoot: true, text: 'conformance: a narrowed push', context: null, author }
-        await narrowedOut(narrowed.inboxPush(SYNC_KEY, [{ id: `conformance-narrowed-${run}`, event, raw: null }]), 'a push to the inbox')
-        await narrowedOut(narrowed.inboxNext(SYNC_KEY, { limit: 1 }), 'a lease from the inbox')
-        await narrowedOut(narrowed.inboxAck(SYNC_KEY, `conformance-narrowed-${run}`, { lease: 'conformance' }), 'an ack to the inbox')
-      } finally {
-        // An import a board wrongly took: only an import can take it down.
-        await ctx.board.syncImport({ op: 'delete', author, from: SYNC_KEY, origin: { thread, message: '1' } }).catch(() => {})
-        await ctx.board.register({ ...registered.where, watch: {} }).catch(() => {})
-      }
-    },
-  },
-  {
-    group: 'agents',
-    name: 'registers, lists, heartbeats, and retires an agent under its verified binding',
-    run: async ({ board, channel, labels, agentOps }) => {
-      if (!agentOps) {
-        await rejects(board.agents.list(channel), 501, 'no_agent_ops', 'listing agents without advertised support')
-        return 'not kept here: agent operations are not advertised'
-      }
-      const writer = board.as(`conformance-${labels.conformance}`)
-      const { principal, profile } = await writer.me()
-      const input = { channel, role: 'reviewer', harness: 'conformance' } as const
-      const enrolled = await writer.agents.register(input)
-      let current = enrolled
-      try {
-        isRef(enrolled.id, 'agent ID')
-        same(enrolled.channel, channel, 'registered channel')
-        same(enrolled.role, input.role, 'registered role')
-        same(enrolled.harness, input.harness, 'registered harness')
-        same(enrolled.parent, null, 'new agent parent')
-        same(enrolled.binding?.principal, principal, 'agent principal')
-        same(enrolled.binding?.profile, profile, 'agent profile')
-        same(enrolled.status, 'enabled', 'new agent status')
-        same(enrolled.generation, 1, 'new agent generation')
-        same(enrolled.heartbeatAt, null, 'new agent heartbeat')
-        current = await writer.agents.register(input)
-        same(current.id, enrolled.id, 'repeated registration ID')
-        same(current.generation, enrolled.generation, 'repeated registration generation')
-        current = await writer.agents.heartbeat(enrolled.id, enrolled.generation)
-        check(current.heartbeatAt !== null && Number.isFinite(Date.parse(current.heartbeatAt)), 'heartbeat should record a timestamp')
-        same(current.generation, enrolled.generation, 'generation after heartbeat')
-        current = await writer.agents.retire(enrolled.id, enrolled.generation)
-        same(current.id, enrolled.id, 'retired agent ID')
-        same(current.status, 'disabled', 'retired agent status')
-        same(current.generation, enrolled.generation + 1, 'retired agent generation')
-        same(current.heartbeatAt, null, 'retired agent heartbeat')
-        await refused(writer.agents.heartbeat(enrolled.id, current.generation), 409, 'heartbeat to a retired agent')
-        const { agents } = await board.agents.list(channel)
-        const listed = agents.find(({ id }) => id === enrolled.id)
-        same(listed?.status, 'disabled', 'retired agent status when listed')
-        same(listed?.generation, current.generation, 'retired agent generation when listed')
-      } finally {
-        if (current.status !== 'disabled') await writer.agents.retire(enrolled.id, current.generation).catch(() => {})
-      }
-    },
-  },
-  {
-    group: 'agents',
-    name: 'confirms a claimed run only through a taken and reported status probe',
-    needsScope: true,
-    run: async (ctx) => {
-      const { board, channel, labels, me } = ctx
-      const isNoAgentOps = (error: unknown) => error instanceof BoardError && error.status === 501 && error.code === 'no_agent_ops'
-      const isNoTasks = (error: unknown): error is BoardError => error instanceof BoardError && error.status === 501 && error.code === 'no_tasks'
-      const notKeptHere = async (error: unknown) => {
-        if (isNoTasks(error)) return `not kept here: ${error.message}`
-        if (!isNoAgentOps(error)) throw error
-        try {
-          await board.agents.list(channel)
-        } catch (error) {
-          if (isNoAgentOps(error)) return 'not kept here: agent operations are not advertised'
-          throw error
-        }
-        return 'not kept here: agent intents are not advertised'
-      }
-      const ignoreNoAgentOps = (error: unknown) => {
-        if (!isNoAgentOps(error)) throw error
-      }
-      // Read before writing: agent calls recheck the mount even if discovery() is cached.
-      try {
-        await board.agents.health('conformance-missing')
-      } catch (error) {
-        const answered = error instanceof BoardError && error.status === 404 && error.code !== 'not_found'
-        if (error instanceof BoardError && (error.status === 502 && error.code === 'remote_error' || error.status === 404 && error.code === 'not_found')) return 'not kept here: this board serves no run health'
-        if (!answered) return notKeptHere(error)
-      }
-      if (me.principal === 'board:client' || me.principal.startsWith('board:client:')) return 'this run has no verified agent credential'
-
-      const made = await task(ctx, 'conformance: run health').catch((error: unknown) => {
-        if (error instanceof BoardError && error.status === 501 && error.code === 'no_tasks') return `not kept here: ${error.message}`
-        throw error
-      })
-      if (typeof made === 'string') return made
-      const { task: root } = made
-      const worker = board.as(`probe-${labels.conformance}`)
-      const { principal, profile } = await worker.me()
-      try {
-        const agent = await worker.agents.register({ channel, role: 'reviewer', harness: 'conformance' })
-        try {
-          if (ctx.workLifecycle) await scopeWork(ctx, root.id, 'conformance: ready for a run health probe')
-          const claim = await worker.tasks.claim(root.id)
-          try {
-            same((await board.agents.health(root.id)).state, 'not_confirmed', 'health of a bare claim')
-            const input = { verb: 'status', generation: agent.generation, ttlSeconds: 30, requestId: `probe-${labels.conformance}`, run: { task: root.id, epoch: claim.epoch } } as const
-            const { intents } = await board.agents.issueIntent(agent.id, input)
-            same(intents.length, 1, 'a probe resolves to one intent')
-            const intent = intents[0]!
-            isRef(intent.id, 'intent ID')
-            same(intent.by?.principal, me.principal, 'intent issuer')
-            same(intent.by?.profile, me.profile, 'intent issuer profile')
-            same(intent.agent, agent.id, 'intent recipient')
-            same(intent.state, 'pending', 'issued intent state')
-            same((await board.agents.issueIntent(agent.id, input)).intents[0]?.id, intent.id, 'replayed intent ID')
-            await refused(board.agents.issueIntent(agent.id, { ...input, ttlSeconds: 29 }), 409, 'issuing changed input under the same request ID', isNoAgentOps)
-            same((await worker.agents.intents(agent.id)).intents.map(({ id }) => id).join(), intent.id, 'pending intents')
-            const taken = await worker.agents.takeIntent(intent.id, agent.generation)
-            same(taken.state, 'taken', 'taken intent state')
-            same(taken.taken?.by?.principal, principal, 'taker principal')
-            same(taken.taken?.by?.profile, profile, 'taker profile')
-            same((await worker.agents.intents(agent.id)).intents.length, 0, 'pending intents after take')
-            same((await board.agents.health(root.id)).state, 'not_confirmed', 'health of a taken but unreported probe')
-            const reported = await worker.agents.reportIntent(intent.id, agent.generation, 'running')
-            same(reported.state, 'reported', 'reported intent state')
-            same(reported.report?.by?.principal, principal, 'reporter principal')
-            same(reported.report?.by?.profile, profile, 'reporter profile')
-            same(reported.report?.outcome, 'running', 'report outcome')
-            const health = await board.agents.health(root.id)
-            check(health.state === 'working', `a positive probe on a live claim should confirm health, got ${show(health)}`)
-            const until = Date.parse(health.validUntil)
-            check(until > Date.parse(reported.report!.at) && until <= Math.min(Date.parse(intent.expiresAt), Date.parse(claim.until)), 'health should have a finite window no later than the intent or lease deadline')
-          } finally {
-            await claim.release().catch(ignoreNoAgentOps)
-          }
-          same((await board.agents.health(root.id)).state, 'not_confirmed', 'health after the claim is released')
-        } finally {
-          await worker.agents.retire(agent.id, agent.generation).catch((error: unknown) => {
-            if (error instanceof BoardError && error.status === 501 && error.code === 'no_agent_ops')
-              throw new Mismatch(`the probe agent ${agent.id} stays enabled: retiring it was answered with ${error.code}`)
-            throw error
-          })
-        }
-      } catch (error) {
-        return notKeptHere(error)
-      }
-    },
-  },
-  {
-    group: 'operational-inbox',
-    name: 'keeps operational messages private, supersedes by topic, and keeps receipts once',
-    run: async (ctx) => {
-      const inbox = ctx.board.operationalInbox
-      try {
-        await inbox.read()
-      } catch (error) {
-        if (error instanceof BoardError && error.status === 501 && error.code === 'no_operational_inbox') return `not kept here: ${error.message}`
-        throw error
-      }
-      const { cursor } = await ctx.board.poll({ all: true })
-      const topic = `conformance inbox ${ctx.labels.conformance}`
-      const input = { to: { agent: ctx.me.principal }, topic, expiresAt: new Date(Date.now() + 60_000).toISOString() }
-      const forTopic = async () => (await inbox.read()).messages.filter((message) => message.topic === topic)
-      const { message: older } = await inbox.send({ ...input, text: 'older' })
-      let latest = older
-      try {
-        ;({ message: latest } = await inbox.send({ ...input, text: 'latest' }))
-        const read = await forTopic()
-        same(show(read.map((m) => m.id)), show([latest.id]), 'which message with the same recipient and topic remains')
-        same(read[0]!.text, 'latest', 'the new message, read back')
-        same(read[0]!.by.principal, ctx.me.principal, 'who authored it')
-        same(read[0]!.seenAt, null, 'reading does not acknowledge it')
-        same(read[0]!.actedAt, null, 'an unread receipt has no acted time')
-        same(read[0]!.archivedAt, null, 'the message has not been archived')
-        await refused(inbox.ack(older.id, 'seen'), 404, 'acknowledging the superseded message')
-
-        const narrow = ctx.withCan?.(`${ctx.channel}=all`) ?? ctx.board.as(ctx.me.profile, { can: { [ctx.channel]: 'all' } })
-        await refused(narrow.operationalInbox.read(), 403, 'reading with only channel access')
-        await refused(narrow.operationalInbox.ack(latest.id, 'seen'), 403, 'acknowledging with only channel access')
-        await refused(narrow.operationalInbox.archive(latest.id), 403, 'archiving with only channel access')
-        await refused(narrow.operationalInbox.send({ ...input, text: 'narrowed' }).then(({ message }) => { latest = message }), 403, 'sending with only channel access')
-
-        const { message: seen } = await inbox.ack(latest.id, 'seen')
-        check(seen.seenAt && Number.isFinite(Date.parse(seen.seenAt)), 'seen should record a timestamp')
-        const { message: acted } = await inbox.ack(latest.id, 'acted')
-        check(acted.actedAt && Date.parse(acted.actedAt) >= Date.parse(seen.seenAt), 'acted should record a timestamp at or after seen')
-        same(acted.seenAt, seen.seenAt, 'acted preserves seen')
-        const { message: repeated } = await inbox.ack(latest.id, 'seen')
-        same(repeated.seenAt, seen.seenAt, 'repeating seen preserves its timestamp')
-        same(repeated.actedAt, acted.actedAt, 'repeating seen cannot undo acted')
-
-        const { message: archived } = await inbox.archive(latest.id)
-        check(archived.archivedAt && Date.parse(archived.archivedAt) >= Date.parse(acted.actedAt), 'archive should record a timestamp at or after acted')
-        same((await inbox.archive(latest.id)).message.archivedAt, archived.archivedAt, 'repeating archive preserves its timestamp')
-        same((await forTopic()).length, 0, 'archiving hides the message without reviving its predecessor')
-        await refused(inbox.ack(latest.id, 'acted'), 404, 'acknowledging the archived message')
-        const { events } = await ctx.board.poll({ all: true, after: cursor })
-        check(!show(events).includes(topic), 'the generic event feed should not expose the operational topic')
-      } finally {
-        await inbox.archive(latest.id).catch(() => {})
-      }
     },
   },
 ]
@@ -3336,8 +2676,8 @@ export async function conformance(board: Board, options: ConformanceOptions = {}
   const wrong =
     discovery instanceof Error
       ? discovery.message
-      : typeof discovery.audience !== 'string' || typeof discovery.url !== 'string' || !Array.isArray(discovery.sync)
-        ? `discovery should have url, audience, and sync, got ${show(discovery)}`
+      : typeof discovery.audience !== 'string' || typeof discovery.url !== 'string'
+        ? `discovery should have url and audience, got ${show(discovery)}`
         : null
   if (wrong !== null) {
     checks.push({ group: 'core', name: 'says in its discovery where it is', status: 'failed', detail: wrong })
@@ -3364,7 +2704,6 @@ export async function conformance(board: Board, options: ConformanceOptions = {}
     running: '',
     ...(options.withCan ? { withCan: options.withCan } : options.withHeaders ? { withCan: (can: string) => options.withHeaders!({ 'x-board-can': can }) } : {}),
     ...(options.withHeaders ? { withHeaders: options.withHeaders } : {}),
-    ...(options.withInviteToken ? { withInviteToken: options.withInviteToken } : {}),
     principals: {
       project: options.principals?.project ?? `prj_conformance${label}`,
       repository: options.principals?.repository ?? `acme/conformance-${label}`,
@@ -3373,10 +2712,6 @@ export async function conformance(board: Board, options: ConformanceOptions = {}
       scoper: options.principals?.scoper,
     },
     team: info.team_id ?? null,
-    agentOps: info.agent_ops === true,
-    workEvidence: info.workEvidence,
-    ...(options.workEvidence ? { workEvidenceSecond: options.workEvidence.second } : {}),
-    agentIntents: info.agent_intents === true,
     workLifecycle: info.workLifecycle === 1,
     accessFence: info.accessFence === 1,
     taskClaimHold: info.task_claim_hold === true,
@@ -3389,19 +2724,14 @@ export async function conformance(board: Board, options: ConformanceOptions = {}
     ] : CHECKS
     const selected = options.networkPause ? [NETWORK_PAUSE, ...compatible] : compatible
     for (const probe of selected) {
-      const { group: original, name, requires, applies, taskAuthority, staged, needsScope, run, needsUngatedCompletion, needsAutomaticRelease } = probe
+      const { group: original, name, requires, applies, taskAuthority, staged, needsScope, run } = probe
       const group = ctx.workLifecycle && (taskAuthority || staged) ? 'work-lifecycle' : original
       if (requires && info[requires] !== true) continue
-      if (group === 'work-evidence' && !ctx.workEvidence) continue
       if (applies && !applies(ctx)) continue
       ctx.running = `${group}/${name}`
       try {
         if (ctx.workLifecycle && !ctx.accessFence && (needsScope || (group === 'work-lifecycle' && probe !== NO_ACCESS_FENCE))) throw new Skip(NEEDS_ACCESS_FENCE)
-        const skipped = needsUngatedCompletion && ctx.workEvidence?.gates.length
-          ? 'this check cannot satisfy completion gates with its one principal'
-          : needsAutomaticRelease && ctx.workEvidence?.releaseDependencies
-            ? 'this check requires completion alone to release dependencies'
-            : await run(ctx)
+        const skipped = await run(ctx)
         checks.push(skipped ? { group, name, status: 'skipped', detail: skipped } : { group, name, status: 'passed' })
       } catch (error) {
         if (error instanceof Skip) checks.push({ group, name, status: 'skipped', detail: error.message })
@@ -3411,7 +2741,6 @@ export async function conformance(board: Board, options: ConformanceOptions = {}
         else if (group === 'watchers' && error instanceof BoardError && error.code === 'watchers_need_project') checks.push({ group, name, status: 'skipped', detail: 'only a deployment registers watchers here' })
         // A board that takes no GitHub or OIDC principal in a grant can't check what names one.
         else if (group === 'grants' && error instanceof BoardError && error.code === 'unsupported_principal') checks.push({ group, name, status: 'skipped', detail: 'this board takes no GitHub or OIDC principals in a grant' })
-        else if (group === 'invites' && !(error instanceof Mismatch)) checks.push({ group, name, status: 'failed', detail: inviteError(error, 'checking invites').message })
         else checks.push({ group, name, status: 'failed', detail: error instanceof Error ? error.message : String(error) })
       }
     }

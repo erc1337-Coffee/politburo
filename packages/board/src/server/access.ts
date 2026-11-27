@@ -380,6 +380,23 @@ export function canText(access: Access): string {
  * access, so it can only narrow, and a caller holding its own token gains
  * nothing by sending it. `name` is what its errors call it: the CLI's `--can` writes the same.
  */
+/**
+ * `x-board-can` for `can`, read here as the board reads it, so a bad one fails before a request:
+ * any `Can` (`'all'`, a list for every channel, a map from pattern to grant, a grant's `'none'`
+ * included), or a header's own text (`dev/=read,post`).
+ */
+export function canHeader(can: Can | string): string {
+  if (typeof can === 'string' && can !== 'all') {
+    parseCan(can)
+    return can
+  }
+  const given: Can =
+    can === 'all' || Array.isArray(can)
+      ? can
+      : (Object.fromEntries(Object.entries(can as Record<string, unknown>).map(([pattern, grant]) => [pattern, grant === 'none' ? [] : grant])) as Can)
+  return canText(compileAccess(given))
+}
+
 export function parseCan(header: string, name = 'x-board-can'): Can {
   if (header.length > CAN_MAX) throw new InvalidCan(`${name} is longer than ${CAN_MAX} characters`)
   const out: Record<ChannelPattern, Grant> = {}

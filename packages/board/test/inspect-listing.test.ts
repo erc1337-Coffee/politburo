@@ -224,7 +224,7 @@ describe("the inspector's channel view", () => {
 })
 
 describe('a post from the inspector', () => {
-  const pending = (m: MessageView): store.Pending => ({ channel: m.channel, re: m.re, text: m.text, noSync: false, labels: {}, key: `k${m.id}`, createdAt: m.createdAt, error: null })
+  const pending = (m: MessageView): store.Pending => ({ channel: m.channel, re: m.re, text: m.text, labels: {}, key: `k${m.id}`, createdAt: m.createdAt, error: null })
 
   it('shows in its channel as soon as the board answers it, before the stream brings it', async () => {
     const board = fakeBoard(() => [{ root: message(1), replies: [] }])

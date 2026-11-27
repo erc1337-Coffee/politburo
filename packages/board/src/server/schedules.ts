@@ -18,11 +18,10 @@ import { authorizePost, deploymentIdentity, type Identity, type WriteContext } f
 import type { WriteOrigin } from './origin.ts'
 import { DroppedError } from './middleware.ts'
 import { indexOf, ref, scheduleRef, viaOfRecord } from './feed.ts'
-import { waitUntil } from './wait-until.ts'
 import { storedPrincipal } from './registry.ts'
 import { ownedActor } from './actors.ts'
 
-/** Vercel Queues delays at most 6 days: a send further out than this goes in hops. */
+/** A send further out than this goes in hops: the scheduler delays a task at most this long at once. */
 export const MAX_HOP_MS = 5 * 86_400_000
 /** The shortest repeat, so a typo can't flood a thread. */
 export const MIN_EVERY_MS = 60_000
@@ -60,8 +59,7 @@ export type Schedule = {
   canceled: { by: Author; reason: 'canceled' | 'thread_deleted' | 'dropped' | 'revoked' } | null
 }
 
-/** `takeover`: the Vercel deployment that sends, the last to take over, and its event's index; null before any has. */
-export type SchedulesState = { byId: Record<string, Schedule>; takeover: { deployment: string; index: number } | null }
+export type SchedulesState = { byId: Record<string, Schedule> }
 
 /**
  * Who a schedule sends as: its creator, shown as its principal names it. One made before handles were
@@ -123,9 +121,6 @@ export function foldSchedules(state: SchedulesState, event: ScheduleEvent): Sche
       schedule.next = event.payload.next
       return state
     }
-    case 'schedule.takeover':
-      state.takeover = { deployment: event.payload.deployment, index: event.index }
-      return state
     default:
       return state
   }
@@ -136,7 +131,7 @@ const occurrence = (schedule: Schedule) => schedule.occurrence ?? schedule.sent
 export const schedulesReducer = reducer({
   contract: schedulesContract,
   name: 'board.schedules.v2',
-  initialState: { byId: {}, takeover: null } as SchedulesState,
+  initialState: { byId: {} } as SchedulesState,
 })
   .fold(foldSchedules)
 
@@ -219,16 +214,6 @@ export function createSchedules(options: { store?: A2Store | undefined; schedule
   let accessNow: AccessNow | null = null
   /** Posts as `identity`, through what every post does: the middleware too. */
   let send: Send | null = null
-  /** Vercel Queues delivers a timer only to the deployment that armed it, which runs its own code and access rules. */
-  const deployment = process.env.VERCEL_DEPLOYMENT_ID || null
-
-  /**
-   * Where this deployment's timers land: a session of its own on Vercel. A queue drains one session
-   * at a time, and Vercel Queues drains it on the deployment that appended to it, so an earlier
-   * deployment never drains the one that sends' timers, and can't drop them there.
-   */
-  const sends = deployment === null ? SCHEDULES_SESSION : `${SCHEDULES_SESSION}:${deployment}`
-
   /**
    * Arms send `n`, due at `at`: the whole way, or one hop toward it. A timer's name is its identity
    * in the queue, so arming the same send under the same name again adds nothing; only a hop's names
@@ -250,9 +235,6 @@ export function createSchedules(options: { store?: A2Store | undefined; schedule
     const { id, n, at } = ctx.event.payload
     const { state } = await session.state(schedulesReducer, { through: 'latest' })
     const schedule = state.byId[id]
-    // A later deployment armed this send itself when it took over, and decides it under the rules as they are now.
-    // The one that sends runs any timer that reaches it, whoever armed it: a scheduler that delivers to one URL brings them all here.
-    if (deployment !== null && state.takeover !== null && state.takeover.deployment !== deployment) return
     // This send went out, and an attempt before this one stopped short of arming the next: arm it now.
     if (schedule && ctx.attempt > 1 && occurrence(schedule) === n + 1 && schedule.next !== null) return arm('next', id, n + 1, schedule.next)
     // Canceled, done, or a stale timer for an occurrence already decided.
@@ -354,57 +336,20 @@ export function createSchedules(options: { store?: A2Store | undefined; schedule
     ...(options.scheduler ? { scheduler: options.scheduler } : {}),
     consumers: [arming, sending],
   })
-  const session = Object.assign(server.session(SCHEDULES_SESSION), { forSends: server.session(sends) })
+  const session = Object.assign(server.session(SCHEDULES_SESSION), { forSends: server.session(SCHEDULES_SESSION) })
   const scheduled = options.scheduler !== undefined
 
   /**
-   * Makes this deployment the one that sends, unless it already is, and arms every pending
-   * schedule's next send here, since the timers an earlier deployment armed only reach it. Each
-   * instance arms them again, under the same names, so one created on an earlier deployment
-   * after the takeover, or missed by a takeover that failed partway, still gets a timer here.
-   */
-  async function takeOver(): Promise<void> {
-    if (deployment === null) return
-    const read = await session.state(schedulesReducer)
-    let { state } = read
-    if (state.takeover?.deployment !== deployment) {
-      await session.append({
-        type: 'schedule.takeover',
-        payload: { deployment },
-        // Instances starting together take over once.
-        id: await idempotentId('board-schedule-takeover', deployment, String(read.index)),
-      })
-      state = (await session.state(schedulesReducer)).state
-    }
-    const since = state.takeover!.index
-    for (const schedule of Object.values(state.byId))
-      if (schedule.next !== null) await arm(`takeover-${since}`, schedule.id, occurrence(schedule), schedule.next)
-  }
-
-  /**
-   * The first call on an instance starts the arming catching up, and doesn't wait: on the first
-   * deploy with it, every schedule from before gets its next send armed here. The first call that
-   * isn't a queue's delivery takes schedules over too: a deployment nobody visits any more still
-   * gets its own timers, and those mustn't take schedules back from the one people reach.
+   * The first call on an instance starts the arming catching up, and doesn't wait: every schedule
+   * from before gets its next send armed here.
    */
   let catching: Promise<unknown> | null = null
-  let taking: Promise<unknown> | null = null
-  function catchUp(options: { takeOver: boolean }): void {
-    if (!scheduled) return
-    if (!catching) {
-      catching = session.consume(arming).catch((error: unknown) => {
-        console.warn('[board] schedules are not caught up:', (error as Error).message)
-        catching = null
-      })
-      waitUntil(catching)
-    }
-    if (options.takeOver && !taking) {
-      taking = takeOver().catch((error: unknown) => {
-        console.warn('[board] schedules are not taken over:', (error as Error).message)
-        taking = null
-      })
-      waitUntil(taking)
-    }
+  function catchUp(): void {
+    if (!scheduled || catching) return
+    catching = session.consume(arming).catch((error: unknown) => {
+      console.warn('[board] schedules are not caught up:', (error as Error).message)
+      catching = null
+    })
   }
 
   /** `visible`: which schedules the caller may see. */

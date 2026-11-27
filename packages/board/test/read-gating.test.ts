@@ -5,10 +5,7 @@ import { readableLinks } from '../src/server/feed.ts'
 import { foldSchedules } from '../src/server/schedules.ts'
 import { board as mount, type Middleware } from '../src/server/index.ts'
 import type { GrantInput } from '../src/api/routes.ts'
-import { slack } from '../src/sync/slack.ts'
-import { channels } from '../src/sync/fn.ts'
 import { BOARD_URL, caller, deploymentToken, personToken, PROJECT_ID, TEAM_ID, testBoard, workflowToken } from './harness.ts'
-import { fakePlatform } from './sync-fixtures.ts'
 import { fakeQueue } from './queue.ts'
 
 /** The front project's feedback intake: it starts threads in feedback/ and reads nothing. */
@@ -295,87 +292,6 @@ describe('links', () => {
     expect(readableLinks([{ ...link, message: 8 }], { access: compileAccess({ security: ['read'] }), channelOf })).toEqual([hidden])
   })
 
-  it('show nothing of it on any route', async () => {
-    const s = fakePlatform('slack')
-    const board = await granting([{ principals: [{ kind: 'project', project: 'prj_sync', environments: ['production'] }], can: { open: 'all', security: ['read'] } }], {
-      sync: { slack: slack({ adapter: s.adapter }, channels({ C2: 'security' })) },
-    })
-    const webhook = (body: unknown) =>
-      board.fetch(new Request(`${BOARD_URL}/webhooks/slack`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }))
-    const julian = caller(board.fetch, await personToken())
-    const secret = '1791322095.443859'
-    await webhook({ type: 'message', threadId: `slack:C2:${secret}`, id: secret, text: 'the key is hunter2', user: 'U_ADA', name: 'Ada' })
-    await vi.waitFor(async () => expect((await julian('GET', '/messages?channel=security')).body.messages).toHaveLength(1))
-    const [linked] = (await julian('GET', '/messages?channel=security')).body.messages
-    // A link to it with its snapshot, in a channel others read: a board's sync no longer makes one
-    // across channels, but a log can hold one from before, and a sync elsewhere that reads it can
-    // import one.
-    const permalink = `https://acme.slack.com/archives/C2/p${secret.replace('.', '')}`
-    const sync = caller(board.fetch, await deploymentToken('sync', 'prj_sync'))
-    expect((await sync('POST', '/watchers', { watch: {}, sync: [{ key: 'helpdesk', platform: 'slack' }] })).status).toBe(200)
-    const snapshot = { author: 'Ada', text: 'the key is hunter2', createdAt: null, files: [] }
-    const author = { id: 'helpdesk:user:U_JB', handle: 'jb', name: 'JB', avatar: null, isBot: false }
-    const imported = await sync('POST', '/sync/imports', { op: 'post', author, from: 'helpdesk', channel: 'open', text: `see ${permalink}`, links: [{ url: permalink, message: linked.id, snapshot, unavailable: null }] })
-    expect(imported.status).toBe(200)
-    expect((await julian('GET', '/messages?channel=open')).body.messages[0].links[0].snapshot.text).toBe('the key is hunter2')
-
-    const open = caller(board.fetch, await personToken(), { 'x-board-can': 'open=read' })
-    const hidden = { message: null, snapshot: null, unavailable: 'not_readable' }
-    const [message] = (await open('GET', '/messages?channel=open')).body.messages
-    expect(message.links[0], '/messages').toMatchObject(hidden)
-    expect((await open('GET', '/threads')).body.threads[0].message.links[0], '/threads').toMatchObject(hidden)
-    expect((await open('GET', `/messages/${message.id}`)).body.message.links[0], '/messages/:id').toMatchObject(hidden)
-    expect(JSON.stringify((await open('GET', '/events?after=0')).body.events), '/events').not.toContain('hunter2')
-  })
-})
-
-describe('sync', () => {
-  /** security/ mirrors Slack's C1, where a thread is already on the board; a workflow syncs in ci/ only. */
-  async function mirrored() {
-    const s = fakePlatform('slack')
-    const board = await granting([www({ 'ci/': ['read', 'post', 'sync'] })], {
-      sync: { slack: slack({ adapter: s.adapter }, channels({ C1: 'security' })) },
-    })
-    const webhook = (body: unknown) =>
-      board.fetch(new Request(`${BOARD_URL}/webhooks/slack`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }))
-    const julian = caller(board.fetch, await personToken())
-    await webhook({ type: 'message', threadId: 'slack:C1:100', id: '100', text: 'incident root', user: 'U_ADA' })
-    await vi.waitFor(async () => expect((await julian('GET', '/messages?channel=security')).body.messages).toHaveLength(1))
-    const [root] = (await julian('GET', '/messages?channel=security')).body.messages
-    return { s, webhook, julian, root, ci: caller(board.fetch, await workflowToken()) }
-  }
-
-  it('can’t take over a platform thread another thread is synced with', async () => {
-    const { webhook, julian, root, ci } = await mirrored()
-    const tap = (await ci('POST', '/messages', { channel: 'ci/x', text: 'tap' })).body.message.id
-    const taken = await ci('POST', `/messages/${tap}/sync`, { target: 'slack:C1:100' })
-    expect(taken).toMatchObject({ status: 409, body: { error: { code: 'already_synced', message: 'slack:C1:100 is already synced with another thread' } } })
-    expect((await ci('POST', '/messages', { channel: 'ci/y', text: 'tap', sync: ['slack:C1:100'] })).status).toBe(409)
-    // Someone who reads that thread learns which it is.
-    const mine = (await julian('POST', '/messages', { channel: 'dev', text: 'mine' })).body.message.id
-    expect((await julian('POST', `/messages/${mine}/sync`, { target: 'slack:C1:100' })).body.error.message).toBe(`slack:C1:100 is already synced with #${root.id}`)
-
-    await webhook({ type: 'message', threadId: 'slack:C1:100', id: '101', text: 'the secret reply', user: 'U_ADA' })
-    await vi.waitFor(async () => expect((await julian('GET', `/messages/${root.id}`)).body.replies.map((r: { text: string }) => r.text)).toEqual(['the secret reply']))
-    expect((await ci('GET', '/threads?channel=ci/')).body.threads.map((t: { message: { text: string } }) => t.message.text)).toEqual(['tap'])
-  })
-
-  it('doesn’t tell a caller that reads one channel where other threads sync', async () => {
-    const { julian, root, ci } = await mirrored()
-    expect((await julian('POST', `/messages/${root.id}/sync`, { target: 'slack:C9:900.1' })).body).toMatchObject({ attached: true })
-    const all = (await julian('GET', '/events?after=0&all=1')).body.events.map((event: { type: string }) => event.type)
-    expect(all).toContain('thread.synced')
-    await ci('POST', '/messages', { channel: 'ci/x', text: 'build' })
-    const events = (await ci('GET', '/events?after=0&all=1')).body.events
-    expect(events.map((event: { type: string }) => event.type)).toEqual(['message.posted'])
-  })
-
-  it('still attaches a thread to one no thread has', async () => {
-    const { ci } = await mirrored()
-    const tap = (await ci('POST', '/messages', { channel: 'ci/x', text: 'build' })).body.message.id
-    expect((await ci('POST', `/messages/${tap}/sync`, { target: 'slack:C9:900.1' })).body).toEqual({ target: 'slack:C9:900.1', attached: true })
-    expect((await ci('POST', `/messages/${tap}/sync`, { target: 'slack:C9:900.1' })).body).toEqual({ target: 'slack:C9:900.1', attached: false })
-  })
 })
 
 describe('one principal, two grants', () => {
@@ -490,38 +406,6 @@ describe('schedules', () => {
     expect(messages).toEqual([])
   })
 
-  it('are sent by the latest deployment, under the grants as they are then, even while an earlier one still gets their timers', async () => {
-    const store = memory()
-    const settle = () => new Promise((resolve) => setTimeout(resolve, 20))
-    const deploy = (id: string) => {
-      vi.stubEnv('VERCEL_DEPLOYMENT_ID', id)
-      const queue = fakeQueue()
-      const deployed = testBoard({ store, scheduler: queue.scheduler })
-      vi.unstubAllEnvs()
-      return { queue, board: deployed, fetch: deployed.fetch }
-    }
-    const before = deploy('dpl_before')
-    await before.board.createGrant(www({ ci: ['post'] }))
-    expect((await caller(before.fetch, await workflowToken())('POST', '/schedules', { channel: 'ci', text: 'nightly: green', in: '1h' })).status).toBe(201)
-    const after = deploy('dpl_after')
-    const julian = async (method: string, path: string) => caller(after.fetch, await personToken())(method, path)
-    await julian('GET', '/me')
-    await vi.waitFor(() => expect(after.queue.timers).toHaveLength(1))
-
-    // The earlier deployment's timer sends nothing, though its creator may still post: the later one took the schedules over.
-    vi.setSystemTime(T0 + 61 * 60_000)
-    await before.queue.fire()
-    await settle()
-    expect((await julian('GET', '/messages?channel=ci')).body.messages).toEqual([])
-
-    await setWww(after.board, { ci: ['read'] })
-    await after.queue.fire()
-    await vi.waitFor(async () =>
-      expect((await julian('GET', '/schedules?all=1')).body.schedules).toMatchObject([{ state: 'canceled', sent: 0, canceled: { reason: 'revoked' } }]),
-    )
-    expect((await julian('GET', '/messages?channel=ci')).body.messages).toEqual([])
-  })
-
   it('are canceled by their creator, or by manage', async () => {
     const queue = fakeQueue()
     const board = await granting([www({ ci: ['post', 'read'] })], { scheduler: queue.scheduler })
@@ -553,7 +437,7 @@ describe('schedules', () => {
     }
     const payload = { channel: 'ci', re: null, text: 'nightly', labels: {}, noSync: false, first: T0, every: null, until: null, times: null, as }
     const event = { index: 1, type: 'schedule.created', createdAt: T0, payload } as unknown as Parameters<typeof foldSchedules>[1]
-    const state = foldSchedules({ byId: {}, takeover: null }, event)
+    const state = foldSchedules({ byId: {} }, event)
     expect(structuredClone(state)).toEqual(state)
   })
 

@@ -1,5 +1,4 @@
 import { z } from 'zod'
-import { ArtifactRef, AttestationGate, Commit, EvidenceExpiry, EvidenceReason, Round, Verdict, type Gate } from '../contract/evidence.ts'
 import {
   ActorId,
   AttachmentId,
@@ -16,7 +15,6 @@ import {
   MessageText,
   Ref,
   SentText,
-  platformAvatar,
   storable,
   TASK_BATCH_MAX,
   EDITED_HOLD,
@@ -29,21 +27,17 @@ import {
 } from '../contract/schemas.ts'
 import { ConfigureChannelBody, RepositoriesQuery } from '../contract/channel-settings.ts'
 import { SetIdentityBody } from '../contract/identities.ts'
-import { ExternalAuthor, ExternalEvent, ExternalTarget, Link as LinkSchema, LINKS_PER_MESSAGE_MAX, MENTIONED_PER_MESSAGE_MAX, Origin } from '../contract/external.ts'
-import type { PublicBoardEvent } from '../contract/events.ts'
+import type { BoardEvent } from '../contract/events.ts'
 import { TaskBinding, TaskPacket } from '../contract/task-authority.ts'
 import type { Link } from '../contract/external.ts'
-import type { Actor, Channel, ExternalCopy, Message, Task } from '../contract/folds.ts'
+import type { Actor, Channel, Message, Task } from '../contract/folds.ts'
 import type { Via } from '../contract/profiles.ts'
 import type { AccessSummary, Permission, WrittenCan } from '../server/access.ts'
-import { controlRoutes, agentOpsRoutes, attentionRoutes, inviteRoutes, operationalInbox, taskAuthority, taskPriority } from './politburo-routes.ts'
+import { controlRoutes, attentionRoutes, taskAuthority, taskPriority } from './politburo-routes.ts'
 
 export { Ref }
 export { AttentionAnswerBody, AttentionDraft, AttentionReceipt, AttentionView, RequestAttentionBody } from '../contract/attention.ts'
-export type { AgentHealth, AgentIntent, AgentRole, AgentRun, IntentOutcome, IntentReceipt, IntentVerb } from '../contract/schemas.ts'
 
-export { ListOpsAgentsQuery, RegisterOpsAgentBody, OpsAgentGenerationBody, IssueOpsIntentBody, IssueOpsRoleIntentBody, ListOpsIntentsQuery, ReportOpsIntentBody } from './politburo-routes.ts'
-export type { RegisterOpsAgentInput, OpsAgentGenerationInput, Agent, AgentView, IssueOpsIntentInput, IssueOpsRoleIntentInput, ListOpsIntentsInput, OpsIntentsIssued, OpsIntentsPage } from './politburo-routes.ts'
 
 /** The message's `revision` as it was read: if it's been edited or deleted since, 409 `revision_conflict`. */
 const Revision = z.number().int().positive()
@@ -66,9 +60,6 @@ const LabelFilter = z
     return at === -1 ? ([value, null] as const) : ([value.slice(0, at), value.slice(at + 1).split('|')] as const)
   })
 
-/** A sync target as the board that syncs it resolved it: a platform channel to start a thread in, or a thread to join. */
-export const ResolvedSyncTarget = z.object({ target: ExternalTarget, kind: z.enum(['channel', 'thread']) })
-
 /** Shared by `/threads` and `/events`. */
 export const Filters = z.object({
   channel: z.string().optional(),
@@ -76,10 +67,7 @@ export const Filters = z.object({
   by: z.string().optional(),
   mentions: z.string().optional(),
   label: repeated.pipe(z.array(LabelFilter)).optional(),
-  /**
-   * Where messages came from: a sync key such as `slack`, or `board` for the board itself. On Vercel's board, another
-   * project's key is `<project>/<key>`, by its name (up to 100 characters) or its ID.
-   */
+  /** Where messages came from, as their `from` names it: `board` for the board itself. */
   from: z.string().min(1).max(165).optional(),
   /** Case-insensitive words the text contains. */
   text: z.string().min(1).max(200).optional(),
@@ -170,11 +158,6 @@ export const PostBody = z
     text: z.string().default(''),
     labels: NewLabels.optional(),
     noSync: z.boolean().optional(),
-    /**
-     * External targets a new thread starts with: `slack:#incidents`, `github:owner/repo:12`. The
-     * board that syncs a target resolves it to `{ target, kind }`, which a board elsewhere takes as is.
-     */
-    sync: z.array(z.union([z.string().min(3).max(300), ResolvedSyncTarget])).max(10).optional(),
     id: z.string().min(1).max(200).refine(storable, 'id has a NUL character or a lone surrogate').optional(),
     /** IDs from `POST /attachments`. */
     attachments: z.array(AttachmentId).optional(),
@@ -191,9 +174,6 @@ export const PostBody = z
   .refine((body) => (body.channel === undefined) !== (body.re === undefined), {
     message: 'a post needs `channel`; a reply needs `re`',
   })
-  .refine((body) => !(body.noSync && body.sync?.length), {
-    message: '`noSync` and `sync` contradict each other',
-  })
   .refine((body) => body.after === undefined || body.re !== undefined, {
     message: '`after` is for replies: it names the newest message in `re`\'s thread',
     path: ['after'],
@@ -203,10 +183,6 @@ export const PostBody = z
 const Duration = z.string().regex(/^\d+(\.\d+)?(s|m|h|d)$/, 'durations look like 30s, 30m, 12h, or 1d')
 const Instant = z.string().datetime({ offset: true })
 
-const { SendOperationalMessageBody, AckOperationalMessageBody, operationalInboxRoutes } = operationalInbox(Instant)
-export { SendOperationalMessageBody, AckOperationalMessageBody }
-export type SendOperationalMessageInput = z.input<typeof SendOperationalMessageBody>
-export type { OperationalRecipient, OperationalStatus, OperationalMessage } from './politburo-routes.ts'
 
 /**
  * A message to post later, as the caller: once (`in` or `at`), or repeating
@@ -419,14 +395,7 @@ export const ClaimReadyTaskBody = z.object({
 
 export const RenewTaskBody = z.object({ ...Claimed, lease: Lease.optional() })
 export const ReleaseTaskBody = z.object(Claimed)
-export const CompleteTaskBody = z.object({ ...Claimed, result: SentTaskNote.optional(), commit: Commit.optional() })
-// Must not end in a legacy route: older routers match path suffixes.
-export const completeWithEvidencePath = '/work/v1/tasks/:id/complete-with-evidence'
-export const CompleteWithEvidenceBody = CompleteTaskBody.required({ commit: true })
-export const SubmitWorkBody = z.strictObject({ ...Claimed, commit: Commit, artifactRef: ArtifactRef })
-export const RecordEvidenceBody = z.strictObject({ commit: Commit, round: Round, gate: AttestationGate, verdict: Verdict, artifactRef: ArtifactRef, expiresAt: EvidenceExpiry.optional() })
-export const OverrideEvidenceBody = z.strictObject({ commit: Commit, round: Round, gate: AttestationGate, reason: EvidenceReason, expiresAt: EvidenceExpiry })
-export const ResolveWorkEdgeBody = z.strictObject({ needId: Ref, evidenceId: Ref, ifVersion: Round })
+export const CompleteTaskBody = z.object({ ...Claimed, result: SentTaskNote.optional() })
 export const FailTaskBody = z.object({ ...Claimed, reason: SentTaskNote })
 /** A hold for a person. A claimed task's comes from its claim, with the claim's `epoch` and `token`. Kind `edited` is the board's own, so none asks for it. */
 export const BlockTaskBody = z
@@ -457,17 +426,12 @@ const Environments = z.array(z.string().min(1).max(100)).min(1).max(16)
 
 /**
  * Who a grant names, as people write it: a user by email (or, where the board can't look one up,
- * by ID), a project by name or ID, a repository by `owner/name`, an invitee by the id `join`
- * returned. The board resolves names and keeps IDs; a board that verifies tokens itself takes IDs
+ * by ID), a project by name or ID, a repository by `owner/name`. The board resolves names and keeps IDs; a board that verifies tokens itself takes IDs
  * only. A `user` names `email` or `userId`. Nothing else: a key it doesn't know (a misspelled
  * `workflows`, say) is a 400, never dropped, since dropping it would name more than was meant.
  */
 export const PrincipalInput = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('user'), email: z.string().min(3).max(320).optional(), userId: z.string().min(1).max(200).optional() }),
-  z.strictObject({
-    kind: z.literal('invitee'),
-    id: z.string().regex(/^joined:user:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, 'an invitee is the id join returned'),
-  }),
   // Its environments are where its deployments get in; a principal to remove leaves them out.
   z.strictObject({ kind: z.literal('project'), project: z.string().min(1).max(200), environments: Environments.optional() }),
   z.strictObject({
@@ -489,7 +453,6 @@ export const PrincipalInput = z.discriminatedUnion('kind', [
 /** What a grant lets its principals do: a map from channel pattern to `'all'` or a list, `[]` for none. Kept as written. */
 export const GrantCan = z.record(z.string().min(1).max(CHANNEL_PATTERN_MAX), CanGrant)
 
-export { INVITE_PERMISSIONS, CreateInviteBody, RedeemInviteBody } from './politburo-routes.ts'
 
 /**
  * Says to go ahead with a grant change its caller couldn't take back: one that takes their own
@@ -569,64 +532,15 @@ export const SchemaBody = z.strictObject({
   schema: z.record(z.string(), z.unknown()),
 })
 
-export const SyncBody = z.object({ target: z.string().min(3).max(300) })
-export const InboxQuery = z.object({
-  channel: z.string().optional(),
-  limit: z.coerce.number().int().min(1).max(500).optional(),
-})
-/** How many watchers one registration holds on the local engine, which matches every event against every tail. Vercel's API sets its own. */
+/** How many watchers one registration holds on the local engine, which matches every event against every tail. */
 export const REGISTERED_WATCHERS_MAX = 64
 
-/** What every registration carries: its watchers' tails, and its sync entries. */
-const Registering = z.object({
+/** What a board on `http()` registers with the board it uses: its watchers' tails, which pull their matches. */
+export const RegisterBody = z.object({
   // The IDs are checked one by one, so a bad one fails with what a misconfigured boot would.
   watch: z.record(z.string().max(100), z.object({ tail: z.string().max(1000) })),
-  /**
-   * Its sync entries: its sync subscribes too, to every post, change, and thread sync in the channels
-   * where it may sync, and the board lists the entries.
-   */
-  sync: z.array(z.object({ key: z.string().min(1).max(64), platform: z.string().min(1).max(64) })).max(32).optional(),
 })
-
-/**
- * What a board on `http()` registers with the board it uses: its watchers, and where to wake it,
- * at a URL or at a path on its own project, never both.
- */
-export const RegisterBody = z.union([
-  Registering.extend({
-    /** Without one, the board pulls on its own instead of being woken. */
-    url: z
-      .string()
-      .url()
-      .max(500)
-      .refine((url) => /^https:\/\//.test(url), 'wake-ups go over https')
-      .transform((url) => url.replace(/\/+$/, ''))
-      .nullable()
-      .optional(),
-    path: z.null({ error: 'register a url or a path, not both' }).optional(),
-    branch: z.null({ error: 'a branch goes with a path' }).optional(),
-  }),
-  Registering.extend({
-    url: z.null({ error: 'register a url or a path, not both' }).optional(),
-    /**
-     * Where to wake the caller on its own Vercel project, on a board whose discovery says
-     * `wake_by_path`. The board takes the project and environment from the caller's token and
-     * finds the deployment, so a project can only register itself, and anyone else gets 403
-     * `not_a_project`.
-     */
-    path: z
-      .string()
-      .max(300)
-      .regex(/^\/[^?#]*$/, 'a path starts with / and has no query or fragment')
-      .transform((path) => path.replace(/(.)\/+$/, '$1')),
-    /**
-     * From a preview: the branch whose latest ready preview is woken, since a token says which
-     * project and environment called but not which deployment. Production names none.
-     */
-    branch: z.string().min(1).max(255).nullable().optional(),
-  }),
-])
-/** A registration as a board on `http()` sends it: `{ url?, watch, sync? }` or `{ path, branch?, watch, sync? }`. */
+/** A registration as a board on `http()` sends it: `{ watch }`. */
 export type RegisterInput = z.input<typeof RegisterBody>
 
 /** A pull of the caller's matches: at most `limit`, waiting up to `wait` seconds for one. */
@@ -641,145 +555,6 @@ export const AckBody = z.object({
   error: z.string().min(1).max(500).optional(),
   skip: z.boolean().optional(),
 })
-
-/**
- * What to read from a platform without syncing it: a channel (`#name` or an ID),
- * a thread (`C0123:1727000000.123456`), or a message permalink (its thread).
- */
-export const SourceReadQuery = z.object({
-  target: z.string().min(1).max(4000),
-  limit: z.coerce.number().int().min(1).max(200).optional(),
-  /** Where the last read left off: its `next`. */
-  after: z.string().min(1).max(400).optional(),
-})
-
-/** A channel to add the board's app to, so it can be read on demand: `#name`, an ID, or a link into it. */
-export const SourceJoinBody = z.object({ target: z.string().min(1).max(4000) })
-
-/** A platform's link to a message or thread, such as a Slack permalink or a GitHub comment's URL. */
-export const LinkedQuery = z.object({ url: z.string().url().max(4000) })
-
-/** A sync entry's key: `slack`, `github`. */
-const SyncKey = z.string().min(1).max(64)
-
-/** A platform message an import changes, by its platform thread and ID; without a message, the root of the board thread the platform thread belongs to. */
-const ImportOrigin = z.object({ thread: ExternalTarget, message: z.string().min(1).max(300).optional() })
-
-/** A link as an import carries it: a board message it names is a ref. */
-const ImportLink = LinkSchema.extend({ message: Ref.nullable() })
-
-/**
- * A platform user, as sync names them to the board. Their avatar shows wherever they do, so one
- * that isn't an https URL is dropped, never refused: the write lands without it.
- */
-const PlatformUser = ExternalAuthor.extend({ avatar: z.string().nullable().transform(platformAvatar) })
-
-/**
- * Who wrote it on the platform, and the sync key it came through: null for a write a sync callback
- * makes as that user, which syncs out to every platform like one written on the board.
- */
-const Imported = { author: PlatformUser, from: SyncKey.nullable() }
-
-/**
- * The platform's users a text mentions as `@[<their id>]`. One the board hasn't met becomes known
- * to it, as one who wrote does: named, and seen where the message is. One the text doesn't mention
- * is left out.
- */
-const Mentioned = z.array(PlatformUser).max(MENTIONED_PER_MESSAGE_MAX).optional()
-
-/**
- * Where the platform event an import comes from is: its sync entry, platform channel, and thread.
- * The middleware is told, and answers there when it drops the write.
- */
-const ImportSource = z.object({ key: SyncKey, channel: ExternalTarget, thread: ExternalTarget })
-
-/** The message a change is about: by its platform IDs (`origin`), or by its board ID (`message`), one or the other. */
-const Changed = { origin: ImportOrigin.optional(), message: Ref.optional() }
-
-/**
- * A platform's write, as its platform author, with where it came from: only a caller with `sync` in
- * the channel it lands in may make one. Posts are idempotent by `id`, derived from the platform
- * event; every other op finds the message it changes from its `origin`.
- */
-export const SyncImportBody = z.discriminatedUnion('op', [
-  z.object({
-    op: z.literal('post'),
-    ...Imported,
-    /** Where it is on the platform. Null for a write a sync callback makes itself. */
-    origin: Origin.nullable().default(null),
-    source: ImportSource.optional(),
-    channel: ChannelPath.optional(),
-    re: Ref.optional(),
-    text: z.string().max(MESSAGE_TEXT_MAX).default(''),
-    labels: NewLabels.optional(),
-    noSync: z.boolean().optional(),
-    attachments: z.array(AttachmentId).max(ATTACHMENTS_PER_MESSAGE_MAX).optional(),
-    links: z.array(ImportLink).max(LINKS_PER_MESSAGE_MAX).optional(),
-    mentioned: Mentioned,
-    id: z.string().min(1).max(200).refine(storable, 'id has a NUL character or a lone surrogate').optional(),
-    /** A reply's precondition, as a post's: a sync callback's reply after the newest message it read. */
-    after: Ref.optional(),
-  }),
-  /** `revision`, as an edit's or a delete's: only if the message is still at it. */
-  z.object({ op: z.literal('edit'), ...Imported, ...Changed, text: MessageText, source: ImportSource.optional(), revision: Revision.optional(), mentioned: Mentioned }),
-  z.object({ op: z.literal('delete'), ...Imported, ...Changed, revision: Revision.optional() }),
-  z.object({ op: z.literal('react'), ...Imported, ...Changed, emoji: Emoji, remove: z.boolean().optional() }),
-  z.object({
-    op: z.literal('labels'),
-    ...Imported,
-    ...Changed,
-    set: NewLabels.optional(),
-    unset: z.array(LabelKey).optional(),
-    /** As a label write's: what the labels must be now, a value or null for none. */
-    if: z.record(LabelKey, LabelValue.nullable()).optional(),
-  }),
-  z.object({ op: z.literal('links'), ...Imported, ...Changed, links: z.array(ImportLink).max(LINKS_PER_MESSAGE_MAX) }),
-])
-
-const PlatformFiles = z.array(z.string().min(1).max(300)).max(ATTACHMENTS_PER_MESSAGE_MAX).nullable()
-
-/** What sync did on a platform, about a board message: it landed, its files did, it gave up, or its thread syncs with a target. */
-export const SyncReceiptBody = z.discriminatedUnion('kind', [
-  z.object({
-    kind: z.literal('message'),
-    message: Ref,
-    target: ExternalTarget,
-    external: z.object({ thread: ExternalTarget, message: z.string().min(1).max(300) }),
-    /** Its files, when they went with it: the platform's IDs, or null when it refused them. */
-    files: PlatformFiles.optional(),
-  }),
-  z.object({ kind: z.literal('files'), message: Ref, target: ExternalTarget, files: PlatformFiles }),
-  z.object({ kind: z.literal('failed'), message: Ref, target: ExternalTarget, error: z.string().min(1).max(500) }),
-  z.object({
-    kind: z.literal('thread'),
-    /** Any message in the thread. */
-    message: Ref,
-    target: ExternalTarget,
-    /** A channel to start a thread in, or a thread to join. */
-    targetKind: z.enum(['channel', 'thread']),
-    cause: z.enum(['config', 'request']),
-  }),
-])
-
-/** What sync looks up by platform ID: a thread or a message. */
-export const SyncFindQuery = z.object({
-  /** The post the caller's sync imported with this client ID. */
-  post: z.string().min(1).max(200).optional(),
-  thread: ExternalTarget.optional(),
-  /** With `thread`: the platform message in it. */
-  message: z.string().min(1).max(300).optional(),
-})
-export const SyncCopiesQuery = z.object({ message: repeated.pipe(z.array(Ref).min(1).max(100)) })
-
-/** Platform events for a sync key's inbox, each with the platform's own ID for it, which dedupes it. */
-/** The longest inbox event ID a board takes: Vercel's API refuses a longer one. */
-export const INBOX_EVENT_ID_MAX = 300
-export const InboxPushBody = z.object({
-  events: z.array(z.object({ id: z.string().min(1).max(INBOX_EVENT_ID_MAX), event: ExternalEvent, raw: z.unknown() })).min(1).max(50),
-})
-export const InboxNextQuery = z.object({ limit: z.coerce.number().int().min(1).max(50).optional() })
-export const InboxAckBody = z.object({ lease: z.string().min(1).max(64), error: z.string().min(1).max(500).optional() })
-
 
 /**
  * A direct upload, before its bytes: what the file will be called, its type, its exact size, and
@@ -797,8 +572,6 @@ export type UploadTicket = { id: string; url: string; headers: Record<string, st
 
 export const EditBody = z.object({ text: SentText, revision: Revision.optional() })
 export const DeleteBody = z.object({ revision: Revision.optional() }).optional()
-/** `status`: what Slack shows in place of "Typing…" (other platforms ignore it). */
-export const TypingBody = z.object({ status: z.string().trim().min(1).max(50).optional() }).optional()
 export const ReactBody = z.object({ emoji: Emoji, remove: z.boolean().optional() })
 /**
  * A channel to make before anything posts to it, and nothing else: a key it doesn't know is a 400,
@@ -831,9 +604,6 @@ export type CreateTasksInput = z.input<typeof CreateTasksBody>
 export type TasksQueryInput = z.input<typeof TasksQuery>
 export type ClaimReadyTaskInput = z.input<typeof ClaimReadyTaskBody>
 export type FiltersInput = z.input<typeof Filters>
-export type SyncImportInput = z.input<typeof SyncImportBody>
-export type SyncReceiptInput = z.input<typeof SyncReceiptBody>
-export type SyncFindInput = z.input<typeof SyncFindQuery>
 export type ChannelMessagesQueryInput = z.input<typeof ChannelMessagesQuery>
 export type ThreadQueryInput = z.input<typeof ThreadQuery>
 export type ChannelsQueryInput = z.input<typeof ChannelsQuery>
@@ -858,7 +628,6 @@ export type GrantCan = Readonly<Record<string, CanAt>>
 /** A grant, as a handle takes it: who it names, and what they may do. */
 export type GrantInput = { principals: readonly PrincipalInput[]; can: GrantCan }
 
-export type { CreateInviteInput, InviteView, CreatedInvite, Joined } from './politburo-routes.ts'
 /**
  * What a grant write takes beside its change. `lockMeOut` goes ahead with one you couldn't take
  * back: it takes your own `manage` at a pattern it names, and is 409 `grant_lockout` without it.
@@ -919,7 +688,6 @@ export type Explanation = {
 /** A principal as a grant keeps it: IDs, with the names the board knows beside them. */
 export type PrincipalView =
   | { kind: 'user'; userId: string; email: string | null }
-  | { kind: 'invitee'; id: string }
   | { kind: 'project'; projectId: string; name: string | null; environments: string[]; teamId: string | null }
   | { kind: 'github'; repositoryId: string | null; repository: string; workflow?: string; branch?: string; event?: string }
   | { kind: 'oidc'; issuer: string; claims: Record<string, string | string[]> }
@@ -963,7 +731,7 @@ export type SchemaView = {
  * owner's actors made it one (`by`, who changes it as its owner), what it waits for, and who holds
  * it until when. A claim's token shows nowhere but in the answer that made it.
  */
-export type TaskView = Omit<Task, 'needs' | 'claim' | 'priority' | 'attention' | 'evidence' | 'releases'> & {
+export type TaskView = Omit<Task, 'needs' | 'claim' | 'priority' | 'attention'> & {
   priority: TaskPriority
   /** The latest attention request, when the task has one. */
   attentionId?: string
@@ -1042,7 +810,7 @@ export type LinkView = Omit<Link, 'message'> & { message: string | null }
 
 /** An event's payload as clients see it: message IDs are refs, and a claim's `token` is left out. */
 type PayloadView<P> = {
-  [K in keyof P as K extends 'token' | 'needId' | 'evidenceId' ? never : K]: K extends 'id' | 're' | 'replyTo'
+  [K in keyof P as K extends 'token' ? never : K]: K extends 'id' | 're' | 'replyTo'
     ? P[K] extends number ? string : P[K] extends number | null ? string | null : P[K]
     : K extends 'links'
       ? LinkView[]
@@ -1054,7 +822,7 @@ type PayloadView<P> = {
 }
 
 /** A board event as subscribers get it. Checking `type` narrows `payload` to that event's. */
-export type BoardEventView = PublicBoardEvent extends infer E
+export type BoardEventView = BoardEvent extends infer E
   ? E extends { type: infer T; payload: infer P }
     ? {
         /** Where this event is in the board's order: pass it as `after` to read on from here. */
@@ -1084,71 +852,35 @@ const DiscoveryResponse = z.object({
   audience: z.string(),
   team_id: z.string().nullable(),
   project_id: z.string().nullable(),
-  sync: z.array(z.object({ key: z.string(), platform: z.string() })),
-  wake_by_path: z.boolean().optional(),
   workLifecycle: z.literal(1).optional(),
   accessFence: z.literal(1).optional(),
   accessFenceScope: z.literal('process').optional(),
   task_authority: z.boolean().optional(),
   task_attention: z.literal(true).optional(),
-  agent_ops: z.literal(true).optional(),
-  agent_intents: z.literal(true).optional(),
-  politburo: z.literal(1).optional(),
 })
 
 export type Discovery = z.infer<typeof DiscoveryResponse> & {
   /**
-   * The board's name, where boards have one: a team's board in Vercel's API (`General`, the default's).
-   * A handle on one says it, for a UI to show which board it's on; `GET /` on a board never does.
+   * The board's name, where a board has one. A handle on one says it, for a UI to show which board
+   * it's on; `GET /` on a board never does.
    */
   name?: string
-  /** The board's sync entries: `key` names its webhook and inbox, `platform` is e.g. `slack`. */
-  sync: { key: string; platform: string }[]
-  /**
-   * Whether `POST /watchers` takes a `path`: the board wakes the caller's own Vercel project there,
-   * through its Deployment Protection. A board that can't find a project's deployments leaves it out.
-   */
-  wake_by_path?: boolean
-  workEvidence?: { version: 1; gates: Gate[]; releaseDependencies: boolean }
   /** True when the board enforces bound claims, parking, and handoffs. */
   task_authority?: boolean
   /** Whether this board is configured to keep structured task attention requests. */
   task_attention?: true
-  /** This board opts into the fork's agent registry. */
-  agent_ops?: true
-  /** Advertises command intents and run health. `agent_ops` alone only advertises the registry. */
-  agent_intents?: true
   /** Read from `X-Board-Task-Claim-Hold`, not the discovery JSON. */
   task_claim_hold?: true
 }
 
-/**
- * Watchers a board on `http()` registered here: one registration per principal, woken at a URL
- * or at a path on its own project, never both.
- */
+/** Watchers a board on `http()` registered here: one registration per principal, which pulls its matches. */
 export type RegistrationView = {
   /** The principal that registered. Its watchers write as it, with their IDs as profiles. */
   owner: string
   watch: Record<string, { tail: string }>
-  /** Its sync entries. With any, its sync gets every event it delivers to platforms, as matches of watcher `@sync`. */
-  sync: { key: string; platform: string }[]
-  /** Every wake-up carries it, so the board can tell its registration is stale. */
+  /** What tells the board its registration is stale. */
   hash: string
-} & (
-  | {
-      /** Where it's woken: `<url>/wake`. `null` when it pulls on its own. */
-      url: string | null
-      path?: undefined
-      branch?: undefined
-    }
-  | {
-      url: null
-      /** Where it's woken on its own Vercel project, on a board with `wake_by_path`. */
-      path: string
-      /** The branch whose latest ready preview a preview's `path` wakes. */
-      branch?: string
-    }
-)
+}
 
 /** One match, leased to the registrant that pulled it. */
 export type MatchView = {
@@ -1179,30 +911,6 @@ export type Me = {
   can: AccessSummary
 }
 
-/** A thread's sync: its root, where it lives, its targets, and the platform thread it is on each. */
-export type SyncThreadView = { thread: string; root: string; channel: string; targets: string[]; external: Record<string, string> }
-/** What a platform ID is on the board. Each answers only when it was asked. */
-export type SyncFindView = {
-  /** The board thread a platform thread belongs to. */
-  thread: string | null
-  /** The board message a platform message is a copy of, or came in as. */
-  message: string | null
-}
-/** A message's copies, by target: where it went, or came from, on each platform. */
-export type SyncCopiesView = { copies: Record<string, Record<string, ExternalCopy>> }
-/** A platform event pulled from the caller's inbox, leased to it until it acks. */
-export type InboxItem = {
-  id: string
-  key: string
-  /** The platform thread: its events come one at a time, in order. */
-  thread: string
-  lease: string
-  /** How many tries came before this one. */
-  attempt: number
-  event: z.infer<typeof ExternalEvent>
-  raw: unknown
-}
-
 /**
  * A channel, and what its board counts in it: its threads, its messages, and its last message's
  * position. `local()` keeps all three; Vercel's API keeps none, so a board on it leaves them out.
@@ -1211,26 +919,6 @@ export type ChannelView = { path: string } & Partial<Omit<Channel, 'path'>>
 /** A page of channels. `next` reads the page after it, as `after`: null when this is the last. `cursor` is where the board is now. */
 export type ChannelsPage = { channels: ChannelView[]; cursor: string; next: string | null }
 export type MessagesPage = { messages: MessageView[]; cursor: string }
-/**
- * Where a message's thread is synced: each target, the platform thread it is there, and this
- * message's copy, with the platform's link to it when the sync that knows the platform runs here.
- */
-export type SyncedView = {
-  targets: {
-    /** As the thread's sync records it: `slack:C0123ABC`, `github:acme/www:12`. */
-    target: string
-    /** The sync entry it belongs to: `slack`. */
-    key: string
-    /** The platform thread this message's copy is in, or the one the target is, once it has one. */
-    thread: string | null
-    /** This message's copy there, by the platform's ID: null when it has none. */
-    message: string | null
-    url: string | null
-    /** Why the message didn't reach it, when it didn't. */
-    undelivered: string | null
-  }[]
-}
-
 export type ThreadView = {
   message: MessageView
   replies: MessageView[]
@@ -1258,60 +946,12 @@ export type ThreadsPage = {
 export type TasksPage = { tasks: ThreadSummaryView[]; cursor: string }
 export type EventsPage = { events: BoardEventView[]; cursor: string }
 
-/** The platform threads that now show typing: those the thread is synced to, minus any that failed. */
-export type TypingResult = { targets: string[] }
-
-/** A platform message read on demand: nothing about it is stored on the board. */
-export type SourceMessage = {
-  /** The platform's message ID (Slack's `ts`). */
-  id: string
-  /** The thread it's in, as a target `vb sources <key> read` reads: `C0123:1727000000.123456`. */
-  thread: string
-  author: string
-  text: string
-  createdAt: string | null
-  /** Replies under it, when it starts a thread. */
-  replies: number
-  files: { name: string; url: string | null }[]
-}
-
-/** A channel or thread read from a platform, oldest message first. */
-export type SourceRead = {
-  /** The channel's ID, and its name when the platform gave one. */
-  channel: string
-  name: string | null
-  /** Set when a thread was read. */
-  thread: string | null
-  messages: SourceMessage[]
-  /** The platform has more than `limit`: older messages in a channel, later replies in a thread. */
-  more: boolean
-  /** Where to pick up, as `after`, when the platform can page past `limit`. */
-  next?: string | null
-}
-
-/** A channel the board's app joined, or was already in (`joined: false`). */
-export type SourceJoin = {
-  channel: string
-  name: string | null
-  joined: boolean
-}
-
 /** A failure: `code` to branch on, `message` to read, and `hint`, when the board knows one, for what fixes it. */
 export type ApiError = { error: { code: string; message: string; hint?: string } }
 
-/** A raw platform event, as `GET /inbox/:key` returns it. */
-export type InboxEntry = {
-  id: string
-  channel: string
-  createdAt: string
-  sync: string
-  event: { kind: string; thread: string; [field: string]: unknown }
-  raw: unknown
-}
-
 /** The route table: method, path, and the schemas that validate input. */
 export const routes = {
-  /** Where the board is, its project, and its sync entries. No token. */
+  /** Where the board is, and its project. No token. */
   discovery: { method: 'GET', path: '/', response: DiscoveryResponse },
   me: { method: 'GET', path: '/me' },
   ...controlRoutes,
@@ -1336,20 +976,11 @@ export const routes = {
   delete: { method: 'POST', path: '/messages/:id/delete', body: DeleteBody },
   react: { method: 'POST', path: '/messages/:id/reactions', body: ReactBody },
   label: { method: 'POST', path: '/messages/:id/labels', body: LabelBody },
-  /** Attaches the thread to a sync target, recording a `thread` receipt: needs `sync` where the thread is. */
-  sync: { method: 'POST', path: '/messages/:id/sync', body: SyncBody },
-  /** Where the message's thread is synced, and its copy on each target: needs `read` where it is. */
-  synced: { method: 'GET', path: '/messages/:id/sync' },
-  /** The board message a platform link names, from what the board synced: 404 `message_not_found` for one it didn't, or that the caller can't read. */
-  linked: { method: 'GET', path: '/links', query: LinkedQuery },
-  /** Ephemeral: shows typing in the thread's synced platform threads, and writes nothing to the log. Needs `post` where the thread is. */
-  typing: { method: 'POST', path: '/messages/:id/typing', body: TypingBody },
   /** Posts a message later, as the caller: needs a scheduler. */
   schedule: { method: 'POST', path: '/schedules', body: ScheduleBody },
   schedules: { method: 'GET', path: '/schedules', query: SchedulesQuery },
   /** Its creator, or manage in its channel, may cancel a schedule. Canceling one that's done is a no-op. */
   cancelSchedule: { method: 'POST', path: '/schedules/:id/cancel' },
-  ...agentOpsRoutes,
   /** Tasks, oldest first: open ones unless `state` says otherwise. */
   tasks: { method: 'GET', path: '/tasks', query: TasksQuery },
   /** Starts a thread as a task (`post` there, and `label` for its labels), or makes the thread `re` roots one (`label` there). */
@@ -1384,11 +1015,6 @@ export const routes = {
   setTaskNeeds: { method: 'POST', path: '/tasks/:id/needs', body: TaskNeedsBody },
   ...taskPriorityRoutes,
   cancelTask: { method: 'POST', path: '/tasks/:id/cancel', body: CancelTaskBody },
-  workEvidence: { method: 'GET', path: '/work/v1/tasks/:id/evidence' },
-  submitWork: { method: 'POST', path: '/work/v1/tasks/:id/submit', body: SubmitWorkBody },
-  recordEvidence: { method: 'POST', path: '/work/v1/tasks/:id/evidence', body: RecordEvidenceBody },
-  overrideEvidence: { method: 'POST', path: '/work/v1/tasks/:id/override', body: OverrideEvidenceBody },
-  resolveWorkEdge: { method: 'POST', path: '/work/v1/tasks/:id/resolve', body: ResolveWorkEdgeBody },
   /** Listing grants needs manage at `*`; changing one, manage at each pattern its `can` names. Team owners always may. */
   grants: { method: 'GET', path: '/grants' },
   createGrant: { method: 'POST', path: '/grants', body: GrantBody },
@@ -1398,7 +1024,6 @@ export const routes = {
   /** Which grant decides a channel, for the caller or, with `manage` at `*`, a principal it names. */
   explain: { method: 'GET', path: '/grants/explain', query: ExplainQuery },
   revokeGrant: { method: 'POST', path: '/grants/:id/revoke', body: RevokeGrantBody },
-  ...inviteRoutes,
   /** Every schema: the built-ins, then the board's own. Anyone the board lets in reads them. */
   schemas: { method: 'GET', path: '/schemas' },
   /** One schema version, by `name@version`. */
@@ -1407,30 +1032,6 @@ export const routes = {
   createSchema: { method: 'POST', path: '/schemas', body: SchemaBody },
   /** The caller's own post with the client ID it gave: what `POST /messages` answered, for telling a retry before posting. */
   posted: { method: 'GET', path: '/posts/:id' },
-  ...operationalInboxRoutes,
-  /** Raw platform events in a sync key's inbox, newest first: the caller's own, and the board's with `sync` everywhere. */
-  inbox: { method: 'GET', path: '/inbox/:key', query: InboxQuery },
-  /** Pushes platform events into the caller's inbox for a sync key, deduplicated by their platform IDs. */
-  inboxPush: { method: 'POST', path: '/inbox/:key', body: InboxPushBody },
-  /** The caller's next inbox events, leased to it, one platform thread at a time and in order. */
-  inboxNext: { method: 'GET', path: '/inbox/:key/next', query: InboxNextQuery },
-  /** How one went: done, or an error to try it again. */
-  inboxAck: { method: 'POST', path: '/inbox/:key/:id/ack', body: InboxAckBody },
-  /** A platform's write, as its platform author: `sync` where it lands. */
-  syncImport: { method: 'POST', path: '/sync/imports', body: SyncImportBody },
-  /** What sync did on a platform: a delivery, its files, a failure, or a thread's new target. */
-  syncReceipt: { method: 'POST', path: '/sync/receipts', body: SyncReceiptBody },
-  /** A board thread's sync, by its key. */
-  syncThread: { method: 'GET', path: '/sync/threads/:thread' },
-  /** What platform IDs are on the board. */
-  syncFind: { method: 'GET', path: '/sync/find', query: SyncFindQuery },
-  /** Messages' copies on platforms. */
-  syncCopies: { method: 'GET', path: '/sync/copies', query: SyncCopiesQuery },
-  /** Reads a platform channel or thread on demand, where that sync runs, without syncing or storing it. Full access only. */
-  readSource: { method: 'GET', path: '/sources/:key/read', query: SourceReadQuery },
-  /** Adds the app to a public channel so it can be read, where that sync runs and opted in with `join`. Full access only. */
-  joinSource: { method: 'POST', path: '/sources/:key/join', body: SourceJoinBody },
-  webhook: { method: 'POST', path: '/webhooks/:key' },
   events: { method: 'GET', path: '/events', query: EventsQuery },
   avatar: { method: 'GET', path: '/avatars/:name' },
   /** The file is the body; `content-type` is its type and `x-board-filename` its name, URI-encoded. */

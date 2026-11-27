@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Politburo · Orchestrator</title>
+<link rel="stylesheet" href="assets/politburo.css">
+</head>
+<body>
+<nav>
+  <a class="brand" href="index.html"><img src="assets/politburo-emblem.png" alt="">Politburo</a>
+  <div class="group">System</div>
+  <a href="index.html">Overview</a>
+  <a href="task-lifecycle.html">Task lifecycle</a>
+  <a href="deployment.html">Deployment</a>
+  <div class="group">Services</div>
+  <a href="board.html">Board</a>
+  <a href="orchestrator.html">Orchestrator</a>
+  <a href="relay.html">Relay</a>
+  <a href="worker.html">Worker</a>
+</nav>
+<main>
+<h1>Orchestrator</h1>
+<p class="lead">Takes ready tasks from the board, runs each attempt in a Claude cloud session through the relay, decides after every round and publishes the work.</p>
+
+<dl class="facts">
+  <dt>Package</dt><dd><code>packages/orchestrator</code> · <code>@remilia/politburo-orchestrator</code></dd>
+  <dt>Runs</dt><dd>Container <code>orchestrator</code>, <code>node packages/orchestrator/src/cli.ts serve --config /config/orchestrator.yaml</code></dd>
+  <dt>Listens</dt><dd><code>127.0.0.1:4780</code>, read-only status. All other connections are outbound.</dd>
+  <dt>State</dt><dd><code>/orchestrator</code> volume: <code>state.sqlite</code>, launch journal, repositories, signing key</dd>
+  <dt>Commands</dt><dd><code>serve</code>, <code>check</code>, <code>status [--json]</code>, <code>idle --reason</code>, <code>routes [--party]</code></dd>
+</dl>
+
+<h2>Main loop</h2>
+<p>All work runs on one serial chain: ticks and relay telemetry never run at the same time. Wake requests that arrive while a tick waits are merged into it.</p>
+<figure class="schematic">
+<svg viewBox="0 0 1000 330" role="img" aria-label="Wake sources and the steps of one tick">
+  <rect class="zone" x="10" y="30" width="250" height="285" rx="8"/><text class="zone-label" x="22" y="22">Wake sources</text>
+  <rect class="zone" x="300" y="30" width="690" height="285" rx="8"/><text class="zone-label" x="312" y="22">Serial chain · one tick</text>
+  <g class="node" id="w-board"><rect x="30" y="50" width="210" height="44" rx="4"/><text class="title" x="42" y="70">Board events</text><text class="detail" x="42" y="86">long poll · retry after 5 s</text></g>
+  <g class="node" id="w-sweep"><rect x="30" y="110" width="210" height="44" rx="4"/><text class="title" x="42" y="130">Sweep</text><text class="detail" x="42" y="146">every sweep_seconds (30)</text></g>
+  <g class="node" id="w-timer"><rect x="30" y="170" width="210" height="44" rx="4"/><text class="title" x="42" y="190">Timer</text><text class="detail" x="42" y="206">lease · token · watchdog due</text></g>
+  <g class="node" id="w-telemetry"><rect x="30" y="250" width="210" height="44" rx="4"/><text class="title" x="42" y="270">Relay telemetry</text><text class="detail" x="42" y="286">one SSE stream per attempt</text></g>
+  <g class="node" id="t-status"><rect x="320" y="50" width="200" height="44" rx="4"/><text class="title" x="332" y="70">1 · Board status</text><text class="detail" x="332" y="86">reachable? paused? epoch</text></g>
+  <g class="node" id="t-outbox"><rect x="560" y="50" width="200" height="44" rx="4"/><text class="title" x="572" y="70">2 · Flush outbox</text><text class="detail" x="572" y="86">queued commands, in order</text></g>
+  <g class="node" id="t-maintain"><rect x="780" y="50" width="195" height="44" rx="4"/><text class="title" x="792" y="70">3 · Maintain</text><text class="detail" x="792" y="86">leases · tokens · watchdogs</text></g>
+  <g class="node" id="t-admit"><rect x="780" y="150" width="195" height="44" rx="4"/><text class="title" x="792" y="170">4 · Admit</text><text class="detail" x="792" y="186">claim ready tasks if not paused</text></g>
+  <g class="node" id="t-timer"><rect x="560" y="150" width="200" height="44" rx="4"/><text class="title" x="572" y="170">5 · Reschedule</text><text class="detail" x="572" y="186">next timer, ≥ 100 ms</text></g>
+  <g class="node key" id="t-telemetry"><rect x="320" y="250" width="440" height="44" rx="4"/><text class="title" x="332" y="270">Telemetry handler</text><text class="detail" x="332" y="286">validate · heartbeat · progress · question · bundle part · result</text></g>
+  <polyline class="link board" id="e-board" points="240,72 280,72 280,72 320,72"/>
+  <polyline class="link" id="e-sweep" points="240,132 290,132 290,80 320,80"/>
+  <polyline class="link" id="e-timer" points="240,192 300,192 300,88 320,88"/>
+  <polyline class="link telemetry" id="e-telemetry" points="240,272 320,272"/>
+  <polyline class="link" id="e-1" points="520,72 560,72"/>
+  <polyline class="link" id="e-2" points="760,72 780,72"/>
+  <polyline class="link" id="e-3" points="877,94 877,150"/>
+  <polyline class="link" id="e-4" points="780,172 760,172"/>
+</svg>
+<script type="application/json" class="steps">[
+  {"text": "A new board event, the sweep interval, a due timer or the start of the service requests a tick.", "links": ["e-board", "e-sweep", "e-timer"], "label": "wake", "nodes": ["w-board", "w-sweep", "w-timer"]},
+  {"text": "The tick reads the board status. An unreachable board ends the tick with a <code>board</code> fault; the next wake tries again.", "links": [], "nodes": ["t-status"]},
+  {"text": "Relay commands wait in the SQLite outbox and are posted in order. The first failure stops the flush, so order is kept.", "links": ["e-1"], "label": "flush", "kind": "command", "nodes": ["t-outbox"]},
+  {"text": "Each live attempt gets its lease renewed, its worker token renewed, its question checked for a reply and its watchdog applied. A paused board stops every attempt.", "links": ["e-2"], "label": "maintain", "nodes": ["t-maintain"]},
+  {"text": "When the board is not paused, ready tasks are claimed up to the limits.", "links": ["e-3"], "label": "admit", "nodes": ["t-admit"]},
+  {"text": "The timer is set to the earliest due time of all live attempts.", "links": ["e-4"], "label": "timer", "nodes": ["t-timer"]},
+  {"text": "Telemetry is not a tick: each relay event runs its handler on the same chain, between ticks.", "links": ["e-telemetry"], "label": "event", "kind": "telemetry", "nodes": ["w-telemetry", "t-telemetry"]}
+]</script>
+</figure>
+
+<h2>Admission</h2>
+<p>Candidates are all <code>ready</code> tasks of all channels. Tasks with a live attempt are skipped. Order: priority (<code>urgent</code>, <code>high</code>, <code>normal</code>, <code>low</code>, <code>lowest</code>), then task number.</p>
+<table>
+  <tr><th>Limit</th><th>Setting</th><th>Default</th></tr>
+  <tr><td>Live attempts in total</td><td><code>admission.live_attempts</code></td><td>2</td></tr>
+  <tr><td>Live attempts per channel</td><td><code>admission.per_channel</code></td><td>1</td></tr>
+  <tr><td>Live attempts per repository</td><td><code>admission.per_repository</code></td><td>1</td></tr>
+  <tr><td>Attempts per task</td><td><code>limits.attempts_per_task</code></td><td>2</td></tr>
+</table>
+<h3>Plan of an attempt</h3>
+<ul>
+  <li><b>Repository.</b> The channel's repository setting, which must be a <code>https://github.com/owner/name</code> URL. A channel without one uses its local repository <code>local:&lt;channel&gt;</code>, made on first use with one empty commit on <code>main</code>.</li>
+  <li><b>Model routes.</b> The party file's routes (<code>tiers.models.sprite.routes</code>). When the channel enables routes, only those are used, in party order.</li>
+  <li><b>Base.</b> GitHub: the default branch head. Local: <code>main</code>.</li>
+  <li><b>Claim.</b> <code>tasks.claim</code> with a lease of <code>board.lease_seconds</code> (900 s), renewed every third of it.</li>
+</ul>
+<p>A task that cannot start gets one status reply <code>not started. &lt;reason&gt;</code>: the repository is not on github.com, the channel enables no party route, or all attempts are used.</p>
+
+<h2>Attempt states</h2>
+<figure class="schematic">
+<svg viewBox="0 0 1100 400" role="img" aria-label="Attempt state machine">
+  <g class="state" id="s-claimed"><rect x="30" y="60" width="130" height="36"/><text x="95" y="83" text-anchor="middle">claimed</text></g>
+  <g class="state" id="s-launching"><rect x="200" y="60" width="130" height="36"/><text x="265" y="83" text-anchor="middle">launching</text></g>
+  <g class="state" id="s-awaiting"><rect x="370" y="60" width="150" height="36"/><text x="445" y="83" text-anchor="middle">awaiting_contact</text></g>
+  <g class="state" id="s-running"><rect x="570" y="60" width="130" height="36"/><text x="635" y="83" text-anchor="middle">running</text></g>
+  <g class="state" id="s-deciding"><rect x="780" y="60" width="130" height="36"/><text x="845" y="83" text-anchor="middle">deciding</text></g>
+  <g class="state" id="s-waiting"><rect x="570" y="190" width="130" height="36"/><text x="635" y="213" text-anchor="middle">waiting_answer</text></g>
+  <g class="state" id="s-publishing"><rect x="780" y="190" width="130" height="36"/><text x="845" y="213" text-anchor="middle">publishing</text></g>
+  <g class="state" id="s-uncertain"><rect x="200" y="190" width="130" height="36"/><text x="265" y="213" text-anchor="middle">uncertain</text></g>
+  <g class="state" id="s-stopping"><rect x="570" y="330" width="130" height="36"/><text x="635" y="353" text-anchor="middle">stopping</text></g>
+  <g class="state terminal" id="s-settled"><rect x="780" y="330" width="130" height="36"/><text x="845" y="353" text-anchor="middle">settled</text></g>
+
+  <polyline class="link command" id="a-launch" points="160,78 200,78"/>
+  <polyline class="link external" id="a-launched" points="330,78 370,78"/>
+  <polyline class="link telemetry" id="a-contact" points="520,78 570,78"/>
+  <polyline class="link telemetry" id="a-result" points="700,78 780,78"/>
+  <polyline class="link telemetry" id="a-question" points="615,96 615,190"/>
+  <polyline class="link command" id="a-answer" points="655,190 655,96"/>
+  <polyline class="link command" id="a-instruct" points="845,60 845,32 635,32 635,60"/>
+  <polyline class="link result" id="a-publish" points="845,96 845,190"/>
+  <polyline class="link external" id="a-published" points="845,226 845,330"/>
+  <polyline class="link command" id="a-stop" points="700,90 735,90 735,300 670,300 670,330"/>
+  <polyline class="link" id="a-lost" points="700,348 780,348"/>
+  <polyline class="link result" id="a-settle" points="910,78 950,78 950,348 910,348"/>
+  <polyline class="link" id="a-unclear" points="265,96 265,190"/>
+  <text class="link-label" x="738" y="26">instruct · next round</text>
+  <text class="link-label" x="955" y="200">complete · retry</text>
+  <text class="link-label" x="955" y="214">fail · hold · review</text>
+  <text class="link-label" x="742" y="250">watchdog</text>
+  <text class="link-label" x="742" y="264">pause · faults</text>
+  <text class="link-label" x="275" y="150">launch unclear</text>
+  <text class="link-label" x="275" y="164">restart while launching</text>
+  <text class="link-label" x="853" y="285">PR or merge</text>
+  <text class="link-label" x="708" y="342">no result</text>
+</svg>
+<script type="application/json" class="steps">[
+  {"text": "The task is claimed. The attempt gets a relay channel <code>task-N-aK-xxxxxxxx</code>, the branch <code>claude/task-N</code> and a worker token.", "states": ["s-claimed"]},
+  {"text": "<code>start</code> is queued for the relay, then the launch directory is prepared and <code>claude --cloud</code> runs.", "links": ["a-launch"], "label": "start", "kind": "command", "states": ["s-launching"]},
+  {"text": "The launcher printed a session id. The attempt waits for the worker's first message, at most <code>contact_timeout_seconds</code> (900 s).", "links": ["a-launched"], "label": "session", "kind": "external", "states": ["s-awaiting"]},
+  {"text": "The first valid telemetry message arrives. Silence longer than 5 heartbeats (300 s) starts the stop.", "links": ["a-contact"], "label": "heartbeat", "kind": "telemetry", "states": ["s-running"]},
+  {"text": "Pi asks a question. It is posted in the task thread; the first reply of a person goes back as <code>answer</code>. Limit: <code>question_wait_seconds</code> (3600 s).", "links": ["a-question", "a-answer"], "label": "question", "kind": "telemetry", "states": ["s-waiting"]},
+  {"text": "The round ends with a <code>result</code>. The orchestrator records usage, assembles the bundle and decides.", "links": ["a-result"], "label": "result", "kind": "telemetry", "states": ["s-deciding"]},
+  {"text": "Failing checks or a RETRY decision start the next round in the same session, up to <code>rounds_per_attempt</code> (3).", "links": ["a-instruct"], "label": "instruct", "kind": "command", "states": ["s-running"]},
+  {"text": "Work with changes is published: push and draft PR, or merge into the channel's local <code>main</code>. The task completes.", "links": ["a-publish", "a-published"], "label": "publish", "kind": "result", "states": ["s-publishing", "s-settled"]},
+  {"text": "No change needed, retry, fail, hold or REVIEW settle the attempt directly.", "links": ["a-settle"], "label": "settle", "kind": "result", "states": ["s-settled"]},
+  {"text": "A watchdog, a paused board or three invalid messages send <code>stop</code>. Without a result after <code>stop_grace_seconds</code> (300 s) the attempt is lost: a new attempt starts, or the task fails.", "links": ["a-stop", "a-lost"], "label": "stop", "kind": "command", "states": ["s-stopping", "s-settled"]},
+  {"text": "A launch whose result is unknown, or a restart during a launch, is never relaunched. The task waits for a person.", "links": ["a-unclear"], "label": "unknown", "states": ["s-uncertain"]}
+]</script>
+</figure>
+
+<table>
+  <tr><th>Watchdog</th><th>Due</th><th>Default</th></tr>
+  <tr><td>First contact</td><td>launch + <code>watchdog.contact_timeout_seconds</code></td><td>900 s</td></tr>
+  <tr><td>Silence</td><td>last contact + <code>heartbeat_seconds</code> × <code>missed_heartbeats</code></td><td>60 s × 5</td></tr>
+  <tr><td>Question</td><td>question + <code>watchdog.question_wait_seconds</code></td><td>3600 s</td></tr>
+  <tr><td>Wall clock</td><td>attempt start + <code>limits.attempt_wall_minutes</code></td><td>120 min</td></tr>
+  <tr><td>Stop grace</td><td>stop + <code>watchdog.stop_grace_seconds</code></td><td>300 s</td></tr>
+  <tr><td>Lease renewal</td><td>every <code>board.lease_seconds</code> / 3</td><td>300 s</td></tr>
+  <tr><td>Worker token renewal</td><td>expiry − <code>tokens.worker_ttl_seconds</code> / 2</td><td>30 min before expiry</td></tr>
+</table>
+
+<h2>Decision after a round</h2>
+<figure class="schematic">
+<svg viewBox="0 0 1000 210" role="img" aria-label="Decision flow after a worker round">
+  <g class="node" id="d-result"><rect x="20" y="60" width="140" height="60" rx="4"/><text class="title" x="32" y="82">Result</text><text class="detail" x="32" y="102">bundle verified</text></g>
+  <g class="node" id="d-rules"><rect x="190" y="60" width="140" height="60" rx="4"/><text class="title" x="202" y="82">Fixed rules</text><text class="detail" x="202" y="102">next step</text></g>
+  <g class="node" id="d-limits"><rect x="360" y="60" width="140" height="60" rx="4"/><text class="title" x="372" y="82">Limits</text><text class="detail" x="372" y="102">rounds · attempts · $</text></g>
+  <g class="node key" id="d-kev"><rect x="530" y="60" width="140" height="60" rx="4"/><text class="title" x="542" y="82">Kev</text><text class="detail" x="542" y="102">confidence ≥ 0.75</text></g>
+  <g class="node key" id="d-claude"><rect x="700" y="60" width="140" height="60" rx="4"/><text class="title" x="712" y="82">Claude</text><text class="detail" x="712" y="102">label + text</text></g>
+  <g class="node" id="d-effect"><rect x="870" y="60" width="115" height="60" rx="4"/><text class="title" x="882" y="82">Effect</text><text class="detail" x="882" y="102">board · relay</text></g>
+  <polyline class="link telemetry" id="f-1" points="160,90 190,90"/>
+  <polyline class="link" id="f-2" points="330,90 360,90"/>
+  <polyline class="link result" id="f-3" points="500,90 530,90"/>
+  <polyline class="link result" id="f-4" points="670,90 700,90"/>
+  <polyline class="link result" id="f-5" points="840,90 870,90"/>
+  <polyline class="link" id="f-direct" points="430,120 430,170 927,170 927,120"/>
+  <polyline class="link result" id="f-sure" points="600,60 600,30 927,30 927,60"/>
+  <text class="link-label" x="440" y="190">decision layer off, or not a completed round</text>
+  <text class="link-label" x="610" y="22">PASS or REVIEW, sure</text>
+</svg>
+<script type="application/json" class="steps">[
+  {"text": "The <code>result</code> arrives. Parts are joined; byte count and SHA-256 must match, else there is no bundle.", "links": ["f-1"], "label": "result", "kind": "telemetry", "nodes": ["d-result", "d-rules"]},
+  {"text": "Fixed rules choose <code>complete</code>, <code>publish</code>, <code>instruct</code>, <code>retry</code> or <code>fail</code>. Limits can turn the step into <code>retry</code> or <code>fail</code>.", "links": ["f-2"], "label": "step", "nodes": ["d-limits"]},
+  {"text": "Without <code>KEV_URL</code> and <code>ORCHESTRATOR_DECISION_MODEL</code>, or after a round that did not complete, the step is applied as it is.", "links": ["f-direct"], "label": "step", "nodes": ["d-effect"]},
+  {"text": "Otherwise Kev classifies the round from short facts. A sure PASS or REVIEW is final.", "links": ["f-3", "f-sure"], "label": "PASS", "kind": "result", "nodes": ["d-kev", "d-effect"]},
+  {"text": "When Kev is unsure, or text is needed, Claude decides: PASS, FOLLOWUP with new tasks, RETRY with a correction, or REVIEW.", "links": ["f-3", "f-4", "f-5"], "label": "FOLLOWUP", "kind": "result", "nodes": ["d-claude", "d-effect"]}
+]</script>
+</figure>
+
+<h3>Fixed rules, in order</h3>
+<table>
+  <tr><th>Round end</th><th>Step</th></tr>
+  <tr><td><code>completed</code>, all checks pass, no file changed</td><td><code>complete</code>: the worker's answer is the result</td></tr>
+  <tr><td><code>completed</code>, all checks pass, files changed</td><td><code>publish</code></td></tr>
+  <tr><td><code>completed</code> or <code>failed</code>, a check fails</td><td><code>instruct</code>: next round with the check output (last 1500 characters each)</td></tr>
+  <tr><td><code>failed</code>, no failing check</td><td><code>retry</code>: new attempt</td></tr>
+  <tr><td><code>stopped</code></td><td><code>fail</code></td></tr>
+  <tr><td><code>timeout</code>, <code>idle</code>, <code>lost_contact</code>, <code>token_expired</code>, <code>worker_error</code></td><td><code>retry</code></td></tr>
+</table>
+<h3>Limits</h3>
+<ul>
+  <li><code>publish</code> without a head commit or a verified bundle becomes <code>retry</code>.</li>
+  <li><code>instruct</code> at the round limit, over the wall time or over budget becomes <code>retry</code> while attempts remain and the budget holds, else <code>fail</code>.</li>
+  <li><code>retry</code> at the attempt limit or over budget becomes <code>fail</code>.</li>
+  <li>Task cost is the sum of the worker-reported <code>cost_usd</code> of all attempts. Budget: <code>limits.task_budget_usd</code> (10).</li>
+</ul>
+
+<h3>Final decision</h3>
+<p>Runs when <code>KEV_URL</code> or <code>ORCHESTRATOR_DECISION_MODEL</code> is set, the round <code>completed</code>, and the step is <code>publish</code>, <code>complete</code>, or <code>instruct</code> because of failing checks.</p>
+<table>
+  <tr><th>Label</th><th>Effect</th></tr>
+  <tr><td><b>PASS</b></td><td>The fixed-rules step is applied: publish or complete.</td></tr>
+  <tr><td><b>FOLLOWUP</b></td><td>The step is applied. After a publish, merge or completion, up to 3 new tasks are created in the same channel, labelled <code>politburo.followup_of</code> and <code>politburo.followup_depth</code>. Not offered at depth <code>decision.followup_depth</code> (3).</td></tr>
+  <tr><td><b>RETRY</b></td><td>Next round with Claude's correction as the instruction, within the limits. Not offered when no round is left.</td></tr>
+  <tr><td><b>REVIEW</b></td><td>Work with changes is kept (draft PR, or the task branch of the local repository with <code>main</code> unchanged). The task is put on hold for a person.</td></tr>
+</table>
+<ul>
+  <li><b>Kev.</b> <code>POST &lt;KEV_URL&gt;/v1/systemone</code> with the brief (1200 characters), the worker summary (1800), the change counts and the check results. Its PASS or REVIEW is final at confidence ≥ <code>decision.kev_confidence</code> (0.75). Timeout 120 s; an error counts as no answer.</li>
+  <li><b>Claude.</b> <code>claude --print --model $ORCHESTRATOR_DECISION_MODEL</code> without tools, with a JSON schema: label, reason, correction (for RETRY), follow-ups (for FOLLOWUP). Kev's answer is passed as first opinion. Timeout 300 s; a failure gives REVIEW.</li>
+  <li><b>No Claude.</b> Kev unsure gives REVIEW. No Kev and no Claude gives PASS.</li>
+  <li><b>After failing checks.</b> No round left gives REVIEW. Otherwise Claude chooses RETRY or REVIEW; without Claude the check output becomes the correction.</li>
+</ul>
+<p>The decision is stored as the task label <code>politburo.decision</code> and shown in the thread as a <code>final_decision@1</code> block. A task that fails, is held or is lost without a model decision gets REVIEW by the rules.</p>
+
+<h2>Publishing</h2>
+<p>Bundle checks: SHA-1 head and base, <code>git bundle verify</code>, fetch of <code>claude/task-N</code> into a staging ref, fetched head equals the reported head, base is an ancestor of head.</p>
+<table>
+  <tr><th></th><th>GitHub repository</th><th>Channel without repository</th></tr>
+  <tr><td>Where</td><td>Bare mirror <code>repositories/&lt;owner&gt;__&lt;name&gt;.git</code></td><td><code>channel_repositories/&lt;channel&gt;.git</code></td></tr>
+  <tr><td>Action</td><td>Push <code>claude/task-N</code> (no force) with <code>GITHUB_TOKEN</code>, then open a draft PR into the default branch, or reuse the open one</td><td>Fast-forward <code>main</code>, or a merge commit when the merge has no conflict</td></tr>
+  <tr><td>Task result</td><td>Completed with the PR URL</td><td>Completed with the summary and the new <code>main</code> commit</td></tr>
+  <tr><td>Hold</td><td>Push or PR error, or a closed PR for the branch</td><td>Merge conflict: the work stays on <code>claude/task-N</code></td></tr>
+</table>
+
+<h2>Thread output</h2>
+<ul>
+  <li><b>Round report.</b> One reply per round with a <code>worker_activity@1</code> block: thinking, tool calls, output, messages, errors and warnings (newest 60), then the changes, the checks and the worker's answer. Edited at most every 5 s while the round runs.</li>
+  <li><b>Status lines.</b> Short replies labelled <code>politburo.status=orchestrator</code>: attempt started, round sent, PR opened, merged, lost, failed.</li>
+  <li><b>Questions.</b> Pi's question is posted as a status line. The first reply of a person after it is the answer.</li>
+</ul>
+
+<h2>Status server</h2>
+<p><code>127.0.0.1:4780</code>, GET only. The board's operations page reads it through its own server.</p>
+<table>
+  <tr><th>Route</th><th>Content</th></tr>
+  <tr><td><code>/state</code></td><td>Board reachability and pause, orchestrator status, relay latency and statistics, live and recent attempts with round, watchdog due time, cost and PR URL</td></tr>
+  <tr><td><code>/events</code></td><td>SSE of operations events: tick, command, telemetry, board, github, launch, attempt, fault, usage, decision. No message content. Kept in memory: 2000 events, 200 per attempt.</td></tr>
+  <tr><td><code>/attempts/&lt;id&gt;/events</code></td><td>The kept events of one attempt</td></tr>
+</table>
+
+<h2>Spend ledger</h2>
+<p>Each round's <code>result.models</code> rows go to <code>/ledger/ledger.sqlite</code>: provider, model, input and output tokens, and the worker-reported cost in USD. The board's usage view reads this file.</p>
+
+<h2 id="configuration">Configuration</h2>
+<p><code>/config/orchestrator.yaml</code>, merged over defaults. Unknown keys are refused.</p>
+<table>
+  <tr><th>Key</th><th>Default</th></tr>
+  <tr><td><code>state_directory</code></td><td><code>/orchestrator</code></td></tr>
+  <tr><td><code>board_profile</code></td><td><code>orchestrator</code></td></tr>
+  <tr><td><code>party_file</code></td><td>none: one default route</td></tr>
+  <tr><td><code>sweep_seconds</code></td><td>30</td></tr>
+  <tr><td><code>relay.signing_key_file</code></td><td><code>/orchestrator/keys/relay_signing_key.pem</code></td></tr>
+  <tr><td><code>board.lease_seconds</code></td><td>900</td></tr>
+  <tr><td><code>admission.live_attempts</code> · <code>per_channel</code> · <code>per_repository</code></td><td>2 · 1 · 1</td></tr>
+  <tr><td><code>limits.rounds_per_attempt</code> · <code>attempts_per_task</code></td><td>3 · 2</td></tr>
+  <tr><td><code>limits.attempt_wall_minutes</code> · <code>task_budget_usd</code></td><td>120 · 10</td></tr>
+  <tr><td><code>tokens.worker_ttl_seconds</code> · <code>orchestrator_ttl_seconds</code></td><td>3600 · 900</td></tr>
+  <tr><td><code>watchdog.heartbeat_seconds</code> · <code>missed_heartbeats</code></td><td>60 · 5</td></tr>
+  <tr><td><code>watchdog.contact_timeout_seconds</code> · <code>stop_grace_seconds</code> · <code>question_wait_seconds</code></td><td>900 · 300 · 3600</td></tr>
+  <tr><td><code>worker.launcher</code></td><td><code>[claude, --cloud]</code></td></tr>
+  <tr><td><code>worker.pi_model</code></td><td><code>fallback/codex-cursor</code></td></tr>
+  <tr><td><code>worker.max_seconds</code> · <code>idle_seconds</code></td><td>2400 · 180</td></tr>
+  <tr><td><code>worker.progress_mode</code></td><td><code>events</code></td></tr>
+  <tr><td><code>worker.checks</code></td><td>none; list of <code>{name, command, timeout_seconds}</code></td></tr>
+  <tr><td><code>github.api_url</code></td><td><code>https://api.github.com</code></td></tr>
+  <tr><td><code>ledger.file</code> · <code>ledger.party</code></td><td><code>/ledger/ledger.sqlite</code> · <code>default</code></td></tr>
+  <tr><td><code>operations.port</code> · <code>relay_statistics_seconds</code></td><td>4780 · 5</td></tr>
+  <tr><td><code>decision.kev_confidence</code> · <code>followup_depth</code></td><td>0.75 · 3</td></tr>
+  <tr><td><code>decision.kev_timeout_seconds</code> · <code>claude_timeout_seconds</code></td><td>120 · 300</td></tr>
+</table>
+<p>Environment only: <code>RELAY_URL</code> (https), <code>KEV_URL</code>, <code>ORCHESTRATOR_DECISION_MODEL</code>, <code>GITHUB_TOKEN</code>, and the provider credentials passed to workers: <code>CLAUDE_CODE_OAUTH_TOKEN</code> for <code>claude-cli</code> routes, <code>&lt;PROVIDER&gt;_API_KEY</code> for others.</p>
+
+<h2>Failures</h2>
+<table>
+  <tr><th>Failure</th><th>Result</th></tr>
+  <tr><td>Configuration or party file invalid</td><td><code>check</code> fails; the container serves only the status with the reason</td></tr>
+  <tr><td>Board unreachable</td><td>Tick ends; next wake tries again</td></tr>
+  <tr><td>Relay unreachable</td><td>Commands stay in the outbox; the stream reconnects with backoff up to 60 s</td></tr>
+  <tr><td>Lease lost</td><td><code>stop</code>; attempt settled as <code>claim_lost</code></td></tr>
+  <tr><td>Brief over 60 KiB</td><td>Task put on hold</td></tr>
+  <tr><td>Launch result unknown, restart during launch</td><td>Attempt <code>uncertain</code>; task put on hold</td></tr>
+  <tr><td>Invalid telemetry three times</td><td><code>stop</code></td></tr>
+  <tr><td>Bundle incomplete or digest mismatch</td><td>Publish becomes retry</td></tr>
+  <tr><td>Push, PR or merge error</td><td>Task put on hold</td></tr>
+  <tr><td>Kev or Claude error</td><td>Kev: ignored. Claude: REVIEW</td></tr>
+</table>
+</main>
+<script src="assets/schematic.js"></script>
+</body>
+</html>

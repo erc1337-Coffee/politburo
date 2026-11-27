@@ -1,11 +1,10 @@
-// The projection of landed rows used by the spike. Optional fields cover the held
-// work-evidence and staged-work revisions without depending on their reducers.
+// The projection of landed rows used by the spike. Optional fields cover staged-work
+// revisions without depending on their reducers.
 export type Fact = {
   type: string
   id?: string
   principal?: string
   epoch?: number
-  round?: number
   until?: number
   needs?: string[]
   waiting?: boolean
@@ -36,13 +35,12 @@ export function checkLeases(history: readonly Batch[]) {
     // A takeover's task.expired must not hide a live lease in the same append.
     const beforeBatch = new Map(leases)
     for (const fact of facts) {
-      const { id, type, epoch, round } = fact
+      const { id, type, epoch } = fact
       if (id === undefined) continue
-      if (['task.renewed', 'task.work_submitted', 'task.released', 'task.completed'].includes(type)) {
+      if (['task.renewed', 'task.released', 'task.completed'].includes(type)) {
         const lease = leases.get(id)
-        const proof = type === 'task.work_submitted' ? round : epoch
-        if (!lease || proof !== lease.epoch || at >= lease.until)
-          violations.push(`I1 ${type} #${id} proof ${proof} landed at ${at}; prior epoch/until ${lease?.epoch}/${lease?.until}`)
+        if (!lease || epoch !== lease.epoch || at >= lease.until)
+          violations.push(`I1 ${type} #${id} proof ${epoch} landed at ${at}; prior epoch/until ${lease?.epoch}/${lease?.until}`)
       }
       if (type === 'task.claimed' && [beforeBatch.get(id), leases.get(id)].some((lease) => lease && at < lease.until))
         violations.push(`I2 ${type} #${id} landed while a prior lease was live at ${at}`)

@@ -1,10 +1,9 @@
-// What a CLI run that failed says, as data: the CLI renders it, and so can the CLI that runs board's
-// (`vercel board`), in its own layout. The shape is the Vercel CLI's (its guide's "Errors and
-// Warnings" and "Machine Output"), so both say the same thing about the same failure.
+// What a CLI run that failed says, as data: the CLI renders it, and so can a CLI that runs board's,
+// in its own layout, so both say the same thing about the same failure.
 
 /**
  * What kind of failure it is, which fixes the exit code: 2 for `usage` and `missing_input`, 130
- * for `canceled`, and 1 for the rest, `timeout` included, as the Vercel CLI's waits exit.
+ * for `canceled`, and 1 for the rest, `timeout` included.
  */
 export type FailureClass =
   | 'usage'
@@ -21,7 +20,7 @@ export type FailureClass =
   | 'canceled'
   | 'unknown'
 
-/** One way out: what to do, and the command that does it, whole (`['vb', 'read', 'dev', '--scope', '<TEAM>']`). */
+/** One way out: what to do, and the command that does it, whole (`['vb', 'read', 'dev', '--url', '<URL>']`). */
 export type Recovery = { instruction: string; argv?: string[] }
 
 export type Failure = {

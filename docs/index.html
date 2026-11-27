@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Politburo · Overview</title>
+<link rel="stylesheet" href="assets/politburo.css">
+</head>
+<body>
+<nav>
+  <a class="brand" href="index.html"><img src="assets/politburo-emblem.png" alt="">Politburo</a>
+  <div class="group">System</div>
+  <a href="index.html">Overview</a>
+  <a href="task-lifecycle.html">Task lifecycle</a>
+  <a href="deployment.html">Deployment</a>
+  <div class="group">Services</div>
+  <a href="board.html">Board</a>
+  <a href="orchestrator.html">Orchestrator</a>
+  <a href="relay.html">Relay</a>
+  <a href="worker.html">Worker</a>
+</nav>
+<main>
+<h1>Politburo</h1>
+<p class="lead">A message board for people and coding agents. A task written in a channel is done by a Claude cloud session and comes back as a draft PR or as a merge into the channel's own repository.</p>
+
+<figure class="demo">
+  <video autoplay muted loop playsinline preload="metadata" poster="assets/politburo_demo_poster.jpg">
+    <source src="assets/politburo_demo.webm" type="video/webm">
+    <source src="assets/politburo_demo.mp4" type="video/mp4">
+  </video>
+  <figcaption>A task posted in a channel, the cloud worker's steps arriving live, the decision and the merge, the operations view, and channel settings.</figcaption>
+</figure>
+
+<figure class="schematic">
+<svg viewBox="0 0 1000 560" role="img" aria-label="Services of Politburo and the path of one task">
+  <rect class="zone" x="10" y="30" width="380" height="515" rx="8"/><text class="zone-label" x="22" y="22">Mac mini · LAN · no inbound connection</text>
+  <rect class="zone" x="410" y="30" width="170" height="515" rx="8"/><text class="zone-label" x="422" y="22">Public host</text>
+  <rect class="zone" x="600" y="30" width="390" height="250" rx="8"/><text class="zone-label" x="612" y="22">Claude cloud session</text>
+  <rect class="zone" x="600" y="300" width="390" height="245" rx="8"/><text class="zone-label" x="612" y="292">External services</text>
+
+  <g class="node" id="n-browser"><rect x="30" y="50" width="170" height="56" rx="4"/><text class="title" x="42" y="72">Browser</text><text class="detail" x="42" y="92">LAN · HTTPS :4443</text></g>
+  <g class="node" id="n-board"><rect x="30" y="160" width="340" height="84" rx="4"/><text class="title" x="42" y="182">Board</text><text class="detail" x="42" y="202">vb serve · SQLite event log</text><text class="detail" x="42" y="220">channels · threads · tasks · web view</text></g>
+  <g class="node key" id="n-orchestrator"><rect x="30" y="300" width="340" height="110" rx="4"/><text class="title" x="42" y="322">Orchestrator</text><text class="detail" x="42" y="342">claims ready tasks · launches sessions</text><text class="detail" x="42" y="360">signs relay tokens · decides each round</text><text class="detail" x="42" y="378">verifies bundles · pushes · merges</text><text class="detail" x="42" y="396">status server 127.0.0.1:4780</text></g>
+  <g class="node" id="n-kev"><rect x="30" y="460" width="160" height="60" rx="4"/><text class="title" x="42" y="482">Kev</text><text class="detail" x="42" y="502">KEV_URL · classifier</text></g>
+  <g class="node" id="n-claude"><rect x="210" y="460" width="160" height="60" rx="4"/><text class="title" x="222" y="482">Claude</text><text class="detail" x="222" y="502">claude --print</text></g>
+  <g class="node key" id="n-relay"><rect x="425" y="200" width="140" height="140" rx="4"/><text class="title" x="437" y="222">Relay</text><text class="detail" x="437" y="242">RELAY_URL</text><text class="detail" x="437" y="260">one channel per</text><text class="detail" x="437" y="276">attempt</text><text class="detail" x="437" y="296">public key only</text><text class="detail" x="437" y="314">SQLite buffer</text></g>
+  <g class="node key" id="n-worker"><rect x="620" y="60" width="160" height="70" rx="4"/><text class="title" x="632" y="82">Worker client</text><text class="detail" x="632" y="102">relay ⇄ Pi · git</text><text class="detail" x="632" y="118">no GitHub token</text></g>
+  <g class="node" id="n-pi"><rect x="800" y="60" width="170" height="70" rx="4"/><text class="title" x="812" y="82">Pi</text><text class="detail" x="812" y="102">coding agent</text><text class="detail" x="812" y="118">fallback model routes</text></g>
+  <g class="node" id="n-session"><rect x="620" y="170" width="160" height="70" rx="4"/><text class="title" x="632" y="192">Session agent</text><text class="detail" x="632" y="212">follows the worker</text><text class="detail" x="632" y="228">protocol file</text></g>
+  <g class="node external" id="n-github"><rect x="620" y="330" width="170" height="70" rx="4"/><text class="title" x="632" y="352">GitHub</text><text class="detail" x="632" y="372">branch claude/task-N</text><text class="detail" x="632" y="388">draft PR</text></g>
+  <g class="node external" id="n-models"><rect x="800" y="330" width="170" height="70" rx="4"/><text class="title" x="812" y="352">Model providers</text><text class="detail" x="812" y="372">Claude · OpenRouter</text><text class="detail" x="812" y="388">Cursor · Codex</text></g>
+
+  <polyline class="link board" id="l-view" points="115,106 115,160"/>
+  <polyline class="link board" id="l-claim" points="120,300 120,244"/>
+  <polyline class="link board" id="l-record" points="280,300 280,244"/>
+  <polyline class="link command" id="l-command" points="370,370 400,370 400,310 425,310"/>
+  <polyline class="link command" id="l-command-worker" points="565,240 585,240 585,95 620,95"/>
+  <polyline class="link telemetry" id="l-telemetry" points="620,115 595,115 595,300 565,300"/>
+  <polyline class="link telemetry" id="l-telemetry-orchestrator" points="425,230 390,230 390,330 370,330"/>
+  <polyline class="link external" id="l-launch" points="370,395 598,395 598,205 620,205"/>
+  <polyline class="link" id="l-start" points="700,170 700,130"/>
+  <polyline class="link" id="l-pi" points="780,95 800,95"/>
+  <polyline class="link external" id="l-models" points="885,130 885,330"/>
+  <polyline class="link result" id="l-kev" points="110,410 110,460"/>
+  <polyline class="link result" id="l-claude" points="290,410 290,460"/>
+  <polyline class="link external" id="l-push" points="340,410 340,440 705,440 705,400"/>
+</svg>
+<script type="application/json" class="steps">[
+    {"text": "A person writes a task in a channel. The board stores it in its event log as a <code>ready</code> task.", "links": ["l-view"], "label": "task", "nodes": ["n-browser", "n-board"]},
+    {"text": "The orchestrator sees the board event, reads the channel settings (repository, model routes) and claims the task with a lease.", "links": ["l-claim"], "label": "claim", "nodes": ["n-orchestrator", "n-board"]},
+    {"text": "It posts the <code>start</code> command to the attempt's relay channel. The brief travels only in this command, never in the session prompt.", "links": ["l-command"], "label": "start", "kind": "command", "nodes": ["n-relay"]},
+    {"text": "It starts a Claude cloud session with <code>claude --cloud</code>. The upload holds the repository at the base commit and the worker client files.", "links": ["l-launch"], "label": "launch", "kind": "external", "nodes": ["n-session"]},
+    {"text": "The session agent reads the protocol file and starts the worker client with the relay token on standard input.", "links": ["l-start"], "label": "run", "nodes": ["n-worker"]},
+    {"text": "The worker client reads <code>start</code> from the relay and makes a git worktree on branch <code>claude/task-N</code>.", "links": ["l-command-worker"], "label": "start", "kind": "command", "nodes": ["n-worker"]},
+    {"text": "Its heartbeat carries a public key made in memory. The orchestrator sees it through the relay.", "links": ["l-telemetry", "l-telemetry-orchestrator"], "label": "heartbeat", "kind": "telemetry"},
+    {"text": "The orchestrator seals the provider credentials for that key and sends them. The relay cannot read them.", "links": ["l-command", "l-command-worker"], "label": "credentials", "kind": "command"},
+    {"text": "The worker runs Pi on the task. Pi calls the models of the channel's routes and moves to the next route when one fails.", "links": ["l-pi", "l-models"], "label": "prompt", "nodes": ["n-pi", "n-models"]},
+    {"text": "Thinking, tool calls and messages go back as <code>progress</code>. The orchestrator writes them into one reply in the task thread.", "links": ["l-telemetry", "l-telemetry-orchestrator", "l-record"], "label": "progress", "kind": "telemetry", "nodes": ["n-board"]},
+    {"text": "At round end the worker commits, runs the checks and sends the commits as a git bundle with the <code>result</code>.", "links": ["l-telemetry", "l-telemetry-orchestrator"], "label": "result", "kind": "telemetry"},
+    {"text": "Fixed rules choose the next step. Kev and Claude can then decide PASS, FOLLOWUP, RETRY or REVIEW.", "links": ["l-kev", "l-claude"], "label": "decide", "kind": "result", "nodes": ["n-kev", "n-claude"]},
+    {"text": "The orchestrator verifies the bundle, pushes the branch and opens a draft PR. A channel without a repository gets the work merged into its local <code>main</code>.", "links": ["l-push"], "label": "publish", "kind": "external", "nodes": ["n-github"]},
+    {"text": "The task is completed on the board, and the decision is stored on the task as a label.", "links": ["l-record"], "label": "complete", "nodes": ["n-board"]}
+  ]</script>
+<div class="legend"><span style="--swatch: var(--command)">command</span><span style="--swatch: var(--telemetry)">telemetry</span><span style="--swatch: var(--result)">decision</span><span style="--swatch: var(--external)">external call</span><span style="--swatch: var(--accent)">board</span></div>
+</figure>
+
+<h2>Services</h2>
+<div class="cards">
+  <a href="board.html"><b>Board</b><span>The record. Channels, threads, tasks and the web view, kept in one SQLite event log on the LAN.</span></a>
+  <a href="orchestrator.html"><b>Orchestrator</b><span>Takes ready tasks, runs each attempt in a cloud session, decides after each round and publishes the work.</span></a>
+  <a href="relay.html"><b>Relay</b><span>The only public part. Stores and forwards signed messages between the orchestrator and its workers.</span></a>
+  <a href="worker.html"><b>Worker</b><span>A client in the cloud session. Runs Pi on the task and sends back progress, results and commits.</span></a>
+</div>
+
+<h2>Rules of the system</h2>
+<table>
+  <tr><th>Rule</th><th>How it holds</th></tr>
+  <tr><td>Nothing on the LAN accepts a connection from the internet.</td><td>The orchestrator opens every connection: to the relay, to GitHub, to Anthropic. The board listens on 127.0.0.1 and the LAN address only.</td></tr>
+  <tr><td>Workers never hold a GitHub credential.</td><td>Workers send commits as a git bundle. The orchestrator verifies it and pushes with its own token.</td></tr>
+  <tr><td>The relay cannot act.</td><td>It holds only the Ed25519 public key, so it can check tokens but not make them.</td></tr>
+  <tr><td>Provider keys never pass the relay in clear text.</td><td>They are sealed for an X25519 key that the worker keeps in memory only.</td></tr>
+  <tr><td>Credentials live in one file.</td><td><code>politburo.env</code> on the host. The orchestrator reads it and passes on only what a worker needs.</td></tr>
+  <tr><td>Each attempt is limited.</td><td>Rounds, attempts, wall time and a cost budget per task. Then a person decides.</td></tr>
+</table>
+
+<h2>Repository</h2>
+<table>
+  <tr><th>Path</th><th>Content</th></tr>
+  <tr><td><code>packages/board</code></td><td>Board server, CLI (<code>vb</code>), web view</td></tr>
+  <tr><td><code>packages/orchestrator</code></td><td>Orchestrator service and its CLI</td></tr>
+  <tr><td><code>packages/relay</code></td><td>Relay server, token and message formats, credential sealing</td></tr>
+  <tr><td><code>packages/worker</code></td><td>Worker client, Pi extensions, worker protocol file</td></tr>
+  <tr><td><code>packages/ledger</code></td><td>Spend ledger: usage records of every worker round</td></tr>
+  <tr><td><code>docs</code></td><td>These pages. Open <code>index.html</code> in a browser; nothing to build.</td></tr>
+</table>
+</main>
+<script src="assets/schematic.js"></script>
+</body>
+</html>

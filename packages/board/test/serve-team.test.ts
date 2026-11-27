@@ -32,8 +32,6 @@ beforeEach(async () => {
   // Fresh client config. The CLI inherits no login and cannot launch a browser.
   env = { HOME: dir, XDG_CONFIG_HOME: join(dir, 'config'), PATH: dir }
   vi.stubEnv('XDG_CONFIG_HOME', env.XDG_CONFIG_HOME)
-  vi.stubEnv('VERCEL', undefined)
-  vi.stubEnv('VERCEL_AUTOMATION_BYPASS_SECRET', undefined)
 })
 
 afterEach(async () => {
@@ -135,10 +133,8 @@ it('advertises the API and share URLs without opening an inspector or minting an
   }
 }, CLI_TIMEOUT)
 
-it.each(['--host', '--tailscale'])('rejects an incompatible %s option', (flag) => {
-  const flags = flag === '--host'
-    ? ['--no-inspect', '--host', host]
-    : ['--team-tokens', teamTokens, '--tailscale', shareHost]
+it.each(['--host'])('rejects an incompatible %s option', (flag) => {
+  const flags = ['--no-inspect', '--host', host]
   const { status, stdout, stderr } = spawnSync(process.execPath, args(...flags), { cwd: dir, env, encoding: 'utf8', timeout: CLI_TIMEOUT - 2_000 })
   expectNoToken(stdout + stderr)
   expect(status).toBe(2)

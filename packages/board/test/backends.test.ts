@@ -4,7 +4,7 @@ import { board, HttpError, type Backend, type Caller } from '../src/server/index
 import { oidcTokens } from '../src/access/index.ts'
 import { local } from '../src/backend-local/index.ts'
 import { http } from '../src/backend-http/index.ts'
-import { board as projectBoard, bearer, BOARD_URL, caller, deploymentToken, OIDC_ISS, oidcToken, personToken, signedInHome, testAuth, testBoard } from './harness.ts'
+import { board as projectBoard, bearer, BOARD_URL, caller, deploymentToken, OIDC_ISS, oidcToken, personToken, testAuth, testBoard } from './harness.ts'
 
 /** Where v0's board is mounted: a board on the team's board, over http(). */
 const V0_URL = 'https://v0.test/api/board'
@@ -30,14 +30,6 @@ async function team(options: Parameters<typeof http>[1] = {}) {
 
 const julianOn = async (fetch: (request: Request) => Promise<Response>, audience?: string) =>
   caller(fetch, await personToken('u_julian', audience), {})
-
-/** Julian, signed in to each board as `vercel login` leaves it, for a client in this process. */
-async function signedIn(audiences: string[]) {
-  vi.stubEnv('XDG_CONFIG_HOME', await signedInHome(audiences))
-  vi.stubEnv('BOARD_TOKEN', '')
-  vi.stubEnv('VERCEL', '')
-  vi.stubEnv('ACTIONS_ID_TOKEN_REQUEST_URL', '')
-}
 
 describe('board() and its backend', () => {
   it("leaves a write's handles to the team's board, and answers what it said of them", async () => {
@@ -132,19 +124,6 @@ describe('board() and its backend', () => {
     expect(calls.at(-1)!.caller).toEqual({ self: 'deploys', profile: 'deploys', origin: { via: { kind: 'client', name: 'deploys' } } })
   })
 
-  it("hands a backend of your own the board's team and name once, when it binds, and refuses what isn't one", () => {
-    const bound: { team: string | null; name: string | null }[] = []
-    const mine = () => ({ routes: [], keeps: true, bind: ({ team, name }: { team: string | null; name: string | null }) => void bound.push({ team, name }) }) as unknown as Backend
-    board({ backend: mine(), team: 'acme', name: 'security', url: BOARD_URL })
-    board({ backend: mine(), team: 'team_acme', url: BOARD_URL })
-    board({ backend: mine(), url: BOARD_URL })
-    expect(bound).toEqual([{ team: 'acme', name: 'security' }, { team: 'team_acme', name: null }, { team: null, name: null }])
-    for (const name of ['', 'acme/security', '/security', 'x'.repeat(65)])
-      expect(() => board({ backend: mine(), name, url: BOARD_URL }), name).toThrow("isn't a board's name")
-    for (const team of ['', 'acme/web', 'two words']) expect(() => board({ backend: mine(), team, url: BOARD_URL }), team).toThrow("isn't a team")
-    expect(bound).toHaveLength(3)
-  })
-
   it('takes a backend made from another, with one method changed', async () => {
     const kept = local({ memory: true })
     const backend: Backend = {
@@ -173,9 +152,9 @@ describe('a board on http()', () => {
     expect(await project.discovery()).toMatchObject({ url: BOARD_URL, audience: BOARD_URL })
   })
 
-  it('reaches the board it uses with the credentials `vb` finds, minting one for that board', async () => {
+  it('reaches the board it uses with the credentials `vb` finds', async () => {
     const { remote } = await team()
-    await signedIn([BOARD_URL])
+    vi.stubEnv('BOARD_TOKEN', await personToken('u_julian', BOARD_URL))
     const seen: string[] = []
     const route = (input: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(input, init)
@@ -185,8 +164,8 @@ describe('a board on http()', () => {
     const here = board({ backend: http(BOARD_URL, { fetch: connect(BOARD_URL, { fetch: route as typeof fetch }).fetch }) }).as(null)
     expect((await here.me()).principal).toBe('vercel:user:u_julian')
     expect((await here.post('dev', 'from a script')).text).toBe('from a script')
-    // Discovery first, for the project to mint for, then the calls, each with the token it minted.
-    expect(seen).toEqual([`GET ${BOARD_URL}`, `GET ${BOARD_URL}/me`, `POST ${BOARD_URL}/messages`])
+    // The calls, each with the token BOARD_TOKEN holds.
+    expect(seen).toEqual([`GET ${BOARD_URL}/me`, `POST ${BOARD_URL}/messages`])
     vi.unstubAllEnvs()
   })
 

@@ -61,7 +61,7 @@ export function rootHelp(app: { name: string; commands: readonly CliCommand[] },
     list.filter((command) => !command.hidden),
   )
   const lines = [
-    `${app.name} ${version}: your Vercel team's message board, for people and agents`,
+    `${app.name} ${version}: the message board, for people and agents`,
     '',
     `usage: ${app.name} <command> [options]${app.name === 'board' ? '      (also installed as `vb`)' : ''}`,
   ]
@@ -117,16 +117,14 @@ export function commandHelp(name: string, path: readonly CliCommand[]): string {
 }
 
 /** The global options a command's page shows: a program's output, who it writes as, and which board. */
-const COMMON = ['json', 'as', 'scope', 'url'] as const
+const COMMON = ['json', 'as', 'url'] as const
 
 /**
- * The command `words` name, and its subcommand when they name one (`schedule cancel`, `sources slack
- * read`): what `--help` shows the page of. Null when the first word names no command.
+ * The command `words` name, and its subcommand when they name one (`schedule cancel`): what `--help` shows the page of. Null when the first word names no command.
  */
 export function commandPath(words: readonly string[], all: readonly CliCommand[]): CliCommand[] | null {
   const command = all.find((candidate) => candidate.name === words[0] || candidate.aliases?.includes(words[0]!))
   if (!command) return null
-  const at = command.argumentsBeforeSubcommand ? command.arguments.length + 1 : 1
-  const sub = command.subcommands?.find((candidate) => candidate.name === words[at])
+  const sub = command.subcommands?.find((candidate) => candidate.name === words[1])
   return sub ? [command, sub] : [command]
 }

@@ -30,7 +30,7 @@ async function setup({ enabled = true, dir, parity = false }: { enabled?: boolea
   const server = local({
     ...(dir ? { dir } : { memory: true }),
     ...(enabled ? { workLifecycle } : {}),
-    ...(parity ? { attentionResponders: { work: [OTHER_SCOPER], conformance: [OTHER_SCOPER] }, agentOps: true } : {}),
+    ...(parity ? { attentionResponders: { work: [OTHER_SCOPER], conformance: [OTHER_SCOPER] } } : {}),
   })
   closes.push(() => server.close())
   const team = board({ backend: server, url: BOARD_URL, authenticate: oidcTokens({ ...testAuth, local: testLocal }) })
@@ -322,24 +322,6 @@ it('refuses a decision from an earlier review even after work returns to review'
   expect(approved.task?.work?.stage).toBe('approved')
 })
 
-it('invalidates review and scope when the platform edits an imported root', async () => {
-  const ctx = await setup()
-  const { syncRequest, scoper, worker } = ctx
-  expect((await syncRequest('POST', '/watchers', { watch: {}, sync: [{ key: 'slack', platform: 'slack' }] })).status).toBe(200)
-  const author = { id: 'slack:user:U_EVE', handle: 'eve', name: 'Eve', avatar: null, isBot: false }
-  const origin = { channel: 'slack:C1', thread: 'slack:C1:100.1', subthread: null, message: '100.1', context: null }
-  const imported = await syncRequest('POST', '/sync/imports', { op: 'post', author, from: 'slack', channel: 'work', text: 'Checkout is slow', origin })
-  const id = imported.body.message as string
-  await worker.tasks.create({ re: id })
-  await scoper.tasks.scope(id, 'Scope the fix')
-  await (await worker.tasks.claim(id)).complete()
-  await scoper.tasks.stage(id, 'review', 'Review the fix')
-  expect((await syncRequest('POST', '/sync/imports', { op: 'edit', author, from: 'slack', origin: { thread: origin.thread, message: origin.message }, text: 'Checkout and search are slow' })).status).toBe(200)
-  expect((await worker.thread(id)).message).toMatchObject({ text: 'Checkout and search are slow', task: { work: PROPOSED } })
-  await expect(scoper.tasks.stage(id, 'approved', 'Approve the old fix')).rejects.toMatchObject(STAGE_ERROR)
-  expect((await audit(ctx, id)).at(-1)).toMatchObject({ payload: { from: 'review', to: 'proposed', reason: expect.stringMatching(/\S/) }, actor: { id: expect.stringMatching(/slack:user:U_EVE$/) } })
-})
-
 it('leaves an existing task legacy when opening its board with lifecycle enabled', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'board-work-lifecycle-'))
   closes.push(() => rm(dir, { recursive: true, force: true }))
@@ -472,16 +454,16 @@ it('passes lifecycle and access-fence conformance instead of legacy queue confor
   expect(lifecycle.every((check) => check.status === 'passed')).toBe(true)
 })
 
-it('runs the staged, network pause, registry, and attention conformance checks together', async () => {
+it('runs the staged, network pause, and attention conformance checks together', async () => {
   const { scoper, scoperToken, handle, web } = await setup({ parity: true })
-  expect(await scoper.discovery()).toMatchObject({ workLifecycle: 1, accessFence: 1, agent_ops: true, task_attention: true })
+  expect(await scoper.discovery()).toMatchObject({ workLifecycle: 1, accessFence: 1, task_attention: true })
   const report = await conformance(scoper, {
     networkPause: true,
     withHeaders: (headers) => handle(scoperToken, headers),
     principals: { project: 'prj_web', scoper: web },
   })
   expect(report.checks.filter((check) => check.status === 'failed')).toEqual([])
-  for (const group of ['work-lifecycle', 'network-pause', 'agents', 'tasks']) {
+  for (const group of ['work-lifecycle', 'network-pause', 'tasks']) {
     const checks = report.checks.filter((check) => check.group === group)
     expect(checks.length).toBeGreaterThan(0)
     expect(checks.every((check) => check.status === 'passed')).toBe(true)

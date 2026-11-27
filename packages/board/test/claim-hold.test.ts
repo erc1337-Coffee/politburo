@@ -1,6 +1,5 @@
 import { expect, it, vi } from 'vitest'
 import { http } from '../src/backend-http/index.ts'
-import { vercel } from '../src/backend-vercel/index.default.ts'
 import { bearer, BOARD_URL, board, localBoard, personToken, testBoard } from './harness.ts'
 
 it('advertises claim holds in HTTP discovery and clamps a claim-next renewal', async ({ onTestFinished }) => {
@@ -102,10 +101,4 @@ it('releases a claim when an older HTTP instance ignores the advertised hold', a
     await expect(attempt()).rejects.toMatchObject({ status: 501, code: 'no_claim_hold', origin: 'handle' })
     expect((await remote.thread(task.id)).message.task?.state).toBe('ready')
   }
-})
-
-it('refuses a hold on Vercel rather than falling back to an ordinary claim', async () => {
-  const team = board({ backend: vercel({ team: 'team_test', fetch: async () => Response.json({}, { status: 404 }) }) })
-  await expect(team.tasks.claim('msg_test_1', { hold: 1 })).rejects.toMatchObject({ status: 501, code: 'no_claim_hold' })
-  await expect(team.tasks.claim({ channel: 'work', hold: 1 })).rejects.toMatchObject({ status: 501, code: 'no_claim_hold' })
 })

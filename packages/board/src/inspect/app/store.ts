@@ -25,7 +25,6 @@ export type Pending = {
   channel: string
   re: string | null
   text: string
-  noSync: boolean
   labels: Record<string, string>
   /** Files going with it, shown while it's on its way. */
   files?: { name: string; size: number }[]
@@ -561,11 +560,11 @@ export type Groupable = Pick<MessageView, 'by' | 'createdAt' | 'deleted' | 'chan
 export const isStatusLine = (m: Pick<Groupable, 'labels' | 'deleted'>): boolean => !m.deleted && Boolean(m.labels?.['politburo.status'])
 
 /**
- * The platform whose logo a message wears, for one that came from a platform: its author's, as their
- * sync key was registered, or else what the board's sync entries say of the key it came through.
+ * The platform whose logo a message wears, for one that came from a platform: its author's, or
+ * else the source it came through.
  */
-export const sourcePlatform = (m: Pick<MessageView, 'from' | 'author'>, platforms: Record<string, string> = {}): string | null =>
-  m.from === null ? null : (m.author?.platform ?? platforms[m.from] ?? m.from)
+export const sourcePlatform = (m: Pick<MessageView, 'from' | 'author'>): string | null =>
+  m.from === null ? null : (m.author?.platform ?? m.from)
 
 /**
  * Whether `m` continues `previous` under one header, as Slack shows a run of messages: by the same

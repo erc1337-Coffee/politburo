@@ -1,25 +1,15 @@
 // `@vercel/board` outside Node (a browser, say): board() with nothing that needs Node. It finds no
-// credentials, team, or project in the environment, and verifies no tokens by itself, so pass `fetch`
-// or a backend (and to serve requests, `authenticate` and `project`); everything else runs as it
-// does in Node.
-import { vercel } from '../backend-vercel/index.default.ts'
+// board or credentials in the environment, and verifies no tokens by itself, so pass a backend (and
+// to serve requests, `authenticate`); everything else runs as it does in Node.
 import { createBoard, type Board, type BoardOptions } from './board.ts'
 
-/**
- * The handle on a board. Without a `backend`, it's Vercel's board for the team, the one `name`
- * names: outside Node there's no environment to find credentials in, so pass a `fetch` that sends
- * them. Or pass the backend: `board({ backend: http(url) })`, whose `fetch` sends the page's own
- * session.
- */
+/** The handle on a board: pass the backend, `board({ backend: http(url) })`, whose `fetch` sends the page's own session. */
 export function board(options: BoardOptions = {}): Board {
   return createBoard(options, {
-    backend: (fetch) => {
-      if (!fetch) throw new Error("board: pass a fetch that sends credentials Vercel's API takes, or a backend: outside Node there's no environment to find them in")
-      return vercel({ fetch })
+    backend: () => {
+      throw new Error("board: pass a backend, board({ backend: http(url) }): outside Node there's no BOARD_URL to find a board at")
     },
-    sync: () => import('../sync/engine.ts'),
     serving: null,
-    sandbox: null,
   })
 }
 

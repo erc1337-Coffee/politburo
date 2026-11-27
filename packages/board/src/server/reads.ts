@@ -7,7 +7,6 @@ import type { MessageFilter, MessageTables, Page, ThreadsPage } from '../store/t
 import type { Access } from './access.ts'
 import type { BoardSession } from './a2.ts'
 import { linkedIds, type Reader } from './feed.ts'
-import { waitUntil } from './wait-until.ts'
 
 /** Keeps the tables from the board's log, one event at a time, from the first. */
 export function tablesConsumer(tables: MessageTables) {
@@ -47,7 +46,6 @@ export function createReads(tables: MessageTables, session: BoardSession, projec
     catching = session.consume(projection).catch(() => {
       catching = null
     })
-    waitUntil(catching)
   }
 
   /**

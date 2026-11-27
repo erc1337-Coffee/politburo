@@ -1,4 +1,4 @@
-import { Activity, Eye, EyeOff, Inbox, LayoutGrid, PanelLeftClose, Plus, Settings } from 'lucide-react'
+import { Activity, Eye, EyeOff, Inbox, PanelLeftClose, Plus, Settings } from 'lucide-react'
 import { compileAccess } from '../../server/access.ts'
 import { ChannelDialog } from './channel-dialog.tsx'
 import { useEffect, useMemo, useState } from 'react'
@@ -8,12 +8,11 @@ import * as board from './board.ts'
 import { toast } from './chrome.ts'
 import { HomeEmblem } from './home-emblem.tsx'
 import { Avatar } from './message.tsx'
-import { Link, navigate, useLocation, type Route } from './nav.tsx'
+import { Link, navigate, type Route } from './nav.tsx'
 import type { State } from './store.ts'
 import { ContextMenuArea, MenuItem } from './ui.tsx'
 import { nameFor, pictureFor } from './identity.ts'
 import { boardWords, shownName } from './words.ts'
-import { workScopeUrl } from './work-scope.ts'
 import { pickTheme, shownTheme, type Theme } from '../theme.ts'
 
 // --- sidebar -------------------------------------------------------------------------
@@ -122,10 +121,6 @@ export function Sidebar({ state, current, onHome, onCollapse }: { state: State; 
   }
   const questions = useMemo(() => attentionTasks(state).length, [state.messages])
   const where = boardWords(state.discovery)
-  const { params } = useLocation()
-  // Parties are Work scopes; list them under Work only when there is a choice.
-  const parties = Object.entries(board.swarmRecords()?.parties ?? {})
-  const scoped = current.view === 'work' ? params.get('party') : null
   const copy = (text: string) => void navigator.clipboard.writeText(text).then(() => toast(`copied ${text}`))
   return (
     <>
@@ -146,15 +141,6 @@ export function Sidebar({ state, current, onHome, onCollapse }: { state: State; 
           {questions > 0 && <span className="count">{questions}</span>}
           {hasUnshownRefusal(state) && <span className="faint">refused</span>}
         </Link>
-        <Link to={workScopeUrl('/work', params)} className="item" current={(current.view === 'work' && scoped === null) || current.view === 'cell'}>
-          <LayoutGrid size={14} aria-hidden="true" />
-          <span className="name">Work</span>
-        </Link>
-        {parties.length > 1 && parties.map(([id, party]) => (
-          <Link key={id} to={workScopeUrl('/work', params, id)} className="item sub-item" current={scoped === id} title={`Work in ${party.name}`}>
-            <span className="name">{party.name}</span>
-          </Link>
-        ))}
         <Link to="/operations" className="item" current={current.view === 'operations'}>
           <Activity size={14} aria-hidden="true" />
           <span className="name">Operations</span>

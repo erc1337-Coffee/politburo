@@ -21,25 +21,21 @@ describe('cli', () => {
       code: 2,
       stdout: '',
       stderr: [
-        "error: No board to use. Nothing sets one, and this directory isn't in a Vercel project.",
+        'error: No board to use. Nothing sets one.',
         '',
-        "  Use a team's board:",
-        '    vb read dev --scope <TEAM>',
-        '  Or a board at a URL:',
+        '  Use a board at a URL:',
         '    vb read dev --url <URL>',
+        '  Or set BOARD_URL',
         '',
       ].join('\n'),
     })
-    // A program gets what to run next, as argv: the same command, with the team it lacked.
+    // A program gets what to run next, as argv: the same command, with the URL it lacked.
     const json = await vb(['read', 'dev', '--json'], { BOARD_URL: undefined }, undefined, root)
     expect(json).toMatchObject({ code: 2, stdout: '' })
-    expect(failure(json)).toMatchObject({ status: 'action_required', reason: 'missing_scope', next: [{ argv: ['vb', 'read', 'dev', '--json', '--scope', '<TEAM>'] }, {}] })
-    // The team goes where options go: before a --, after which everything is text.
+    expect(failure(json)).toMatchObject({ status: 'action_required', reason: 'missing_board', next: [{ argv: ['vb', 'read', 'dev', '--json', '--url', '<URL>'] }] })
+    // The URL goes where options go: before a --, after which everything is text.
     const text = await vb(['post', 'dev', '--json', '--', '-1'], { BOARD_URL: undefined }, undefined, root)
-    expect(failure(text).next?.map((recovery) => recovery.argv)).toEqual([
-      ['vb', 'post', 'dev', '--json', '--scope', '<TEAM>', '--', '-1'],
-      ['vb', 'post', 'dev', '--json', '--url', '<URL>', '--', '-1'],
-    ])
+    expect(failure(text).next?.[0]?.argv).toEqual(['vb', 'post', 'dev', '--json', '--url', '<URL>', '--', '-1'])
     for (const command of ['link', 'use']) {
       const gone = await vb([command, url], {}, undefined, root)
       expect(gone).toMatchObject({ code: 2, stdout: '' })
@@ -117,8 +113,6 @@ describe('cli', () => {
     expect(edit).toMatchObject({ code: 2, stdout: '', stderr: expect.stringMatching(/^error: edit can't attach files: reply with the file instead\.\n\n {2}Reply with it:\n {4}vb reply <ID> <TEXT> --attach <FILE>\n/) })
     expect(failure(await vb(['edit', id, 'edited', '--label', 'a=b', '--json']))).toMatchObject({ reason: 'unknown_option', message: 'Unknown option --label for vb edit.' })
     expect((await vb(['read', id, '--attach', attach])).stderr).toMatch(/^error: Unknown option --attach for vb read\./)
-    // Where it means something else, it says so: --text filters reads, and a schedule doesn't sync.
-    expect((await vb(['schedule', 'notes', 'hi', '--sync', 'slack:#x'])).stderr).toMatch(/^error: Can't use --sync with schedule\. A schedule posts where you point it\.\n/)
     expect(JSON.parse((await vb(['read', id, '--json'])).stdout).message).toMatchObject({ text: 'root', labels: {} })
     // Stdin is the text's, never an attachment's.
     expect((await vb(['reply', id, 'see attached', '--attach', '-'])).stderr).toMatch(/^error: Can't attach -: stdin is for the message's text\./)
@@ -133,124 +127,6 @@ describe('cli', () => {
     expect((await vb(['label', id, 'owner=bo', '--if', 'owner='])).stderr).toMatch(/^error: Can't label #\d+\.\n {2}owner isn't /)
   })
 
-  it("finds a Vercel project's link up to its checkout's root, where only a real .git (a HEAD, or a gitdir: file) is one", async () => {
-    // A Vercel project linked above the checkout isn't this checkout's: no board, as outside one.
-    // Linked, it's the team's board, which needs a Vercel login this environment doesn't have.
-    const outside = await tmp('board-vercel-')
-    await mkdir(join(outside, '.vercel'))
-    await writeFile(join(outside, '.vercel', 'project.json'), JSON.stringify({ orgId: 'team_x', projectId: 'prj_x' }))
-    const teamBoard = /^error: You're not logged in to Vercel\./
-    const noBoard = /^error: No board to use\./
-    const run = async (directory: string) => (await vb(['whoami'], { BOARD_URL: undefined, BOARD_TOKEN: undefined, XDG_DATA_HOME: await tmp('board-data-') }, undefined, directory)).stderr
-    const checkout = join(outside, 'repo')
-    await mkdir(join(checkout, '.git', 'x'), { recursive: true })
-    await mkdir(join(checkout, 'src'))
-    // An empty .git isn't a checkout: the search goes on up, to the project.
-    expect(await run(join(checkout, 'src'))).toMatch(teamBoard)
-    await writeFile(join(checkout, '.git', 'HEAD'), 'ref: refs/heads/main\n')
-    expect(await run(join(checkout, 'src'))).toMatch(noBoard)
-    const worktree = join(outside, 'worktree')
-    await mkdir(join(worktree, 'src'), { recursive: true })
-    await writeFile(join(worktree, '.git'), 'gitdir: /repo/.git/worktrees/x\n')
-    expect(await run(join(worktree, 'src'))).toMatch(noBoard)
-    const stray = join(outside, 'stray')
-    await mkdir(join(stray, 'src'), { recursive: true })
-    await writeFile(join(stray, '.git'), 'not a pointer')
-    expect(await run(join(stray, 'src'))).toMatch(teamBoard)
-  }, 30_000)
-  it('says a board is behind Vercel Deployment Protection, and passes the bypass secret', async () => {
-    const board = testBoard({ url: undefined })
-    const walls = {
-      redirect: () => new Response(null, { status: 302, headers: { location: 'https://vercel.com/sso-api?url=x' } }),
-      html: () => new Response('<!DOCTYPE html><html></html>', { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } }),
-    }
-    for (const [kind, wall] of Object.entries(walls)) {
-      const seen: (string | null)[] = []
-      const protectedBoard = await serve(async (request) => {
-        seen.push(request.headers.get('x-vercel-protection-bypass'))
-        return request.headers.get('x-vercel-protection-bypass') === 's3cret' ? board.fetch(request) : wall()
-      })
-      const at = `${protectedBoard.origin}/api/board`
-      // What it is, then how to get through: your login, or the project's bypass.
-      const line = expect.stringMatching(
-        new RegExp(`^error: ${at.replace(/[.:/]/g, '\\$&')} is behind Vercel Deployment Protection, and your Vercel login can't see its project\\.\\n\\n  .*VERCEL_AUTOMATION_BYPASS_SECRET`),
-      )
-      // No Vercel login to look the project's bypass up with: no auth.json, no `vercel` on PATH.
-      const signedOut = { PATH: '', XDG_DATA_HOME: await tmp('board-data-') }
-      try {
-        expect(await vb(['whoami'], { ...signedOut, BOARD_URL: at, BOARD_TOKEN: await personToken('u_julian', at) }), kind).toMatchObject({ code: 1, stdout: '', stderr: line })
-        // Discovery, without a token yet.
-        expect(await vb(['whoami'], { ...signedOut, BOARD_URL: at }), kind).toMatchObject({ code: 1, stdout: '', stderr: line })
-        const stale = await vb(['whoami', '--json'], { BOARD_URL: at, BOARD_TOKEN: await personToken('u_julian', at), VERCEL_AUTOMATION_BYPASS_SECRET: 'stale' })
-        expect(stale, kind).toMatchObject({ code: 1, stdout: '' })
-        expect(failure(stale)).toMatchObject({
-          reason: 'deployment_protected',
-          message: `${at} is behind Vercel Deployment Protection, and it rejected VERCEL_AUTOMATION_BYPASS_SECRET.`,
-          hint: 'Check VERCEL_AUTOMATION_BYPASS_SECRET against Project → Settings → Deployment Protection → Protection Bypass for Automation.',
-        })
-        // A deployment gets through by its project's trust: that's what to fix there.
-        const hosted = await vb(['whoami', '--json'], { BOARD_URL: at, BOARD_TOKEN: 'a-deployment-token', VERCEL: '1' })
-        expect(failure(hosted)).toMatchObject({
-          reason: 'deployment_protected',
-          hint: "Add this project and environment to the board project's Deployment Protection Trusted Sources.",
-        })
-        expect(failure(hosted).next).toBeUndefined()
-        seen.length = 0
-        const ok = await vb(['whoami', '--json'], { BOARD_URL: at, BOARD_TOKEN: await personToken('u_julian', at), VERCEL_AUTOMATION_BYPASS_SECRET: 's3cret' })
-        expect(ok, kind).toMatchObject({ code: 0, stderr: '' })
-        expect(seen.length).toBeGreaterThan(0)
-        expect(seen.every((header) => header === 's3cret')).toBe(true)
-      } finally {
-        await protectedBoard.close()
-      }
-    }
-  }, 30_000)
-
-  it('says a board that redirects to another origin moved there, instead of looking for its bypass', async () => {
-    const wall = await serve(async () => new Response(null, { status: 302, headers: { location: 'https://vercel.com/sso-api?url=x' } }))
-    // vboard.dev answers with www.vboard.dev: none of a request's credentials follow it there.
-    const apex = await serve(async (request) => new Response(null, { status: 308, headers: { location: `${wall.origin}${new URL(request.url).pathname}` } }))
-    try {
-      const at = `${apex.origin}/api/board`
-      // No Vercel login to look a bypass up with: had it looked, it would say that instead.
-      const json = await vb(['whoami', '--json'], { PATH: '', XDG_DATA_HOME: await tmp('board-data-'), BOARD_URL: at })
-      expect(json).toMatchObject({ code: 2, stdout: '' })
-      expect(failure(json)).toMatchObject({
-        reason: 'wrong_url',
-        message: `${at} redirects to ${wall.origin}, and its credentials don't follow it there, so Deployment Protection turns it away.`,
-        hint: `Use ${wall.origin}/api/board.`,
-      })
-      // Through another origin first, it names the one with the wall, not one that redirects again.
-      const hop = await serve(async (request) => new Response(null, { status: 308, headers: { location: `${apex.origin}${new URL(request.url).pathname}` } }))
-      try {
-        const twice = await vb(['whoami', '--json'], { PATH: '', XDG_DATA_HOME: await tmp('board-data-'), BOARD_URL: `${hop.origin}/api/board` })
-        expect(failure(twice)).toMatchObject({ reason: 'wrong_url', hint: `Use ${wall.origin}/api/board.` })
-      } finally {
-        await hop.close()
-      }
-    } finally {
-      await Promise.all([apex.close(), wall.close()])
-    }
-  })
-
-  it("doesn't wait on a signed-out `vercel` CLI's login flow", async () => {
-    const wall = await serve(async () => new Response(null, { status: 302, headers: { location: 'https://vercel.com/sso-api?url=x' } }))
-    // A `vercel` that logs each call and, like a signed-out CLI, starts a login flow that never ends.
-    const bin = await tmp('board-bin-')
-    const log = join(bin, 'calls')
-    await writeFile(join(bin, 'vercel'), `#!/bin/sh\necho "$*" >> ${log}\nexec ${execFileSync('sh', ['-c', 'command -v sleep']).toString().trim()} 60\n`, { mode: 0o755 })
-    try {
-      const at = `${wall.origin}/api/board`
-      const started = Date.now()
-      const result = await vb(['whoami'], { PATH: bin, XDG_DATA_HOME: await tmp('board-data-'), BOARD_URL: at })
-      expect(result).toMatchObject({ code: 1, stderr: expect.stringContaining("your Vercel login can't see its project") })
-      expect(Date.now() - started).toBeLessThan(20_000)
-      expect((await readFile(log, 'utf8')).trim().split('\n')).toEqual(['whoami --non-interactive'])
-    } finally {
-      await wall.close()
-    }
-  }, 30_000)
-
   it('keeps its own error for a non-board HTML page, and keeps credentials off other origins', async () => {
     const missing = await serve(async () => new Response('<!DOCTYPE html><h1>404</h1>', { status: 404, headers: { 'content-type': 'text/html' } }))
     try {
@@ -262,12 +138,12 @@ describe('cli', () => {
       await missing.close()
     }
 
-    // A board that moved: same-origin and cross-origin hops are followed, and only the board's origin gets the token and bypass.
+    // A board that moved: same-origin and cross-origin hops are followed, and only the board's origin gets the token.
     const board = testBoard({ url: undefined })
-    const seen = { moved: [] as (string | null)[], board: [] as { path: string; authorization: string | null; bypass: string | null }[] }
+    const seen = { moved: [] as (string | null)[], board: [] as { path: string; authorization: string | null }[] }
     const target = await serve(async (request) => {
       const { pathname: path } = new URL(request.url)
-      seen.board.push({ path, authorization: request.headers.get('authorization'), bypass: request.headers.get('x-vercel-protection-bypass') })
+      seen.board.push({ path, authorization: request.headers.get('authorization') })
       return board.fetch(request)
     })
     const moved = await serve(async (request) => {
@@ -279,30 +155,30 @@ describe('cli', () => {
     try {
       const at = `${moved.origin}/old/api/board`
       const token = await personToken('u_julian', `${target.origin}/api/board`)
-      const me = await vb(['whoami', '--json'], { BOARD_URL: at, BOARD_TOKEN: token, VERCEL_AUTOMATION_BYPASS_SECRET: 's3cret' })
+      const me = await vb(['whoami', '--json'], { BOARD_URL: at, BOARD_TOKEN: token })
       // Its discovery, which sends nothing, and /me, whose token stays on the origin it was asked for.
       expect(seen.moved.filter(Boolean)).toEqual([`Bearer ${token}`, `Bearer ${token}`])
       // /me reaches the board bare, and turned away, it ends the command: its discovery, sent
       // alongside, may not have got there yet, but whatever did came with no credentials either.
-      expect(seen.board).toContainEqual({ path: '/api/board/me', authorization: null, bypass: null })
-      expect(seen.board.filter((request) => request.authorization !== null || request.bypass !== null)).toEqual([])
+      expect(seen.board).toContainEqual({ path: '/api/board/me', authorization: null })
+      expect(seen.board.filter((request) => request.authorization !== null)).toEqual([])
       expect(me.code).toBe(1)
     } finally {
       await Promise.all([moved.close(), target.close()])
     }
   })
 
-  it("never reaches a board a checkout's .board/config.json names, with the environment's token or bypass", async () => {
+  it("never reaches a board a checkout's .board/config.json names, with the environment's token", async () => {
     const seen: string[] = []
     const elsewhere = await serve(async (request) => {
-      seen.push(`${request.headers.get('authorization')} ${request.headers.get('x-vercel-protection-bypass')}`)
+      seen.push(`${request.headers.get('authorization')}`)
       return new Response('{}', { headers: { 'content-type': 'application/json' } })
     })
     try {
       const root = await tmp('board-carried-')
       await mkdir(join(root, '.board'))
       await writeFile(join(root, '.board', 'config.json'), JSON.stringify({ url: `${elsewhere.origin}/api/board` }))
-      const secrets = { BOARD_URL: undefined, BOARD_TOKEN: 'a-token-for-my-board', VERCEL_AUTOMATION_BYPASS_SECRET: 's3cret' }
+      const secrets = { BOARD_URL: undefined, BOARD_TOKEN: 'a-token-for-my-board' }
       expect(await vb(['read', 'dev'], secrets, undefined, root)).toMatchObject({ code: 2, stderr: expect.stringMatching(/^error: No board to use\./) })
       expect(seen).toEqual([])
       // BOARD_URL and --url are the board.
@@ -447,11 +323,6 @@ describe('cli', () => {
     const reply = await vb(['reply', id, '-', '--as', 'claude'], {}, 'rolled back to d4e5f6\n')
     expect(reply.code).toBe(0)
     expect((await vb(['react', id, '👀'])).code).toBe(0)
-    // This board syncs nowhere, so typing shows nowhere, and that's fine.
-    expect(await vb(['typing', id])).toMatchObject({ code: 0, stdout: '', stderr: '' })
-    expect(await vb(['typing', id, 'running', 'tests…'])).toMatchObject({ code: 0, stdout: '', stderr: '' })
-    expect(await vb(['typing', id, 'a'.repeat(50)])).toMatchObject({ code: 0, stderr: '' })
-    expect(await vb(['typing', id, 'a'.repeat(51)])).toMatchObject({ code: 2, stderr: expect.stringContaining('50') })
     expect((await vb(['label', id, 'status=investigating'])).code).toBe(0)
 
     const read = await vb(['read', id])
@@ -531,9 +402,6 @@ describe('cli', () => {
     expect((await vb(['post', `#${id}`, 'and deployed'])).code).toBe(0)
     const thread = JSON.parse((await vb(['read', id, '--json'])).stdout)
     expect([thread.message, ...thread.replies].map((m: { text: string }) => m.text)).toEqual(['export is broken', 'fixed in a1b2c3', 'and deployed'])
-    const synced = await vb(['post', id, 'x', '--sync', 'slack:#incidents'])
-    expect(synced).toMatchObject({ code: 2, stderr: expect.stringMatching(/^error: Can't use --sync on a reply\./) })
-    expect(synced.stderr).toContain(`vb sync ${id} <TARGET>`)
   })
 
   it('labels a reply as it posts it', async () => {
@@ -857,9 +725,9 @@ describe('cli', () => {
 
 
   it('delivers all of a long read to a reader that falls behind', async () => {
-    const root = (await vb(['post', 'long-reads', 'a long thread', '--no-sync', '--json'])).stdout
+    const root = (await vb(['post', 'long-reads', 'a long thread', '--json'])).stdout
     const id = (JSON.parse(root) as { message: { id: number } }).message.id
-    expect((await vb(['reply', String(id), `note ${'x'.repeat(300)}`, '--no-sync'])).code).toBe(0)
+    expect((await vb(['reply', String(id), `note ${'x'.repeat(300)}`])).code).toBe(0)
     // The thread, as the board would send it with 1,500 replies: well past a pipe's buffer on any OS
     // (Linux's is bigger than macOS's), so a dropped tail shows. Posting that many takes the board half a minute.
     const long = await serve(async (request) => {
@@ -890,33 +758,12 @@ describe('cli', () => {
     }
   })
 
-  it('lists sources, and reads one only as `sources <key> read <target>`', async () => {
-    expect((await vb(['sources'])).stdout.trim()).toBe('no sources: this board has no sync configured')
-    const misuse = await vb(['sources', 'slack', '#general'])
-    expect(misuse).toMatchObject({ code: 2, stderr: expect.stringMatching(/^error: Unknown command #general for vb sources\./) })
-    // Only the board that runs a sync entry reads its source.
-    const unsynced = await vb(['sources', 'slack', 'read', '#general'])
-    expect(unsynced).toMatchObject({ code: 1, stderr: "error: Can't read #general on slack.\n  this board doesn't run sync entry slack: read it where its sync runs\n" })
-    const unjoined = await vb(['sources', 'slack', 'join', '#general'])
-    expect(unjoined).toMatchObject({ code: 1, stderr: "error: Can't join #general on slack.\n  this board doesn't run sync entry slack: join it where its sync runs\n" })
-  })
-
   it('says so when the board is older than thread summaries, instead of crashing on its discovery document', async () => {
     // An old board answers any unknown GET with its discovery document, 200.
     const old = await serve(async () => Response.json({ version: '0.4.0', sync: [] }))
     try {
       const threads = await vb(['read', 'errors-www'], { BOARD_URL: `${old.origin}/api/board` })
       expect(threads).toMatchObject({ code: 1, stderr: expect.stringMatching(OLD_THREADS) })
-    } finally {
-      await old.close()
-    }
-  })
-
-  it('says so when the board is older than reading links, instead of crashing on its discovery document', async () => {
-    const old = await serve(async () => Response.json({ version: '0.16.0', sync: [] }))
-    try {
-      const read = await vb(['read', 'https://acme.slack.com/archives/C1/p1727000000123456'], { BOARD_URL: `${old.origin}/api/board` })
-      expect(read).toMatchObject({ code: 1, stderr: expect.stringMatching(/^error: This board can't read links\. It's older than this CLI\.\n/) })
     } finally {
       await old.close()
     }
@@ -956,7 +803,7 @@ describe('cli', () => {
     }
   })
 
-  it("says what a 404 that isn't an old board's says, as Vercel's API does for a team without the board", async () => {
+  it("says what a 404 that isn't an old board's says", async () => {
     const off = await serve(async () => Response.json({ error: { code: 'not_found', message: 'Messageboard is not enabled for this team.' } }, { status: 404 }))
     try {
       expect(await vb(['read'], { BOARD_URL: `${off.origin}/api/board` })).toEqual({
@@ -970,7 +817,7 @@ describe('cli', () => {
   })
 
   it('checks that the board speaks the protocol, a group at a time', async () => {
-    // The core protocol, schedules included, on a board that hasn't opted into agent operations.
+    // The core protocol, schedules included.
     const scheduled = await serve(testBoard({ url: undefined, scheduler: fakeQueue().scheduler }).fetch)
     const board = `${scheduled.origin}/api/board`
     const as = { BOARD_URL: board, BOARD_TOKEN: await personToken('u_julian', board) }
@@ -980,16 +827,8 @@ describe('cli', () => {
       expect(run.stdout).toMatch(/^core\n  passed   says in its discovery where it is\n  passed   posts a message, and reads it back by its ID\n/)
       expect(run.stdout).toContain('\n\nschedules\n  passed   schedules a reply')
       expect(run.stdout).toContain('\n\nwatchers\n  passed   matches a registered tail')
-      expect(run.stdout).toContain(
-        '\n\nagents\n' +
-          '  skipped  registers, lists, heartbeats, and retires an agent under its verified binding\n' +
-          '           not kept here: agent operations are not advertised\n' +
-          '  skipped  confirms a claimed run only through a taken and reported status probe\n' +
-          '           not kept here: agent operations are not advertised\n',
-      )
-      expect(run.stdout).toContain('\n\noperational-inbox\n  passed   keeps operational messages private')
-      // Four grants checks and two agent checks are skipped.
-      expect(run.stdout).toMatch(/\n\n\d+ passed, 6 skipped\n$/)
+      // Four grants checks are skipped.
+      expect(run.stdout).toMatch(/\n\n\d+ passed, 4 skipped\n$/)
       expect(JSON.parse((await vb(['conformance', '--json', '--channel', 'conformance/json'], as)).stdout)).toMatchObject({ ok: true })
     } finally {
       await scheduled.close()
@@ -1003,8 +842,8 @@ describe('cli', () => {
       expect(partial.stdout).toContain(
         '\n\nschedules\n  skipped  schedules a reply, lists it, and cancels it\n           not kept here: this board has no scheduler, so it can\'t send later\n',
       )
-      // The same six skips, plus two schedules checks.
-      expect(partial.stdout).toMatch(/\n\n\d+ passed, 8 skipped\n$/)
+      // The same four skips, plus two schedules checks.
+      expect(partial.stdout).toMatch(/\n\n\d+ passed, 6 skipped\n$/)
     } finally {
       await unscheduled.close()
     }
@@ -1031,7 +870,6 @@ describe('cli', () => {
     // A file's name where download takes its ID says where the ID is.
     expect(await vb(['download', 'notes.txt'])).toMatchObject({ code: 2, stderr: expect.stringMatching(/^error: notes\.txt is a file's name, and download takes the attachment's ID/) })
     expect((await vb(['react', '1', 'not an emoji'])).code).toBe(2)
-    expect((await vb(['typing'])).code).toBe(2)
     expect((await vb(['frobnicate'])).code).toBe(2)
     expect((await vb(['inspect', '--port', 'nope'])).code).toBe(2)
   })

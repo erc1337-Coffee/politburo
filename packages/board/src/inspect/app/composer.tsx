@@ -1,4 +1,4 @@
-import { Clock, CloudOff, FileText, ListTodo, Paperclip, Tag, X } from 'lucide-react'
+import { Clock, FileText, ListTodo, Paperclip, Tag, X } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { ATTACHMENT_BYTES_MAX, ATTACHMENTS_PER_MESSAGE_MAX } from '../../contract/schemas.ts'
 import type { ScheduleTiming } from '../../server/index.default.ts'
@@ -43,7 +43,6 @@ const LIST_ITEM = /^(\s*)([-*]|\d+\.)\s(.*)$/
 
 export type Send = {
   text: string
-  noSync: boolean
   channel: string
   labels: Record<string, string>
   files: File[]
@@ -60,7 +59,6 @@ export function Composer(props: {
   placeholder: string
   label?: string
   known: KnownLabels
-  syncConfigured: boolean
   mayLabel: (channel: string) => boolean
   mayPost?: (channel: string) => boolean
   channels?: string[]
@@ -84,7 +82,6 @@ export function Composer(props: {
   const [assignee, setAssignee] = useState('')
   const tasking = props.tasks
   const asTask = tasking !== undefined && task
-  const [noSync, setNoSync] = useState(false)
   const [labels, setLabels] = useState<Record<string, string>>({})
   const [labelsOpen, setLabelsOpen] = useState(false)
   const localFiles = useState<File[]>([])
@@ -133,7 +130,6 @@ export function Composer(props: {
     const me = tasking?.state.me
     props.onSend({
       text: text.trim(),
-      noSync: props.syncConfigured && noSync,
       channel: target,
       labels: canLabel ? labels : {},
       files,
@@ -320,15 +316,6 @@ export function Composer(props: {
               }
             />
           </Panel>}
-          {props.syncConfigured && <button
-            className={`tool${noSync ? ' on' : ''}`}
-            aria-pressed={noSync}
-            title={noSync ? 'board only: do not sync this message' : 'keep this message on the board only'}
-            onClick={() => setNoSync(!noSync)}
-          >
-            <CloudOff size={14} />
-            {noSync && <span className="tool-label">board only</span>}
-          </button>}
           {tasking && !tasking.always && (
             <button
               className={`tool${task ? ' on' : ''}`}

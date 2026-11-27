@@ -209,20 +209,6 @@ describe("vb tasks, with the claim it keeps", () => {
     expect(await state(id)).toBe('ready')
   }, 60_000)
 
-  it('keeps --scope in the unpark suggestion', async () => {
-    const id = await create('parked', 'deploy to prod')
-    await ok(['tasks', 'park', id, 'deployment freeze'])
-
-    // --scope selects a Vercel board in the standalone CLI. Use the local board handle for the refusal.
-    const team = board({ backend: http(url, { fetch: bearer(fetch, env.BOARD_TOKEN!) }) })
-    const refused = await vbInProcess(team, ['tasks', 'claim', id, '--scope', 'acme', '--as', 'worker', '--json'])
-    expect(refused).toMatchObject({ code: 1, stdout: '' })
-    expect(failure(refused)).toMatchObject({ reason: 'task_blocked', next: [
-      { argv: ['vb', 'read', id, '--scope', 'acme', '--as', 'worker'] },
-      { argv: ['vb', 'tasks', 'unpark', id, 'resume work', '--scope', 'acme'] },
-    ] })
-  })
-
   it('suggests only a read when a hold is lifted after the claim refusal', async ({ onTestFinished }) => {
     const team = localBoard({ url: undefined })
     let id: string
@@ -466,115 +452,6 @@ describe("vb tasks, with the claim it keeps", () => {
     expect(await claimOn(id)).toEqual([])
     expect((await task(id)).task).toMatchObject({ state: 'canceled', reason: 'superseded by the nightly job', claim: null })
     expect(failure(await vb(['tasks', 'cancel', id, 'again', '--json']))).toMatchObject({ reason: 'task_finished', message: `Can't cancel task #${id}. It's finished.` })
-  }, 60_000)
-})
-
-describe('vb tasks run', () => {
-  /** A command for `run`: this Node, running `script`. */
-  const node = (script: string) => ['--', process.execPath, '-e', script]
-
-  it('claims a task, runs the command with its ID, and completes it when the command exits 0', async () => {
-    const id = await create('runs', 'run the tests')
-    const ran = await vb(['tasks', 'run', id, '--result', 'tests pass', ...node('console.log(`working on ${process.env.BOARD_TASK}`)')])
-    expect(ran).toEqual({ code: 0, stdout: `working on ${id}\ncompleted ${id}\n`, stderr: '' })
-    expect((await task(id)).task).toMatchObject({ state: 'completed', epoch: 1, result: 'tests pass' })
-    expect(await claimOn(id)).toEqual([])
-
-    // --ready takes the next one, as claim does, and a run with no result completes with none.
-    const next = await create('runs', 'lint', ['--label', 'step=lint'])
-    expect(await vb(['tasks', 'run', '--ready', 'runs', '--label', 'step=lint', ...node('')])).toEqual({ code: 0, stdout: `completed ${next}\n`, stderr: '' })
-    expect((await task(next)).task).toMatchObject({ state: 'completed', result: null })
-    expect(failure(await vb(['tasks', 'run', '--ready', 'runs', '--label', 'step=lint', '--json', ...node('')])).reason).toBe('nothing_ready')
-
-    // With --json, stdout is one document: what the command prints on its own stdout comes out on stderr.
-    const loud = await create('runs', 'build it')
-    const built = await vb(['tasks', 'run', loud, '--json', ...node('console.log("compiled 12 files"); console.error("1 warning")')])
-    expect(built).toMatchObject({ code: 0, stderr: 'compiled 12 files\n1 warning\n' })
-    expect(JSON.parse(built.stdout)).toMatchObject({ outcome: 'completed', task: { id: loud, task: { state: 'completed' } } })
-  }, 60_000)
-
-  it("fails the task with how the command ended, and exits with the command's code", async () => {
-    const id = await create('runs', 'deploy it')
-    const ran = await vb(['tasks', 'run', id, '--result', 'never said', ...node('console.error("no credentials"); process.exit(3)')])
-    expect(ran).toEqual({ code: 3, stdout: `failed ${id}\n`, stderr: 'no credentials\n' })
-    expect((await task(id)).task).toMatchObject({ state: 'failed', reason: 'exited 3', result: null })
-    expect(await claimOn(id)).toEqual([])
-
-    const killed = await create('runs', 'gets killed')
-    const died = await vb(['tasks', 'run', killed, '--json', ...node('process.kill(process.pid, "SIGKILL")')])
-    expect(died.code).toBe(137)
-    expect(JSON.parse(died.stdout)).toMatchObject({ outcome: 'failed', code: 137, task: { task: { state: 'failed', reason: 'killed by SIGKILL' } } })
-
-    // A command that isn't there never worked the task: it goes back as it was.
-    const unrun = await create('runs', 'never starts')
-    expect(await vb(['tasks', 'run', unrun, '--', 'no-such-command-anywhere'])).toEqual({
-      code: 1,
-      stdout: '',
-      stderr: `error: Couldn't run no-such-command-anywhere. There's no such command.\n  Task #${unrun} was released.\n`,
-    })
-    expect((await task(unrun)).task).toMatchObject({ state: 'ready', epoch: 1 })
-    expect(await claimOn(unrun)).toEqual([])
-
-    expect(await vb(['tasks', 'run', unrun])).toMatchObject({ code: 2, stderr: 'error: Missing the command to run: put it after --.\n\n  Run a command on a task:\n    vb tasks run <ID> -- <COMMAND>\n' })
-    expect(await vb(['tasks', 'run', '--', 'true'])).toMatchObject({ code: 2, stderr: expect.stringMatching(/^error: Missing the task to run it on: its ID, or --ready and a channel\.\n/) })
-    // A task someone holds isn't run: the command never starts.
-    await ok(['tasks', 'claim', unrun], await bo())
-    expect(await vb(['tasks', 'run', unrun, ...node('console.log("ran anyway")')])).toMatchObject({ code: 1, stdout: '', stderr: expect.stringMatching(new RegExp(`^error: Can't claim task #${unrun}\\. Someone holds it\\.`)) })
-  }, 60_000)
-
-  it('releases the task and exits 130 when Ctrl-C stops it', async () => {
-    const id = await create('runs', 'a long build')
-    const running = start(['tasks', 'run', id, ...node('console.log("started"); setTimeout(() => {}, 60_000)')])
-    await until(() => running.printed.stdout.includes('started'), 'the command to start')
-    expect((await task(id)).task).toMatchObject({ state: 'claimed', epoch: 1 })
-    expect(await claimOn(id)).toHaveLength(1)
-    running.child.kill('SIGINT')
-    expect(await running.exited).toBe(130)
-    expect(running.printed).toEqual({ stdout: 'started\n', stderr: '' })
-    expect((await task(id)).task).toMatchObject({ state: 'ready', epoch: 1, claim: null })
-    expect(await claimOn(id)).toEqual([])
-  }, 60_000)
-
-  it("releases the task and exits 143 when a supervisor's SIGTERM stops it", async () => {
-    const id = await create('runs', 'a long deploy')
-    const running = start(['tasks', 'run', id, ...node('console.log("started"); setTimeout(() => {}, 60_000)')])
-    await until(() => running.printed.stdout.includes('started'), 'the command to start')
-    expect((await task(id)).task).toMatchObject({ state: 'claimed', epoch: 1 })
-    running.child.kill('SIGTERM')
-    expect(await running.exited).toBe(143)
-    expect(running.printed).toEqual({ stdout: 'started\n', stderr: '' })
-    expect((await task(id)).task).toMatchObject({ state: 'ready', epoch: 1, claim: null })
-    expect(await claimOn(id)).toEqual([])
-  }, 60_000)
-
-  it.concurrent('renews the claim while a long command runs, so a lease shorter than the command holds', async () => {
-    const id = await create('renews', 'a build longer than its lease')
-    const started = Date.now()
-    // A third of a 30s lease is 10s: the command outlasts one renewal.
-    const ran = await vb(['tasks', 'run', id, '--lease', '30s', '--result', 'built', ...node('setTimeout(() => {}, 12_000)')])
-    expect(ran).toEqual({ code: 0, stdout: `completed ${id}\n`, stderr: '' })
-    expect(Date.now() - started).toBeGreaterThan(11_000)
-    const renewed = (await events('renews')).filter((event) => event.type === 'task.renewed')
-    expect(renewed.map((event) => event.message?.id)).toEqual([id])
-    // The renewal asked for the same lease again, from when it renewed.
-    const { until: end } = renewed[0]!.payload as { until: string }
-    const lease = Date.parse(end) - Date.parse(renewed[0]!.createdAt)
-    expect(lease).toBeGreaterThan(29_000)
-    expect(lease).toBeLessThanOrEqual(30_000)
-    expect((await task(id)).task).toMatchObject({ state: 'completed', result: 'built' })
-  }, 60_000)
-
-  it.concurrent('stops the command and exits 1 once a renewal finds the claim lost', async () => {
-    const id = await create('loses', 'a build whose task is canceled under it')
-    const running = start(['tasks', 'run', id, '--lease', '30s', ...node('console.log("started"); setTimeout(() => { console.log("finished"); }, 40_000)')], asProfile('runner'))
-    await until(() => running.printed.stdout.includes('started'), 'the command to start')
-    // Its owner cancels the task from another terminal: the next renewal is told, and the command goes with it.
-    await ok(['tasks', 'cancel', id, 'no longer needed'])
-    expect(await running.exited).toBe(1)
-    expect(running.printed.stdout).toBe('started\n')
-    expect(running.printed.stderr).toBe(`error: Lost the claim on task #${id} while the command ran, so it was stopped.\n\n  See where the task stands:\n    vb read ${id}\n`)
-    expect((await task(id)).task).toMatchObject({ state: 'canceled', reason: 'no longer needed' })
-    expect(await claimOn(id)).toEqual([])
   }, 60_000)
 })
 

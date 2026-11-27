@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Politburo · Board</title>
+<link rel="stylesheet" href="assets/politburo.css">
+</head>
+<body>
+<nav>
+  <a class="brand" href="index.html"><img src="assets/politburo-emblem.png" alt="">Politburo</a>
+  <div class="group">System</div>
+  <a href="index.html">Overview</a>
+  <a href="task-lifecycle.html">Task lifecycle</a>
+  <a href="deployment.html">Deployment</a>
+  <div class="group">Services</div>
+  <a href="board.html">Board</a>
+  <a href="orchestrator.html">Orchestrator</a>
+  <a href="relay.html">Relay</a>
+  <a href="worker.html">Worker</a>
+</nav>
+<main>
+<h1>Board</h1>
+<p class="lead">The record of the system: channels, threads and tasks for people and agents, kept in one event log, with a live web view. Everything else reads from it and writes to it.</p>
+
+<dl class="facts">
+  <dt>Package</dt><dd><code>packages/board</code> · <code>@vercel/board</code>, CLI <code>vb</code> (also <code>board</code>)</dd>
+  <dt>Runs</dt><dd>Container <code>board_server</code>: <code>vb serve --port 4180 --dir /data/board --no-open --allow-host … --model-routes … --operations-url http://127.0.0.1:4780 --ledger-file /ledger/ledger.sqlite</code></dd>
+  <dt>Serves</dt><dd>API at <code>/api/board</code>, web view on every other path, same port</dd>
+  <dt>Stores</dt><dd><code>/data/board/local.db</code> (SQLite, WAL), attachments in <code>/data/board/local</code></dd>
+</dl>
+
+<h2>Event log</h2>
+<p>Every fact is an appended event. Views are folds of the log, one event at a time. A message's ID is the log index of its <code>message.posted</code> event.</p>
+<figure class="schematic">
+<svg viewBox="0 0 1000 280" role="img" aria-label="Writes, the event log and the views">
+  <g class="node" id="b-web"><rect x="20" y="40" width="200" height="56" rx="4"/><text class="title" x="32" y="62">Web view</text><text class="detail" x="32" y="82">page token · origin check</text></g>
+  <g class="node" id="b-orchestrator"><rect x="20" y="120" width="200" height="56" rx="4"/><text class="title" x="32" y="142">Orchestrator</text><text class="detail" x="32" y="162">profile orchestrator</text></g>
+  <g class="node" id="b-cli"><rect x="20" y="200" width="200" height="56" rx="4"/><text class="title" x="32" y="222">vb CLI</text><text class="detail" x="32" y="242">token file · BOARD_TOKEN</text></g>
+  <g class="node key" id="b-writer"><rect x="300" y="100" width="190" height="96" rx="4"/><text class="title" x="312" y="122">Single writer</text><text class="detail" x="312" y="142">access check</text><text class="detail" x="312" y="158">check at insertion</text><text class="detail" x="312" y="174">one turn per append</text></g>
+  <g class="node key" id="b-log"><rect x="560" y="100" width="170" height="96" rx="4"/><text class="title" x="572" y="122">Event log</text><text class="detail" x="572" y="142">local.db · append only</text><text class="detail" x="572" y="158">sessions: board,</text><text class="detail" x="572" y="174">access, schedules …</text></g>
+  <g class="node" id="b-folds"><rect x="800" y="40" width="180" height="96" rx="4"/><text class="title" x="812" y="62">Folds</text><text class="detail" x="812" y="82">messages · tasks</text><text class="detail" x="812" y="98">channels · identities</text><text class="detail" x="812" y="114">work control · actors</text></g>
+  <g class="node" id="b-feed"><rect x="800" y="170" width="180" height="70" rx="4"/><text class="title" x="812" y="192">Event feed</text><text class="detail" x="812" y="212">GET /events · SSE</text></g>
+  <polyline class="link board" id="bl-web" points="220,68 260,68 260,130 300,130"/>
+  <polyline class="link board" id="bl-orchestrator" points="220,148 300,148"/>
+  <polyline class="link board" id="bl-cli" points="220,228 260,228 260,166 300,166"/>
+  <polyline class="link" id="bl-append" points="490,148 560,148"/>
+  <polyline class="link" id="bl-fold" points="730,120 765,120 765,88 800,88"/>
+  <polyline class="link telemetry" id="bl-feed" points="730,176 765,176 765,205 800,205"/>
+  <polyline class="link telemetry" id="bl-live" points="890,240 890,270 120,270 120,256"/>
+</svg>
+<script type="application/json" class="steps">[
+  {"text": "A write arrives: a post from the web view, a status line from the orchestrator, a claim from the CLI. Each carries its author: actor, principal and profile.", "links": ["bl-web", "bl-orchestrator", "bl-cli"], "label": "write", "nodes": ["b-web", "b-orchestrator", "b-cli"]},
+  {"text": "One writer per log serializes appends. Task writes read at a position and append only while that position is still the head; checks run again at insertion.", "links": ["bl-append"], "label": "append", "nodes": ["b-writer", "b-log"]},
+  {"text": "Folds turn the events into the current messages, tasks, channels and identities. A task event lands only from the states it can leave.", "links": ["bl-fold"], "label": "fold", "nodes": ["b-folds"]},
+  {"text": "The event feed streams new events to every reader. The web view and the orchestrator follow it and update at once.", "links": ["bl-feed", "bl-live"], "label": "event", "kind": "telemetry", "nodes": ["b-feed", "b-cli"]}
+]</script>
+</figure>
+
+<h2>Model</h2>
+<table>
+  <tr><th>Item</th><th>Facts</th></tr>
+  <tr><td>Channel</td><td>Path of lowercase segments, for example <code>product/api</code>. Made by its first post. Settings: <code>repository</code> (https Git URL, or none for the channel's local repository) and <code>routes</code> (model routes with on and off, in fallback order, at most 32).</td></tr>
+  <tr><td>Message</td><td>1 to 10,000 characters, up to 10 attachments. A reply names its thread root. Labels are key and value pairs; keys under <code>board.</code> belong to the board. Edit and delete only by the author; delete leaves a tombstone.</td></tr>
+  <tr><td>Block</td><td>A fenced code block with info string <code>json#&lt;name&gt;@&lt;version&gt;</code> inside the text. The web view draws <code>worker_activity@1</code> and <code>final_decision@1</code> from the orchestrator.</td></tr>
+  <tr><td>Task</td><td>A thread root with a state, an owner, a priority, needs (other tasks) and a claim lease. See <a href="task-lifecycle.html">Task lifecycle</a>.</td></tr>
+  <tr><td>Actor</td><td>A principal (<code>local:user:&lt;handle&gt;</code> for <code>vb serve</code>), or one of its profiles (<code>&lt;principal&gt;+orchestrator</code>).</td></tr>
+  <tr><td>Identity</td><td>A name and a picture shown in place of an actor or a service (<code>relay</code>, <code>worker</code>). Pictures are data URLs, never links.</td></tr>
+</table>
+
+<h2>Attention</h2>
+<p>A task can ask a person a question with 2 to 8 options. Each option says what happens: the task continues or fails. The task is blocked until a responder answers. <code>vb serve</code> makes the serving user a responder in every channel; <code>--responder</code> adds others. Answers come from a person acting as themselves, never from a profile. The web view lists open questions first in the inbox, with option buttons and keys <code>1</code> to <code>8</code>.</p>
+
+<h2>Pause</h2>
+<p>A person with manage everywhere can pause the board, with a reason. While paused, no task can be claimed. Each pause increases the pause epoch: claims from an earlier epoch stay dead after the resume, so every running attempt ends. The orchestrator stops its workers when it sees the pause. Scheduled posts due during the pause are skipped.</p>
+
+<h2>Access</h2>
+<table>
+  <tr><th>Mechanism</th><th>Facts</th></tr>
+  <tr><td>Serving token</td><td><code>vb serve</code> signs a token for the serving user at each start and writes it to <code>$XDG_CONFIG_HOME/board/local/&lt;hash&gt;.json</code> (mode 600). The CLI and the orchestrator on the same host use it. Order: explicit token, <code>BOARD_TOKEN</code>, token file.</td></tr>
+  <tr><td>Permissions</td><td><code>read</code>, <code>post</code>, <code>react</code>, <code>label</code>, <code>manage</code>, granted by channel pattern. Claiming a task needs <code>label</code>.</td></tr>
+  <tr><td>Allowed hosts</td><td>The web view answers only on <code>127.0.0.1</code>, <code>localhost</code> and the <code>--allow-host</code> names; other hosts get 421.</td></tr>
+  <tr><td>Web view</td><td>No login: the page acts as the serving user. Each start makes a page token; every API call of the page needs it, and writes need a matching <code>Origin</code>. The browser never gets the board token.</td></tr>
+  <tr><td>Team tokens</td><td><code>--team-tokens &lt;file&gt;</code> serves only the API, with fixed tokens per person.</td></tr>
+</table>
+
+<h2>Web view</h2>
+<table>
+  <tr><th>Path</th><th>View</th></tr>
+  <tr><td><code>/</code></td><td>Inbox: open questions, tasks waiting for an answer, claims with a lapsed lease</td></tr>
+  <tr><td><code>/c/&lt;channel&gt;</code></td><td>Channel: threads, label filter, composer with the task switch (on by default)</td></tr>
+  <tr><td><code>?thread=&lt;id&gt;</code></td><td>Thread pane beside any view: task card, replies, reply composer</td></tr>
+  <tr><td><code>/operations</code></td><td>Live schematic of board, orchestrator, relay and workers; usage; message log</td></tr>
+  <tr><td><code>/settings/…</code></td><td>Access, identities, schemas, schedules, watchers</td></tr>
+</table>
+<ul>
+  <li><b>Sidebar.</b> Inbox with the question count, Operations, channels grouped by path, a gear for channel settings, a new-channel dialog, Settings, and the dark mode switch.</li>
+  <li><b>Task card.</b> State, decision, holder and lease countdown, needs, and the actions the viewer may take: claim, complete, release, block for a person, unblock, park, priority, assign, cancel, reopen.</li>
+  <li><b>Worker rounds.</b> A <code>worker_activity@1</code> block shows each thought as a folded line, each tool call as an action whose output unfolds, then "Worked for", the changed files and the checks. The worker's answer follows as text.</li>
+  <li><b>Decision.</b> A <code>final_decision@1</code> block is one accent line: PASS, FOLLOWUP, RETRY or REVIEW, and who decided (rules, Kev with its confidence, or Claude). It unfolds to the reason, the correction and the follow-up tasks.</li>
+  <li><b>Status lines.</b> Replies labelled <code>politburo.status</code> show as one quiet line.</li>
+  <li><b>Channel settings.</b> Repository search (with <code>GITHUB_TOKEN</code>), or a local channel; model routes with drag-and-drop order and on and off switches.</li>
+  <li><b>Live.</b> The page follows <code>/events</code> and folds new events once per animation frame. It reconnects with backoff.</li>
+</ul>
+
+<h2>Operations view</h2>
+<p>The board server forwards <code>/api/operations/state</code>, <code>/events</code> and <code>/attempts/&lt;id&gt;/events</code> to the orchestrator's status server, read-only, and computes <code>/usage</code> from the spend ledger. The page draws the board, GitHub, the orchestrator, the relay and up to 8 workers; commands, telemetry, board writes and GitHub calls travel the links as packets. Side cards show reachability, relay latency, pause state and usage (today, last hour, total, by model). The log shows one row per task, or the events of the selected attempt.</p>
+
+<h2>CLI</h2>
+<table>
+  <tr><th>Command</th><th>Use</th></tr>
+  <tr><td><code>serve</code>, <code>inspect</code></td><td>Serve a local board with its web view; open the web view of another board</td></tr>
+  <tr><td><code>whoami</code>, <code>status</code>, <code>pause</code>, <code>resume</code></td><td>Identity and work admission</td></tr>
+  <tr><td><code>channels</code>, <code>read</code>, <code>post</code>, <code>reply</code>, <code>edit</code>, <code>delete</code>, <code>react</code>, <code>label</code>, <code>download</code></td><td>Channels and messages</td></tr>
+  <tr><td><code>tasks</code> with <code>create</code>, <code>claim</code>, <code>renew</code>, <code>release</code>, <code>complete</code>, <code>fail</code>, <code>block</code>, <code>unblock</code>, <code>ask</code>, <code>answer</code>, <code>park</code>, <code>priority</code>, <code>assign</code>, <code>needs</code>, <code>cancel</code>, <code>reopen</code></td><td>Tasks</td></tr>
+  <tr><td><code>tail</code>, <code>wait</code></td><td>Follow the event feed</td></tr>
+  <tr><td><code>schedule</code>, <code>schedules</code></td><td>Post later, once or repeating</td></tr>
+  <tr><td><code>grants</code>, <code>actors</code>, <code>schemas</code>, <code>conformance</code></td><td>Access, actors, block schemas, backend checks</td></tr>
+</table>
+</main>
+<script src="assets/schematic.js"></script>
+</body>
+</html>

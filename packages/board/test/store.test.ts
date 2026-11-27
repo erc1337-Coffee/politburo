@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { AttentionView, BoardEventView, MessageView, ScheduleView, SchemaView, TaskView } from '../src/api/routes.ts'
 import { block } from '../src/contract/blocks.ts'
 import * as attentionStore from '../src/inspect/app/attention-store.ts'
-import { projectWork } from '../src/inspect/app/work.ts'
+import { inboxRows } from '../src/inspect/app/inbox-rows.ts'
 import * as store from '../src/inspect/app/store.ts'
 import { continues } from '../src/inspect/app/store.ts'
 import { boardWords, cadence, laterFields, localInput, principalName, refusal, span, timingWords, until } from '../src/inspect/app/words.ts'
@@ -158,7 +158,7 @@ describe('the inspector store', () => {
   })
 
   it('never shows a post twice when the stream beats the board\'s answer', () => {
-    const post: store.Pending = { key: 'k', channel: 'ops', re: null, text: 'four', noSync: false, labels: {}, createdAt: '', error: null }
+    const post: store.Pending = { key: 'k', channel: 'ops', re: null, text: 'four', labels: {}, createdAt: '', error: null }
     const other: store.Pending = { ...post, key: 'k2', text: 'five' }
     let state: store.State = { ...start, pending: [post, other] }
     state = store.applyEvent(state, postedEvent(message(17, { text: 'four' })))
@@ -234,7 +234,7 @@ describe('the inspector store', () => {
 
   it('groups a channel into threads, with pending posts', () => {
     let state = store.merge(start, [message(1), message(2, { re: '1' }), message(3), message(4, { channel: 'other' })])
-    state = { ...state, pending: [{ key: 'k', channel: 'ops', re: '3', text: 'soon', noSync: false, labels: {}, createdAt: '', error: null }] }
+    state = { ...state, pending: [{ key: 'k', channel: 'ops', re: '3', text: 'soon', labels: {}, createdAt: '', error: null }] }
     const { threads } = store.channelThreads(state, 'ops')
     expect(threads.map((t) => [t.root.id, t.replies.map((r) => r.id), t.pending.length])).toEqual([
       ['1', ['2'], 0],
@@ -392,8 +392,7 @@ it('shows only open decisions, oldest first, from readable task roots', () => {
     state = withRead(state, canceled, here(request(canceled, 'canceled')))
     const prior = withRead(seeded([absent]), absent, here(request(absent)))
     state = { ...state, attention: { ...prior.attention, ...state.attention } }
-    const { groups } = projectWork(state, null, viewer([], { may: (perm, channel) => perm === 'read' && channel === 'work' }), NOW)
-    const needs = groups.find(({ group }) => group === 'needs')!.rows.filter(({ reason }) => reason === 'attention answer needed')
+    const needs = inboxRows(state, NOW).get('needs')!.filter(({ reason }) => reason === 'attention answer needed')
     expect(needs.map(({ root }) => root.id)).toEqual(['9', '2'])
   })
 
@@ -600,8 +599,8 @@ it('shows only open decisions, oldest first, from readable task roots', () => {
   })
 
   it('says which board it is: its name and host where it has a name, else its host and where on it', () => {
-    // A team's board in Vercel's API has a name, and every one is on the same host.
-    expect(boardWords({ url: 'https://api.vercel.com/v1/messageboard/boards/brd_1?teamId=team_1', name: 'General' })).toEqual({ name: 'General', at: 'api.vercel.com' })
+    // A board with a name is known by it, on its host.
+    expect(boardWords({ url: 'https://board.acme.com/api/board', name: 'General' })).toEqual({ name: 'General', at: 'board.acme.com' })
     // A board mounted on a deployment is known by its host, and where it's mounted there.
     expect(boardWords({ url: 'https://board.acme.com/api/board' })).toEqual({ name: 'board.acme.com', at: '/api/board' })
     expect(boardWords({ url: 'http://localhost:4000/' })).toEqual({ name: 'localhost:4000', at: null })
@@ -610,7 +609,7 @@ it('shows only open decisions, oldest first, from readable task roots', () => {
   })
 
   it("keeps a post to send later through a message that lands saying the same", () => {
-    const post: store.Pending = { key: 'k', channel: 'ops', re: null, text: 'standup', noSync: false, labels: {}, createdAt: '', error: null }
+    const post: store.Pending = { key: 'k', channel: 'ops', re: null, text: 'standup', labels: {}, createdAt: '', error: null }
     const later: store.Pending = { ...post, key: 'k2', later: { in: '2h' } }
     // Yours, in the same place, saying the same: it stands for the post on its way, never for the one to send later.
     const state = store.applyEvent({ ...start, pending: [later, post] }, postedEvent(message(17, { text: 'standup' })))

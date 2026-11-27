@@ -4,7 +4,12 @@ import {
   type DrainableServer,
   type SchedulerAppendTask,
 } from 'experimental-a2/server'
-import { waitUntil } from '../src/server/wait-until.ts'
+
+/** Keeps `task` running after the response through the request context A2 reads, where one is set. */
+function waitUntil(task: Promise<unknown>): void {
+  const context = Reflect.get(globalThis, Symbol.for('@vercel/request-context')) as { get?(): { waitUntil?(task: Promise<unknown>): void } | undefined } | undefined
+  context?.get?.()?.waitUntil?.(task)
+}
 
 /** A queue that drains right away and holds timers until `fire` delivers the due ones. */
 export function fakeQueue() {

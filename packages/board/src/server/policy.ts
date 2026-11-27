@@ -1,4 +1,3 @@
-import { sha256 } from '../client/ids.ts'
 import { compileAccess, parseCan, PERMISSIONS, type Access, type Level, type Permission } from './access.ts'
 import { explainGrants } from './grants.ts'
 import { resolveActor } from './actors.ts'
@@ -22,7 +21,9 @@ import {
 } from './auth.ts'
 import type { Identity, Trust } from './backend.ts'
 import { HttpError, RejectedError, unauthorized } from './errors.ts'
-import type { ProjectIdentity } from './identity.ts'
+
+/** The project and team discovery names for a board: null where it names none. */
+export type ProjectIdentity = { projectId: string | null; teamId: string | null }
 
 /** What decides a channel for a principal: the winning pattern and level, the grants there or the rule, and what they give. */
 export type Decided = { pattern: string | null; over: string[]; level: Level | null; grants: StoredGrant[]; permissions: Permission[] }
@@ -43,7 +44,7 @@ export type PolicyOptions = {
   authenticate?: Authenticate
 }
 
-/** What a build of board finds in its environment for a board's policy: Node's verifies OIDC tokens and reads the board's Vercel project. */
+/** What a build of board finds in its environment for a board's policy: Node's verifies OIDC tokens. */
 export type Serving = {
   oidcTokens(): Authenticate
   ownProjectId(): Promise<string | null>
@@ -51,21 +52,18 @@ export type Serving = {
   discoveryIdentity(headers: Headers | null): Promise<ProjectIdentity>
 }
 
-/** Whether a bearer belongs to the board's joined credential namespace, valid or not. */
-export const isJoinedCredential = (credential: string | null): credential is string => credential?.startsWith('vbj_') === true
-
 /** board()'s policy: who each request is, and what principals may do, now and at every send and match. */
 export type Policy = ReturnType<typeof createPolicy>
 
 /**
  * The policy a board's options say: verifying requests, and what they and the principals its
  * backend stores may do. `keeps`: the backend keeps the board, so it serves requests; one that
- * uses another board's answers only wake-ups and webhooks on Vercel's, and nothing at `BOARD_URL`.
+ * uses another board's answers nothing itself.
  */
 export function createPolicy(options: PolicyOptions, keeps: boolean, serving: (() => Promise<Serving>) | null, trust: Trust | null = null) {
   const grants = trust ? () => trust.grants() : null
 
-  /** The board's own Vercel project and team, from the environment, asked once. */
+  /** The board's own project and team, as its serving build names them, asked once. */
   let own: Promise<{ id: string | null; teamId: string | null }> | null = null
   const project = () =>
     (own ??= (async () => {
@@ -147,11 +145,6 @@ export function createPolicy(options: PolicyOptions, keeps: boolean, serving: ((
   }
 
   async function verify(request: CallerRequest): Promise<Principal> {
-    if (trust?.joined && isJoinedCredential(request.credential)) {
-      const found = /^vbj_[A-Za-z0-9_-]{43}$/.test(request.credential) ? await trust.joined(await sha256(request.credential), request.audience) : null
-      if (!found) throw unauthorized('invalid board credential')
-      return { id: found.id, handle: found.name, kind: 'person', expiresAt: null, facts: { issuer: 'joined', iss: '', claims: {} } }
-    }
     if (request.credential !== null) await learnIssuers(request.credential)
     const authenticate = await verifier()
     let result: Awaited<ReturnType<Authenticate>>

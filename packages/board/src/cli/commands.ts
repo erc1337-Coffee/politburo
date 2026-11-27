@@ -1,5 +1,5 @@
 // `@vercel/board/cli/commands`: board's CLI as data. Its parser and its help read this, and so can
-// another CLI that runs it (`vercel board` renders board's help with its own renderer). It runs no
+// another CLI that runs it (rendering board's help with its own renderer). It runs no
 // command and imports only command specs, so a host can load it on every start.
 
 import * as fork from './politburo-command-specs.ts'
@@ -47,9 +47,7 @@ export type CliCommand = {
   readonly filtersNote?: string
   readonly examples: readonly CliExample[]
   readonly subcommands?: readonly CliCommand[]
-  /** Its arguments come before its subcommand, as in `sources <key> read <target>`. */
-  readonly argumentsBeforeSubcommand?: true
-  /** It does something without a subcommand too, as `sources` lists the sync entries. */
+  /** It does something without a subcommand too. */
   readonly runsWithoutSubcommand?: true
   /** The subcommand its command runs when given none, as `channels` runs `channels list`. */
   readonly default?: true
@@ -66,15 +64,11 @@ export const options = {
   by: { type: 'string', value: 'handle', description: 'by an author: a handle, me, or an actor ID' },
   mentions: { type: 'string', value: '@handle', optionalValue: true, description: 'mentioning a handle or email, or you without one' },
   label: { type: 'string', multiple: true, value: 'k[=v|w]', description: "with a label on the message or its thread's root" },
-  source: { type: 'string', value: 'source', description: 'from a source: a sync key such as slack, or board' },
+  source: { type: 'string', value: 'source', description: "from a source, as a message's from names it: board for the board itself" },
   text: { type: 'string', value: 'words', description: 'containing this text, as one phrase (a substring, not word search)' },
   after: { type: 'string', value: 'id', description: 'only what came after a message or a cursor (read and wait print one)' },
   // Global: every command takes them.
   url: { type: 'string', value: 'url', description: "the board at this URL, not the one the environment points at" },
-  scope: { type: 'string', value: 'team', description: "a team's board in Vercel's API, by its slug or ID" },
-  name: { type: 'string', value: 'board', description: "the team's board with this name, on --scope's team" },
-  ensure: { type: 'boolean', description: 'with --name: make that board if the team has none by that name' },
-  team: { type: 'string', value: 'team', description: 'the same as --scope', hidden: true },
   as: { type: 'string', value: 'profile', description: "write as a profile, such as an agent's name" },
   avatar: { type: 'string', value: 'url', description: "the profile's avatar, with --as" },
   json: { type: 'boolean', description: 'JSON, for programs' },
@@ -85,8 +79,6 @@ export const options = {
   last: { type: 'string', value: 'N', description: "start with the feed's newest N events (1 to 100)" },
   before: { type: 'string', value: 'older', description: "a channel's threads before a page: the older its read printed" },
   'idempotency-key': { type: 'string', value: 'key', description: 'sending the same one again posts once' },
-  sync: { type: 'string', multiple: true, value: 'target', description: 'sync the new thread to a target too, e.g. slack:#incidents' },
-  'no-sync': { type: 'boolean', description: 'keep it on the board: sync it nowhere' },
   attach: { type: 'string', multiple: true, value: 'file', description: 'attach a file: up to 10 per message, each up to 100 MB (4 MB on some boards)' },
   // What a command takes from a file: a message's text, a plan of tasks, several grants, a schema. Each says which.
   file: { type: 'string', value: 'path', description: 'from a file: - reads stdin' },
@@ -102,7 +94,6 @@ export const options = {
   timeout: { type: 'string', value: 'duration', description: 'how long to wait: 30s, 10m, or a bare number of seconds (default: 30m)' },
   'no-open': { type: 'boolean', description: "don't open the browser" },
   'allow-host': { type: 'string', multiple: true, value: 'host', description: 'also answer requests for this host, from a proxy in front: whoever reaches it there acts as you' },
-  tailscale: { type: 'string', multiple: true, value: 'host', description: "also answer requests for this host, the board's name on your tailnet behind tailscale serve: whoever Tailscale says is calling is a person on the board" },
   in: { type: 'string', value: 'duration', description: 'once, this long from now, e.g. 90s, 5m, 1d' },
   at: { type: 'string', value: 'time', description: 'at a time: once, or with --every, the first' },
   every: { type: 'string', value: 'duration', description: 'repeating at this interval, e.g. 30m' },
@@ -111,7 +102,6 @@ export const options = {
   times: { type: 'string', value: 'N', description: 'repeating this many times' },
   can: { type: 'string', multiple: true, value: 'pattern=perms', description: 'what they may do, repeated: perms, all, or none' },
   'lock-me-out': { type: 'boolean', description: "go ahead with a change you couldn't take back" },
-  ...fork.inviteOptions,
   // Grants: whom one names, each flag a principal, with the modifiers after it.
   user: { type: 'string', multiple: true, value: 'email', description: 'a person on the team' },
   project: { type: 'string', multiple: true, short: 'p', value: 'name|id', description: "a project's deployments" },
@@ -154,7 +144,7 @@ export const options = {
   dir: { type: 'string', value: 'dir', description: 'where the board keeps its log (default: .board/)' },
   ...fork.teamOptions,
   'no-inspect': { type: 'boolean', description: "don't start the inspector" },
-  ...fork.swarmOptions,
+  ...fork.serveOptions,
   // Tasks.
   state: { type: 'string', value: 'state', description: 'in a state: waiting, ready, claimed, blocked, completed, failed, canceled, open, or all (default: open)' },
   needs: { type: 'string', multiple: true, value: 'id', description: 'wait for a task to complete first' },
@@ -169,13 +159,6 @@ export const options = {
   ...fork.attentionOptions,
   pool: { type: 'boolean', description: 'back to anyone who may claim it' },
   none: { type: 'boolean', description: 'wait for nothing' },
-  commit: { type: 'string', value: 'sha', description: 'the full lowercase Git commit ID' },
-  round: { type: 'string', value: 'N', description: 'the round shown by tasks evidence' },
-  artifact: { type: 'string', value: 'ref', description: 'a reference to the submitted or attested artifact' },
-  'expires-at': { type: 'string', value: 'utc', description: 'expiry as an ISO UTC timestamp' },
-  'if-version': { type: 'string', value: 'N', description: 'the dependent task version shown by read --json' },
-  // What a turn-end hook an earlier board installed still passes to `hook`.
-  agent: { type: 'string', value: 'name', description: "the agent whose turn ended", hidden: true },
 } as const satisfies Record<string, Spec>
 
 export type OptionName = keyof typeof options
@@ -192,7 +175,7 @@ export const option = (name: OptionName, description?: string, value?: string): 
 export const filters: readonly CliOption[] = (['re', 'by', 'source', 'label', 'text', 'mentions', 'after'] as const).map((name) => option(name))
 
 /** What every command takes. */
-export const globalOptions: readonly CliOption[] = (['url', 'scope', 'name', 'ensure', 'team', 'as', 'avatar', 'json', 'help', 'version'] as const).map((name) =>
+export const globalOptions: readonly CliOption[] = (['url', 'as', 'avatar', 'json', 'help', 'version'] as const).map((name) =>
   option(name),
 )
 
@@ -399,14 +382,13 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
     description: 'the latest threads, one each (root, replies, latest reply), or one thread, every message',
     arguments: [
       {
-        name: 'channel|id|link',
+        name: 'channel|id',
         required: false,
-        description: "a channel (every channel without one, but not on Vercel's board), a message's ID, or a Slack or GitHub link the board synced",
+        description: "a channel (every channel without one), or a message's ID",
       },
     ],
     options: [option('limit', 'threads to list (default: 50, at most 500)'), option('before')],
     filters: true,
-    filtersNote: "Vercel's board reads one channel or thread here, with only --re, --label, and --after, or on a channel --mentions and --text, which look through one page of its threads: it keeps no search index",
     examples: [
       { name: "list a channel's latest threads", value: 'read dev' },
       { name: 'read one thread, every message', value: 'read 812' },
@@ -422,7 +404,7 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
     brief: '[--label k=v]... [--attach file]...',
     description: 'a new thread in a channel, or with an ID, a reply in its thread',
     arguments: [{ name: 'channel|id', required: true, description: 'a channel, or a message ID to reply in its thread' }, text()],
-    options: [option('label', 'label it', 'k=v'), option('file', 'the text, from a file: - reads stdin'), option('schema'), option('attach'), option('sync', "sync the new thread to a target too, e.g. slack:#incidents (not on Vercel's board yet)"), option('no-sync'), option('idempotency-key'), option('after', AFTER)],
+    options: [option('label', 'label it', 'k=v'), option('file', 'the text, from a file: - reads stdin'), option('schema'), option('attach'), option('idempotency-key'), option('after', AFTER)],
     examples: [
       { name: 'start a thread', value: 'post dev "deploys are green again"' },
       { name: 'start a labeled thread', value: 'post dev "checkout times out" --label kind=bug' },
@@ -434,7 +416,7 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
     name: 'reply',
     description: 'a reply in a thread',
     arguments: [id('the ID of a message in the thread'), text()],
-    options: [option('label', 'label it', 'k=v'), option('file', 'the text, from a file: - reads stdin'), option('schema'), option('attach'), option('idempotency-key'), option('no-sync'), option('after', AFTER)],
+    options: [option('label', 'label it', 'k=v'), option('file', 'the text, from a file: - reads stdin'), option('schema'), option('attach'), option('idempotency-key'), option('after', AFTER)],
     examples: [
       { name: 'reply in a thread', value: 'reply 812 "on it"' },
       { name: 'reply with a label', value: 'reply 812 "fixed in a1b2c3" --label step=fix' },
@@ -447,7 +429,7 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
     brief: '(--in 5m | --at time | --every 30m)',
     description: 'post later, as you: once (--in or --at), or repeating (--every) until a stop or until canceled',
     arguments: [{ name: 'channel|id', required: true, description: 'a channel, or a message ID to reply in its thread' }, text()],
-    options: [option('in'), option('at'), option('every'), option('until'), option('for'), option('times'), option('label', 'label it', 'k=v'), option('file', 'the text, from a file: - reads stdin'), option('schema'), option('attach', "attach a file to what it posts (not on Vercel's board yet)"), option('no-sync')],
+    options: [option('in'), option('at'), option('every'), option('until'), option('for'), option('times'), option('label', 'label it', 'k=v'), option('file', 'the text, from a file: - reads stdin'), option('schema'), option('attach', 'attach a file to what it posts')],
     examples: [
       { name: 'reply in a thread tomorrow', value: 'schedule 812 "still broken?" --in 1d' },
       { name: 'post every morning', value: 'schedule dev "standup" --at 2026-11-02T09:00:00Z --every 1d' },
@@ -515,64 +497,6 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
   },
   {
     group: 'messages',
-    name: 'typing',
-    description: "show typing in the thread's synced platform threads",
-    arguments: [id(), { name: 'status', required: false, description: 'what Slack shows instead of "Typing…"' }],
-    options: [],
-    examples: [{ name: 'show typing while you work', value: 'typing 812 "looking into it"' }],
-  },
-  {
-    group: 'messages',
-    name: 'sync',
-    description: "where the thread is synced, or with a target, attach it there (backfilling it)",
-    arguments: [id(), { name: 'target', required: false, description: 'where to sync it, e.g. slack:#incidents' }],
-    options: [],
-    examples: [
-      { name: 'list where a thread is synced', value: 'sync 812' },
-      { name: 'sync a thread to a Slack channel', value: 'sync 812 slack:#incidents' },
-    ],
-  },
-  {
-    group: 'messages',
-    name: 'inbox',
-    description: 'raw platform events, for debugging sync',
-    arguments: [
-      { name: 'key', required: true, description: 'the sync entry, e.g. slack; use raw for read, ack, archive, or raw' },
-      { name: 'channel', required: false, description: 'the board channel its events went to' },
-    ],
-    options: [option('limit', 'events to list')],
-    runsWithoutSubcommand: true,
-    examples: [{ name: "list Slack's latest events", value: 'inbox slack' }],
-    subcommands: fork.inboxCommands(option),
-  },
-  {
-    group: 'messages',
-    name: 'sources',
-    description: "the board's sources: its sync entries (slack, github, …)",
-    arguments: [{ name: 'key', required: false, description: 'a sync entry, e.g. slack' }],
-    options: [],
-    runsWithoutSubcommand: true,
-    argumentsBeforeSubcommand: true,
-    examples: [{ name: "list the board's sources", value: 'sources' }],
-    subcommands: [
-      {
-        name: 'read',
-        description: "read a source's channel, thread, or message link without syncing it (full access only)",
-        arguments: [{ name: 'target', required: true, description: "a channel ('#general'), a thread, or a message link" }],
-        options: [option('limit', 'messages to read'), option('after', "where the last read left off: the cursor it printed")],
-        examples: [{ name: 'read a Slack channel', value: "sources slack read '#general'" }, { name: "read a Linear project's issues", value: 'sources linear read https://linear.app/acme/project/checkout-a1b2c3' }],
-      },
-      {
-        name: 'join',
-        description: 'add the app to a public channel so it can be read, where the board opted in (full access only)',
-        arguments: [{ name: 'channel', required: true, description: 'a channel or its link' }],
-        options: [],
-        examples: [{ name: 'join a Slack channel', value: "sources slack join '#general'" }],
-      },
-    ],
-  },
-  {
-    group: 'messages',
     name: 'download',
     description: "save an attachment (its name, here, by default; - for stdout)",
     arguments: [
@@ -625,7 +549,6 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
           option('lease', 'with --claim: how long to hold it'),
           option('binding', 'with --claim: assignment metadata as JSON'),
           option('file', 'a plan, from a JSON file (- reads stdin): an array of tasks, each { key?, text, labels?, needs?, for?, priority?, noSync?, attachments? }, all made, in as many writes as it takes'),
-          option('no-sync'),
           option('idempotency-key', 'sending the same one again makes it once'),
         ],
         examples: [
@@ -647,19 +570,6 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
         ],
       },
       {
-        name: 'run',
-        description: 'claim a task and run a command: complete on exit 0, otherwise fail a legacy task or release staged work',
-        arguments: [
-          { name: 'id|channel', required: true, description: "a task's ID, or with --ready a channel or a path prefix" },
-          { name: 'cmd', required: true, multiple: true, description: 'the command, after --: it gets BOARD_TASK, the task\'s ID' },
-        ],
-        options: [option('result'), option('ready'), option('label', 'with --ready: one whose root has this label, one value exactly', 'k=v'), option('from'), option('wait'), option('lease'), option('binding')],
-        examples: [
-          { name: 'run the tests as a task', value: 'tasks run 812 --result "tests pass" -- make test' },
-          { name: 'work the next fix', value: 'tasks run --ready work/ --label step=fix -- ./fix.sh' },
-        ],
-      },
-      {
         name: 'renew',
         description: 'extend the lease of a task you hold, from now',
         arguments: [task()],
@@ -677,43 +587,8 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
         name: 'complete',
         description: 'finish a legacy task or hand off staged work, with the claim you hold',
         arguments: [task(), { name: 'result', required: false, description: 'what it came to, in a line' }],
-        options: [option('commit')],
-        examples: [{ name: 'complete a task', value: 'tasks complete 812 "fixed in a1b2c3, tests pass"' }],
-      },
-      {
-        name: 'submit',
-        description: 'submit the commit for a task you hold',
-        arguments: [task()],
-        options: [option('commit'), option('artifact')],
-        examples: [{ name: 'submit a commit', value: 'tasks submit 812 --commit "$COMMIT" --artifact builds/42' }],
-      },
-      {
-        name: 'evidence',
-        description: 'show the current submission, evidence, overrides, and recorded releases',
-        arguments: [task()],
         options: [],
-        examples: [{ name: 'see what was recorded', value: 'tasks evidence 812' }],
-      },
-      {
-        name: 'attest',
-        description: 'record a verdict for a gate on the current submission',
-        arguments: [task(), { name: 'gate', required: true, description: 'tests, review, browserQA, acceptance, or publication' }, { name: 'verdict', required: true, description: 'pass or fail' }],
-        options: [option('commit'), option('round'), option('artifact'), option('expires-at')],
-        examples: [{ name: 'record passing tests', value: 'tasks attest 812 tests pass --commit "$COMMIT" --round 1 --artifact ci/42' }],
-      },
-      {
-        name: 'override',
-        description: 'waive a gate until a UTC timestamp, with an audited reason',
-        arguments: [task(), { name: 'gate', required: true, description: 'the gate to waive' }, { name: 'reason', required: true, description: 'why, in a line' }],
-        options: [option('commit'), option('round'), option('expires-at')],
-        examples: [{ name: 'waive the tests until a time', value: 'tasks override 812 tests "CI offline" --commit "$COMMIT" --round 1 --expires-at "$UNTIL"' }],
-      },
-      {
-        name: 'resolve',
-        description: 'release a dependency with passing evidence from the prerequisite',
-        arguments: [task(), { name: 'need', required: true, description: 'the prerequisite task ID' }, { name: 'evidence', required: true, description: 'the evidence ID on the prerequisite' }],
-        options: [option('if-version')],
-        examples: [{ name: 'release an edge with evidence', value: 'tasks resolve 813 812 821 --if-version 816' }],
+        examples: [{ name: 'complete a task', value: 'tasks complete 812 "fixed in a1b2c3, tests pass"' }],
       },
       {
         name: 'fail',
@@ -795,33 +670,6 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
       },
     ],
   },
-  fork.agentsCommand(option, id, task),
-  {
-    group: 'agents',
-    name: 'hooks',
-    description: 'the turn-end hooks an earlier board installed',
-    arguments: [],
-    options: [],
-    examples: [],
-    subcommands: [
-      {
-        name: 'uninstall',
-        description: 'remove the turn-end hooks an earlier board installed, from every agent or the ones named',
-        arguments: [{ name: 'agent', required: false, multiple: true, description: 'claude, codex, cursor, or pi' }],
-        options: [],
-        examples: [{ name: 'remove every hook', value: 'hooks uninstall' }],
-      },
-    ],
-  },
-  {
-    group: 'agents',
-    name: 'hook',
-    description: 'what an earlier turn-end hook runs: it does nothing now',
-    arguments: [{ name: 'event', required: false, multiple: true }],
-    options: [option('agent')],
-    examples: [],
-    hidden: true,
-  },
   {
     group: 'live',
     name: 'tail',
@@ -864,11 +712,9 @@ export function usage(path: readonly CliCommand[]): string {
   path.forEach((command, at) => {
     const last = at === path.length - 1
     words.push(command.name)
-    // A parent's arguments show before its subcommand only when it takes them there, and then the subcommand needs them.
-    if (last || command.argumentsBeforeSubcommand)
+    if (last)
       for (const argument of command.arguments) {
-        const required = argument.required || !last
-        words.push(`${required ? `<${argument.name}>` : `[${argument.name}]`}${argument.multiple ? '...' : ''}`)
+        words.push(`${argument.required ? `<${argument.name}>` : `[${argument.name}]`}${argument.multiple ? '...' : ''}`)
       }
   })
   if (path.at(-1)?.filters) words.push('[filters]')

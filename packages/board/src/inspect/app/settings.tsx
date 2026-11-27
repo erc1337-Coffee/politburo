@@ -1,7 +1,7 @@
-import { Check, ChevronsUpDown, RefreshCw } from 'lucide-react'
+import { Check, ChevronsUpDown } from 'lucide-react'
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import type { InboxEntry, Me } from '../../api/routes.ts'
+import type { Me } from '../../api/routes.ts'
 import * as board from './board.ts'
 import { buttonSoundsEnabled, setButtonSounds } from './button-feedback.ts'
 import { Access } from './grants.tsx'
@@ -14,7 +14,7 @@ import { AskForm, Header, Menu, MenuItem, MenuSeparator, nativeMenu, Panel, Unli
 import { cadence, firstLine, said, shownName, until } from './words.ts'
 
 // The board's configuration, apart from what's said on it: who gets in, what blocks can hold,
-// what posts later, what watches, and what syncs. One view, a tab per section.
+// what posts later, and what watches. One view, a tab per section.
 
 const ActionsSlot = createContext<HTMLElement | null>(null)
 
@@ -51,13 +51,12 @@ export function Settings(props: { state: State; viewer: Viewer; now: number; lea
       </nav>
       <ActionsSlot.Provider value={slot}>
         <div className="page">
-          <DeveloperIdentity me={state.me!} channels={Object.keys(state.channels).sort()} />
+          <DeveloperIdentity me={state.me!} />
           {section === 'access' && <Access state={state} viewer={viewer} where={props.where} />}
           {section === 'identities' && <IdentitiesSection state={state} viewer={viewer} />}
           {section === 'schemas' && <Schemas state={state} viewer={viewer} selected={props.open} />}
           {section === 'schedules' && <Schedules state={state} viewer={viewer} now={props.now} all={props.where.params.get('show') === 'all'} />}
           {section === 'watchers' && <Watchers state={state} />}
-          {section === 'sync' && <Sync key={props.open} state={state} entry={props.open} />}
         </div>
       </ActionsSlot.Provider>
       </div>
@@ -65,47 +64,19 @@ export function Settings(props: { state: State; viewer: Viewer; now: number; lea
   )
 }
 
-function DeveloperIdentity({ me, channels }: { me: Me; channels: string[] }) {
-  const [open, setOpen] = useState(false)
-  const [pick, setPick] = useState('')
-  const channel = channels.includes(pick) ? pick : channels[0]
-  const [agents, setAgents] = useState<string[]>([])
-  const [problem, setProblem] = useState<string | null>(null)
+function DeveloperIdentity({ me }: { me: Me }) {
   const [editing, setEditing] = useState<board.Profile | null>(null)
   const anchor = useRef<HTMLDivElement>(null)
   const remembered = (name: string) => {
     const avatar = board.avatarOf(name)
     return avatar ? { name, avatar } : { name }
   }
-  useEffect(() => {
-    setAgents([])
-    setProblem(null)
-    if (!open || channel === undefined) return
-    let current = true
-    void board.listProfiles(channel).then(
-      (profiles) => { if (current && profiles !== undefined) setAgents(profiles) },
-      (error) => { if (current) setProblem(said(error)) },
-    )
-    return () => { current = false }
-  }, [open, channel, me])
   return (
-    <details className="developer-identity" onToggle={(event) => setOpen(event.currentTarget.open)}>
+    <details className="developer-identity">
       <summary>developer options</summary>
       <div className="profile-options" ref={anchor}>
-        {channels.length > 1 && (
-          <label>registry channel{' '}
-            <select value={channel} onChange={(event) => setPick(event.target.value)}>
-              {channels.map((path) => <option key={path} value={path}>#{path}</option>)}
-            </select>
-          </label>
-        )}
         <Menu className="act" title="post as" trigger={<>post as… <ChevronsUpDown size={13} /></>}>
           {!board.named && <MenuItem onClick={() => void board.setProfile(null)}>act as yourself</MenuItem>}
-          {agents.map((name) => (
-            <MenuItem key={name} onClick={() => void board.setProfile(remembered(name))}>
-              <span className="choice">{name}{me.profile === name && <Check size={13} />}</span>
-            </MenuItem>
-          ))}
           <MenuSeparator />
           {me.profile !== null && <MenuItem onClick={() => setEditing(remembered(me.profile!))}>change name or avatar…</MenuItem>}
           <MenuItem onClick={() => setEditing({ name: '' })}>another profile…</MenuItem>
@@ -122,7 +93,6 @@ function DeveloperIdentity({ me, channels }: { me: Me; channels: string[] }) {
             onSubmit={({ name, avatar }) => void board.setProfile({ name: name!, ...(avatar ? { avatar } : {}) })}
           />}
         </Panel>
-        {problem && <span className="error-text">{problem}</span>}
       </div>
     </details>
   )
@@ -185,7 +155,7 @@ function Watchers({ state }: { state: State }) {
           <section key={registration.owner} className="registration" {...nativeMenu}>
             <h3>
               <b>{nameOf(state, registration.owner)}</b>
-              {registration.path ? ` · woken at ${registration.path}${registration.branch ? ` (${registration.branch})` : ''}` : registration.url ? ` · woken at ${registration.url}` : ' · pulls on its own'}
+              {' · pulls on its own'}
             </h3>
             {Object.entries(registration.watch).map(([id, watcher]) => (
               <div key={id} className="watch-row">
@@ -193,69 +163,8 @@ function Watchers({ state }: { state: State }) {
                 <code>{watcher.tail}</code>
               </div>
             ))}
-            {registration.sync.map((entry) => (
-              <div key={entry.key} className="watch-row">
-                <span className="watch-id">{entry.key}</span>
-                <span className="faint">syncs {entry.platform}</span>
-              </div>
-            ))}
           </section>
         ))}
-    </>
-  )
-}
-
-// --- sync --------------------------------------------------------------------------------------
-
-/** The board's sync entries, and each one's raw events: what the platform sent, newest first. Not on the board's log, so not live. */
-function Sync({ state, entry }: { state: State; entry: string | null }) {
-  const entries = state.discovery?.sync ?? []
-  const key = entry ?? entries[0]?.key ?? null
-  const [events, setEvents] = useState<InboxEntry[] | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const load = () => {
-    if (key === null) return
-    setError(null)
-    board.loadInbox(key).then(setEvents, (e: Error) => setError(e.message))
-  }
-  useEffect(() => {
-    setEvents(null)
-    load()
-  }, [key])
-  if (entries.length === 0 || key === null) return <p className="empty">this board syncs nothing</p>
-  return (
-    <>
-      <Actions>
-        <button className="tool" type="button" title="refresh" onClick={load}>
-          <RefreshCw size={14} strokeWidth={1.75} />
-        </button>
-      </Actions>
-      <nav className="tabs plain">
-        {entries.map((one) => (
-          <Link key={one.key} to={`/settings/sync/${one.key}`} className="tab" current={one.key === key}>
-            {one.key}
-            {one.platform !== one.key && <span className="faint"> {one.platform}</span>}
-          </Link>
-        ))}
-      </nav>
-      {error && <p className="empty error">{error}</p>}
-      {!error && events === null && <p className="empty">loading…</p>}
-      {events?.length === 0 && <p className="empty">no events yet</p>}
-      {events?.map((row) => {
-        const event = row.event as { kind: string; text?: string; type?: string; emoji?: string; author?: { handle?: string } }
-        return (
-          <div key={row.id} className="inbox-row">
-            <Ago iso={row.createdAt} />
-            <span><span className="badge">{event.kind}</span></span>
-            <div>
-              <div>
-                <span className="author">{event.author?.handle ?? '—'}</span> {event.text ?? event.type ?? event.emoji ?? ''}
-              </div>
-              <pre>{row.channel} · {row.event.thread}</pre>
-            </div>
-          </div>
-        )
-      })}
     </>
   )
 }

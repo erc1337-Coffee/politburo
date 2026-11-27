@@ -3,20 +3,19 @@ import type { Batch, Fact } from './oracles.ts'
 import type { Sim } from './sim.ts'
 
 type Payload = {
-  id?: string | number; by?: { principal?: string }; epoch?: number; round?: number; until?: string
+  id?: string | number; by?: { principal?: string }; epoch?: number; until?: string
   needs?: (string | number)[]; waiting?: boolean; work?: string; to?: string
 }
 
 /** Keep a normalized projection: no claim proofs, credentials, or random A2 event IDs. */
 function fact(type: string, payload: unknown): Fact {
-  const { id, by, epoch, round, until, needs, waiting, work, to } = payload as Payload
+  const { id, by, epoch, until, needs, waiting, work, to } = payload as Payload
   return {
     type,
     // Access log grant IDs are numeric; the public grant handle spells them g<number>.
     ...(id === undefined ? {} : { id: type === 'grant.deleted' ? `g${id}` : String(id) }),
     ...(by?.principal === undefined ? {} : { principal: by.principal }),
     ...(epoch === undefined ? {} : { epoch }),
-    ...(round === undefined ? {} : { round }),
     ...(until === undefined ? {} : { until: Date.parse(until) }),
     ...(needs === undefined ? {} : { needs: needs.map(String) }),
     ...(waiting === undefined ? {} : { waiting }),

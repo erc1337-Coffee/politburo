@@ -59,8 +59,7 @@ it('locks the local directory until its last store closes or its owner is killed
   let owner = startOwner(path)
   const backend = local({ dir: path })
   const recovered = local({ dir: path })
-  // A different board name still shares the directory lock.
-  const team = board({ backend, name: 'contender' })
+  const team = board({ backend })
   const locked = {
     status: 409, code: 'board_dir_locked', origin: 'handle',
     message: "another process owns this board's directory",

@@ -3,7 +3,7 @@ import { createServer, request } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createBoardClient, type BoardClient } from '../src/client/client.ts'
-import { groupingOf, route } from '../src/inspect/app/routes.ts'
+import { route } from '../src/inspect/app/routes.ts'
 import { startInspector, type Inspector } from '../src/inspect/server.ts'
 import { serve } from './http.ts'
 import { personToken, testBoard } from './harness.ts'
@@ -45,11 +45,9 @@ function exactly(path: string, headers: Record<string, string> = {}) {
 }
 
 describe('inspector navigation', () => {
-  it('lands on the Inbox and opens Work and a Cell at their own URLs', () => {
+  it('lands on the Inbox', () => {
     expect(route('/')).toEqual({ view: 'inbox' })
-    expect(route('/work')).toEqual({ view: 'work' })
-    expect(route('/cell/local%3Auser%3Areader%2Bworker')).toEqual({ view: 'cell', cell: 'local:user:reader+worker' })
-    for (const path of ['/unknown-scope/blue', '/cell/', '/cell/%ZZ']) {
+    for (const path of ['/unknown-scope/blue', '/work', '/cell/local%3Auser%3Areader%2Bworker', '/cell/']) {
       expect(route(path), path).toEqual({ view: 'missing' })
     }
   })
@@ -62,13 +60,6 @@ describe('inspector navigation', () => {
     expect(route('/settings/identities')).toEqual({ view: 'settings', section: 'identities', open: null })
   })
 
-  it('reads the Work grouping from the URL, swarm groups by default', () => {
-    expect(groupingOf(new URLSearchParams(''))).toBe('swarm')
-    expect(groupingOf(new URLSearchParams('by=state'))).toBe('state')
-    expect(groupingOf(new URLSearchParams('by=none'))).toBe('none')
-    expect(groupingOf(new URLSearchParams('by=other'))).toBe('swarm')
-  })
-
   it.each(['/activity', '/global-chat', '/inbox/slack'])('shows no such page at %s', (path) => {
     expect(route(path)).toEqual({ view: 'missing' })
   })
@@ -76,7 +67,7 @@ describe('inspector navigation', () => {
 
 describe('inspect', () => {
   it('serves the page for every route, and its bundle', async () => {
-    for (const path of ['/', '/work?by=state', '/?thread=12', '/c/errors-www', '/settings/schemas/test-run@1', '/settings/identities']) {
+    for (const path of ['/', '/?thread=12', '/c/errors-www', '/settings/schemas/test-run@1', '/settings/identities']) {
       const response = await fetch(`${inspector.url}${path}`)
       expect(response.status).toBe(200)
       expect(response.headers.get('content-security-policy')).toContain("script-src 'self'")

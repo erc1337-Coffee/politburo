@@ -1,6 +1,5 @@
 packages:
   - packages/*
-  - apps/*
 # esbuild (via vitest) only checks its platform binary at install; the tests run without it.
 allowBuilds:
   esbuild: false
