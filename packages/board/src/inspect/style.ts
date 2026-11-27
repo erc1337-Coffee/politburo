@@ -640,8 +640,8 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 @media (hover: hover) { .model-row:hover { border-color: var(--hairline); } }
 .model-row > img, .model-logo-gap { width: 16px; height: 16px; border-radius: 3px; flex-shrink: 0; }
 .model-grip { flex-shrink: 0; color: var(--faint); }
-.model-label { display: flex; align-items: baseline; gap: 6px; flex: 1; min-width: 0; font-size: 12.5px; }
-.model-provider { flex-shrink: 0; color: var(--faint); font-size: 11.5px; }
+.model-label { display: flex; align-items: baseline; gap: 4px; flex: 1; min-width: 0; font-size: 12.5px; }
+.model-provider { flex-shrink: 0; color: var(--faint); }
 .model-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-row.on .model-name { font-weight: 600; }
 .switch { position: relative; flex-shrink: 0; width: 30px; height: 17px; padding: 0; border: 1px solid var(--hairline); border-radius: 9px; background: var(--shade); cursor: pointer; transition: background .15s, border-color .15s; }
