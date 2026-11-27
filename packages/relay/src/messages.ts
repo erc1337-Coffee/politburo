@@ -6,7 +6,7 @@
 export const MESSAGE_VERSION = 1
 
 export type CommandType = 'start' | 'credentials' | 'instruct' | 'answer' | 'stop' | 'renew'
-export type TelemetryType = 'heartbeat' | 'progress' | 'question' | 'bundle_part' | 'result'
+export type TelemetryType = 'heartbeat' | 'phase' | 'progress' | 'question' | 'bundle_part' | 'result'
 
 export interface Envelope<T extends string, D> {
   v: typeof MESSAGE_VERSION
@@ -38,13 +38,20 @@ export interface StartData {
 }
 /** Environment variables for Pi, sealed for the worker's public key (see sealed.ts). */
 export interface CredentialsData { ephemeral_public_key: string; nonce: string; ciphertext: string }
-export interface InstructData { round: number; text: string; mode: 'next_round' | 'interrupt' }
+/**
+ * `next_round` runs `text` as the next round, after the current one; `interrupt` stops the current
+ * round and runs it at once. `steer` and `follow_up` give `text` to the Pi of the running round, in
+ * the same session: `steer` before its next model call, `follow_up` once it has finished; the worker
+ * answers each with an `instruction_received` or `instruction_dropped` phase that names the command.
+ */
+export type InstructMode = 'next_round' | 'interrupt' | 'steer' | 'follow_up'
+export interface InstructData { round: number; text: string; mode: InstructMode }
 export interface AnswerData { question_id: string; text: string }
 /** `send_bundle`: send the commits made so far as bundle parts and a final result before exiting. */
 export interface StopData { reason: string; send_bundle: boolean }
 export interface RenewData { token: string; exp: number }
 
-export type WorkerState = 'waiting_start' | 'running' | 'waiting_answer' | 'checking' | 'bundling' | 'stopping' | 'finished'
+export type WorkerState = 'setting_up' | 'waiting_start' | 'running' | 'waiting_answer' | 'checking' | 'bundling' | 'stopping' | 'finished'
 export interface HeartbeatData {
   state: WorkerState
   round: number
@@ -54,6 +61,24 @@ export interface HeartbeatData {
   pi_alive: boolean
   /** The worker's X25519 public key, base64url, until it has received its credentials. */
   public_key?: string
+}
+/**
+ * The worker's acknowledgement of a step: `started` once the process runs, the setup of Pi, and
+ * the work of each round (Pi, checks and bundle; `work_finished` comes before the round's result).
+ */
+export type PhaseName =
+  | 'started' | 'setup_started' | 'setup_finished' | 'setup_failed' | 'work_started' | 'work_finished'
+  | 'instruction_received' | 'instruction_dropped'
+export interface PhaseData {
+  phase: PhaseName
+  round: number
+  /**
+   * The failure of `setup_failed`, the packages `setup_finished` installed, the exit reason of
+   * `work_finished`, the command id of `instruction_received` and `instruction_dropped`.
+   */
+  detail?: string
+  /** The length of the step that ended, for `setup_finished`, `setup_failed` and `work_finished`. */
+  duration_seconds?: number
 }
 export type ProgressKind = 'thinking' | 'tool' | 'output' | 'say' | 'error' | 'usage' | 'diff' | 'warning'
 export interface ProgressData { round: number; items: Array<{ at: number; kind: ProgressKind; text: string }> }
@@ -90,6 +115,7 @@ export type Command =
   | Envelope<'renew', RenewData>
 export type Telemetry =
   | Envelope<'heartbeat', HeartbeatData>
+  | Envelope<'phase', PhaseData>
   | Envelope<'progress', ProgressData>
   | Envelope<'question', QuestionData>
   | Envelope<'bundle_part', BundlePartData>
@@ -149,7 +175,7 @@ const commandData: Record<CommandType, Check> = {
     credentials: bool,
   }),
   credentials: object({ ephemeral_public_key: str(43, KEY), nonce: str(16, BASE64URL), ciphertext: str(48_000, BASE64URL) }),
-  instruct: object({ round: int(2), text: text(32_000), mode: oneOf('next_round', 'interrupt') }),
+  instruct: object({ round: int(1), text: text(32_000), mode: oneOf('next_round', 'interrupt', 'steer', 'follow_up') }),
   answer: object({ question_id: str(100, ID), text: text(8_000) }),
   stop: object({ reason: text(1_000), send_bundle: bool }),
   renew: object({ token: text(4_000), exp: int(1) }),
@@ -157,9 +183,13 @@ const commandData: Record<CommandType, Check> = {
 
 const telemetryData: Record<TelemetryType, Check> = {
   heartbeat: object({
-    state: oneOf('waiting_start', 'running', 'waiting_answer', 'checking', 'bundling', 'stopping', 'finished'),
+    state: oneOf('setting_up', 'waiting_start', 'running', 'waiting_answer', 'checking', 'bundling', 'stopping', 'finished'),
     round: int(0), last_command_seq: int(0), elapsed_seconds: num, token_exp: int(0), pi_alive: bool, public_key: str(43, KEY),
   }, ['public_key']),
+  phase: object({
+    phase: oneOf('started', 'setup_started', 'setup_finished', 'setup_failed', 'work_started', 'work_finished', 'instruction_received', 'instruction_dropped'),
+    round: int(0), detail: text(1_000), duration_seconds: num,
+  }, ['detail', 'duration_seconds']),
   progress: object({
     round: int(0),
     items: list(object({ at: int(0), kind: oneOf('thinking', 'tool', 'output', 'say', 'error', 'usage', 'diff', 'warning'), text: text(1_024) }), 50),

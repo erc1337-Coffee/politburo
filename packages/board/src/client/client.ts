@@ -761,7 +761,7 @@ export function createBoardClient(options: ClientOptions) {
       unpark: (id: string, reason: string) => taskWrite(id, 'unpark', { reason }),
       /** Records packet metadata using explicit claim proof. */
       handoff: (id: string, input: TaskHandoffWrite) => taskWrite(id, 'handoff', input, true),
-      /** Makes a failed task ready again, in place: what waits for it still does. */
+      /** Makes a failed, completed or canceled task ready again, in place: what waits for it still does. */
       reopen: async (id: string, reason?: string, opts: { ifVersion?: number } = {}) =>
         taskWrite(id, 'reopen', reason === undefined ? {} : { reason, ifVersion: await taskVersion(id, opts.ifVersion) }),
       /** Authorizes proposed work. Pass the version you scoped, or read it before writing. */

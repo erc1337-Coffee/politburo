@@ -17,6 +17,7 @@ import { GitHubClient } from '../src/github.ts'
 import { openJournal, type Provider } from '../src/launch.ts'
 import { RelayClient } from '../src/relay-client.ts'
 import { Orchestrator } from '../src/service.ts'
+import { ThreadAssistant, type ThreadFacts } from '../src/thread-assistant.ts'
 import { StateStore } from '../src/state.ts'
 import { UsageLedger } from '../src/usage-ledger.ts'
 import { OperationsMonitor } from '../src/operations.ts'
@@ -58,7 +59,11 @@ function workerBundle(origin: string, scratch: string, branch: string, base: str
 function fakeGitHub(originRoot: string) {
   const origin = join(originRoot, 'owner', 'repo.git')
   const branchHead = (name: string) => { try { return git(origin, 'rev-parse', `refs/heads/${name}`) } catch { return null } }
-  const pulls: Array<{ html_url: string; head: string }> = []
+  const pulls: Array<{ html_url: string; head: string; number: number; draft: boolean; state: 'open' | 'closed'; merged: boolean }> = []
+  const view = (pull: (typeof pulls)[number]) => ({
+    html_url: pull.html_url, number: pull.number, state: pull.state, draft: pull.draft, merged_at: pull.merged ? '2026-11-27T00:00:00Z' : null,
+    head: { sha: branchHead(pull.head) }, node_id: `PR_${pull.number}`, title: `PR ${pull.number}`, mergeable: true, mergeable_state: 'clean',
+  })
   const fetch: typeof globalThis.fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input))
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
@@ -68,14 +73,34 @@ function fakeGitHub(originRoot: string) {
       const sha = branchHead(decodeURIComponent(branch[1]!))
       return sha ? json(200, { commit: { sha } }) : json(404, { message: 'Not Found' })
     }
-    if (url.pathname === '/repos/owner/repo/pulls' && (init?.method ?? 'GET') === 'GET') return json(200, [])
+    if (url.pathname === '/repos/owner/repo/pulls' && (init?.method ?? 'GET') === 'GET') {
+      const head = url.searchParams.get('head')?.split(':')[1]
+      return json(200, pulls.filter((pull) => pull.head === head).reverse().map(view))
+    }
+    const one = /^\/repos\/owner\/repo\/pulls\/(\d+)(\/merge)?$/.exec(url.pathname)
+    if (one) {
+      const pull = pulls[Number(one[1]) - 1]
+      if (!pull) return json(404, { message: 'Not Found' })
+      if (one[2] && init?.method === 'PUT') { pull.merged = true; pull.state = 'closed'; return json(200, { sha: 'f'.repeat(40), merged: true }) }
+      if (init?.method === 'PATCH') { pull.state = (JSON.parse(String(init.body)) as { state: 'open' | 'closed' }).state; return json(200, view(pull)) }
+      return json(200, view(pull))
+    }
+    if (/^\/repos\/owner\/repo\/commits\/[0-9a-f]+\/check-runs$/.test(url.pathname)) return json(200, { check_runs: [{ name: 'test', status: 'completed', conclusion: 'success' }] })
+    if (/^\/repos\/owner\/repo\/commits\/[0-9a-f]+\/status$/.test(url.pathname)) return json(200, { state: 'success', total_count: 1 })
+    if (url.pathname === '/graphql' && init?.method === 'POST') {
+      const id = (JSON.parse(String(init.body)) as { variables: { id: string } }).variables.id
+      const pull = pulls[Number(id.replace('PR_', '')) - 1]
+      if (!pull) return json(200, { errors: [{ message: 'not found' }] })
+      pull.draft = false
+      return json(200, { data: { markPullRequestReadyForReview: { pullRequest: { isDraft: false } } } })
+    }
     if (url.pathname === '/repos/owner/repo/pulls' && init?.method === 'POST') {
       const body = JSON.parse(String(init.body)) as { head: string; base: string; draft: boolean }
       assert.equal(body.draft, true)
       assert.ok(!body.head.includes(':'), 'the PR head stays in the same repository')
-      const pull = { html_url: `https://github.com/owner/repo/pull/${pulls.length + 1}`, head: body.head }
+      const pull = { html_url: `https://github.com/owner/repo/pull/${pulls.length + 1}`, head: body.head, number: pulls.length + 1, draft: true, state: 'open' as const, merged: false }
       pulls.push(pull)
-      return json(201, pull)
+      return json(201, view(pull))
     }
     return json(404, { message: `unexpected ${url.pathname}` })
   }
@@ -163,7 +188,7 @@ describe('orchestrator', () => {
     rmSync(directory, { recursive: true, force: true })
   })
 
-  async function setup(name: string, script: WorkerScript, overrides = '') {
+  async function setup(name: string, script: WorkerScript, overrides = '', options: { assistant?: (facts: ThreadFacts) => unknown } = {}) {
     const team = openBoard({ backend: local({ memory: true }) })
     await team.post('work/app', 'channel')
     await team.configureChannel('work/app', { repository: 'https://github.com/owner/repo', routes: [] })
@@ -183,7 +208,17 @@ ${overrides}
     const state = new StateStore(join(stateDirectory, 'state.sqlite'))
     const logs: Array<Record<string, unknown>> = []
     const monitor = new OperationsMonitor({ relayUrl })
+    const facts: ThreadFacts[] = []
+    const resumed: string[] = []
+    const starts: Array<Extract<Command, { type: 'start' }>['data']> = []
     const orchestrator = new Orchestrator({
+      ...(options.assistant ? {
+        assistant: new ThreadAssistant(async ({ prompt }) => {
+          const seen = JSON.parse(prompt) as ThreadFacts
+          facts.push(seen)
+          return options.assistant!(seen)
+        }),
+      } : {}),
       config,
       board: team.as('orchestrator'),
       relay: new RelayClient({ url: relayUrl, signingKey: keys.privateKeyPem, orchestratorTtlSeconds: 300 }),
@@ -193,7 +228,8 @@ ${overrides}
       journal: openJournal(join(stateDirectory, 'journal')),
       routes: () => [{ label: 'Route A', provider: 'openrouter', model: 'm' }],
       provider: fakeWorker(relayUrl, async (command, send) => {
-        const branch = `claude/task-${command.task}`
+        const branch = command.type === 'start' ? command.data.branch : `claude/task-${command.task}`
+        if (command.type === 'start') starts.push(command.data)
         const deliver: Deliver = async (round, checkExit) => {
           const made = workerBundle(github.origin, stateDirectory, branch, base, round)
           for (const [index, data] of made.parts.entries()) await send('bundle_part', { round, index, count: made.parts.length, data })
@@ -201,6 +237,17 @@ ${overrides}
         }
         await script(command, send, deliver)
       }, launches),
+      resume: (session, prompt) => {
+        resumed.push(session)
+        return fakeWorker(relayUrl, async (command, send) => {
+          if (command.type !== 'start') return
+          starts.push(command.data)
+          await send('result', {
+            ...result(1, 0, command.data.branch, command.data.repository.base_commit, command.data.repository.base_commit, null),
+            head_commit: null, diff_stat: { files: 0, insertions: 0, deletions: 0 }, summary: 'Nothing else to change.',
+          })
+        }, launches)(prompt)
+      },
       usage: new UsageLedger({ file: join(stateDirectory, 'ledger', 'ledger.sqlite'), party: 'default', requestedRoute: 'openrouter/m' }),
       monitor,
       log: (entry) => logs.push(entry),
@@ -213,7 +260,7 @@ ${overrides}
       }
       throw new Error(`task ${id} did not reach ${states.join('/')}: ${JSON.stringify(logs.slice(-5))}`)
     }
-    return { team, orchestrator, state, github, launches, logs, done, base, monitor, ledgerFile: join(stateDirectory, 'ledger', 'ledger.sqlite') }
+    return { team, orchestrator, state, github, launches, logs, done, base, monitor, facts, resumed, starts, ledgerFile: join(stateDirectory, 'ledger', 'ledger.sqlite') }
   }
 
   test('runs a task to a draft PR in the same repository and completes it', async () => {
@@ -316,6 +363,104 @@ ${overrides}
       const message = await run.done(task.id, ['failed'])
       assert.match(String(message.task?.result ?? message.task?.reason ?? ''), /lost/i)
       assert.equal(run.github.pulls.length, 0)
+    } finally {
+      await run.orchestrator.stop()
+      run.state.close()
+    }
+  })
+
+  test('worker acknowledgements reach the operations view, and a failed setup loses the attempt at once', async () => {
+    const run = await setup('setup_failure', async (command, send) => {
+      if (command.type !== 'start') return
+      await send('phase', { phase: 'started', round: 0 })
+      await send('phase', { phase: 'setup_started', round: 0 })
+      await send('phase', { phase: 'setup_failed', round: 0, duration_seconds: 4, detail: 'npm cannot reach the registry' })
+    }, 'limits: { attempts_per_task: 1 }')
+    const { task } = await run.team.tasks.create('work/app', 'Setup fails')
+    await run.orchestrator.start()
+    try {
+      const message = await run.done(task.id, ['failed'])
+      assert.match(String(message.task?.result ?? message.task?.reason ?? ''), /setup failed: npm cannot reach the registry/)
+      const phases = run.logs.filter((entry) => entry.event === 'worker_phase').map((entry) => entry.phase)
+      assert.deepEqual(phases, ['started', 'setup_started', 'setup_failed'])
+      const snapshot = run.monitor.snapshot({ actor: 'a', live: [], liveLimit: 1, outbox: 0, sweepSeconds: 1, watchdogDue: () => null })
+      const attempt = snapshot.attempts.find((row) => row.task_id === task.id)
+      assert.equal(attempt?.phase?.phase, 'setup_failed')
+      assert.equal(attempt?.phase?.detail, 'npm cannot reach the registry')
+    } finally {
+      await run.orchestrator.stop()
+      run.state.close()
+    }
+  })
+
+  /** Waits until `check` holds, polling. */
+  async function until(check: () => boolean | Promise<boolean>, what: string, logs: Array<Record<string, unknown>>): Promise<void> {
+    for (let i = 0; i < 200; i++) {
+      if (await check()) return
+      await sleep(50)
+    }
+    throw new Error(`${what} did not happen: ${JSON.stringify(logs.slice(-6))}`)
+  }
+
+  test('a person asks in the thread of a published task: the orchestrator model answers and marks the PR ready', async () => {
+    const run = await setup('thread_ready', async (command, send, deliver) => {
+      if (command.type !== 'start') return
+      await send('heartbeat', { state: 'running', round: 1, last_command_seq: 1, elapsed_seconds: 1, token_exp: 9e9, pi_alive: true })
+      await deliver(1, 0)
+    }, '', {
+      assistant: (facts) => /ready/.test(facts.message.text)
+        ? { reply: 'The checks pass, so the pull request goes to review.', actions: [{ name: 'pr_ready' }, { name: 'pr_merge' }] }
+        : { reply: '', actions: [] },
+    })
+    const { task } = await run.team.tasks.create('work/app', 'Fix the parser')
+    await run.orchestrator.start()
+    try {
+      await run.done(task.id, ['completed'])
+      await run.team.reply(task.id, 'thanks')
+      await run.team.reply(task.id, 'checks ok? then mark it ready')
+      await until(() => run.github.pulls[0]?.draft === false, 'the PR ready for review', run.logs)
+      const seen = run.facts.at(-1)!
+      assert.equal(seen.pull_request?.draft, true)
+      assert.deepEqual(seen.pull_request?.checks, [{ name: 'test', status: 'completed', conclusion: 'success' }])
+      assert.ok('pr_ready' in seen.actions && !('pr_merge' in seen.actions), 'a draft PR can be marked ready, not merged')
+      assert.ok(!seen.thread.some((entry) => /mark it ready/.test(entry.text)), 'the new message is not in the thread history')
+      await until(async () => (await run.team.thread(task.id)).replies.some((reply) => /ready for review/.test(reply.text)), 'the reply', run.logs)
+      const replies = (await run.team.thread(task.id)).replies.map((reply) => reply.text)
+      assert.ok(replies.some((text) => text.startsWith('The checks pass, so the pull request goes to review.') && /#1 is ready for review/.test(text)))
+      assert.equal(run.facts.length, 2, 'each message of a person reaches the model once, the orchestrator replies never')
+      assert.equal(run.github.pulls[0]!.merged, false, 'an action that does not apply is not done')
+    } finally {
+      await run.orchestrator.stop()
+      run.state.close()
+    }
+  })
+
+  test('work asked in the thread of a completed task reopens it; the next attempt continues the PR branch in the resumed session', async () => {
+    const run = await setup('thread_followup', async (command, send, deliver) => {
+      if (command.type !== 'start') return
+      await send('heartbeat', { state: 'running', round: 1, last_command_seq: 1, elapsed_seconds: 1, token_exp: 9e9, pi_alive: true })
+      await deliver(1, 0)
+    }, 'limits: { attempts_per_task: 1 }', {
+      assistant: () => ({ reply: 'The worker renames it.', actions: [], work: { text: 'Rename parse to parseValue.', mode: 'follow_up' } }),
+    })
+    const { task } = await run.team.tasks.create('work/app', 'Fix the parser')
+    await run.orchestrator.start()
+    try {
+      await run.done(task.id, ['completed'])
+      const head = run.github.branchHead(`claude/task-${task.id}`)
+      await run.team.reply(task.id, 'please also rename parse to parseValue')
+      await until(() => run.starts.length === 2, 'the follow-up attempt', run.logs)
+      const second = run.starts[1]!
+      assert.match(second.brief, /Follow-up requests from the task thread/)
+      assert.match(second.brief, /- Rename parse to parseValue\./)
+      assert.equal(second.branch, `claude/task-${task.id}`)
+      assert.equal(second.repository.base_commit, head, 'the follow-up starts from the PR branch')
+      assert.deepEqual(run.resumed, ['session_fake1'], 'the session of the first attempt is resumed')
+      await run.done(task.id, ['completed'])
+      assert.equal(run.state.pendingFollowups(task.id).length, 0)
+      assert.equal(run.state.forTask(task.id).length, 2, 'the follow-up gives the task an attempt again')
+      const replies = (await run.team.thread(task.id)).replies.map((reply) => reply.text)
+      assert.ok(replies.some((text) => /The worker renames it\.\n\nThe task is open again/.test(text)))
     } finally {
       await run.orchestrator.stop()
       run.state.close()

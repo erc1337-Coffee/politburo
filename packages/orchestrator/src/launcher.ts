@@ -111,3 +111,27 @@ export function cloudProvider(launcher: readonly string[], prompt: string, direc
     },
   }
 }
+
+/**
+ * A launch `Provider` that sends the prompt to an existing cloud session instead of a new one:
+ * `claude -p <prompt> --cloud <session>`. A paused session resumes on the same machine, with the
+ * files of its earlier attempt; a reclaimed one starts on a new machine with its history.
+ */
+export function resumeProvider(launcher: readonly string[], session: string, prompt: string, directory: string, run: CommandRunner = runCommand): Provider {
+  return {
+    async send() {
+      // The prompt holds the worker token: it goes through the environment, never through arguments.
+      const { CLAUDE_CODE_OAUTH_TOKEN: _token, ...inherited } = process.env
+      const env = { ...inherited, WORKER_PROMPT: prompt, WORKER_SESSION: session }
+      const command = `exec ${shellQuote(launcher[0]!)} -p "$WORKER_PROMPT" --cloud "$WORKER_SESSION"`
+      const result = await run('sh', ['-c', command], { timeoutMs: 5 * 60_000, cwd: directory, env })
+      const output = result.output.replace(ANSI, '')
+      writeFileSync(`${directory}.log`, `exit ${result.code}\nresumed ${session}\n${output}`, { mode: 0o600 })
+      if (result.code !== 0) throw new Error(`the launcher could not send to session ${session} (exit ${result.code})`)
+      return { session: parseSessionId(output) ?? session }
+    },
+    async probe() {
+      return { kind: 'unknown' }
+    },
+  }
+}

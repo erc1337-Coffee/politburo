@@ -62,13 +62,26 @@ function fakeGitHub(originRoot: string) {
   return { origin, branchHead, pulls, client: new GitHubClient({ apiUrl: 'https://api.github.test', token: 'test', fetch }) }
 }
 
-/** A stand-in for `pi -p --mode json`: edits parser.ts, may ask a question, prints Pi JSONL events. */
+/** A stand-in for `pi --mode rpc`: reads the prompt on standard input, edits parser.ts, may ask a question, prints Pi JSONL events. */
 const FAKE_PI = `#!/usr/bin/env node
 const fs = require('fs'), path = require('path')
-const args = process.argv.slice(2)
-const prompt = args[args.indexOf('--') + 1] || ''
+if (process.argv[2] === '--version') { console.log('1.4.0'); process.exit(0) }
+if (process.argv[2] === 'install') process.exit(0)
 const emit = (event) => process.stdout.write(JSON.stringify(event) + '\\n')
-async function main() {
+let buffer = ''
+let started = false
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', (chunk) => {
+  buffer += chunk
+  let end
+  while ((end = buffer.indexOf('\\n')) >= 0) {
+    const command = JSON.parse(buffer.slice(0, end))
+    buffer = buffer.slice(end + 1)
+    if (command.type === 'prompt' && !started) { started = true; main(command.message).then(() => emit({ type: 'agent_settled' })) }
+  }
+})
+process.stdin.on('end', () => process.exit(0))
+async function main(prompt) {
   if (process.env.OPENROUTER_API_KEY !== 'sealed-test-key') {
     emit({ type: 'message_end', message: { role: 'assistant', content: [], errorMessage: 'No fallback tier is ready (missing login or cooling down)' } })
     return
@@ -87,7 +100,6 @@ async function main() {
   emit({ type: 'message_end', message: { role: 'assistant', provider: 'openrouter', model: 'fake', content: [{ type: 'text', text: 'parse now returns ' + value }], usage: { input: 10, output: 5, cost: { total: 0.01 } } } })
   emit({ type: 'agent_end', messages: [] })
 }
-main()
 `
 
 describe('orchestrator with the real worker client', () => {

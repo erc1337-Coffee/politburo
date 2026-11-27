@@ -37,7 +37,7 @@
   <rect class="zone" x="10" y="30" width="980" height="140" rx="8"/><text class="zone-label" x="22" y="22">Claude cloud session</text>
   <g class="node" id="k-agent"><rect x="30" y="60" width="190" height="80" rx="4"/><text class="title" x="42" y="82">Session agent</text><text class="detail" x="42" y="102">reads the protocol</text><text class="detail" x="42" y="118">polls status --wait 540</text></g>
   <g class="node key" id="k-client"><rect x="300" y="60" width="220" height="80" rx="4"/><text class="title" x="312" y="82">Worker client</text><text class="detail" x="312" y="102">worker/src/cli.ts run</text><text class="detail" x="312" y="118">token on stdin</text></g>
-  <g class="node" id="k-pi"><rect x="600" y="60" width="170" height="80" rx="4"/><text class="title" x="612" y="82">Pi</text><text class="detail" x="612" y="102">pi -p --mode json</text><text class="detail" x="612" y="118">route extension</text></g>
+  <g class="node" id="k-pi"><rect x="600" y="60" width="170" height="80" rx="4"/><text class="title" x="612" y="82">Pi</text><text class="detail" x="612" y="102">pi --mode rpc</text><text class="detail" x="612" y="118">route extension</text></g>
   <g class="node" id="k-git"><rect x="810" y="60" width="160" height="80" rx="4"/><text class="title" x="822" y="82">Worktree</text><text class="detail" x="822" y="102">claude/task-N</text><text class="detail" x="822" y="118">push disabled</text></g>
   <g class="node key" id="k-relay"><rect x="300" y="230" width="220" height="70" rx="4"/><text class="title" x="312" y="252">Relay</text><text class="detail" x="312" y="272">commands ↓ · telemetry ↑</text></g>
   <g class="node external" id="k-models"><rect x="600" y="230" width="170" height="70" rx="4"/><text class="title" x="612" y="252">Models</text><text class="detail" x="612" y="272">routes in order</text></g>
@@ -75,13 +75,15 @@
 <p>Events at or below the saved sequence are skipped. Invalid commands and commands for another channel become warnings. The last 500 command ids are kept, so none runs twice.</p>
 
 <h2>Pi</h2>
-<pre><code>pi -p --mode json --session-dir ~/.politburo_worker/&lt;channel&gt;/pi_session \
+<pre><code>pi --mode rpc --session-dir ~/.politburo_worker/&lt;channel&gt;/pi_session \
    --session-id task-&lt;N&gt;-attempt-&lt;K&gt; --model &lt;start.model.pi_model&gt; \
-   --thinking ${PI_THINKING:-medium} --extension &lt;route extension&gt; --extension &lt;ask_orchestrator&gt; -- &lt;prompt&gt;</code></pre>
+   --thinking ${PI_THINKING:-medium} --extension &lt;route extension&gt; --extension &lt;ask_orchestrator&gt;</code></pre>
 <ul>
+  <li>Input: the round's prompt goes to Pi's standard input as a <code>prompt</code> command. While the round runs, an <code>instruct</code> command with mode <code>steer</code> or <code>follow_up</code> goes to the same Pi session: <code>steer</code> before Pi's next model call, <code>follow_up</code> after Pi finishes its current work. The worker answers each with the phase <code>instruction_received</code>, or <code>instruction_dropped</code> when no round takes it.</li>
+  <li>End: the round ends when Pi reports <code>agent_settled</code>. The worker then closes Pi's input, and Pi exits.</li>
   <li>Environment: the session environment without <code>CLAUDE_*</code> and <code>CCR_*</code>, plus the opened credentials and <code>PI_FALLBACK_TIERS</code> (the start command's routes).</li>
   <li>Limits: Pi is ended at <code>max_seconds</code> (2400) or after <code>idle_seconds</code> (180) with no output and no change in the worktree. Idle time does not count while a question waits.</li>
-  <li>Exit reason: <code>completed</code> for exit 0 without an error reply, else <code>failed</code>; or <code>timeout</code>, <code>idle</code>, <code>stopped</code>.</li>
+  <li>Exit reason: <code>completed</code> for exit 0 after <code>agent_settled</code> without an error reply, else <code>failed</code>; or <code>timeout</code>, <code>idle</code>, <code>stopped</code>.</li>
   <li>Summary: Pi's last reply.</li>
 </ul>
 <table>

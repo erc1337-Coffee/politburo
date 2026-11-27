@@ -60,7 +60,7 @@
   {"text": "REVIEW, a hold or a merge conflict blocks the task for a person, with the reason. A question to a person blocks it too, until the answer.", "links": ["x-block"], "label": "hold", "kind": "result", "states": ["t-blocked"]},
   {"text": "The person unblocks the task on its card, or answers the question. It is ready again, and the orchestrator takes it.", "links": ["x-unblock"], "label": "unblock", "states": ["t-ready"]},
   {"text": "Limits used up, or a stop: the task fails with the reason, and the decision label is REVIEW.", "links": ["x-fail"], "label": "fail", "kind": "result", "states": ["t-failed"]},
-  {"text": "The owner can reopen a failed task. It goes back to <code>ready</code>, or <code>waiting</code> when its needs are not done.", "links": ["x-reopen"], "label": "reopen", "states": ["t-ready"]},
+  {"text": "The owner can reopen a failed, completed or canceled task. It goes back to <code>ready</code>, or <code>waiting</code> when its needs are not done. The orchestrator reopens a task when a person asks for more work in its thread.", "links": ["x-reopen"], "label": "reopen", "states": ["t-ready"]},
   {"text": "The owner can cancel any open task. Deleting the thread root cancels it too.", "links": ["x-cancel"], "label": "cancel", "states": ["t-canceled"]}
 ]</script>
 </figure>
@@ -81,7 +81,7 @@
   <tr><td>Answer</td><td><code>blocked</code> → <code>ready</code>, <code>waiting</code> or <code>failed</code>, as the option says</td><td>A responder, as themselves</td></tr>
   <tr><td>Unblock</td><td><code>blocked</code> → <code>ready</code> or <code>waiting</code></td><td>Owner; not while a question waits</td></tr>
   <tr><td>Park, unpark</td><td>open → <code>blocked</code> (parked) → back, without the claim</td><td>A person with <code>manage</code></td></tr>
-  <tr><td>Reopen</td><td><code>failed</code> → <code>ready</code> or <code>waiting</code></td><td>Owner</td></tr>
+  <tr><td>Reopen</td><td><code>failed</code>, <code>completed</code> or <code>canceled</code> → <code>ready</code> or <code>waiting</code></td><td>Owner</td></tr>
   <tr><td>Cancel</td><td>any open state → <code>canceled</code></td><td>Owner, or the delete of the root</td></tr>
   <tr><td>Priority, assign, needs</td><td>state unchanged</td><td>Owner; a claim holder may only lower the priority</td></tr>
 </table>

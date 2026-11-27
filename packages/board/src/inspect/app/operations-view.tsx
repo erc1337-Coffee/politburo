@@ -16,8 +16,10 @@ type OpsEvent = { seq: number; at: number } & (
   | { kind: 'tick'; sources: WakeSource[]; live: number; duration_ms: number }
   | { kind: 'command'; channel: string; task: string; type: string; bytes: number; outcome: 'sent' | 'failed' }
   | { kind: 'telemetry'; channel: string; task: string; type: string; bytes: number; relay_seq: number }
+  | { kind: 'phase'; channel: string; task: string; phase: string; round: number; duration_seconds?: number }
   | { kind: 'board'; action: string; task: string; channel?: string }
-  | { kind: 'github'; action: 'push' | 'draft_pr'; repository: string; task: string; channel: string }
+  | { kind: 'github'; action: 'push' | 'draft_pr' | 'ready' | 'merge' | 'close' | 'reopen'; repository: string; task: string; channel?: string }
+  | { kind: 'thread'; task: string; channel?: string; reply: boolean; actions: string[]; work: 'worker' | 'followup' | null }
   | { kind: 'launch'; task: string; channel: string; outcome: string }
   | { kind: 'attempt'; attempt: string; task: string; channel: string; state: string }
   | { kind: 'fault'; component: string; code: string; task?: string; channel?: string }
@@ -30,6 +32,7 @@ type AttemptView = {
   state: string; outcome: string | null; round: number; created_at: number; launched_at: number | null; last_contact_at: number | null
   question_at: number | null; watchdog_due: number | null; cost_usd: number; pr_url: string | null
   heartbeat: { at: number; state: string; round: number; elapsed_seconds: number; pi_alive: boolean } | null
+  phase?: { at: number; phase: string; round: number; detail?: string; duration_seconds?: number } | null
   progress: Record<string, number>; messages: { commands: number; telemetry: number; last_at: number | null }
   decision_model?: 'kev' | 'claude' | null
 }
@@ -190,6 +193,7 @@ export function bundle(links: ReadonlyArray<{ a: Point; b: Point }>): number[] {
 }
 /** How long a packet takes along one link, slow enough to read its label. */
 const PACKET_MS = 2_400
+const GITHUB_ACTIONS = { push: 'push', draft_pr: 'draft PR', ready: 'ready for review', merge: 'merge', close: 'close PR', reopen: 'reopen PR' } as const
 const LIVE = new Set(['claimed', 'launching', 'awaiting_contact', 'running', 'waiting_answer', 'deciding', 'publishing', 'stopping'])
 
 function packetsOf(event: OpsEvent): Array<Omit<Packet, 'started'>> {
@@ -206,7 +210,7 @@ function packetsOf(event: OpsEvent): Array<Omit<Packet, 'started'>> {
       return chain([`${event.channel}>relay`, 'relay>orchestrator'], kind, words(event.type), event.type === 'bundle_part' ? 4 : 3, event.type === 'result')
     }
     case 'board': return chain(['orchestrator>board'], 'external', words(event.action))
-    case 'github': return chain(['orchestrator>github'], 'external', event.action === 'draft_pr' ? 'draft PR' : 'push', 4)
+    case 'github': return chain(['orchestrator>github'], 'external', GITHUB_ACTIONS[event.action], 4)
     case 'launch': return chain([`launch>${event.channel}`], 'command', 'launch', 4)
     case 'tick': return event.sources.includes('board') ? chain(['board>orchestrator'], 'external', '', 2) : []
     default: return []
@@ -279,7 +283,7 @@ export function Operations(props: { lead?: ReactNode; identities?: Identities })
       if (event.kind === 'telemetry' && event.type === 'heartbeat') setHeartbeats((h) => ({ ...h, [event.channel]: (h[event.channel] ?? 0) + 1 }))
       if (event.kind === 'telemetry' && event.type === 'progress') setProgress((p) => ({ ...p, [event.channel]: (p[event.channel] ?? 0) + 1 }))
       if (event.kind === 'fault') setFaults((f) => ({ ...f, [event.channel ?? event.component]: (f[event.channel ?? event.component] ?? 0) + 1 }))
-      if (event.kind === 'attempt' || event.kind === 'launch' || event.kind === 'github') refresh.current()
+      if (event.kind === 'attempt' || event.kind === 'launch' || event.kind === 'github' || event.kind === 'phase') refresh.current()
       if (event.kind === 'usage') void loadUsage()
     }, () => refresh.current(), setLive)
     return () => {
@@ -606,7 +610,7 @@ function Worker(props: {
   const fault = props.fault || late || attempt.outcome === 'failed'
   const state = settled ? 'off' : fault ? 'fault' : waiting ? 'warn' : attempt.heartbeat?.pi_alive === false ? 'warn' : 'ok'
   const where = `${attempt.repository.split('/').pop() ?? attempt.repository} · ${attempt.branch}`
-  const shown = settled ? attempt.outcome ?? words(attempt.state) : words(attempt.state)
+  const shown = settled ? attempt.outcome ?? words(attempt.state) : attempt.state === 'running' && attempt.phase ? words(attempt.phase.phase) : words(attempt.state)
   return (
     <g className={`node worker${waiting ? ' waiting' : ''}${settled ? ' settled' : ''}${fault ? ' fault' : ''}${props.selected ? ' selected' : ''}`}
       onClick={props.onSelect} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); props.onSelect() } }}
@@ -696,6 +700,7 @@ function AttemptPanel(props: { name: string; attempt: AttemptView; now: number; 
         ['Created', clock(attempt.created_at)],
         ['Launched', attempt.launched_at && clock(attempt.launched_at)],
         ['Last contact', ago(now, attempt.last_contact_at)],
+        ['Worker step', attempt.phase && `${words(attempt.phase.phase)}${attempt.phase.duration_seconds !== undefined ? ` after ${span(attempt.phase.duration_seconds * 1000)}` : ''} · ${ago(now, attempt.phase.at)}${attempt.phase.detail ? ` · ${attempt.phase.detail}` : ''}`],
         ['Heartbeat', beat && `${words(beat.state)} · ${span(beat.elapsed_seconds * 1000)} · ${beat.pi_alive ? 'agent alive' : 'agent stopped'}`],
         ['Watchdog', attempt.watchdog_due && (attempt.watchdog_due > now ? `in ${span(attempt.watchdog_due - now)}` : `${span(now - attempt.watchdog_due)} overdue`)],
         ['Question asked', attempt.question_at && ago(now, attempt.question_at)],
@@ -710,9 +715,9 @@ function AttemptPanel(props: { name: string; attempt: AttemptView; now: number; 
   )
 }
 
-/** Events worth a line: no heartbeats, ticks or thread replies, which only repeat what the state says. */
+/** Events worth a line: no heartbeats, ticks, thread replies or raw phase messages, which only repeat what the state or a phase line says. */
 const worthShowing = (event: OpsEvent) =>
-  event.kind !== 'tick' && !(event.kind === 'telemetry' && event.type === 'heartbeat') && !(event.kind === 'board' && event.action === 'reply')
+  event.kind !== 'tick' && !(event.kind === 'telemetry' && (event.type === 'heartbeat' || event.type === 'phase')) && !(event.kind === 'board' && event.action === 'reply')
 
 /** The model sources an event names: the model of a decision step, who decided, or a round's providers. */
 function sourcesOf(event: OpsEvent): string[] {
@@ -816,6 +821,7 @@ function kindOf(event: OpsEvent): Kind {
     case 'command': return event.type === 'answer' ? 'question' : 'command'
     case 'telemetry': return event.type === 'question' ? 'question' : event.type === 'result' || event.type === 'bundle_part' ? 'result' : 'telemetry'
     case 'usage': return 'usage'
+    case 'phase': return event.phase === 'setup_failed' ? 'question' : 'telemetry'
     case 'fault': return 'question'
     case 'decision': case 'decision_step': return 'result'
     default: return 'external'
@@ -827,8 +833,10 @@ function describe(event: OpsEvent): string {
     case 'tick': return `${event.sources.join(' + ')} · ${event.duration_ms} ms`
     case 'command': return `← ${words(event.type)}${event.outcome === 'failed' ? ' · failed' : ''}`
     case 'telemetry': return `→ ${words(event.type)}`
+    case 'phase': return `worker ${words(event.phase)}${event.phase.startsWith('work') ? ` · round ${event.round}` : ''}${event.duration_seconds !== undefined ? ` · ${event.duration_seconds} s` : ''}`
     case 'board': return `board ${words(event.action)}`
-    case 'github': return `${event.action === 'draft_pr' ? 'draft PR' : 'push'} · ${event.repository}`
+    case 'github': return `${GITHUB_ACTIONS[event.action]} · ${event.repository}`
+    case 'thread': return `message #${event.task} · ${[event.reply ? 'answered' : '', ...event.actions.map(words), event.work === 'worker' ? 'sent to the worker' : event.work === 'followup' ? 'follow-up' : ''].filter(Boolean).join(' · ') || 'no action'}`
     case 'launch': return `launch ${words(event.outcome)}`
     case 'attempt': return words(event.state)
     case 'fault': return `${event.component} · ${words(event.code)}${event.task ? ` · #${event.task}` : ''}`
