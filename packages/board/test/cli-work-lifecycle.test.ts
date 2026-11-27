@@ -118,15 +118,6 @@ it('asks the caller to read again if staged work changes during reopen', async (
   }
 })
 
-it('releases staged work when a run fails without turning it into a rejection', async () => {
-  const id = await ok(['tasks', 'create', 'run', 'try the job'])
-  await ok(['tasks', 'scope', id, 'ready to start'])
-  const failed = await vb(['tasks', 'run', id, '--json', '--', process.execPath, '-e', 'process.exit(7)'], scoper)
-  expect(failed).toMatchObject({ code: 7, stderr: '' })
-  expect(JSON.parse(failed.stdout)).toMatchObject({ outcome: 'released', code: 7, task: { task: { state: 'ready', work: { stage: 'scoped' } } } })
-  expect(await ok(['tasks', 'run', id, '--', process.execPath, '-e', 'process.exit(0)'])).toBe(`handoff ${id}`)
-})
-
 it('reports that staging is unsupported on a legacy board', async () => {
   const id = await ok(['tasks', 'create', 'work', 'legacy task'], old)
   await refused(['tasks', 'scope', id, 'ready to start'], 501, 'no_work_lifecycle', old)

@@ -233,15 +233,6 @@ describe('vb tasks', () => {
         '',
       ].join('\n'),
     })
-    const bare = await vb(['tasks', 'run', '--ready', 'roles', '--label=role', '--', 'true'])
-    expect([bare.code, bare.stdout, bare.stderr.split('\n')]).toEqual([2, '', ['error: --label on run --ready takes key=value: role has no value, and a claim matches one exactly.', '', "  See what's ready, and their labels:", '    vb tasks roles --state ready --label role', '']])
-    // What it says to run claims the task.
-    const claim = failure(await vb(['tasks', 'run', '--ready', 'roles', '--label=role=worker|reviewer', '--json', '--', 'true'])).next![0]!
-    expect(claim.argv).toEqual(['vb', 'tasks', 'run', '--ready', 'roles', '--label=role=worker', '--json', '--', 'true'])
-    expect(JSON.parse((await ok(claim.argv.slice(1))))).toMatchObject({ task: { id: worker } })
-    // The command after -- is run's to hand over as it is: the same label there is its own, and stays.
-    const own = failure(await vb(['tasks', 'run', '--ready', 'roles', '--label', 'role=worker|reviewer', '--json', '--', 'echo', '--label', 'role=worker|reviewer', '--label=role=worker|reviewer']))
-    expect(own.next![0]!.argv).toEqual(['vb', 'tasks', 'run', '--ready', 'roles', '--label', 'role=worker', '--json', '--', 'echo', '--label', 'role=worker|reviewer', '--label=role=worker|reviewer'])
     // One with no key says so, not that it has no value.
     const keyless = await vb(['tasks', 'claim', '--ready', 'roles', '--label', '=worker'])
     expect([keyless.code, keyless.stderr.split('\n')[0]]).toEqual([2, 'error: --label on claim --ready takes key=value, and =worker has no key before its =.'])
@@ -254,7 +245,8 @@ describe('vb tasks', () => {
     await new Promise((resolve) => setTimeout(resolve, 1500))
     expect(waiting.printed.stdout).toBe('')
     // Its prerequisite completes while it waits, and the claim is the waiter's.
-    await ok(['tasks', 'run', build, '--', process.execPath, '-e', ''])
+    await ok(['tasks', 'claim', build])
+    await ok(['tasks', 'complete', build])
     expect(await waiting.exited).toBe(0)
     expect(waiting.printed).toEqual({ stdout: `#${deploy}  yours for 15m  deploy it\n`, stderr: '' })
 

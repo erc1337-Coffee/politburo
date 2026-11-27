@@ -165,8 +165,6 @@ export const options = {
   artifact: { type: 'string', value: 'ref', description: 'a reference to the submitted or attested artifact' },
   'expires-at': { type: 'string', value: 'utc', description: 'expiry as an ISO UTC timestamp' },
   'if-version': { type: 'string', value: 'N', description: 'the dependent task version shown by read --json' },
-  // What a turn-end hook an earlier board installed still passes to `hook`.
-  agent: { type: 'string', value: 'name', description: "the agent whose turn ended", hidden: true },
 } as const satisfies Record<string, Spec>
 
 export type OptionName = keyof typeof options
@@ -565,7 +563,7 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
           claimNow,
           option('lease', 'with --claim: how long to hold it'),
           option('binding', 'with --claim: assignment metadata as JSON'),
-          option('file', 'a plan, from a JSON file (- reads stdin): an array of tasks, each { key?, text, labels?, needs?, for?, priority?, attachments? }, all made, in as many writes as it takes'),
+          option('file', 'a plan, from a JSON file (- reads stdin): an array of tasks, each { key?, text, labels?, needs?, for?, priority?, noSync?, attachments? }, all made, in as many writes as it takes'),
           option('idempotency-key', 'sending the same one again makes it once'),
         ],
         examples: [
@@ -584,19 +582,6 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
         examples: [
           { name: 'claim a task', value: 'tasks claim 812' },
           { name: 'claim the next fix, waiting for one', value: 'tasks claim --ready work/ --label step=fix --wait 10m' },
-        ],
-      },
-      {
-        name: 'run',
-        description: 'claim a task and run a command: complete on exit 0, otherwise fail a legacy task or release staged work',
-        arguments: [
-          { name: 'id|channel', required: true, description: "a task's ID, or with --ready a channel or a path prefix" },
-          { name: 'cmd', required: true, multiple: true, description: 'the command, after --: it gets BOARD_TASK, the task\'s ID' },
-        ],
-        options: [option('result'), option('ready'), option('label', 'with --ready: one whose root has this label, one value exactly', 'k=v'), option('from'), option('wait'), option('lease'), option('binding')],
-        examples: [
-          { name: 'run the tests as a task', value: 'tasks run 812 --result "tests pass" -- make test' },
-          { name: 'work the next fix', value: 'tasks run --ready work/ --label step=fix -- ./fix.sh' },
         ],
       },
       {
@@ -736,32 +721,6 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
     ],
   },
   fork.agentsCommand(option, id, task),
-  {
-    group: 'agents',
-    name: 'hooks',
-    description: 'the turn-end hooks an earlier board installed',
-    arguments: [],
-    options: [],
-    examples: [],
-    subcommands: [
-      {
-        name: 'uninstall',
-        description: 'remove the turn-end hooks an earlier board installed, from every agent or the ones named',
-        arguments: [{ name: 'agent', required: false, multiple: true, description: 'claude, codex, cursor, or pi' }],
-        options: [],
-        examples: [{ name: 'remove every hook', value: 'hooks uninstall' }],
-      },
-    ],
-  },
-  {
-    group: 'agents',
-    name: 'hook',
-    description: 'what an earlier turn-end hook runs: it does nothing now',
-    arguments: [{ name: 'event', required: false, multiple: true }],
-    options: [option('agent')],
-    examples: [],
-    hidden: true,
-  },
   {
     group: 'live',
     name: 'tail',

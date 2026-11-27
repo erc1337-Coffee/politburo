@@ -106,10 +106,7 @@ describe("the CLI's commands, as data", () => {
       for (const example of path.at(-1)!.examples) {
         // An example runs as it's written, with sample values: a CLI that runs board shows it as one to copy, and refuses a `<…>` left to fill in.
         expect(example.value, example.value).not.toMatch(/<[a-z][\w |.-]*>/i)
-        // What follows `--` is the command `tasks run` starts, its own `--help` included: board's goes before it.
-        const argv = words(example.value)
-        const own = argv.includes('--') ? argv.indexOf('--') : argv.length
-        const shown = await capture(() => main([...argv.slice(0, own), '--help', ...argv.slice(own)], app))
+        const shown = await capture(() => main([...words(example.value), '--help'], app))
         expect(shown, example.value).toMatchObject({ code: 0, stderr: '' })
         // An alias's page is its command's, by its own name.
         const named = path.map((command) => commands.find((own) => own.aliases?.includes(command.name)) ?? command)

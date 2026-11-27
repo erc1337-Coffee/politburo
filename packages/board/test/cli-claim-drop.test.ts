@@ -283,38 +283,3 @@ it.each([false, true])('recovers after a drop process is killed (proof matches: 
   expect(await store.get(id)).toBeNull()
   expect(await fs.readdir(claimsDir())).toEqual([])
 })
-
-it('releases staged work on command failure without deleting a replacement claim', async ({ onTestFinished }) => {
-  const backend = local({ memory: true, workLifecycle: { scopers: ['vercel:user:u_julian'] } })
-  const server = await serve((request) => team.fetch(request))
-  const url = `${server.origin}/api/board`
-  const team = board({ backend, url, authenticate: oidcTokens(testAuth) })
-  onTestFinished(async () => {
-    await server.close()
-    await backend.close()
-  })
-  const env = { BOARD_URL: url, BOARD_TOKEN: await personToken('u_julian', url), HOME: home, XDG_CONFIG_HOME: home }
-  const id = await create('work', 'try the job', [], env)
-  await ok(['tasks', 'scope', id, 'ready to start'], env)
-  const store = fileClaims(async () => url, null)
-  const run = async (script: string) => {
-    const failed = await vb(['tasks', 'run', id, '--json', '--', process.execPath, '--input-type=module', '-e', script], env)
-    expect(failed).toMatchObject({ code: 7, stderr: '' })
-    expect(JSON.parse(failed.stdout)).toMatchObject({
-      outcome: 'released', code: 7, task: { id, task: { state: 'ready', claim: null, work: { stage: 'scoped' } } },
-    })
-  }
-
-  await run('process.exitCode = 7')
-  expect(await store.get(id)).toBeNull()
-
-  // The child starts after vb has saved its proof and replaces the file before vb settles.
-  const replacement = { epoch: 3, token: 'replacement-claim', until: new Date(Date.now() + 60_000).toISOString() }
-  await run(`
-    import { fileClaims } from ${JSON.stringify(new URL('../src/cli/claims.ts', import.meta.url).href)}
-    const other = fileClaims(async () => process.env.BOARD_URL, null)
-    await other.put(process.env.BOARD_TASK, ${JSON.stringify(replacement)})
-    process.exitCode = 7
-  `)
-  expect(await store.get(id)).toEqual(replacement)
-})

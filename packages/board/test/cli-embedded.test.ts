@@ -117,7 +117,7 @@ describe('the embedded CLI', () => {
     vi.stubEnv('BOARD_TOKEN', env.BOARD_TOKEN)
     const app = createApp({ appName: 'vercel board' })
     expect((await capture(() => app.run(['help']))).stdout).toMatch(/^ {2}tasks \[channel\] +open tasks, oldest first/m)
-    expect((await capture(() => app.run(['tasks', 'run', '--help']))).stdout).toContain('\n    vercel board tasks run 812 --result "tests pass" -- make test\n')
+    expect((await capture(() => app.run(['tasks', 'claim', '--help']))).stdout).toContain('\n    vercel board tasks claim 812\n')
 
     const made = await capture(() => app.run(['tasks', 'create', 'embedded', 'fix CVE-123 in acme/web']))
     expect(made).toMatchObject({ code: 0, stderr: '' })

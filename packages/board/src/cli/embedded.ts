@@ -96,7 +96,7 @@ let queue: Promise<unknown> = Promise.resolve()
  * Runs the vb command `argv` (`['read', '42']`, `['reply', '42', 'on it']`) on `board`, in this
  * process, and returns what the CLI would print. `board` already says which board and who, so
  * `--url` doesn't apply, and the commands about your machine (`whoami`, `identity`,
- * `hooks`, `serve`, `inspect`) answer 2. Calls run one at a time, in order, so
+ * `serve`, `inspect`) answer 2. Calls run one at a time, in order, so
  * `tail` and `wait`, which hold the rest until they end, need `options.signal`; it bounds any
  * other call too: `{ signal: AbortSignal.timeout(30_000) }`.
  */

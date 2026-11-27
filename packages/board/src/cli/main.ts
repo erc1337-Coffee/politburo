@@ -21,8 +21,6 @@ import { parseSchemaId } from '../contract/data-schemas.ts'
 import { block } from '../contract/blocks.ts'
 import { actorName, claimLine, formatAccess, formatAttention, formatConformance, formatEvent, formatGrants, grantRow, formatOperationalInbox, formatSchedule, formatTasks, grantCan, lineText, mentionedIn, reactionNames, formatThreadSummaries, formatThreads, terminalText, who } from './format.ts'
 import { fileClaims, memoryClaims, tokenClaims, type ClaimProof, type Claims } from './claims.ts'
-import { runCommand } from './run.ts'
-import { AGENTS, allowRules, cliOf, disallow, installedHook, tilde, uninstallHook, type HookAgent } from './hooks.ts'
 import { commands, filters as filterOptions, globalOptions, options, type CliCommand } from './commands.ts'
 import { commandHelp, commandPath, rootHelp } from './help.ts'
 import { closest, commandLine, exitCode, failureDocument, formatFailure, type Failure, type Recovery, type Warning } from './failure.ts'
@@ -131,7 +129,7 @@ function markAttachmentId(args: string[]): string[] {
   }
   return args
 }
-/** Commands that are gone, and what to run instead. Their flags don't matter: an old hook's `vb update --skip` gets this too. */
+/** Commands that are gone, and what to run instead. Their flags don't matter. */
 function removedCommand(word: string): Failed | undefined {
   const gone = (next: Recovery[], why = '') => usage(`\`${named()} ${word}\` is gone.${why}`, { reason: 'unknown_command', next })
   const url: Recovery[] = [
@@ -1106,13 +1104,6 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString('utf8')
 }
 
-function hookAgents(names: string[]): HookAgent[] {
-  const known = Object.keys(AGENTS) as HookAgent[]
-  for (const name of names)
-    if (!known.includes(name as HookAgent)) throw usage(`Unknown agent ${name}. The agents are ${known.join(', ')}.`)
-  return names.length ? (names as HookAgent[]) : known
-}
-
 /** Says what a write that went through had to say: in its JSON result with `--json`, on stderr otherwise. */
 function warn(warning: Warning) {
   if (flags.json) warnings.push(warning)
@@ -1659,34 +1650,6 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       return 0
     }
 
-    case 'hooks': {
-      const [action, ...names] = args
-      if (action !== 'uninstall')
-        throw usage(`\`${`${named()} hooks ${action ?? ''}`.trimEnd()}\` is gone. Turn-end hooks were removed.`, {
-          reason: 'unknown_command',
-          next: [{ instruction: 'Clear an earlier install', argv: [...cli(), 'hooks', 'uninstall'] }],
-        })
-      const agents = hookAgents(names)
-      const width = Math.max(...agents.map((agent) => AGENTS[agent].name.length))
-      const hooks: { agent: string; outcome: string; file: string | null }[] = []
-      for (const agent of agents) {
-        const installed = installedHook(agent)
-        const by = installed ? cliOf(installed) : null
-        const rules = by ? allowRules(agent, by) : null
-        if (rules) disallow(rules.file, rules.rules)
-        const removed = uninstallHook(agent)
-        hooks.push({ agent, outcome: removed ? 'removed' : 'unchanged', file: installed ? AGENTS[agent].file() : null })
-        if (!flags.json) out([AGENTS[agent].name.padEnd(width), removed ? 'removed' : 'not installed', installed ? tilde(AGENTS[agent].file()) : ''].join('  ').trimEnd())
-      }
-      if (flags.json) result({ hooks })
-      return 0
-    }
-
-    // What an earlier board's turn-end hook still runs: it does nothing, so those turns end as they would without it.
-    // `hooks uninstall` clears it.
-    case 'hook':
-      return 0
-
     case 'edit': {
       const id = messageId(args[0])
       const { mentions } = await client().edit(id, await content(args[1]), ifRevision())
@@ -1979,7 +1942,7 @@ async function agents(args: string[]): Promise<number> {
 
 /** What `tasks` does to a task, by the word after it: any other word is a channel to list. */
 const TASK_EVIDENCE_VERBS = new Set(['submit', 'evidence', 'attest', 'override', 'resolve'])
-const TASK_VERBS = new Set(['create', 'claim', 'run', 'renew', 'release', 'complete', 'fail', 'block', 'ask', 'attention', 'answer', 'unblock', 'park', 'unpark', 'handoff', 'scope', 'stage', 'reopen', 'assign', 'needs', 'priority', 'show', 'cancel', ...TASK_EVIDENCE_VERBS])
+const TASK_VERBS = new Set(['create', 'claim', 'renew', 'release', 'complete', 'fail', 'block', 'ask', 'attention', 'answer', 'unblock', 'park', 'unpark', 'handoff', 'scope', 'stage', 'reopen', 'assign', 'needs', 'priority', 'show', 'cancel', ...TASK_EVIDENCE_VERBS])
 const TASK_READS = new Set(['show', 'attention', 'evidence'])
 // Evidence verbs take a task ID. A bare word still names the channel to list.
 const isTaskVerb = (word: string, target: string | undefined) =>
@@ -2092,7 +2055,7 @@ async function withClaim<T>(claims: Claims, id: string, proof: ClaimProof, write
  * keeps the claim. With nothing ready it fails: `nothing_ready`, or `timeout` once `--wait` ran
  * out, as `wait` does. Stopped while it waits, it answers the exit code instead.
  */
-async function claimFor(board: Board, claims: Claims, target: string | undefined, verb: 'claim' | 'run', binding?: TaskBinding): Promise<ClaimedTask | number> {
+async function claimFor(board: Board, claims: Claims, target: string | undefined, verb: 'claim', binding?: TaskBinding): Promise<ClaimedTask | number> {
   const lease = seconds('lease')
   const options = {
     ...(lease !== undefined ? { lease } : {}),
@@ -2153,8 +2116,8 @@ async function claimFor(board: Board, claims: Claims, target: string | undefined
 /** `tasks`: the list, or what the word after it does to a task. */
 async function tasks(args: string[]): Promise<number> {
   const [verb, ...rest] = args
-  if (flags.binding !== undefined && verb !== 'claim' && verb !== 'run' && verb !== 'create')
-    throw usage('--binding goes with tasks claim, tasks run, or tasks create --claim.')
+  if (flags.binding !== undefined && verb !== 'claim' && verb !== 'create')
+    throw usage('--binding goes with tasks claim, or tasks create --claim.')
   if (flags.supersedes !== undefined && verb !== 'handoff') throw usage('--supersedes goes with tasks handoff.')
   if (verb === undefined || !isTaskVerb(verb, rest[0])) {
     if (rest.length > 0) {
@@ -2266,75 +2229,6 @@ async function tasks(args: string[]): Promise<number> {
     if (typeof claim === 'number') return claim
     printClaim(claim.task, claim)
     return 0
-  }
-
-  if (verb === 'run') {
-    // What follows `--` is the command, whole: the parser hands it over as arguments, after the task or the channel.
-    const dash = typed.indexOf('--')
-    const command = dash === -1 ? [] : typed.slice(dash + 1)
-    if (command.length === 0)
-      throw usage('Missing the command to run: put it after --.', { reason: 'missing_arguments', next: [{ instruction: 'Run a command on a task', argv: [...cli(), 'tasks', 'run', '<ID>', '--', '<COMMAND>'] }] })
-    const before = rest.slice(0, rest.length - command.length)
-    if (before.length > 1) throw usage(`tasks run takes one ${flags.ready ? 'channel' : 'task'} before --: ${before[1]} is one too many.`)
-    if (!flags.ready && before[0] === undefined) throw usage('Missing the task to run it on: its ID, or --ready and a channel.', { reason: 'missing_arguments' })
-    // It runs a command on this machine, and holds every other call for as long as it runs.
-    if (io.board) throw usage("tasks run isn't available in-process: it runs a command on this machine.", { reason: 'not_available', next: [] })
-    const binding = bindingFlag()
-    const { board, claims } = tasksOn()
-    const claim = await claimFor(board, claims, before[0], 'run', binding)
-    if (typeof claim === 'number') return claim
-    const id = claim.task.id
-    const lease = seconds('lease')
-    // Settle and drop with the latest proof this run saved, not a reread of the file.
-    let held = claim
-    const ran = await runCommand(command, {
-      env: { ...process.env, BOARD_TASK: id },
-      // With --json this run's stdout is one document: what the command prints goes to stderr.
-      ...(flags.json ? { stdout: 'stderr' as const } : {}),
-      // A third of the lease the board gave, so two renewals can fail before it runs out.
-      every: (Date.parse(claim.until) - Date.now()) / 3,
-      async renew() {
-        try {
-          const renewed = await held.renew(lease)
-          await claims.put(id, { epoch: renewed.epoch, token: renewed.token, until: renewed.until })
-          held = renewed
-          return true
-        } catch (error) {
-          // Lost, the command works a task that's someone else's now: it stops. Anything else is tried again at the next turn.
-          return !(error instanceof BoardError && error.code === 'claim_lost')
-        }
-      },
-    })
-    if (ran.how === 'lost') {
-      await claims.drop(id, held)
-      throw new Failed({
-        class: 'conflict',
-        reason: 'claim_lost',
-        message: `Lost the claim on task ${ref(id)} while the command ran, so it was stopped.`,
-        next: [{ instruction: 'See where the task stands', argv: [...cli(), 'read', id] }],
-      })
-    }
-    if (ran.how === 'unstarted') {
-      // Nothing ran, so the task goes back as it was.
-      await held.release().catch(() => {})
-      await claims.drop(id, held)
-      throw new Failed({ class: 'not_found', reason: 'command_not_found', message: `Couldn't run ${command[0]}. ${sentence(ran.why)}`, details: [`Task ${ref(id)} was released.`] })
-    }
-    if (ran.how === 'interrupted') {
-      await withClaim(claims, id, held, () => held.release())
-      await claims.drop(id, held)
-      // 130 for Ctrl-C, 143 for a supervisor's SIGTERM: what the signal would have said had it ended this process.
-      return ran.code
-    }
-    // A command's failure can settle a legacy task, but cannot reject staged work.
-    const staged = held.task.task?.work !== undefined
-    const settled = await withClaim(claims, id, held, () => ran.code === 0
-      ? held.complete(flags.result)
-      : staged ? held.release() : held.fail(ran.signal ? `killed by ${ran.signal}` : `exited ${ran.code}`))
-    await claims.drop(id, held)
-    const outcome = ran.code === 0 ? completionOutcome(settled) : staged ? 'released' : 'failed'
-    printTask(settled, outcome, ran.code === 0 ? {} : { code: ran.code })
-    return ran.code
   }
 
   const id = taskId(rest[0])
@@ -2930,7 +2824,7 @@ function stopped(reason: unknown): Failed {
 }
 
 /** The commands about the machine the CLI runs on, not the board: none of them run in-process. */
-const MACHINE = new Set(['whoami', 'hooks', 'hook', 'serve', 'inspect', 'join'])
+const MACHINE = new Set(['whoami', 'serve', 'inspect', 'join'])
 
 /** `main()` with `io` in place of the terminal, for `vb()`. One run at a time, as `main()`'s. */
 export async function mainWith(argv: string[], options: App, with_: Io): Promise<number> {

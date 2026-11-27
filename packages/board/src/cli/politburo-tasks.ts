@@ -19,7 +19,7 @@ export function resetTaskBoard() {
 }
 
 /** What `tasks` does to a task, by the word after it: any other word is a channel to list. */
-export const TASK_VERBS = new Set(['create', 'claim', 'run', 'renew', 'release', 'complete', 'fail', 'block', 'ask', 'attention', 'answer', 'unblock', 'park', 'unpark', 'handoff', 'scope', 'stage', 'reopen', 'assign', 'needs', 'priority', 'show', 'cancel', 'submit', 'evidence', 'attest', 'override', 'resolve'])
+export const TASK_VERBS = new Set(['create', 'claim', 'renew', 'release', 'complete', 'fail', 'block', 'ask', 'attention', 'answer', 'unblock', 'park', 'unpark', 'handoff', 'scope', 'stage', 'reopen', 'assign', 'needs', 'priority', 'show', 'cancel', 'submit', 'evidence', 'attest', 'override', 'resolve'])
 
 export function priorityOf(value: unknown, from: string): TaskPriority {
   const parsed = TaskPriority.safeParse(value)
@@ -75,7 +75,7 @@ export async function createPlan(target: string, text: string | undefined, path:
 }
 
 /** What a task of a plan's `--file` takes, as `tasks.createMany` does. */
-const PLAN_KEYS = ['key', 'text', 'labels', 'needs', 'for', 'attachments', 'priority']
+const PLAN_KEYS = ['key', 'text', 'labels', 'needs', 'for', 'noSync', 'attachments', 'priority']
 
 /** The help page that says what a plan holds. */
 const planHelp = (): Recovery => ({ instruction: 'See what a plan takes', argv: [...cli(), 'tasks', 'create', '--help'] })
@@ -319,7 +319,7 @@ export async function withClaim<T>(claims: Claims, id: string, proof: ClaimProof
  * matches. The list's `key=a|b` and bare `key` would match nothing, or the value `a|b`, and wait
  * out its `--wait` without a word: they're refused, with the claim of one value and the list.
  */
-export function readyLabels(values: string[], target: string, verb: 'claim' | 'run'): Record<string, string> {
+export function readyLabels(values: string[], target: string, verb: 'claim'): Record<string, string> {
   for (const value of values) {
     const at = value.indexOf('=')
     const options = at > 0 ? value.slice(at + 1).split('|') : []
@@ -347,7 +347,7 @@ export function readyLabels(values: string[], target: string, verb: 'claim' | 'r
  * keeps the claim. With nothing ready it fails: `nothing_ready`, or `timeout` once `--wait` ran
  * out, as `wait` does. Stopped while it waits, it answers the exit code instead.
  */
-export async function claimFor(board: Board, claims: Claims, target: string | undefined, verb: 'claim' | 'run', binding?: TaskBinding): Promise<ClaimedTask | number> {
+export async function claimFor(board: Board, claims: Claims, target: string | undefined, verb: 'claim', binding?: TaskBinding): Promise<ClaimedTask | number> {
   const lease = seconds('lease')
   const options = {
     ...(lease !== undefined ? { lease } : {}),
@@ -598,7 +598,7 @@ export function doingTasks(a: string | undefined, b: string | undefined): string
   if (a === undefined || !TASK_VERBS.has(a)) return a === undefined ? 'list tasks' : `list tasks in ${a}`
   const one = b === undefined ? 'a task' : `task ${ref(b)}`
   // `run` fails as its claim does, before its command starts, or as what it settles with after.
-  if (a === 'claim' || a === 'run') return flags.ready ? `claim a task in ${b ?? 'a channel'}` : `claim ${one}`
+  if (a === 'claim') return flags.ready ? `claim a task in ${b ?? 'a channel'}` : `claim ${one}`
   if (a === 'create' && flags.file !== undefined) return `create tasks in ${b ?? 'a channel'}`
   if (a === 'create') return b !== undefined && isMessageRef(b) ? `make ${ref(b)} a task` : `create a task in ${b ?? 'a channel'}`
   if (a === 'renew') return `renew the claim on ${one}`
