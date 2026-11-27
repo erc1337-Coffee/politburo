@@ -622,7 +622,9 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 .channel-form .field { display: grid; gap: 6px; min-width: 0; margin: 0; padding: 0; border: 0; }
 .channel-form .field > input { width: 100%; }
 .channel-form .choice-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.channel-form .repositories { display: grid; max-height: 168px; overflow-y: auto; margin: 0; padding: 0; list-style: none; background: var(--shade); }
+/* The proposed repositories float under the input, over what follows it, and move nothing. */
+.channel-form .field:has(> .repositories) { position: relative; }
+.channel-form .repositories { position: absolute; top: 36px; left: 0; right: 0; z-index: 2; display: grid; max-height: 168px; overflow-y: auto; margin: 0; padding: 4px 0; list-style: none; border: 1px solid var(--hairline); border-radius: 5px; background: var(--panel); box-shadow: 0 4px 12px var(--shadow); }
 .channel-form .repository { display: flex; align-items: center; gap: 6px; width: 100%; padding: 5px 8px; border: 0; background: none; color: var(--dim); text-align: left; overflow-wrap: anywhere; }
 .channel-form .repository.on { color: var(--accent); font-weight: 600; }
 @media (hover: hover) { .channel-form .repository:hover { background: var(--shade-hover); } }
