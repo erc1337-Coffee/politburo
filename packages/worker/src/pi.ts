@@ -1,5 +1,7 @@
-// Runs one Pi round: `pi -p --mode json` in its own process group, with an idle limit and a
-// maximum time. Pi JSONL events become progress items, model usage and the round summary.
+// Runs one Pi round: `pi --mode rpc` in its own process group, with an idle limit and a maximum
+// time. The round's prompt goes to Pi's standard input, and so do steering and follow-up messages
+// while the round runs. Pi JSONL events become progress items, model usage and the round summary;
+// the round ends when Pi settles, and Pi exits when its input closes.
 import { spawn, type ChildProcess } from 'node:child_process'
 import { appendFileSync } from 'node:fs'
 import type { ProgressKind } from '../../relay/src/messages.ts'
@@ -66,6 +68,7 @@ export class PiRound {
   readonly #models = new Map<string, ModelUsage>()
   #summary = ''
   #error = ''
+  #settled = false
   readonly done: Promise<PiRoundResult>
 
   constructor(options: PiRoundOptions) {
@@ -88,6 +91,29 @@ export class PiRound {
     this.#terminate()
   }
 
+  /**
+   * Gives `text` to the running Pi: `steer` before its next model call, `follow_up` once it has
+   * finished its current work. False when the round has settled or Pi no longer runs.
+   */
+  send(mode: 'steer' | 'follow_up', text: string): boolean {
+    if (this.#settled || !this.alive) return false
+    return this.#write({ type: mode, message: text })
+  }
+
+  #write(command: Record<string, unknown>): boolean {
+    const input = this.#child?.stdin
+    if (!input || input.destroyed || input.writableEnded) return false
+    input.write(`${JSON.stringify(command)}\n`)
+    return true
+  }
+
+  /** Pi has nothing left to do: its input closes, and it exits on its own. */
+  #settle(): void {
+    if (this.#settled) return
+    this.#settled = true
+    this.#child?.stdin?.end()
+  }
+
   #terminate(): void {
     const pid = this.#child?.pid
     if (!pid || !this.alive) return
@@ -97,11 +123,19 @@ export class PiRound {
 
   #handle(line: string): void {
     appendFileSync(this.#options.logFile, `${line}\n`, { mode: 0o600 })
-    let event: PiEvent
-    try { event = JSON.parse(line) as PiEvent } catch { return }
+    let event: PiEvent & { command?: string; success?: boolean; error?: string }
+    try { event = JSON.parse(line) as typeof event } catch { return }
     const at = Date.now()
     const { onItem } = this.#options
-    if (event.type === 'tool_execution_start') {
+    if (event.type === 'response') {
+      if (event.success === false) {
+        this.#error = String(event.error ?? `Pi refused ${event.command ?? 'a command'}`)
+        onItem({ at, kind: 'error', text: clip(this.#error, 400) })
+        if (event.command === 'prompt') { this.#lastFailed = true; this.#settle() }
+      }
+    } else if (event.type === 'agent_settled') {
+      this.#settle()
+    } else if (event.type === 'tool_execution_start') {
       const target = event.args?.command ?? event.args?.path ?? ''
       onItem({ at, kind: 'tool', text: clip(`${event.toolName ?? 'tool'} ${typeof target === 'string' ? target : JSON.stringify(target)}`, 300) })
     } else if (event.type === 'tool_execution_end') {
@@ -136,11 +170,12 @@ export class PiRound {
 
   async #run(): Promise<PiRoundResult> {
     const o = this.#options
-    const args = ['-p', '--mode', 'json', '--session-dir', o.sessionDirectory, '--session-id', o.sessionId, '--model', o.model, '--thinking', o.thinking]
+    const args = ['--mode', 'rpc', '--session-dir', o.sessionDirectory, '--session-id', o.sessionId, '--model', o.model, '--thinking', o.thinking]
     for (const extension of o.extensions) args.push('--extension', extension)
-    args.push('--', o.prompt)
-    const child = spawn(o.command ?? 'pi', args, { cwd: o.cwd, env: o.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn(o.command ?? 'pi', args, { cwd: o.cwd, env: o.env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] })
     this.#child = child
+    child.stdin!.on('error', () => { /* Pi exited; its exit code tells the outcome */ })
+    this.#write({ id: 'round', type: 'prompt', message: o.prompt })
     let buffer = ''
     child.stdout!.setEncoding('utf8').on('data', (chunk: string) => {
       this.#lastActivity = Date.now()
@@ -170,7 +205,7 @@ export class PiRound {
     clearInterval(watch)
     if (buffer.trim()) this.#handle(buffer.trim())
     const models = [...this.#models.values()]
-    const exitReason = this.#stopReason ?? (exitCode === 0 && !this.#lastFailed ? 'completed' : 'failed')
+    const exitReason = this.#stopReason ?? (exitCode === 0 && this.#settled && !this.#lastFailed ? 'completed' : 'failed')
     if (exitReason === 'failed' && !this.#error) this.#error = stderr.trim().split('\n').slice(-5).join('\n')
     return {
       exitReason, exitCode, summary: (this.#lastFailed ? this.#error : this.#summary) || this.#error || '(no reply)', models,

@@ -99,6 +99,8 @@ export class Worker {
   #piCommand: string | undefined
   #ready: Promise<boolean> = Promise.resolve(true)
   #roundStartedAt = 0
+  /** Steering and follow-up messages that arrived while the round was still starting. */
+  #waitingMessages: Array<{ id: string; mode: 'steer' | 'follow_up'; text: string }> = []
 
   constructor(options: WorkerOptions, token: string) {
     this.#o = options
@@ -307,6 +309,10 @@ export class Worker {
       }
       case 'instruct': {
         if (!this.#start) return
+        if (command.data.mode === 'steer' || command.data.mode === 'follow_up') {
+          this.#message({ id: command.id, mode: command.data.mode, text: command.data.text })
+          return
+        }
         if (command.data.mode === 'interrupt' && this.#roundRunning) {
           this.#nextRound = { round: command.data.round, text: command.data.text }
           this.#pi?.stop()
@@ -353,6 +359,20 @@ export class Worker {
       return
     }
     void this.#runRound(start.round, this.#roundPrompt(start, null))
+  }
+
+  /**
+   * Gives a steering or follow-up message to the running Pi, or keeps it for the round that is
+   * starting; with no round, it is dropped and the orchestrator hears so.
+   */
+  #message(message: { id: string; mode: 'steer' | 'follow_up'; text: string }): void {
+    if (this.#pi?.send(message.mode, message.text)) {
+      this.#phase({ phase: 'instruction_received', round: this.#round, detail: message.id })
+    } else if (!this.#pi && !this.#stopping && (this.#roundRunning || this.#roundStartedAt === 0)) {
+      this.#waitingMessages.push(message)
+    } else {
+      this.#phase({ phase: 'instruction_dropped', round: this.#round, detail: message.id })
+    }
   }
 
   #worktree(): string {
@@ -422,6 +442,7 @@ export class Worker {
       maxSeconds: start.limits.max_seconds,
       onItem: (item) => this.#item(item),
     })
+    for (const message of this.#waitingMessages.splice(0)) this.#message(message)
     let outcome: PiRoundResult
     try {
       outcome = await this.#pi.done
@@ -429,6 +450,7 @@ export class Worker {
       outcome = { exitReason: 'failed', exitCode: null, summary: (error as Error).message, models: [], costUsd: 0, error: (error as Error).message }
     }
     this.#flushProgress()
+    for (const message of this.#waitingMessages.splice(0)) this.#phase({ phase: 'instruction_dropped', round, detail: message.id })
     if (this.#stopping) return
     await this.#finishRound(outcome.exitReason, outcome, true)
     this.#pi = null

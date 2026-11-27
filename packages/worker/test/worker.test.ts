@@ -24,6 +24,30 @@ process.stdout.write(JSON.stringify({ type: 'tool_execution_start', toolName: 'w
 setInterval(() => process.stdout.write(JSON.stringify({ type: 'message_update' }) + '\\n'), 500)
 `
 
+/** A stand-in for `pi --mode rpc` that records every command on its input and settles once it was steered. */
+const RPC_PI = `#!/usr/bin/env node
+const fs = require('fs')
+const emit = (event) => process.stdout.write(JSON.stringify(event) + '\\n')
+let buffer = ''
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', (chunk) => {
+  buffer += chunk
+  let end
+  while ((end = buffer.indexOf('\\n')) >= 0) {
+    const command = JSON.parse(buffer.slice(0, end))
+    buffer = buffer.slice(end + 1)
+    fs.appendFileSync('commands.log', command.type + ': ' + command.message + '\\n')
+    if (command.type === 'prompt') emit({ type: 'tool_execution_start', toolName: 'write', args: { path: 'commands.log' } })
+    if (command.type === 'steer') {
+      emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'steered: ' + command.message }] } })
+      emit({ type: 'agent_settled' })
+    }
+  }
+})
+process.stdin.on('end', () => process.exit(0))
+setInterval(() => {}, 1000)
+`
+
 describe('worker', () => {
   let directory: string
   let store: MessageStore
@@ -48,6 +72,8 @@ describe('worker', () => {
     base = git(checkout, 'rev-parse', 'HEAD')
     writeFileSync(join(directory, 'slow-pi'), SLOW_PI)
     chmodSync(join(directory, 'slow-pi'), 0o755)
+    writeFileSync(join(directory, 'rpc-pi'), RPC_PI)
+    chmodSync(join(directory, 'rpc-pi'), 0o755)
   })
 
   after(async () => {
@@ -87,6 +113,29 @@ describe('worker', () => {
     const setup = prepare ? { prepare } : { extensions: [], piCommand: join(directory, 'slow-pi') }
     return new Worker({ relayUrl, channel, files, checkout, contactTimeoutSeconds, ...setup, log: () => {} }, token)
   }
+
+  test('a steering message reaches the running Pi in the same session, and the round ends when Pi settles', async () => {
+    const channel = 'worker-steer'
+    const prepare = async (): Promise<PiSetup> => ({ piCommand: join(directory, 'rpc-pi'), extensions: [], installed: [] })
+    const running = worker(channel, 600, 900, prepare).run()
+    await command(channel, 'start', { ...start(channel), branch: 'claude/task-steer' })
+    for (let i = 0; i < 100 && !phases(telemetry(channel)).some((phase) => phase.phase === 'work_started'); i++) await sleep(100)
+    await sleep(300)
+    await command(channel, 'instruct', { round: 1, text: 'use tabs', mode: 'steer' })
+    for (let i = 0; i < 100 && !telemetry(channel).some((message) => message.type === 'result'); i++) await sleep(100)
+    const messages = telemetry(channel)
+    const received = phases(messages).find((phase) => phase.phase === 'instruction_received')
+    assert.ok(received, 'no instruction_received phase')
+    const result = messages.find((message) => message.type === 'result')
+    if (!result || result.type !== 'result') throw new Error('no result')
+    assert.equal(result.data.exit_reason, 'completed')
+    assert.equal(result.data.summary, 'steered: use tabs')
+    await command(channel, 'instruct', { round: 1, text: 'too late', mode: 'follow_up' })
+    for (let i = 0; i < 50 && !phases(telemetry(channel)).some((phase) => phase.phase === 'instruction_dropped'); i++) await sleep(100)
+    assert.ok(phases(telemetry(channel)).some((phase) => phase.phase === 'instruction_dropped'), 'a message after the round was not reported as dropped')
+    await command(channel, 'stop', { reason: 'done', send_bundle: false })
+    assert.equal(await running, EXIT.finished)
+  })
 
   const phases = (messages: Telemetry[]) => messages.flatMap((message) => (message.type === 'phase' ? [message.data] : []))
 

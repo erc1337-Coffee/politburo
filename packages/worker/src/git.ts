@@ -22,16 +22,32 @@ export function git(cwd: string, args: string[], timeoutMs = 120_000): Promise<s
 
 /**
  * Creates (or reuses) the worktree of the task branch at `directory`, starting at `baseCommit`.
- * Push is disabled on every remote of the checkout.
+ * In a session that worked on the task before, the earlier attempt's worktree of the branch is
+ * removed first: its work is committed and the base contains it. Push is disabled on every remote
+ * of the checkout.
  */
 export async function prepareWorktree(checkout: string, directory: string, branch: string, baseCommit: string): Promise<void> {
   await git(checkout, ['cat-file', '-e', `${baseCommit}^{commit}`]).catch(() => {
     throw new Error(`the uploaded checkout does not contain the base commit ${baseCommit}`)
   })
-  if (!existsSync(directory)) await git(checkout, ['worktree', 'add', '--quiet', '-B', branch, directory, baseCommit])
+  if (!existsSync(directory)) {
+    for (const other of worktreesOf(await git(checkout, ['worktree', 'list', '--porcelain']), branch)) {
+      await git(checkout, ['worktree', 'remove', '--force', other])
+    }
+    await git(checkout, ['worktree', 'add', '--quiet', '-B', branch, directory, baseCommit])
+  }
   for (const remote of (await git(checkout, ['remote'])).split('\n').filter(Boolean)) {
     await git(checkout, ['config', `remote.${remote}.pushurl`, 'push-disabled-by-politburo-worker'])
   }
+}
+
+/** The paths of the worktrees that have `branch` checked out, from `git worktree list --porcelain`. */
+export function worktreesOf(listing: string, branch: string): string[] {
+  return listing.split('\n\n').flatMap((entry) => {
+    const lines = entry.split('\n')
+    const path = lines.find((line) => line.startsWith('worktree '))?.slice('worktree '.length)
+    return path && lines.includes(`branch refs/heads/${branch}`) ? [path] : []
+  })
 }
 
 export async function head(directory: string): Promise<string> {
