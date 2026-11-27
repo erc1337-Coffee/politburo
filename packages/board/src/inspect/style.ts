@@ -11,12 +11,13 @@ export const CSS = `
   --rail: light-dark(#f5f5f5, #121218);
   --chrome: light-dark(#f5f5f5, #121218);
   --chrome-pressed: light-dark(#e6e5e9, #0b0b0e);
-  /* The ink rules and frames are drawn in; text takes the steps below, each readable on every surface. */
+  /* The ink rules and frames are drawn in; text takes the steps below, each readable on every surface
+     once the page's duotone has tinted both (inspect-theme.test.ts checks). */
   --ink: light-dark(#2c3382, #af5353);
   --bright: light-dark(#1f2566, #f0f0f0);
   --dim: light-dark(#2c3382, #e6e0e0);
   --muted: light-dark(#454b91, #cbbfbf);
-  --faint: light-dark(#5d6070, #ab9f9f);
+  --faint: light-dark(#4c4f60, #c9bdbd);
   --hairline: light-dark(#2c338240, #af535359);
   /* A rule drawn by hand: thick enough that its wobble never breaks it. */
   --rule: light-dark(#2c338273, #af53538c);
@@ -24,7 +25,7 @@ export const CSS = `
   --shade: light-dark(#f2f1f0, #241516);
   --shade-hover: light-dark(#e6e5e9, #301a1b);
   --selected: light-dark(#dddde4, #3c2021);
-  --accent: light-dark(#2c3382, #e27b7b);
+  --accent: light-dark(#2c3382, #f59a9a);
   --gold: var(--accent);
   --gold-text: light-dark(#fffdf7, #ffffff);
   --focus: var(--accent);
@@ -38,8 +39,8 @@ export const CSS = `
   --bevel-dark: light-dark(#c9cadb, #000000);
   --raised: 0 1px 1px light-dark(#1f25661a, #0006);
   --shadow: light-dark(#1f256626, #0009);
-  --red: light-dark(#a3231d, #ff7aa8);
-  --warning: light-dark(#8a4a00, #ffa45c);
+  --red: light-dark(#a3231d, #ff9ee6);
+  --warning: light-dark(#604810, #ffa45c);
   /* The page's duotone, and the wobble its rules take; \`shell.ts\` holds the filters. */
   --tint: url(#tint-light);
   --boil: url(#boil);
@@ -152,9 +153,9 @@ textarea, [contenteditable]:not([contenteditable='false']) { cursor: text; }
 .sidebar .item.theme-toggle:hover { color: var(--bright); }
 .theme-toggle input {
   appearance: none; display: grid; place-content: center; width: 14px; height: 14px; margin: 0 0 0 0;
-  border: 2px solid var(--ink); border-radius: 2px; background: none;
+  border: 2px solid var(--accent); border-radius: 2px; background: none;
 }
-.theme-toggle input::before { content: ''; width: 6px; height: 6px; background: var(--ink); transform: scale(0); }
+.theme-toggle input::before { content: ''; width: 6px; height: 6px; background: var(--accent); transform: scale(0); }
 .theme-toggle input:checked::before { transform: scale(1); }
 .new-channel { display: flex; align-items: center; gap: 2px; margin: 2px 0 4px; }
 .new-channel input { flex: 1; min-width: 0; height: 28px; padding: 0 8px; border: 0; background: var(--shade); font-size: 12px; }

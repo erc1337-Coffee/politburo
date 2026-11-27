@@ -37,7 +37,7 @@ ${SHADERS}
  * the whole page, one for each theme, and a hand-drawn wobble on its rules, still when you'd rather
  * not see motion.
  */
-const SHADERS = `<svg class="shaders" aria-hidden="true" focusable="false"><defs>
+export const SHADERS = `<svg class="shaders" aria-hidden="true" focusable="false"><defs>
 <filter id="tint-light" color-interpolation-filters="sRGB">
 <feColorMatrix type="saturate" values="0"/>
 <feComponentTransfer result="duo"><feFuncR type="table" tableValues="0.094 1"/><feFuncG type="table" tableValues="0.094 0.992"/><feFuncB type="table" tableValues="0.427 0.973"/></feComponentTransfer>

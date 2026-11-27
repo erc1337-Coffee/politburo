@@ -1,5 +1,6 @@
 import { Window } from 'happy-dom'
 import { describe, expect, it } from 'vitest'
+import { SHADERS } from '../src/inspect/shell.ts'
 import { CSS } from '../src/inspect/style.ts'
 
 const css = CSS.replace(/\/\*[\s\S]*?\*\//g, '')
@@ -30,7 +31,24 @@ function rgb(hex: string | undefined, name = 'color'): RGB {
   return [value >> 16, (value >> 8) & 0xff, value & 0xff]
 }
 
-const color = (theme: Record<string, string>, name: string) => rgb(theme[`--${name}`], `--${name}`)
+/**
+ * What the page's duotone (`shell.ts`) makes of a color: gray, mapped between the filter's two
+ * tones, mixed back with the color. Every pixel passes through it, so contrast is read after it.
+ */
+function tinted(id: string): (channels: RGB) => RGB {
+  const filter = SHADERS.match(new RegExp(`<filter id="${id}"[\\s\\S]*?</filter>`))?.[0]
+  if (!filter) throw new Error(`Missing filter #${id}`)
+  const tables = [...filter.matchAll(/<feFunc[RGB] type="table" tableValues="([\d.]+) ([\d.]+)"/g)].map(([, lo, hi]) => [Number(lo), Number(hi)] as const)
+  const [k2, k3] = ['k2', 'k3'].map((k) => Number(filter.match(new RegExp(`${k}="([\\d.]+)"`))![1]))
+  return (channels) => {
+    const [r, g, b] = channels.map((c) => c / 255) as [number, number, number]
+    const gray = 0.213 * r + 0.715 * g + 0.072 * b
+    return tables.map(([lo, hi], i) => Math.round(Math.min(1, Math.max(0, k2! * (lo + gray * (hi - lo)) + k3! * [r, g, b][i]!)) * 255)) as RGB
+  }
+}
+const tints: Record<string, (channels: RGB) => RGB> = {}
+
+const color = (theme: Record<string, string>, name: string) => (tints[theme === light ? 'light' : 'dark'] ??= tinted(theme === light ? 'tint-light' : 'tint-dark'))(rgb(theme[`--${name}`], `--${name}`))
 
 /** WCAG relative luminance, with each sRGB channel linearized first. */
 function luminance([r, g, b]: RGB): number {
