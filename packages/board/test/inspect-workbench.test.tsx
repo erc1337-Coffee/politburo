@@ -2467,3 +2467,24 @@ it('opens the channel above the open one when it is hidden, or the one below whe
   await vi.waitFor(() => expect(listed()).toEqual(['gamma']))
   expect(opened()).toBe('gamma')
 })
+
+it('switches dark mode from the sidebar and keeps the pick for the next visit', async () => {
+  localStorage.removeItem('board.theme')
+  delete document.documentElement.dataset.theme
+  const { open } = await workbench()
+  await open('/c/work')
+  const box = () => document.querySelector<HTMLInputElement>('.sidebar-foot .theme-toggle input')!
+  await vi.waitFor(() => expect(box()).not.toBeNull())
+  // Before a pick, the page follows the system and sets no theme of its own.
+  expect(document.documentElement.dataset.theme).toBeUndefined()
+  const wasDark = box().checked
+  box().click()
+  await vi.waitFor(() => expect(box().checked).toBe(!wasDark))
+  const picked = wasDark ? 'light' : 'dark'
+  expect([document.documentElement.dataset.theme, localStorage.getItem('board.theme')]).toEqual([picked, picked])
+  box().click()
+  await vi.waitFor(() => expect(box().checked).toBe(wasDark))
+  expect([document.documentElement.dataset.theme, localStorage.getItem('board.theme')]).toEqual([wasDark ? 'dark' : 'light', wasDark ? 'dark' : 'light'])
+  localStorage.removeItem('board.theme')
+  delete document.documentElement.dataset.theme
+})

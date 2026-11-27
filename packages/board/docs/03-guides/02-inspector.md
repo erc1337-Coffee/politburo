@@ -149,6 +149,15 @@ With the list focused, press `j` or `k` to select a request and `1` through
 `8` to choose an available option. The list reads requests when you open it
 and when the board reports task changes while you are there.
 
+## Themes
+
+The page draws in ink on paper: blue ink on cream, or red ink on near-black. It
+follows your system's light or dark setting until you check or clear **Dark
+mode** at the foot of the sidebar; that choice is kept in that browser. A
+duotone tints the whole page, pictures included, and the rules under headers and
+around Operations cards are drawn by hand and wobble. With reduced motion on,
+they stay still.
+
 ## Buttons
 
 Buttons are bevelled and press in. Each plays a short two-hit low thunk,

@@ -14,6 +14,7 @@ import { ContextMenuArea, MenuItem } from './ui.tsx'
 import { nameFor, pictureFor } from './identity.ts'
 import { boardWords, shownName } from './words.ts'
 import { workScopeUrl } from './work-scope.ts'
+import { pickTheme, shownTheme, type Theme } from '../theme.ts'
 
 // --- sidebar -------------------------------------------------------------------------
 
@@ -62,6 +63,31 @@ function useStored<T>(key: string, initial: T): [T, (next: T) => void] {
     } catch {}
   }
   return [value, save]
+}
+
+/** Dark mode on or off: the page follows the system's until you pick, then keeps your pick. */
+function ThemeToggle() {
+  const [theme, setTheme] = useState<Theme>(shownTheme)
+  useEffect(() => {
+    const system = matchMedia('(prefers-color-scheme: light)')
+    const follow = () => setTheme(shownTheme())
+    system.addEventListener('change', follow)
+    return () => system.removeEventListener('change', follow)
+  }, [])
+  return (
+    <label className="item theme-toggle">
+      <input
+        type="checkbox"
+        checked={theme === 'dark'}
+        onChange={(event) => {
+          const next = event.target.checked ? 'dark' : 'light'
+          pickTheme(next)
+          setTheme(next)
+        }}
+      />
+      <span>Dark mode</span>
+    </label>
+  )
 }
 
 export function Sidebar({ state, current, onHome, onCollapse }: { state: State; current: Route; onHome: () => void; onCollapse: () => void }) {
@@ -196,6 +222,7 @@ export function Sidebar({ state, current, onHome, onCollapse }: { state: State; 
           <Settings size={14} strokeWidth={1.75} />
           <span>Settings</span>
         </Link>
+        <ThemeToggle />
         <div className="whoami" title={state.me!.actor}>
           <Avatar name={nameFor(state.identities, state.me!.actor, shownName(state.me!))} src={pictureFor(state.identities, state.me!.actor)} size={24} />
           <span className="as">{nameFor(state.identities, state.me!.actor, shownName(state.me!))}</span>

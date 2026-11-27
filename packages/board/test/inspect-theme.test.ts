@@ -1,5 +1,6 @@
 import { Window } from 'happy-dom'
 import { describe, expect, it } from 'vitest'
+import { SHADERS } from '../src/inspect/shell.ts'
 import { CSS } from '../src/inspect/style.ts'
 
 const css = CSS.replace(/\/\*[\s\S]*?\*\//g, '')
@@ -10,8 +11,16 @@ function declarations(rule: RegExp): Record<string, string> {
   return Object.fromEntries([...body.matchAll(/([\w-]+)\s*:\s*([^;]+)/g)].map(([, name, value]) => [name!, value!.trim()]))
 }
 
-const dark = declarations(/^\s*:root\s*\{([^{}]*)\}/)
-const light = declarations(/@media\s*\(\s*prefers-color-scheme\s*:\s*light\s*\)\s*\{\s*:root\s*\{([^{}]*)\}\s*\}/)
+// Each color is `light-dark(light, dark)`, or a `var()` of another token: one theme takes one side.
+const root = declarations(/^\s*:root\s*\{([^{}]*)\}/m)
+function themed(side: 0 | 1): Record<string, string> {
+  const pick = (value: string) => value.replace(/light-dark\(\s*([^,()]+?)\s*,\s*([^,()]+?)\s*\)/g, (_, light: string, dark: string) => (side === 0 ? light : dark))
+  const theme = Object.fromEntries(Object.entries(root).map(([name, value]) => [name, pick(value)]))
+  const resolve = (value: string): string => value.replace(/var\((--[\w-]+)\)/g, (_, name: string) => resolve(theme[name] ?? ''))
+  return Object.fromEntries(Object.entries(theme).map(([name, value]) => [name, resolve(value)]))
+}
+const light = themed(0)
+const dark = themed(1)
 const surfaces = ['bg', 'panel', 'rail', 'chrome', 'shade', 'shade-hover', 'selected']
 
 type RGB = [number, number, number]
@@ -22,7 +31,24 @@ function rgb(hex: string | undefined, name = 'color'): RGB {
   return [value >> 16, (value >> 8) & 0xff, value & 0xff]
 }
 
-const color = (theme: Record<string, string>, name: string) => rgb(theme[`--${name}`], `--${name}`)
+/**
+ * What the page's duotone (`shell.ts`) makes of a color: gray, mapped between the filter's two
+ * tones, mixed back with the color. Every pixel passes through it, so contrast is read after it.
+ */
+function tinted(id: string): (channels: RGB) => RGB {
+  const filter = SHADERS.match(new RegExp(`<filter id="${id}"[\\s\\S]*?</filter>`))?.[0]
+  if (!filter) throw new Error(`Missing filter #${id}`)
+  const tables = [...filter.matchAll(/<feFunc[RGB] type="table" tableValues="([\d.]+) ([\d.]+)"/g)].map(([, lo, hi]) => [Number(lo), Number(hi)] as const)
+  const [k2, k3] = ['k2', 'k3'].map((k) => Number(filter.match(new RegExp(`${k}="([\\d.]+)"`))![1]))
+  return (channels) => {
+    const [r, g, b] = channels.map((c) => c / 255) as [number, number, number]
+    const gray = 0.213 * r + 0.715 * g + 0.072 * b
+    return tables.map(([lo, hi], i) => Math.round(Math.min(1, Math.max(0, k2! * (lo + gray * (hi - lo)) + k3! * [r, g, b][i]!)) * 255)) as RGB
+  }
+}
+const tints: Record<string, (channels: RGB) => RGB> = {}
+
+const color = (theme: Record<string, string>, name: string) => (tints[theme === light ? 'light' : 'dark'] ??= tinted(theme === light ? 'tint-light' : 'tint-dark'))(rgb(theme[`--${name}`], `--${name}`))
 
 /** WCAG relative luminance, with each sRGB channel linearized first. */
 function luminance([r, g, b]: RGB): number {
@@ -54,8 +80,8 @@ describe.each([{ scheme: 'dark', theme: dark }, { scheme: 'light', theme: light 
     expect(contrast(color(theme, foreground), color(theme, background)), `--${foreground} on --${background}`).toBeGreaterThanOrEqual(minimum)
   }
 
-  it('sets the browser color scheme', () => {
-    expect(theme['color-scheme']).toBe(scheme)
+  it('sets the browser color scheme when it is picked', () => {
+    expect(declarations(new RegExp(`:root\\[data-theme='${scheme}'\\]\\s*\\{([^{}]*)\\}`))['color-scheme']).toBe(scheme)
   })
 
   it.each(['bright', 'dim', 'muted', 'faint', 'accent', 'red', 'warning'])('gives --%s text at least 4.5:1 contrast on every surface', (name) => {
@@ -80,27 +106,19 @@ describe.each([{ scheme: 'dark', theme: dark }, { scheme: 'light', theme: light 
   })
 })
 
-it.each(['bg', 'chrome'])('keeps the default --%s a dark maroon', (name) => {
-  const channels = color(dark, name)
-  const [r, g, b] = channels
-  expect(r - Math.max(g, b)).toBeGreaterThanOrEqual(0x1a)
-  expect(lightness(channels)).toBeGreaterThanOrEqual(lightness(rgb('#2a0a10')))
-  expect(lightness(channels)).toBeLessThanOrEqual(lightness(rgb('#4a1018')))
+it('draws the dark theme in red ink on near-black', () => {
+  const [r, g, b] = color(dark, 'ink')
+  expect(r - Math.max(g, b)).toBeGreaterThanOrEqual(0x40)
+  expect(lightness(color(dark, 'bg'))).toBeLessThan(0.06)
 })
 
-it('gives the default theme a gold accent, not pink', () => {
-  const [r, g, b] = color(dark, 'accent')
-  expect(r).toBeGreaterThan(g)
-  expect(g).toBeGreaterThan(b)
-  expect(b).toBeLessThan(0x9a)
-})
-
-it('gives the light theme a warm cream background', () => {
-  const [r, g, b] = color(light, 'bg')
-  expect(r).toBeGreaterThanOrEqual(g)
-  expect(g).toBeGreaterThanOrEqual(b)
-  expect(g).toBeGreaterThan(0xe0)
-  expect(b).toBeGreaterThanOrEqual(0xd0)
+it('draws the light theme in blue ink on cream', () => {
+  const [r, g, b] = color(light, 'ink')
+  expect(b - Math.max(r, g)).toBeGreaterThanOrEqual(0x40)
+  const [br, bg, bb] = color(light, 'bg')
+  expect(br).toBeGreaterThanOrEqual(bg)
+  expect(bg).toBeGreaterThanOrEqual(bb)
+  expect(bb).toBeGreaterThan(0xe8)
 })
 
 it('draws hairlines below headers, not around the shell, pane, or task prerequisites', async () => {
@@ -118,7 +136,11 @@ it('draws hairlines below headers, not around the shell, pane, or task prerequis
       </div>
     `
     const style = (selector: string) => window.getComputedStyle(window.document.querySelector(selector)!)
-    for (const selector of ['.brand', '.header', '.home-queue h2']) expect(style(selector).borderBottomStyle, selector).toBe('solid')
+    // happy-dom resolves no `light-dark()` color, so a rule in one reads from the stylesheet.
+    expect(declarations(/\.home-queue h2\s*\{([^{}]*)\}/)['border-bottom']).toMatch(/solid/)
+    // A header's rule is drawn by hand, on a layer of its own so its wobble moves nothing it holds.
+    for (const selector of ['.brand', '.header']) expect(style(selector).position, selector).toBe('relative')
+    expect(declarations(/\.header, \.tabs:not\(\.plain\), \.ops-card\)::after\s*\{([^{}]*)\}/)['border-bottom']).toMatch(/solid/)
     expect(style('.shell').borderTopStyle).not.toBe('solid')
     expect(style('.sidebar').borderRightStyle).not.toBe('solid')
     expect(style('.pane').borderLeftStyle).not.toBe('solid')
