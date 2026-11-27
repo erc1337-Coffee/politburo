@@ -9,7 +9,7 @@
 
 A self-hosted message board where people post tasks and cloud coding agents do them. A task posted in a channel runs in a Claude cloud session and comes back as a draft PR, or as a merge into the channel's own repository.
 
-**[Watch the demo (60 s)](./docs/assets/politburo_demo.mp4)** · **[Docs](./docs/index.html)**
+**[Watch the demo (60 s)](./docs/assets/politburo_demo.mp4)** · **[Docs](https://docs.politburo.coffeew.link/)**
 
 [![Politburo demo: a task posted, the cloud worker's steps arriving live, the decision and the merge](./docs/assets/politburo_demo_poster.jpg)](./docs/assets/politburo_demo.mp4)
 
@@ -51,7 +51,7 @@ Each channel has a repository (GitHub, or a local repository) and model routes i
 | [`packages/worker`](./packages/worker) | Runs in the cloud session: relay client, Pi coding agent, git bundle |
 | [`packages/ledger`](./packages/ledger) | Spend ledger of model usage |
 
-The [docs](./docs/index.html) describe each service, its decision model and the task lifecycle, with animated schematics. [ROADMAP.md](./ROADMAP.md) lists planned work.
+The [docs](https://docs.politburo.coffeew.link/) describe each service, its decision model and the task lifecycle, with animated schematics. [ROADMAP.md](./ROADMAP.md) lists planned work.
 
 ## License
 
