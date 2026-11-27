@@ -10,7 +10,6 @@ import { localScheduler, type LocalScheduler } from '../scheduler/local.ts'
 import { lockDirectory } from '../store/directory-lock.ts'
 import type { BoardStore } from '../store/types.ts'
 import type { AttentionResponders } from '../contract/attention.ts'
-import type { EvidencePolicy } from '../contract/evidence.ts'
 import type { WorkLifecycleOptions } from './tasks.ts'
 
 export type LocalOptions = {
@@ -23,8 +22,6 @@ export type LocalOptions = {
   memory?: boolean
   /** Opt in to staged work for new tasks on this board. */
   workLifecycle?: WorkLifecycleOptions
-  /** Opt in to commit evidence at task completion and, separately, to evidence-backed dependencies. */
-  workEvidence?: EvidencePolicy
   /** Enables structured attention. Lists verified responders by exact channel or `*` for all channels. */
   attentionResponders?: AttentionResponders
 }
@@ -110,7 +107,6 @@ export function local(options: LocalOptions = {}): LocalBackend {
         const backend = a2({
           store, scheduler, blob: options.memory ? memoryBlob() : fsBlob(join(dir, file)),
           ...(workLifecycle ? { workLifecycle } : {}),
-          ...(options.workEvidence ? { workEvidence: options.workEvidence } : {}),
           ...(options.attentionResponders !== undefined ? { attentionResponders: options.attentionResponders } : {}),
         })
         backend.bind(bound)
@@ -136,7 +132,6 @@ export function local(options: LocalOptions = {}): LocalBackend {
     keeps: true,
     supportsTaskAuthority: true,
     // `local()` is the backend board() sees. The flag lives on the engine it opens.
-    enforcesCommitEvidence: async () => (await open()).backend.enforcesCommitEvidence(),
     trust: {
       grants: async () => (await open()).backend.trust.grants(),
     } satisfies Trust,

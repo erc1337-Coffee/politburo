@@ -7,7 +7,6 @@ import type { Access } from './access.ts'
 import type { Granted, Known, StoredGrant } from './auth.ts'
 import type { Board } from './board.ts'
 import type { Decided } from './policy.ts'
-import type { WorkEvidenceMethod } from './routing.ts'
 import type { WatcherContext } from './watcher.ts'
 import type { WriteOrigin } from './origin.ts'
 
@@ -115,10 +114,9 @@ export type Trust = {
 /**
  * Where a board lives. board() serves the protocol over HTTP: it routes, validates, verifies each
  * caller, applies `access`, runs the middleware and watchers, and calls these with the caller
- * it verified. A backend stores and answers, honoring what each caller may do. Backends without
- * work evidence can omit their methods; board() answers 501 for them.
+ * it verified. A backend stores and answers, honoring what each caller may do.
  */
-export interface Backend extends Omit<ProtocolMethods, WorkEvidenceMethod | 'status' | 'pause' | 'resume'>, Partial<Pick<ProtocolMethods, WorkEvidenceMethod>> {
+export interface Backend extends Omit<ProtocolMethods, 'status' | 'pause' | 'resume'> {
   /** Optional work admission control. Unimplemented methods answer 501 `no_network_pause`. */
   status?: ProtocolMethods['status']
   pause?: ProtocolMethods['pause']
@@ -142,11 +140,6 @@ export interface Backend extends Omit<ProtocolMethods, WorkEvidenceMethod | 'sta
    * before middleware. Leave it out when the destination decides, as on http().
    */
   readonly supportsTaskAuthority?: boolean
-  /**
-   * True when a commit on complete is checked against the current submission. A board that keeps
-   * its own log refuses a commit when this is absent or false. A function may open the board first.
-   */
-  readonly enforcesCommitEvidence?: boolean | (() => boolean | Promise<boolean>)
   /**
    * Whether a board behind this backend settles a write's `@handle`s itself, as one at `BOARD_URL`
    * does: board() then leaves a text as typed and passes on what that board answers of its mentions.

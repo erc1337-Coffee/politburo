@@ -11,7 +11,6 @@ import { boardUrl, connect, environmentProfile } from '../client/node.ts'
 import { http } from '../backend-http/index.ts'
 import { board as boardAt, type Board } from '../server/index.ts'
 import { normalizeEmoji } from '../contract/emoji.ts'
-import { AttestationGate, Commit, Verdict } from '../contract/evidence.ts'
 import { ATTACHMENTS_PER_MESSAGE_MAX, DIRECT_UPLOAD_BYTES_MAX, MESSAGE_TEXT_MAX, type Attachment, AttachmentId, TaskPriority, WorkStageTarget } from '../contract/schemas.ts'
 import { TaskBinding, TaskPacket } from '../contract/task-authority.ts'
 import { VERSION } from '../version.ts'
@@ -1026,8 +1025,7 @@ function report(failure: Failure, json: boolean): number {
     app.onError(failure, { json })
   } else if (json) io.error(`${JSON.stringify(failureDocument(failure))}\n`)
   else {
-    const escapeLine = isEvidenceCommand() || failure.reason === 'evidence_required' ? lineText : undefined
-    io.error(`${terminalText(formatFailure(failure, escapeLine))}\n`)
+    io.error(`${terminalText(formatFailure(failure))}\n`)
   }
   return exitCode(failure)
 }
@@ -1775,18 +1773,8 @@ function unknownCommand(command: string): Failed {
 }
 
 /** What `tasks` does to a task, by the word after it: any other word is a channel to list. */
-const TASK_EVIDENCE_VERBS = new Set(['submit', 'evidence', 'attest', 'override', 'resolve'])
-const TASK_VERBS = new Set(['create', 'claim', 'renew', 'release', 'complete', 'fail', 'block', 'ask', 'attention', 'answer', 'unblock', 'park', 'unpark', 'handoff', 'scope', 'stage', 'reopen', 'assign', 'needs', 'priority', 'show', 'cancel', ...TASK_EVIDENCE_VERBS])
-const TASK_READS = new Set(['show', 'attention', 'evidence'])
-// Evidence verbs take a task ID. A bare word still names the channel to list.
-const isTaskVerb = (word: string, target: string | undefined) =>
-  TASK_VERBS.has(word) && (target !== undefined || !TASK_EVIDENCE_VERBS.has(word))
-
-function isEvidenceCommand(): boolean {
-  const { command, args: [verb, target] } = current
-  return command === 'tasks' && verb !== undefined && target !== undefined
-    && (TASK_EVIDENCE_VERBS.has(verb) || (verb === 'complete' && flags.commit !== undefined))
-}
+const TASK_VERBS = new Set(['create', 'claim', 'renew', 'release', 'complete', 'fail', 'block', 'ask', 'attention', 'answer', 'unblock', 'park', 'unpark', 'handoff', 'scope', 'stage', 'reopen', 'assign', 'needs', 'priority', 'show', 'cancel'])
+const TASK_READS = new Set(['show', 'attention'])
 const TASK_STATES = ['waiting', 'ready', 'claimed', 'blocked', 'completed', 'failed', 'canceled']
 
 /** A task's ID as you'd write it: `#812` or `812`. */
@@ -1953,7 +1941,7 @@ async function tasks(args: string[]): Promise<number> {
   if (flags.binding !== undefined && verb !== 'claim' && verb !== 'create')
     throw usage('--binding goes with tasks claim, or tasks create --claim.')
   if (flags.supersedes !== undefined && verb !== 'handoff') throw usage('--supersedes goes with tasks handoff.')
-  if (verb === undefined || !isTaskVerb(verb, rest[0])) {
+  if (verb === undefined || !TASK_VERBS.has(verb)) {
     if (rest.length > 0) {
       // Two words, the first no verb: the list takes one channel, so it's a command this one doesn't have.
       const guess = closest(verb!, TASK_VERBS)
@@ -2098,76 +2086,7 @@ async function tasks(args: string[]): Promise<number> {
     return 0
   }
   const { board, claims } = tasksOn()
-  const required = (flag: 'commit' | 'round' | 'artifact' | 'expires-at' | 'if-version') => {
-    const value = flags[flag]
-    if (!value?.trim()) throw usage(`Pass --${flag}.`, { reason: 'missing_arguments' })
-    return value
-  }
-  const number = (flag: 'round' | 'if-version') => {
-    const value = required(flag)
-    if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value))) throw usage(`--${flag} takes a positive integer.`)
-    return Number(value)
-  }
-  const commit = () => {
-    const parsed = Commit.safeParse(required('commit'))
-    if (!parsed.success) throw usage('--commit takes a full lowercase Git commit ID.')
-    return parsed.data
-  }
-
   switch (verb) {
-    case 'submit': {
-      one(rest[1], 'one task')
-      const sha = commit()
-      const artifact = required('artifact')
-      const held = await heldBy(board, claims, id)
-      printTask(await withClaim(claims, id, held, () => held.submit(sha, artifact)), 'submitted')
-      return 0
-    }
-    case 'evidence': {
-      one(rest[1], 'one task')
-      const work = await board.tasks.evidence(id)
-      if (flags.json) result({ work })
-      else {
-        if (work.submission) {
-          out(lineText(`commit  ${work.submission.commit}`))
-          out(lineText(`round   ${work.submission.round}`))
-        } else out('no current submission')
-        if (work.required.length) out(lineText(`gates   ${work.required.join(', ')}`))
-        for (const record of [...(work.submission ? [work.submission] : []), ...work.evidence]) {
-          out(lineText(`#${record.id}  ${record.gate} ${record.verdict}${record.expiresAt ? ` until ${record.expiresAt}` : ''}`))
-          out(lineText(`  ${record.artifactRef}`))
-        }
-        for (const record of work.overrides) {
-          out(lineText(`#${record.id}  ${record.gate} overridden until ${record.expiresAt}`))
-          out(lineText(`  ${record.by.principal}: ${record.reason}`))
-        }
-        for (const edge of work.releases) out(lineText(`#${edge.needId}  released with #${edge.evidenceId}`))
-      }
-      return 0
-    }
-    case 'attest':
-    case 'override': {
-      one(rest[3], 'a task, gate, and verdict or reason')
-      const gate = AttestationGate.safeParse(rest[1])
-      if (!gate.success) throw usage('Name a gate: tests, review, browserQA, acceptance, or publication.')
-      const target = { commit: commit(), round: number('round'), gate: gate.data }
-      if (verb === 'override') {
-        if (!rest[2]?.trim()) throw usage('Give a reason for the override.', { reason: 'missing_arguments' })
-        printTask(await board.tasks.overrideEvidence(id, { ...target, reason: rest[2], expiresAt: required('expires-at') }), 'overridden')
-      } else {
-        const verdict = Verdict.safeParse(rest[2])
-        if (!verdict.success) throw usage('Give a verdict: pass or fail.')
-        printTask(await board.tasks.recordEvidence(id, { ...target, verdict: verdict.data, artifactRef: required('artifact'), ...(flags['expires-at'] !== undefined ? { expiresAt: required('expires-at') } : {}) }), 'attested')
-      }
-      return 0
-    }
-    case 'resolve': {
-      one(rest[3], 'a task, prerequisite, and evidence ID')
-      const needId = taskId(rest[1])
-      const evidenceId = messageId(rest[2], 'evidence ID')
-      printTask(await board.tasks.resolve(id, { needId, evidenceId, ifVersion: number('if-version') }), 'resolved')
-      return 0
-    }
     case 'show': {
       one(rest[1], 'one task')
       const { message, replies } = await board.thread(id)
@@ -2209,8 +2128,7 @@ async function tasks(args: string[]): Promise<number> {
     case 'complete': {
       one(rest[2], 'a task and its result, quoted')
       const held = await heldBy(board, claims, id)
-      const options = flags.commit === undefined ? undefined : { commit: commit() }
-      const task = await withClaim(claims, id, held, () => held.complete(rest[1], options))
+      const task = await withClaim(claims, id, held, () => held.complete(rest[1]))
       await claims.drop(id, held)
       printTask(task, completionOutcome(task))
       return 0
@@ -2371,26 +2289,15 @@ async function taskHold(): Promise<TaskHold> {
 function taskFailure(code: string, status: number, hold: TaskHold): { class: Failure['class']; message: string; next: Recovery[]; whole?: true } | null {
   const { command, args } = current
   const named = namedTask()
-  const evidenceWrite = command === 'tasks' && (args[0] === 'submit' || (args[0] === 'complete' && flags.commit !== undefined))
   const board = onSameBoard()
   const profile = asTyped()
-  const recovery = (instruction: string, words: string[], asProfile = evidenceWrite): Recovery =>
+  const recovery = (instruction: string, words: string[], asProfile = false): Recovery =>
     ({ instruction, argv: [...cli(), ...words, ...board, ...(asProfile ? profile : [])] })
-  const read = (instruction: string, asProfile = evidenceWrite): Recovery[] =>
+  const read = (instruction: string, asProfile = false): Recovery[] =>
     named === undefined ? [] : [recovery(instruction, ['read', named], asProfile)]
   const also = (instruction: string, verb: string, words: string[] = [], asProfile = true): Recovery[] =>
     named === undefined ? [] : [recovery(instruction, ['tasks', verb, named, ...words], asProfile)]
   switch (code) {
-    case 'evidence_required':
-    case 'stale_candidate':
-    case 'already_submitted':
-      return { class: 'conflict', message: `Can't ${doing()}. Check the current submission and its gates.`, next: also('See the evidence', 'evidence') }
-    case 'invalid_evidence':
-      return { class: 'conflict', message: `Can't ${doing()}. Use current passing evidence from the completed prerequisite.`, next: [] }
-    case 'stale_task':
-      return { class: 'conflict', message: `Can't ${doing()}. The task changed.`, next: read('See the current task', true) }
-    case 'no_work_evidence':
-      return status === 501 ? { class: 'platform', message: `Can't ${doing()}. This board does not support that work evidence operation.`, next: [] } : null
     case 'task_claimed':
       return { class: 'conflict', message: `Can't ${doing()}. Someone holds it.`, next: read('See who holds it, and until when') }
     case 'task_assigned':
@@ -2646,7 +2553,7 @@ function stopped(reason: unknown): Failed {
   // A subcommand that writes is the first word after the command: `channels create`.
   const sub = current.args[0]
   const writes = WRITES.has(current.command ?? '') || ['create', 'update', 'revoke', 'cancel'].includes(sub ?? '')
-    || (current.command === 'tasks' && sub !== undefined && isTaskVerb(sub, current.args[1]) && !TASK_READS.has(sub))
+    || (current.command === 'tasks' && sub !== undefined && TASK_VERBS.has(sub) && !TASK_READS.has(sub))
   return new Failed({
     class: timedOut ? 'timeout' : 'canceled',
     reason: timedOut ? 'timeout' : 'canceled',

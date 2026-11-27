@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { BoardStatus, completeWithEvidencePath, readDiscovery, routes, type Discovery, type EventsPage } from '../api/routes.ts'
+import { BoardStatus, readDiscovery, routes, type Discovery, type EventsPage } from '../api/routes.ts'
 import { boundTaskPaths } from '../api/task-authority.ts'
 import type { Method, Protocol } from '../api/protocol.ts'
 import { BoardError, createBoardClient, type BoardClient, type ProfileOption } from '../client/client.ts'
@@ -36,10 +36,6 @@ const PROFILE = /^[A-Za-z][A-Za-z0-9-]{0,31}$/
 const PROFILE_RULE = 'ids start with a letter and use up to 32 letters, numbers, and hyphens'
 
 const describe = (error: unknown) => ((error instanceof Error ? error.message : String(error)) || 'unknown error').slice(0, 500)
-
-const noEvidenceCompletion = () => new HttpError(501, 'no_work_evidence', 'the HTTP board does not support completion with work evidence', {
-  origin: 'handle', hint: 'Upgrade the board before completing with a commit.',
-})
 
 /** The SDK's error, as the board answers it: the remote's own status and code, or 502 when it never answered. */
 const rethrow = (error: unknown): never => {
@@ -196,7 +192,6 @@ export function createHttp(url: string | undefined, options: HttpOptions, enviro
   /** One protocol call on the remote, as `client`, with the input back on the wire. */
   async function call(client: BoardClient, method: Method, input: Record<string, unknown>, signal: AbortSignal, pathOverride?: string): Promise<Response> {
     const route = routes[method]
-    const withEvidence = pathOverride === completeWithEvidencePath
     // Each `:name` in the path is the input's field of that name; the rest are the query or the body.
     const fields = { ...input }
     const path = (pathOverride ?? route.path).replace(/:(\w+)/g, (_, name: string) => {
@@ -205,7 +200,6 @@ export function createHttp(url: string | undefined, options: HttpOptions, enviro
       return encodeURIComponent(String(value))
     })
     let response: Response
-    const refuseRedirect = pathOverride === completeWithEvidencePath || method === 'submitWork' || method === 'recordEvidence' || method === 'overrideEvidence' || method === 'resolveWorkEdge'
     if (method === 'upload') {
       const { data, name, type } = input as Protocol['upload']['input']
       // Too big for one request: straight to the board's blob store,
@@ -230,17 +224,8 @@ export function createHttp(url: string | undefined, options: HttpOptions, enviro
         .request(path, {
           method: route.method, body: new TextEncoder().encode(JSON.stringify(fields)), headers: { 'content-type': 'application/json' }, signal,
           claim: carriesClaim(method, input),
-          ...(refuseRedirect ? { redirect: 'manual' as const } : {}),
         })
         .catch(rethrow)
-    if (refuseRedirect && (response.type === 'opaqueredirect' || response.status === 0 || (response.status >= 300 && response.status < 400))) {
-      const completion = pathOverride === completeWithEvidencePath
-      throw new HttpError(502, 'remote_error', completion
-        ? 'The board redirected a completion with work evidence. This handle never follows those redirects.'
-        : 'The board redirected a work-evidence request. This handle never follows those redirects.', {
-        origin: 'handle', hint: "Point `url` at the board's final URL.",
-      })
-    }
     if (response.ok) return response
     try {
       const body = (await response.json()) as { error?: { code?: string; message?: string; hint?: unknown } }
@@ -270,14 +255,6 @@ export function createHttp(url: string | undefined, options: HttpOptions, enviro
         })
       }
     }
-    const withEvidence = method === 'completeTask' && input.commit !== undefined
-    if (withEvidence) {
-      signal.throwIfAborted()
-      const response = await doFetch(remote, { signal, cache: 'no-store' }).catch(rethrow)
-      const found = response.ok ? (await response.json().catch(() => null)) as Discovery | null : null
-      signal.throwIfAborted()
-      if (found?.workEvidence?.version !== 1) throw noEvidenceCompletion()
-    }
     if ((method === 'claimTask' || method === 'claimReadyTask') && input.hold !== undefined &&
         (await fetchDiscovery({ signal, cache: 'no-store' }))?.task_claim_hold !== true) {
       throw new HttpError(501, 'no_claim_hold', 'the HTTP board does not advertise a hard end for claims', { origin: 'handle' })
@@ -289,26 +266,13 @@ export function createHttp(url: string | undefined, options: HttpOptions, enviro
     if ((method === 'post' || method === 'posted' || method === 'createTask' || method === 'createTasks' || method === 'createdTasks') && 'self' in caller && typeof input.id === 'string' && DERIVED_ID.test(input.id))
       input = { ...input, id: await ownKey(input.id).catch(rethrow) }
     // Discovery and the write can reach different versions. Never fall back to the legacy path.
-    const response = await call(client, method, input, signal, withEvidence ? completeWithEvidencePath : boundPath).catch((error: unknown) => {
-      if (withEvidence && error instanceof HttpError && error.status === 404 && error.code === 'not_found') throw noEvidenceCompletion()
-      throw error
-    })
+    const response = await call(client, method, input, signal, boundPath)
     if (method === 'attachment') return attachmentOf(String(input.id), response)
     if (method === 'status' || method === 'pause' || method === 'resume') {
       // An older mount can answer an unknown GET with discovery, not a control state.
       const status = BoardStatus.safeParse(await response.json().catch(() => null))
       if (!status.success) throw new HttpError(502, 'remote_error', 'the remote board did not answer with a control status')
       return status.data
-    }
-    if (method === 'workEvidence') {
-      // An older mount can answer an unknown GET with its discovery document.
-      const work = (await response.json().catch(() => null)) as Partial<Protocol['workEvidence']['output']> | null
-      if (!work || !Array.isArray(work.required) || !Array.isArray(work.evidence) || !Array.isArray(work.overrides)
-        || !Array.isArray(work.releases) || !(work.submission === null || (work.submission && typeof work.submission === 'object')))
-        throw new HttpError(501, 'no_work_evidence', 'the remote board did not answer with work evidence', {
-          origin: 'handle', hint: 'Use a board that supports work evidence.',
-        })
-      return work
     }
     return response.json()
   }

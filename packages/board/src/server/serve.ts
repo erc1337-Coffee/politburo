@@ -11,7 +11,6 @@ import {
   ClaimReadyTaskBody,
   ClaimTaskBody,
   CompleteTaskBody,
-  CompleteWithEvidenceBody,
   ControlBody,
   CreateTaskBody,
   CreateTasksBody,
@@ -21,10 +20,6 @@ import {
   ParkTaskBody,
   ReleaseTaskBody,
   RenewTaskBody,
-  SubmitWorkBody,
-  RecordEvidenceBody,
-  OverrideEvidenceBody,
-  ResolveWorkEdgeBody,
   ReopenTaskBody,
   ScopeTaskBody,
   StageTaskBody,
@@ -69,12 +64,12 @@ import { derivedId, sha256 } from '../client/ids.ts'
 import { claimsOf, KNOWN_AGENTS } from './actors.ts'
 import type { CallerRequest } from './auth.ts'
 import { avatarSvg } from './avatars.ts'
-import { badRequest, batchTooLarge, forbidden, HttpError, json, noWorkEvidence, notFound, toErrorResponse } from './errors.ts'
+import { badRequest, batchTooLarge, forbidden, HttpError, json, notFound, toErrorResponse } from './errors.ts'
 import { extractMentions, settleMentions, type Mentioned, type MentionedActor } from '../contract/mentions.ts'
 import { DroppedError, runMiddleware, type Write, type WriteSource } from './middleware.ts'
 import { ConfigureChannelBody, RepositoriesQuery } from '../contract/channel-settings.ts'
 import { SetIdentityBody } from '../contract/identities.ts'
-import { ATTENTION_METHODS, createRouter, isWorkEvidenceMethod, openapi, queryObject, readCapped, readJson } from './routing.ts'
+import { ATTENTION_METHODS, createRouter, openapi, queryObject, readCapped, readJson } from './routing.ts'
 import { authorize, compileAccess, FULL_ACCESS, parseCan, type Access } from './access.ts'
 import type { WriteOrigin } from './origin.ts'
 import type { WatcherContext } from './watcher.ts'
@@ -118,7 +113,7 @@ function attachmentResponse({ attachment, data }: Protocol['attachment']['output
 }
 
 /** A method's input, from the request: its path's `:id` or `:key`, its query, or its body, validated. */
-async function inputOf(name: Method, request: Request, url: URL, params: Record<string, string>, requiresWorkCommit?: true): Promise<unknown> {
+async function inputOf(name: Method, request: Request, url: URL, params: Record<string, string>): Promise<unknown> {
   const id = params.id ?? ''
   const key = params.key ?? ''
   const body = () => readJson(request)
@@ -142,7 +137,6 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
     case 'message':
       return { id, ...ThreadQuery.parse(queryObject(url)) }
     case 'posted':
-    case 'workEvidence':
     case 'cancelSchedule':
     case 'unblockTask':
     case 'taskAttention':
@@ -204,7 +198,7 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
     case 'releaseTask':
       return { id, ...ReleaseTaskBody.parse(await body()) }
     case 'completeTask':
-      return { id, ...(requiresWorkCommit ? CompleteWithEvidenceBody : CompleteTaskBody).parse(await body()) }
+      return { id, ...CompleteTaskBody.parse(await body()) }
     case 'failTask':
       return { id, ...FailTaskBody.parse(await body()) }
     case 'blockTask':
@@ -232,14 +226,6 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
       return { id, ...TaskPriorityBody.parse(await body()) }
     case 'cancelTask':
       return { id, ...CancelTaskBody.parse(await body()) }
-    case 'submitWork':
-      return { id, ...SubmitWorkBody.parse(await body()) }
-    case 'recordEvidence':
-      return { id, ...RecordEvidenceBody.parse(await body()) }
-    case 'overrideEvidence':
-      return { id, ...OverrideEvidenceBody.parse(await body()) }
-    case 'resolveWorkEdge':
-      return { id, ...ResolveWorkEdgeBody.parse(await body()) }
     case 'createGrant':
       return GrantBody.parse(await body())
     case 'createGrants':
@@ -829,24 +815,11 @@ export async function createServe(context: BoardContext): Promise<Serve> {
           ? screenSchedule(caller, body, signal)
           : settling(caller, body.text, async () => body.re, signal, (text) => backend.schedule(caller, { ...body, text }, signal))
       }
-      case 'completeTask': {
-        const body = input as Protocol['completeTask']['input']
-        // A read method is not proof the complete path checks the commit. A board that keeps its
-        // own log accepts a commit only when its backend says it enforces the evidence. A board
-        // on another one forwards the write, and that backend checks the remote's discovery.
-        if (body.commit !== undefined && backend.keeps === true) {
-          const enforces = (backend as { enforcesCommitEvidence?: boolean | (() => boolean | Promise<boolean>) }).enforcesCommitEvidence
-          const enforced = typeof enforces === 'function' ? await enforces() : enforces === true
-          if (!enforced) throw noWorkEvidence()
-        }
-        return backend.completeTask(caller, body, signal)
-      }
       default: {
         const method = backend[name] as unknown
         if (typeof method !== 'function') {
           if (CONTROL.has(name)) throw new HttpError(501, 'no_network_pause', 'this board does not support network pause')
           if (ATTENTION_METHODS.has(name)) throw new HttpError(501, 'no_task_attention', 'this board does not support task attention')
-          if (isWorkEvidenceMethod(name)) throw noWorkEvidence()
           throw notFound(`no route: ${name}`)
         }
         return (method as (caller: Caller, input: unknown, signal: AbortSignal) => Promise<unknown>).call(backend, caller, input, signal)
@@ -928,7 +901,6 @@ export async function createServe(context: BoardContext): Promise<Serve> {
       } : {}),
       ...(backend.supportsTaskAuthority === true ? { task_authority: true } : {}),
       ...(capabilities?.task_attention === true ? { task_attention: true } : {}),
-      ...(capabilities?.workEvidence ? { workEvidence: capabilities.workEvidence } : {}),
     }, 200, capabilities?.task_claim_hold === true ? { [TASK_CLAIM_HOLD_HEADER]: '1' } : undefined)
   }
 
@@ -959,13 +931,13 @@ export async function createServe(context: BoardContext): Promise<Serve> {
       if (!injected && !policy.open) throw servesOnly()
       if (!injected && target.kind === 'protocol' && target.name === 'discovery') return await discovery(request, audienceOf(at), request.signal)
       if (target.kind === 'protocol' && !CONTROL.has(target.name) && !ATTENTION_METHODS.has(target.name)
-        && !isWorkEvidenceMethod(target.name) && typeof backend[target.name] !== 'function')
+        && typeof backend[target.name] !== 'function')
         throw notFound(`no route: ${request.method} ${url.pathname}`)
       const asked = injected ? null : requestOf(request, at)
       const caller: Caller = injected ?? (await callerOf(asked!))
       if (target.kind === 'board') throw notFound(`no route: ${request.method} ${url.pathname}`)
 
-      const input = await inputOf(target.name, request, url, match.params, match.requiresWorkCommit)
+      const input = await inputOf(target.name, request, url, match.params)
       if (match.requiresTaskBinding && !(input as { binding?: unknown }).binding) throw badRequest('a bound task request needs binding')
       if (target.name === 'events' && (request.headers.get('accept') ?? '').includes('text/event-stream'))
         return await sse(caller, input as Protocol['events']['input'], request, asked ? () => callerOf(asked) : null)

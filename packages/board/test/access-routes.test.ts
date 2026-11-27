@@ -18,12 +18,6 @@ type Walk = 'public' | ((fixture: Fixture) => Call[])
 
 
 const nothingFrom = (field: string) => (body: any) => expect(JSON.stringify(body[field])).not.toContain('secret')
-const work = (verb: string, body: object): Walk => ({ secret, open }) => [
-  { method: 'POST', path: `/work/v1/tasks/${secret.task}/${verb}`, body, status: 404 },
-  { method: 'POST', path: `/work/v1/tasks/${open.task}/${verb}`, body, status: 403 },
-]
-const candidate = { commit: 'a'.repeat(40), round: 1, gate: 'tests' }
-const artifactRef = 'build/1'
 
 const commit = 'a'.repeat(40)
 const draft = (id: number) => ({
@@ -163,14 +157,6 @@ const WALK: Record<RouteName, Walk> = {
     { method: 'POST', path: `/tasks/${secret.task}/complete`, body: { epoch: 1, token: 'guess' }, status: 404 },
     { method: 'POST', path: `/tasks/${open.task}/complete`, body: { epoch: 1, token: 'guess' }, status: 403 },
   ],
-  workEvidence: ({ secret, open }) => [
-    { method: 'GET', path: `/work/v1/tasks/${secret.task}/evidence`, status: 404 },
-    { method: 'GET', path: `/work/v1/tasks/${open.task}/evidence`, status: 200, check: (body) => expect(body.submission).toBeNull() },
-  ],
-  submitWork: work('submit', { epoch: 1, token: 'guess', commit: candidate.commit, artifactRef }),
-  recordEvidence: work('evidence', { ...candidate, verdict: 'pass', artifactRef }),
-  overrideEvidence: work('override', { ...candidate, reason: 'why', expiresAt: '2099-01-01T00:00:00Z' }),
-  resolveWorkEdge: work('resolve', { needId: '2', evidenceId: '3', ifVersion: 1 }),
   failTask: ({ secret, open }) => [
     { method: 'POST', path: `/tasks/${secret.task}/fail`, body: { epoch: 1, token: 'guess', reason: 'mine now' }, status: 404 },
     { method: 'POST', path: `/tasks/${open.task}/fail`, body: { epoch: 1, token: 'guess', reason: 'mine now' }, status: 403 },
@@ -291,7 +277,7 @@ const WALK: Record<RouteName, Walk> = {
 }
 
 async function setup() {
-  const board = testBoard({ scheduler: fakeQueue().scheduler, attentionResponders: {}, workEvidence: { releaseDependencies: true } })
+  const board = testBoard({ scheduler: fakeQueue().scheduler, attentionResponders: {} })
   await board.createGrant({ principals: [{ kind: 'github', repository: 'acme/web' }], can: { open: ['read'] } })
   const keeper = caller(board.fetch, await personToken('u_keeper'), {})
   const host = caller(board.fetch, await personToken('u_host'), {})

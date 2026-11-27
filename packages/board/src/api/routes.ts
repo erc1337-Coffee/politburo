@@ -1,5 +1,4 @@
 import { z } from 'zod'
-import { ArtifactRef, AttestationGate, Commit, EvidenceExpiry, EvidenceReason, Round, Verdict, type Gate } from '../contract/evidence.ts'
 import {
   ActorId,
   AttachmentId,
@@ -397,14 +396,7 @@ export const ClaimReadyTaskBody = z.object({
 
 export const RenewTaskBody = z.object({ ...Claimed, lease: Lease.optional() })
 export const ReleaseTaskBody = z.object(Claimed)
-export const CompleteTaskBody = z.object({ ...Claimed, result: SentTaskNote.optional(), commit: Commit.optional() })
-// Must not end in a legacy route: older routers match path suffixes.
-export const completeWithEvidencePath = '/work/v1/tasks/:id/complete-with-evidence'
-export const CompleteWithEvidenceBody = CompleteTaskBody.required({ commit: true })
-export const SubmitWorkBody = z.strictObject({ ...Claimed, commit: Commit, artifactRef: ArtifactRef })
-export const RecordEvidenceBody = z.strictObject({ commit: Commit, round: Round, gate: AttestationGate, verdict: Verdict, artifactRef: ArtifactRef, expiresAt: EvidenceExpiry.optional() })
-export const OverrideEvidenceBody = z.strictObject({ commit: Commit, round: Round, gate: AttestationGate, reason: EvidenceReason, expiresAt: EvidenceExpiry })
-export const ResolveWorkEdgeBody = z.strictObject({ needId: Ref, evidenceId: Ref, ifVersion: Round })
+export const CompleteTaskBody = z.object({ ...Claimed, result: SentTaskNote.optional() })
 export const FailTaskBody = z.object({ ...Claimed, reason: SentTaskNote })
 /** A hold for a person. A claimed task's comes from its claim, with the claim's `epoch` and `token`. Kind `edited` is the board's own, so none asks for it. */
 export const BlockTaskBody = z
@@ -740,7 +732,7 @@ export type SchemaView = {
  * owner's actors made it one (`by`, who changes it as its owner), what it waits for, and who holds
  * it until when. A claim's token shows nowhere but in the answer that made it.
  */
-export type TaskView = Omit<Task, 'needs' | 'claim' | 'priority' | 'attention' | 'evidence' | 'releases'> & {
+export type TaskView = Omit<Task, 'needs' | 'claim' | 'priority' | 'attention'> & {
   priority: TaskPriority
   /** The latest attention request, when the task has one. */
   attentionId?: string
@@ -819,7 +811,7 @@ export type LinkView = Omit<Link, 'message'> & { message: string | null }
 
 /** An event's payload as clients see it: message IDs are refs, and a claim's `token` is left out. */
 type PayloadView<P> = {
-  [K in keyof P as K extends 'token' | 'needId' | 'evidenceId' ? never : K]: K extends 'id' | 're' | 'replyTo'
+  [K in keyof P as K extends 'token' ? never : K]: K extends 'id' | 're' | 'replyTo'
     ? P[K] extends number ? string : P[K] extends number | null ? string | null : P[K]
     : K extends 'links'
       ? LinkView[]
@@ -874,7 +866,6 @@ export type Discovery = z.infer<typeof DiscoveryResponse> & {
    * it's on; `GET /` on a board never does.
    */
   name?: string
-  workEvidence?: { version: 1; gates: Gate[]; releaseDependencies: boolean }
   /** True when the board enforces bound claims, parking, and handoffs. */
   task_authority?: boolean
   /** Whether this board is configured to keep structured task attention requests. */
@@ -1025,11 +1016,6 @@ export const routes = {
   setTaskNeeds: { method: 'POST', path: '/tasks/:id/needs', body: TaskNeedsBody },
   ...taskPriorityRoutes,
   cancelTask: { method: 'POST', path: '/tasks/:id/cancel', body: CancelTaskBody },
-  workEvidence: { method: 'GET', path: '/work/v1/tasks/:id/evidence' },
-  submitWork: { method: 'POST', path: '/work/v1/tasks/:id/submit', body: SubmitWorkBody },
-  recordEvidence: { method: 'POST', path: '/work/v1/tasks/:id/evidence', body: RecordEvidenceBody },
-  overrideEvidence: { method: 'POST', path: '/work/v1/tasks/:id/override', body: OverrideEvidenceBody },
-  resolveWorkEdge: { method: 'POST', path: '/work/v1/tasks/:id/resolve', body: ResolveWorkEdgeBody },
   /** Listing grants needs manage at `*`; changing one, manage at each pattern its `can` names. Team owners always may. */
   grants: { method: 'GET', path: '/grants' },
   createGrant: { method: 'POST', path: '/grants', body: GrantBody },
