@@ -126,9 +126,11 @@ function ChannelForm(props: { channel?: string; done: () => void }) {
     if (creating) navigate(`/c/${path}`)
   }
 
+  // The hint says what the input does not: the repository is already in it.
+  const where = repository ? null : 'local'
   const outcome = creating
-    ? path ? `#${path} · ${repository ? shownRepository(repository) : 'local'}` : null
-    : repository ? shownRepository(repository) : notRepository ? null : 'local'
+    ? path ? [`#${path}`, where].filter(Boolean).join(' · ') : null
+    : notRepository ? null : where
 
   return (
     <form className="ask channel-form" onSubmit={(event) => { event.preventDefault(); void save() }}>
@@ -191,7 +193,7 @@ function ChannelForm(props: { channel?: string; done: () => void }) {
                     <GripVertical size={13} className="model-grip" aria-hidden="true" />
                     {source ? <img src={source.src} alt={source.name} title={source.name} /> : <span className="model-logo-gap" />}
                     <span className="model-label">
-                      <span className="model-provider">{provider}</span>
+                      <span className="model-provider">{provider}:</span>
                       <span className="model-name">{shown}</span>
                     </span>
                     <button type="button" role="switch" aria-checked={row.enabled} aria-label={`${name} ${row.enabled ? 'on' : 'off'}`}
