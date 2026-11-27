@@ -18,7 +18,8 @@ type OpsEvent = { seq: number; at: number } & (
   | { kind: 'telemetry'; channel: string; task: string; type: string; bytes: number; relay_seq: number }
   | { kind: 'phase'; channel: string; task: string; phase: string; round: number; duration_seconds?: number }
   | { kind: 'board'; action: string; task: string; channel?: string }
-  | { kind: 'github'; action: 'push' | 'draft_pr'; repository: string; task: string; channel: string }
+  | { kind: 'github'; action: 'push' | 'draft_pr' | 'ready' | 'merge' | 'close' | 'reopen'; repository: string; task: string; channel?: string }
+  | { kind: 'thread'; task: string; channel?: string; reply: boolean; actions: string[]; work: 'worker' | 'followup' | null }
   | { kind: 'launch'; task: string; channel: string; outcome: string }
   | { kind: 'attempt'; attempt: string; task: string; channel: string; state: string }
   | { kind: 'fault'; component: string; code: string; task?: string; channel?: string }
@@ -192,6 +193,7 @@ export function bundle(links: ReadonlyArray<{ a: Point; b: Point }>): number[] {
 }
 /** How long a packet takes along one link, slow enough to read its label. */
 const PACKET_MS = 2_400
+const GITHUB_ACTIONS = { push: 'push', draft_pr: 'draft PR', ready: 'ready for review', merge: 'merge', close: 'close PR', reopen: 'reopen PR' } as const
 const LIVE = new Set(['claimed', 'launching', 'awaiting_contact', 'running', 'waiting_answer', 'deciding', 'publishing', 'stopping'])
 
 function packetsOf(event: OpsEvent): Array<Omit<Packet, 'started'>> {
@@ -208,7 +210,7 @@ function packetsOf(event: OpsEvent): Array<Omit<Packet, 'started'>> {
       return chain([`${event.channel}>relay`, 'relay>orchestrator'], kind, words(event.type), event.type === 'bundle_part' ? 4 : 3, event.type === 'result')
     }
     case 'board': return chain(['orchestrator>board'], 'external', words(event.action))
-    case 'github': return chain(['orchestrator>github'], 'external', event.action === 'draft_pr' ? 'draft PR' : 'push', 4)
+    case 'github': return chain(['orchestrator>github'], 'external', GITHUB_ACTIONS[event.action], 4)
     case 'launch': return chain([`launch>${event.channel}`], 'command', 'launch', 4)
     case 'tick': return event.sources.includes('board') ? chain(['board>orchestrator'], 'external', '', 2) : []
     default: return []
@@ -833,7 +835,8 @@ function describe(event: OpsEvent): string {
     case 'telemetry': return `→ ${words(event.type)}`
     case 'phase': return `worker ${words(event.phase)}${event.phase.startsWith('work') ? ` · round ${event.round}` : ''}${event.duration_seconds !== undefined ? ` · ${event.duration_seconds} s` : ''}`
     case 'board': return `board ${words(event.action)}`
-    case 'github': return `${event.action === 'draft_pr' ? 'draft PR' : 'push'} · ${event.repository}`
+    case 'github': return `${GITHUB_ACTIONS[event.action]} · ${event.repository}`
+    case 'thread': return `message #${event.task} · ${[event.reply ? 'answered' : '', ...event.actions.map(words), event.work === 'worker' ? 'sent to the worker' : event.work === 'followup' ? 'follow-up' : ''].filter(Boolean).join(' · ') || 'no action'}`
     case 'launch': return `launch ${words(event.outcome)}`
     case 'attempt': return words(event.state)
     case 'fault': return `${event.component} · ${words(event.code)}${event.task ? ` · #${event.task}` : ''}`

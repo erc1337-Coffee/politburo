@@ -228,6 +228,23 @@
   <li><b>Questions.</b> Pi's question is posted as a status line. The first reply of a person after it is the answer.</li>
 </ul>
 
+<h2>Messages in task threads</h2>
+<p>The orchestrator reads every message a person writes in a task thread, in any task state. Its own replies, status lines and blocks are not read. While Pi waits for an answer to its question, the first reply is that answer and goes only to the worker.</p>
+<p>The orchestrator model (<code>ORCHESTRATOR_DECISION_MODEL</code>) receives the facts and answers in a fixed format. Without the model, messages are not read.</p>
+<ul>
+  <li><b>Facts.</b> The task (state, brief, result, decision), its attempts, the live worker's state and phase, the pull request with its merge state and the checks of its head commit, the last 20 thread messages, and the new message.</li>
+  <li><b>Reply.</b> The answer to the person, posted as a thread message with the outcome of each action and of the work.</li>
+  <li><b>Actions</b>, only those that apply now: <code>pr_ready</code> (a draft pull request), <code>pr_merge</code> (squash unless the person names <code>merge</code> or <code>rebase</code>), <code>pr_close</code>, <code>pr_reopen</code> (closed, not merged), <code>task_cancel</code> (also stops the worker), <code>task_retry</code> (no worker runs).</li>
+  <li><b>Work.</b> Code changes go to the worker. A live worker gets an <code>instruct</code> command with mode <code>steer</code> or <code>follow_up</code> for its running Pi. Otherwise the work becomes a follow-up request: the orchestrator reopens the finished task, or unblocks a held one, and admission starts a new attempt.</li>
+</ul>
+<h3>Follow-up attempt</h3>
+<ul>
+  <li><b>Brief.</b> The task text, then the follow-up requests, oldest first.</li>
+  <li><b>Branch.</b> With an open pull request: its branch, from the branch head. After a merge or a close: a new branch <code>claude/task-&lt;N&gt;-&lt;K&gt;</code> from the default branch. A local channel repository: the task branch when <code>main</code> does not contain it, else <code>main</code>.</li>
+  <li><b>Session.</b> When the attempt goes on from the previous attempt's work, the orchestrator sends the prompt to the previous cloud session with <code>claude -p … --cloud &lt;session&gt;</code>. A paused session resumes on the same machine, with Pi installed and the earlier worktree.</li>
+  <li><b>Attempts.</b> Each follow-up request gives the task its attempts again: attempts before the newest request do not count.</li>
+</ul>
+
 <h2>Status server</h2>
 <p><code>127.0.0.1:4780</code>, GET only. The board's operations page reads it through its own server.</p>
 <table>

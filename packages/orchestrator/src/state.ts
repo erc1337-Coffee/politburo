@@ -48,6 +48,9 @@ const NUMERIC = new Set<keyof AttemptRecord>(['attemptNo', 'round', 'claimEpoch'
 
 export interface PendingCommand { id: string; channel: string; body: string }
 
+/** Work a person asked for in a task thread that no running worker took: the next attempt of the task does it. */
+export interface FollowupRequest { id: string; taskId: string; text: string; createdAt: number; attemptId: string | null }
+
 export class StateStore {
   readonly #db: DatabaseSync
 
@@ -67,6 +70,10 @@ export class StateStore {
       CREATE INDEX IF NOT EXISTS attempts_task ON attempts (task_id);
       CREATE TABLE IF NOT EXISTS seen_messages (channel TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY (channel, id)) WITHOUT ROWID;
       CREATE TABLE IF NOT EXISTS outbox (id TEXT PRIMARY KEY, channel TEXT NOT NULL, body TEXT NOT NULL, created_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS followup_requests (
+        id TEXT PRIMARY KEY, task_id TEXT NOT NULL, text TEXT NOT NULL, created_at INTEGER NOT NULL, attempt_id TEXT
+      );
+      CREATE INDEX IF NOT EXISTS followup_requests_task ON followup_requests (task_id);
     `)
   }
 
@@ -129,6 +136,30 @@ export class StateStore {
 
   sent(id: string): void {
     this.#db.prepare('DELETE FROM outbox WHERE id = ?').run(id)
+  }
+
+  addFollowup(request: Omit<FollowupRequest, 'attemptId'>): void {
+    this.#db.prepare('INSERT OR IGNORE INTO followup_requests (id, task_id, text, created_at) VALUES (?, ?, ?, ?)').run(request.id, request.taskId, request.text, request.createdAt)
+  }
+
+  /** The requests no attempt took yet, oldest first; of one task, or of all. */
+  pendingFollowups(taskId?: string): FollowupRequest[] {
+    const rows = (taskId === undefined
+      ? this.#db.prepare('SELECT * FROM followup_requests WHERE attempt_id IS NULL ORDER BY created_at, rowid').all()
+      : this.#db.prepare('SELECT * FROM followup_requests WHERE attempt_id IS NULL AND task_id = ? ORDER BY created_at, rowid').all(taskId)) as Array<Record<string, unknown>>
+    return rows.map((row) => ({ id: String(row.id), taskId: String(row.task_id), text: String(row.text), createdAt: Number(row.created_at), attemptId: null }))
+  }
+
+  /** The attempt that does the requests. */
+  takeFollowups(ids: string[], attemptId: string): void {
+    const statement = this.#db.prepare('UPDATE followup_requests SET attempt_id = ? WHERE id = ?')
+    for (const id of ids) statement.run(attemptId, id)
+  }
+
+  /** When the task's newest request was made, or null; attempts before it do not count against the attempt limit. */
+  lastFollowupAt(taskId: string): number | null {
+    const row = this.#db.prepare('SELECT MAX(created_at) AS at FROM followup_requests WHERE task_id = ?').get(taskId) as { at: number | null } | undefined
+    return row?.at === null || row?.at === undefined ? null : Number(row.at)
   }
 
   dropChannel(channel: string): void {

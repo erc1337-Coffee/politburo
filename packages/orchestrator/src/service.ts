@@ -1,5 +1,7 @@
 // The orchestrator service: claims board tasks, starts one remote worker per attempt,
-// follows it through the relay, decides the next step and settles the board task.
+// follows it through the relay, decides the next step and settles the board task. It also reads
+// every message a person writes in a task thread, and answers it, acts on it, or gives the work
+// to the worker: the running one, or a new attempt of the reopened task.
 //
 // Wake sources (event based, one serialized tick at a time):
 //   - board events (long-poll feed)            -> new or changed tasks
@@ -9,13 +11,14 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { BoardError, type board as openBoard, type MessageView } from '@vercel/board'
+import { BoardError, type board as openBoard, type BoardEventView, type MessageView } from '@vercel/board'
 import { envelope, parseTelemetry, type BundlePartData, type Command, type PhaseData, type ResultData, type StartData, type Telemetry } from '@remilia/politburo-relay/messages'
 import type { OrchestratorConfig } from './config.ts'
 import { isLocalRepository, LOCAL_BRANCH, localRepository, type GitRepositories } from './git.ts'
 import type { UsageLedger } from './usage-ledger.ts'
 import { errorCode, type OperationsEventBody, type OperationsMonitor, type OperationsSnapshot, type WakeSource } from './operations.ts'
-import { repositoryName, type GitHubClient } from './github.ts'
+import { repositoryName, type GitHubClient, type PullRequest, type PullRequestStatus } from './github.ts'
+import { applicableActions, type ThreadAction, type ThreadAnswer, type ThreadAssistant, type ThreadFacts } from './thread-assistant.ts'
 import { launch, launchKey, recover, type Binding, type Journal, type Provider } from './launch.ts'
 import { workerPrompt } from './launcher.ts'
 import { workerFiles } from './worker-files.ts'
@@ -53,6 +56,10 @@ export interface OrchestratorDependencies {
   policy?: NextStepPolicy
   /** The final decision after a finished round; without it, the fixed rules alone decide. */
   decider?: FinalDecider | null
+  /** Answers people's messages in task threads; without it, the orchestrator does not read them. */
+  assistant?: ThreadAssistant | null
+  /** A launch provider that sends an attempt's prompt to an existing cloud session; without it, every attempt gets a new session. */
+  resume?: ((session: string, prompt: string, directory: string) => Provider) | null
   now?: () => number
   log?: (entry: Record<string, unknown>) => void
 }
@@ -79,6 +86,15 @@ const sha256 = (text: string) => createHash('sha256').update(text).digest('hex')
 const workerText = (text: string, max = 3_000) =>
   text.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '').replace(/@/g, '@\u200b').slice(0, max)
 
+/** The brief of a follow-up attempt: the task, then what people asked for since, oldest first. */
+export function followupBrief(text: string, requests: string[]): string {
+  return [
+    text, '',
+    'Follow-up requests from the task thread, oldest first. The work of earlier attempts is on the task branch; continue from it.',
+    ...requests.map((request) => `- ${request.replace(/\n+/g, ' ')}`),
+  ].join('\n')
+}
+
 type Resolved = Required<OrchestratorDependencies>
 
 export class Orchestrator {
@@ -94,6 +110,10 @@ export class Orchestrator {
   /** Attempts whose round a model decided: the steps it leads to record no decision of their own. */
   readonly #modelDecided = new Set<string>()
   readonly #skipped = new Set<string>()
+  /** Steering and follow-up commands sent to running workers, by command id, until the worker answers. */
+  readonly #instructions = new Map<string, { taskId: string; text: string }>()
+  /** People's thread messages wait here for the orchestrator model, one at a time, apart from the ticks. */
+  #threadChain: Promise<void> = Promise.resolve()
   #chain: Promise<void> = Promise.resolve()
   #wakeQueued = false
   #timer: NodeJS.Timeout | undefined
@@ -108,7 +128,7 @@ export class Orchestrator {
     const log = (entry: Record<string, unknown>): void => {
       process.stdout.write(`${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`)
     }
-    this.#d = { policy: fixedRulesPolicy, now: Date.now, log, workerFiles: () => workerFiles(), usage: null, monitor: null, decider: null, ...dependencies }
+    this.#d = { policy: fixedRulesPolicy, now: Date.now, log, workerFiles: () => workerFiles(), usage: null, monitor: null, decider: null, assistant: null, resume: null, ...dependencies }
   }
 
   /** Recovers live attempts, then follows board events and starts the sweep. */
@@ -165,6 +185,7 @@ export class Orchestrator {
     clearTimeout(this.#timer)
     for (const subscription of this.#subscriptions.values()) subscription.close()
     this.#subscriptions.clear()
+    await this.#threadChain
     await this.#chain
     // A tick that was running can have started an attempt and opened its subscription.
     for (const subscription of this.#subscriptions.values()) subscription.close()
@@ -201,7 +222,10 @@ export class Orchestrator {
   async #followEvents(signal: AbortSignal): Promise<void> {
     while (!signal.aborted) {
       try {
-        for await (const _ of this.#d.board.events({ last: 1 }, { signal })) this.wake('board')
+        for await (const event of this.#d.board.events({ last: 1 }, { signal })) {
+          this.wake('board')
+          this.#onBoardEvent(event)
+        }
       } catch {
         if (signal.aborted) return
         await new Promise((resolve) => setTimeout(resolve, 5_000))
@@ -236,7 +260,10 @@ export class Orchestrator {
       if (status.paused && attempt.state !== 'stopping') await this.#stopAttempt(attempt, 'the board is paused')
       await this.#maintain(attempt, now)
     }
-    if (!status.paused) await this.#admit(now, status.pauseEpoch)
+    if (!status.paused) {
+      await this.#reopenForFollowups()
+      await this.#admit(now, status.pauseEpoch)
+    }
     this.#scheduleTimer()
   }
 
@@ -296,6 +323,175 @@ export class Orchestrator {
   async #settle(attempt: AttemptRecord, action: 'complete' | 'fail' | 'release' | 'block', call: () => Promise<unknown>): Promise<void> {
     await call()
     this.#emit({ kind: 'board', action, task: attempt.taskId, channel: attempt.channel })
+  }
+
+  // --- people's messages in task threads -------------------------------------
+
+  /** A reply in a task thread from anyone but the orchestrator goes to the orchestrator model. */
+  #onBoardEvent(event: BoardEventView): void {
+    if (!this.#d.assistant || event.type !== 'message.posted') return
+    const message = event.message
+    const root = message?.re
+    if (!message || !root) return
+    if (message.by.actor === this.#actor || message.by.principal === this.#actor) return
+    if (message.labels[STATUS_LABEL] || message.blocks.length > 0 || !message.text.trim()) return
+    // A worker's question takes the first reply as its answer.
+    if (this.#d.state.live().some((attempt) => attempt.taskId === root && attempt.state === 'waiting_answer')) return
+    this.#threadChain = this.#threadChain
+      .then(() => this.#assist(root, message))
+      .catch((error: unknown) => this.#d.log({ event: 'thread_message_failed', task: root, message: error instanceof Error ? error.message : String(error) }))
+  }
+
+  async #assist(taskId: string, message: MessageView): Promise<void> {
+    const thread = await this.#d.board.thread(taskId)
+    const root = thread.message
+    if (!root.task) return
+    const attempts = this.#d.state.forTask(taskId)
+    const live = attempts.find((attempt) => LIVE_STATES.includes(attempt.state)) ?? null
+    const latest = attempts.at(-1) ?? null
+    const repository = latest?.repository ?? null
+    let pull: PullRequestStatus | null = null
+    if (repository && latest && !isLocalRepository(repository)) {
+      try {
+        const found = await this.#d.github.findPullRequest(repository, latest.branch)
+        if (found) pull = await this.#d.github.pullRequestStatus(repository, found.number)
+      } catch (error) {
+        this.#d.log({ event: 'github_read_failed', task: taskId, message: (error as Error).message })
+      }
+    }
+    const snapshot = this.#d.monitor ? this.operations() : null
+    const phaseOf = (attempt: AttemptRecord) => snapshot?.attempts.find((row) => row.attempt_id === attempt.attemptId)?.phase?.phase ?? null
+    const name = (by: MessageView['by'], author: MessageView['author']) => (by.actor === this.#actor ? 'orchestrator' : author?.name ?? by.actor)
+    const base: Omit<ThreadFacts, 'actions'> = {
+      task: {
+        id: taskId, channel: root.channel, state: root.task.state, brief: workerText(root.text, 6_000),
+        result: root.task.result ? workerText(root.task.result, 2_000) : null, decision: root.labels[DECISION_LABEL] ?? null,
+      },
+      repository: { name: repository ?? 'none yet', kind: repository && isLocalRepository(repository) ? 'local' : 'github' },
+      attempts: attempts.map((attempt) => ({
+        no: attempt.attemptNo, state: attempt.state, outcome: attempt.outcome, round: attempt.round, phase: phaseOf(attempt), cost_usd: attempt.costUsd, branch: attempt.branch,
+      })),
+      worker: live ? { state: live.state, round: live.round, phase: phaseOf(live) } : null,
+      pull_request: pull && {
+        url: pull.url, number: pull.number, title: pull.title, state: pull.state, draft: pull.draft, merged: pull.merged,
+        mergeable: pull.mergeable, mergeable_state: pull.mergeableState, combined_status: pull.combinedStatus, checks: pull.checks.slice(0, 30),
+      },
+      thread: thread.replies.filter((reply) => reply.id !== message.id).slice(-20)
+        .map((reply) => ({ by: name(reply.by, reply.author), text: workerText(reply.text, 1_500) })),
+      message: { by: name(message.by, message.author), text: workerText(message.text, 8_000) },
+    }
+    const facts: ThreadFacts = { ...base, actions: applicableActions(base) }
+    let answer: ThreadAnswer
+    try {
+      answer = await this.#d.assistant!.answer(facts)
+    } catch (error) {
+      this.#d.log({ event: 'thread_answer_failed', task: taskId, message: (error as Error).message })
+      await this.#reply(taskId, `Orchestrator: the orchestrator model did not answer (${(error as Error).message.slice(0, 200)}).`)
+      return
+    }
+    await this.#serial(() => this.#actOnThreadAnswer(taskId, answer, pull, message.id))
+  }
+
+  /** Does what the orchestrator model chose, then posts its reply with the outcome of each action. */
+  async #actOnThreadAnswer(taskId: string, answer: ThreadAnswer, pull: PullRequest | null, messageId: string): Promise<void> {
+    const outcomes: string[] = []
+    const latest = this.#d.state.forTask(taskId).at(-1) ?? null
+    for (const action of answer.actions) outcomes.push(await this.#threadAction(taskId, action, pull, latest))
+    let work: 'worker' | 'followup' | null = null
+    if (answer.work) {
+      const outcome = await this.#threadWork(taskId, answer.work.text, answer.work.mode, messageId)
+      work = outcome.work
+      outcomes.push(outcome.text)
+    }
+    const text = [answer.reply ? workerText(answer.reply, 4_000) : '', ...outcomes].filter(Boolean).join('\n\n')
+    if (text) {
+      try {
+        await this.#d.board.reply(taskId, text)
+        this.#emit({ kind: 'board', action: 'reply', task: taskId })
+      } catch (error) {
+        this.#d.log({ event: 'board_reply_failed', task: taskId, message: (error as Error).message })
+      }
+    }
+    this.#emit({ kind: 'thread', task: taskId, ...(latest ? { channel: latest.channel } : {}), reply: answer.reply !== '', actions: answer.actions.map((action) => action.name), work })
+    this.#d.log({ event: 'thread_message', task: taskId, reply: answer.reply !== '', actions: answer.actions.map((action) => action.name), work })
+  }
+
+  async #threadAction(taskId: string, action: ThreadAction, pull: PullRequest | null, latest: AttemptRecord | null): Promise<string> {
+    const repository = latest?.repository ?? ''
+    const github = (name: 'ready' | 'merge' | 'close' | 'reopen') =>
+      this.#emit({ kind: 'github', action: name, repository, task: taskId, ...(latest ? { channel: latest.channel } : {}) })
+    try {
+      switch (action.name) {
+        case 'pr_ready':
+          await this.#d.github.markReady(pull!, repository)
+          github('ready')
+          return `Pull request #${pull!.number} is ready for review.`
+        case 'pr_merge': {
+          const sha = await this.#d.github.merge(repository, pull!.number, action.merge_method ?? 'squash')
+          github('merge')
+          return `Pull request #${pull!.number} is merged (${action.merge_method ?? 'squash'}, ${sha.slice(0, 12)}).`
+        }
+        case 'pr_close':
+          await this.#d.github.setPullRequestState(repository, pull!.number, 'closed')
+          github('close')
+          return `Pull request #${pull!.number} is closed.`
+        case 'pr_reopen':
+          await this.#d.github.setPullRequestState(repository, pull!.number, 'open')
+          github('reopen')
+          return `Pull request #${pull!.number} is open again.`
+        case 'task_cancel': {
+          const live = this.#d.state.live().find((attempt) => attempt.taskId === taskId)
+          if (live) await this.#stopAttempt(live, 'the task was canceled')
+          await this.#d.board.tasks.cancel(taskId, 'Canceled on request in the thread.')
+          return 'The task is canceled.'
+        }
+        case 'task_retry':
+          this.#d.state.addFollowup({ id: randomUUID(), taskId, text: 'Do the task again from where its branch is.', createdAt: this.#d.now() })
+          await this.#reopenForFollowups()
+          this.wake('request')
+          return 'The task starts again with a new worker.'
+      }
+    } catch (error) {
+      this.#d.log({ event: 'thread_action_failed', task: taskId, action: action.name, message: (error as Error).message })
+      this.#emit({ kind: 'fault', component: action.name.startsWith('pr_') ? 'github' : 'board', code: errorCode(error), task: taskId })
+      return `${action.name.replace('_', ' ')} failed: ${(error as Error).message.slice(0, 300)}`
+    }
+  }
+
+  /**
+   * Work a person asked for: to the running worker's Pi when one runs, otherwise a follow-up
+   * request that a new attempt of the reopened task does.
+   */
+  async #threadWork(taskId: string, text: string, mode: 'steer' | 'follow_up', messageId: string): Promise<{ work: 'worker' | 'followup'; text: string }> {
+    const live = this.#d.state.live().find((attempt) => attempt.taskId === taskId)
+    if (live && ['claimed', 'launching', 'awaiting_contact', 'running', 'waiting_answer'].includes(live.state)) {
+      const command = envelope('instruct', live.taskId, live.channel, { round: live.round, text, mode }, this.#d.now())
+      this.#instructions.set(command.id, { taskId, text })
+      await this.#send(live, command)
+      return { work: 'worker', text: mode === 'steer' ? 'Sent to the worker, for the work it does now.' : 'Sent to the worker, for after its current work.' }
+    }
+    this.#d.state.addFollowup({ id: `thread-${messageId}`, taskId, text, createdAt: this.#d.now() })
+    if (live) return { work: 'followup', text: 'The worker is finishing its round; the request goes to a new attempt after it.' }
+    await this.#reopenForFollowups()
+    this.wake('request')
+    return { work: 'followup', text: 'The task is open again; a worker takes the request.' }
+  }
+
+  /** Tasks with follow-up requests and no live attempt are made ready again, so admission starts them. */
+  async #reopenForFollowups(): Promise<void> {
+    const tasks = new Set(this.#d.state.pendingFollowups().map((request) => request.taskId))
+    const live = new Set(this.#d.state.live().map((attempt) => attempt.taskId))
+    for (const taskId of tasks) {
+      if (live.has(taskId)) continue
+      try {
+        const { message } = await this.#d.board.thread(taskId)
+        const state = message.task?.state
+        if (state === 'completed' || state === 'failed' || state === 'canceled') await this.#d.board.tasks.reopen(taskId)
+        else if (state === 'blocked') await this.#d.board.tasks.unblock(taskId)
+      } catch (error) {
+        this.#d.log({ event: 'followup_reopen_failed', task: taskId, message: (error as Error).message })
+      }
+    }
   }
 
   // --- live attempts: lease, token, watchdog --------------------------------
@@ -433,22 +629,42 @@ export class Orchestrator {
       ? party
       : settings.routes.filter((route) => route.enabled && byKey.has(route.key)).map((route) => byKey.get(route.key)!)
     if (routes.length === 0) return this.#skip(message, `Channel #${message.channel} enables no model route of the party.`)
-    const attempts = this.#d.state.forTask(message.id).length
+    // Each follow-up request gives the task its attempts again.
+    const since = this.#d.state.lastFollowupAt(message.id)
+    const attempts = this.#d.state.forTask(message.id).filter((attempt) => since === null || attempt.createdAt > since).length
     if (attempts >= this.#d.config.limits.attemptsPerTask) return this.#skip(message, `All ${attempts} attempts are used.`)
     return { repository, url: settings?.repository || repository, routes }
   }
 
   async #startAttempt(message: MessageView, plan: { repository: string; url: string; routes: PartyRoute[] }, now: number, pauseEpoch: number): Promise<void> {
     const { config } = this.#d
+    const followups = this.#d.state.pendingFollowups(message.id)
+    const previous = this.#d.state.forTask(message.id).at(-1) ?? null
     let baseRef: string
     let baseCommit: string | null
+    let branch = previous?.branch ?? `claude/task-${message.id}`
+    /** A follow-up that goes on from the work of the previous attempt can resume its cloud session. */
+    let continues = false
     try {
       if (isLocalRepository(plan.repository)) {
         baseRef = LOCAL_BRANCH
-        baseCommit = await this.#d.git.localHead(plan.repository)
+        baseCommit = followups.length && previous
+          ? await this.#d.git.localFollowupBase(plan.repository, previous.branch)
+          : await this.#d.git.localHead(plan.repository)
+        continues = followups.length > 0 && previous !== null
       } else {
         baseRef = await this.#d.github.defaultBranch(plan.repository)
         baseCommit = await this.#d.github.branchHead(plan.repository, baseRef)
+        if (followups.length && previous) {
+          // An open pull request takes the follow-up on its branch; after a merge or a close, new work goes on a new branch.
+          const pull = await this.#d.github.findPullRequest(plan.repository, previous.branch)
+          if (pull?.state === 'open') {
+            baseCommit = await this.#d.github.branchHead(plan.repository, previous.branch) ?? baseCommit
+            continues = true
+          } else if (pull) {
+            branch = `claude/task-${message.id}-${this.#d.state.forTask(message.id).length + 1}`
+          }
+        }
       }
     } catch (error) {
       this.#d.log({ event: 'github_read_failed', task: message.id, message: (error as Error).message })
@@ -466,7 +682,6 @@ export class Orchestrator {
     if (!claim) return
     const attemptNo = this.#d.state.forTask(message.id).length + 1
     const channel = `task-${message.id}-a${attemptNo}-${randomBytes(4).toString('hex')}`
-    const branch = `claude/task-${message.id}`
     const worker = this.#d.relay.token(channel, 'worker', config.tokens.workerTtlSeconds)
     const attempt: AttemptRecord = {
       attemptId: randomUUID(), taskId: message.id, attemptNo, channel, boardChannel: message.channel, repository: plan.repository,
@@ -475,12 +690,13 @@ export class Orchestrator {
       telemetrySeq: 0, costUsd: 0, questionId: null, questionAt: null, outcome: null, prUrl: null,
     }
     this.#d.state.insert(attempt)
+    if (followups.length) this.#d.state.takeFollowups(followups.map((request) => request.id), attempt.attemptId)
     this.#leaseRenewedAt.set(attempt.attemptId, now)
     this.#emit({ kind: 'attempt', attempt: attempt.attemptId, task: attempt.taskId, channel, state: 'claimed' })
     this.#emit({ kind: 'board', action: 'claim', task: attempt.taskId, channel })
     this.#d.log({ event: 'attempt_state', attempt: attempt.attemptId, task: attempt.taskId, channel, state: 'claimed' })
 
-    const brief = message.text
+    const brief = followups.length ? followupBrief(message.text, followups.map((request) => request.text)) : message.text
     const start: StartData = {
       task_id: message.id, attempt: attemptNo, round: 1,
       title: brief.split('\n').find((line) => line.trim())?.trim().slice(0, 120) ?? `Task ${message.id}`,
@@ -521,7 +737,9 @@ export class Orchestrator {
       this.#transition(attempt, { state: 'settled', outcome: 'launch_preparation_failed' }, (error as Error).message)
       return
     }
-    const result = await launch({ journal: this.#d.journal, provider: this.#d.provider(prompt, launchDirectory), control: this.#control(), key, binding })
+    const resumed = continues && previous?.session && this.#d.resume ? previous.session : null
+    const provider = resumed ? this.#d.resume!(resumed, prompt, launchDirectory) : this.#d.provider(prompt, launchDirectory)
+    const result = await launch({ journal: this.#d.journal, provider, control: this.#control(), key, binding })
       .finally(() => rmSync(launchDirectory, { recursive: true, force: true }))
     this.#emit({ kind: 'launch', task: attempt.taskId, channel, outcome: 'ok' in result ? 'journal_unreadable' : result.status })
     if ('ok' in result) {
@@ -530,7 +748,7 @@ export class Orchestrator {
     }
     if (result.status === 'launched' || result.status === 'adopted' || result.status === 'reattached') {
       this.#transition(attempt, { state: 'awaiting_contact', session: result.session ?? null, launchedAt: this.#d.now() })
-      await this.#reply(message.id, `Orchestrator: attempt ${attemptNo} started. Session ${result.session}, branch ${branch} in ${plan.repository}, routes ${plan.routes.map((route) => route.label).join(', ')}.`)
+      await this.#reply(message.id, `Orchestrator: attempt ${attemptNo} started${followups.length ? ` for ${followups.length === 1 ? 'the follow-up request' : `${followups.length} follow-up requests`}` : ''}. Session ${result.session}${resumed ? ' (resumed)' : ''}, branch ${branch} in ${plan.repository}, routes ${plan.routes.map((route) => route.label).join(', ')}.`)
       this.#subscribe(attempt)
       return
     }
@@ -619,6 +837,12 @@ export class Orchestrator {
     this.#d.monitor?.phase(attempt.attemptId, { phase, round, ...(text === undefined ? {} : { detail: text }), ...(duration_seconds === undefined ? {} : { duration_seconds }) })
     this.#emit({ kind: 'phase', task: attempt.taskId, channel: attempt.channel, phase, round, ...(duration_seconds === undefined ? {} : { duration_seconds }) })
     this.#d.log({ event: 'worker_phase', task: attempt.taskId, channel: attempt.channel, phase, round, ...(duration_seconds === undefined ? {} : { duration_seconds }) })
+    if (phase === 'instruction_received' && detail) this.#instructions.delete(detail)
+    if (phase === 'instruction_dropped' && detail) {
+      const instruction = this.#instructions.get(detail)
+      this.#instructions.delete(detail)
+      if (instruction) this.#d.state.addFollowup({ id: `instruction-${detail}`, taskId: instruction.taskId, text: instruction.text, createdAt: this.#d.now() })
+    }
     if (phase === 'setup_failed' && attempt.state !== 'stopping') await this.#lost(attempt, `the worker setup failed${text ? `: ${text}` : ''}`)
   }
 

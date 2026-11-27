@@ -12,10 +12,11 @@ import { idleSnapshot, OperationsMonitor } from './operations.ts'
 import { startOperationsServer, type OperationsServer } from './operations-server.ts'
 import { GitHubClient } from './github.ts'
 import { openJournal } from './launch.ts'
-import { cloudProvider } from './launcher.ts'
+import { cloudProvider, resumeProvider } from './launcher.ts'
 import { RelayClient } from './relay-client.ts'
 import { readModelRoutes, type ModelRoute } from './model-routes.ts'
 import { Orchestrator } from './service.ts'
+import { ThreadAssistant } from './thread-assistant.ts'
 import { acquireLock, StateStore } from './state.ts'
 
 const usage = [
@@ -57,6 +58,9 @@ async function serve(config: OrchestratorConfig): Promise<number> {
   } catch (error) {
     console.error(`orchestrator: the spend ledger cannot be opened: ${(error as Error).message}`)
   }
+  const orchestratorModel = config.decision.claudeModel
+    ? claudeRunner({ model: config.decision.claudeModel, directory: join(config.stateDirectory, 'decision'), timeoutMs: config.decision.claudeTimeoutSeconds * 1000 })
+    : null
   const orchestrator = new Orchestrator({
     config,
     monitor,
@@ -68,12 +72,12 @@ async function serve(config: OrchestratorConfig): Promise<number> {
     journal: openJournal(join(config.stateDirectory, 'journal')),
     routes: () => partyRoutes(config),
     provider: (prompt, directory) => cloudProvider(config.worker.launcher, prompt, directory),
+    resume: (session, prompt, directory) => resumeProvider(config.worker.launcher, session, prompt, directory),
+    assistant: orchestratorModel ? new ThreadAssistant(orchestratorModel) : null,
     usage: usageLedger,
     decider: new FinalDecider({
       kev: config.decision.kevUrl ? new KevClient({ url: config.decision.kevUrl, timeoutMs: config.decision.kevTimeoutSeconds * 1000 }) : null,
-      claude: config.decision.claudeModel
-        ? claudeRunner({ model: config.decision.claudeModel, directory: join(config.stateDirectory, 'decision'), timeoutMs: config.decision.claudeTimeoutSeconds * 1000 })
-        : null,
+      claude: orchestratorModel,
       kevConfidence: config.decision.kevConfidence,
       followupDepth: config.decision.followupDepth,
       log: (entry) => console.log(JSON.stringify({ at: new Date().toISOString(), ...entry })),

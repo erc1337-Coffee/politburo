@@ -12,7 +12,9 @@ export type OperationsEventBody =
   | { kind: 'telemetry'; channel: string; task: string; type: string; bytes: number; relay_seq: number }
   | { kind: 'phase'; channel: string; task: string; phase: string; round: number; duration_seconds?: number }
   | { kind: 'board'; action: 'claim' | 'renew' | 'reply' | 'complete' | 'fail' | 'release' | 'block'; task: string; channel?: string }
-  | { kind: 'github'; action: 'push' | 'draft_pr'; repository: string; task: string; channel: string }
+  | { kind: 'github'; action: 'push' | 'draft_pr' | 'ready' | 'merge' | 'close' | 'reopen'; repository: string; task: string; channel?: string }
+  /** A person's message in a task thread and what the orchestrator did with it. */
+  | { kind: 'thread'; task: string; channel?: string; reply: boolean; actions: string[]; work: 'worker' | 'followup' | null }
   | { kind: 'launch'; task: string; channel: string; outcome: string }
   | { kind: 'attempt'; attempt: string; task: string; channel: string; state: string }
   | { kind: 'fault'; component: 'board' | 'relay' | 'github' | 'worker' | 'launch' | 'ledger'; code: string; task?: string; channel?: string }

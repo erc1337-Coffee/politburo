@@ -75,6 +75,19 @@ export class GitRepositories {
     return isLocalRepository(repository) ? this.#local(repository) : this.#mirror(repository)
   }
 
+  /**
+   * Where a follow-up attempt of a local channel task starts: the task branch when `main` does not
+   * contain it (the work was kept, not merged), otherwise `main`.
+   */
+  async localFollowupBase(repository: string, branch: string): Promise<string> {
+    const path = await this.#local(repository)
+    const main = await this.#git(['rev-parse', `refs/heads/${LOCAL_BRANCH}`], path)
+    const head = await this.#git(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], path).catch(() => '')
+    if (!head) return main
+    const merged = await this.#git(['merge-base', '--is-ancestor', head, main], path).then(() => true, () => false)
+    return merged ? main : head
+  }
+
   /** Fetches a verified worker bundle into `repository` as `staging`, and checks that it holds `head` on top of `base`. */
   async #receive(path: string, staging: string, input: { bundleFile: string; branch: string; head: string; base: string }): Promise<void> {
     if (!SHA.test(input.head) || !SHA.test(input.base)) throw new GitError('head and base must be full commit ids')
