@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Politburo · Worker</title>
+<link rel="stylesheet" href="assets/politburo.css">
+</head>
+<body>
+<nav>
+  <a class="brand" href="index.html"><img src="assets/politburo-emblem.png" alt="">Politburo</a>
+  <div class="group">System</div>
+  <a href="index.html">Overview</a>
+  <a href="task-lifecycle.html">Task lifecycle</a>
+  <a href="deployment.html">Deployment</a>
+  <div class="group">Services</div>
+  <a href="board.html">Board</a>
+  <a href="orchestrator.html">Orchestrator</a>
+  <a href="relay.html">Relay</a>
+  <a href="worker.html">Worker</a>
+</nav>
+<main>
+<h1>Worker</h1>
+<p class="lead">A client that runs one attempt inside a Claude cloud session. It reads relay commands, runs Pi on the task, and sends progress, results and the commits as a git bundle. It holds no GitHub credential and never pushes.</p>
+
+<dl class="facts">
+  <dt>Package</dt><dd><code>packages/worker</code> · <code>@remilia/politburo-worker</code>, no dependency</dd>
+  <dt>Delivered</dt><dd>Committed into the session upload under <code>.politburo/packages/</code> by the orchestrator, with the relay message and sealing modules</dd>
+  <dt>Started by</dt><dd>The session agent, following <code>WORKER_RELAY_PROTOCOL.md</code></dd>
+  <dt>State</dt><dd><code>~/.politburo_worker/&lt;channel&gt;/</code>, mode 700</dd>
+  <dt>Exit codes</dt><dd>0 finished · 2 usage · 3 configuration · 4 lost contact · 5 internal · 10 still running (<code>status</code>)</dd>
+</dl>
+
+<h2>One round</h2>
+<figure class="schematic">
+<svg viewBox="0 0 1000 330" role="img" aria-label="Worker client, Pi and the relay during one round">
+  <rect class="zone" x="10" y="30" width="980" height="140" rx="8"/><text class="zone-label" x="22" y="22">Claude cloud session</text>
+  <g class="node" id="k-agent"><rect x="30" y="60" width="190" height="80" rx="4"/><text class="title" x="42" y="82">Session agent</text><text class="detail" x="42" y="102">reads the protocol</text><text class="detail" x="42" y="118">polls status --wait 540</text></g>
+  <g class="node key" id="k-client"><rect x="300" y="60" width="220" height="80" rx="4"/><text class="title" x="312" y="82">Worker client</text><text class="detail" x="312" y="102">worker/src/cli.ts run</text><text class="detail" x="312" y="118">token on stdin</text></g>
+  <g class="node" id="k-pi"><rect x="600" y="60" width="170" height="80" rx="4"/><text class="title" x="612" y="82">Pi</text><text class="detail" x="612" y="102">pi -p --mode json</text><text class="detail" x="612" y="118">route extension</text></g>
+  <g class="node" id="k-git"><rect x="810" y="60" width="160" height="80" rx="4"/><text class="title" x="822" y="82">Worktree</text><text class="detail" x="822" y="102">claude/task-N</text><text class="detail" x="822" y="118">push disabled</text></g>
+  <g class="node key" id="k-relay"><rect x="300" y="230" width="220" height="70" rx="4"/><text class="title" x="312" y="252">Relay</text><text class="detail" x="312" y="272">commands ↓ · telemetry ↑</text></g>
+  <g class="node external" id="k-models"><rect x="600" y="230" width="170" height="70" rx="4"/><text class="title" x="612" y="252">Models</text><text class="detail" x="612" y="272">routes in order</text></g>
+  <polyline class="link" id="k-run" points="220,100 300,100"/>
+  <polyline class="link command" id="k-command" points="360,230 360,140"/>
+  <polyline class="link telemetry" id="k-telemetry" points="460,140 460,230"/>
+  <polyline class="link" id="k-prompt" points="520,100 600,100"/>
+  <polyline class="link" id="k-edit" points="770,100 810,100"/>
+  <polyline class="link external" id="k-model" points="685,140 685,230"/>
+  <polyline class="link result" id="k-bundle" points="890,60 890,44 410,44 410,60"/>
+</svg>
+<script type="application/json" class="steps">[
+  {"text": "The session agent starts the client in the background with the token on standard input: <code>node --experimental-strip-types .politburo/packages/worker/src/cli.ts run --relay-url … --channel …</code>", "links": ["k-run"], "label": "run", "nodes": ["k-agent", "k-client"]},
+  {"text": "Setup: Pi 1.4.0 if missing, the model catalog, the Claude CLI provider, the Cursor provider when <code>PI_CURSOR</code> is set, and the two extensions.", "links": [], "nodes": ["k-client"]},
+  {"text": "The client reads <code>start</code> from the relay and adds a git worktree at the base commit on branch <code>claude/task-N</code>. Every remote gets a disabled push URL.", "links": ["k-command"], "label": "start", "kind": "command", "nodes": ["k-git"]},
+  {"text": "Heartbeats carry the public key; the sealed credentials come back. The round waits for them up to 300 s.", "links": ["k-telemetry", "k-command"], "label": "credentials", "kind": "command"},
+  {"text": "Pi runs on the prompt: task title, brief and fixed rules (work in this checkout, do not push, ask with <code>ask_orchestrator</code>, end with a summary).", "links": ["k-prompt"], "label": "prompt", "nodes": ["k-pi"]},
+  {"text": "The route extension tries the routes in order and moves on after a rate limit, an auth error, a quota error or 90 s of silence.", "links": ["k-model"], "label": "request", "kind": "external", "nodes": ["k-models"]},
+  {"text": "Pi edits the worktree. Its events become <code>progress</code> items, sent every 10 s.", "links": ["k-edit", "k-telemetry"], "label": "progress", "kind": "telemetry"},
+  {"text": "At round end the client runs the checks, commits, and makes a bundle of <code>branch ^base</code>.", "links": ["k-bundle"], "label": "bundle", "kind": "result", "nodes": ["k-git"]},
+  {"text": "Bundle parts and the <code>result</code> go to the relay. The client then waits for <code>instruct</code> or <code>stop</code>.", "links": ["k-telemetry"], "label": "result", "kind": "telemetry", "nodes": ["k-relay"]}
+]</script>
+</figure>
+
+<h2>Commands</h2>
+<table>
+  <tr><th>Command</th><th>Action</th></tr>
+  <tr><td><code>start</code></td><td>Sets the heartbeat interval, prepares the worktree, runs round 1. A second <code>start</code> is ignored with a warning.</td></tr>
+  <tr><td><code>credentials</code></td><td>Opens the sealed variables. Logs only their names; the next heartbeat has no public key.</td></tr>
+  <tr><td><code>instruct</code></td><td>Runs the next round with the text as the whole prompt, or queues it while a round runs.</td></tr>
+  <tr><td><code>answer</code></td><td>Writes the answer file that the <code>ask_orchestrator</code> tool waits for.</td></tr>
+  <tr><td><code>renew</code></td><td>Replaces the token when the new one expires later, saves it and reconnects.</td></tr>
+  <tr><td><code>stop</code></td><td>Safe stop: stops Pi; with <code>send_bundle</code> and a running round, commits and sends a final result.</td></tr>
+</table>
+<p>Events at or below the saved sequence are skipped. Invalid commands and commands for another channel become warnings. The last 500 command ids are kept, so none runs twice.</p>
+
+<h2>Pi</h2>
+<pre><code>pi -p --mode json --session-dir ~/.politburo_worker/&lt;channel&gt;/pi_session \
+   --session-id task-&lt;N&gt;-attempt-&lt;K&gt; --model &lt;start.model.pi_model&gt; \
+   --thinking ${PI_THINKING:-medium} --extension &lt;route extension&gt; --extension &lt;ask_orchestrator&gt; -- &lt;prompt&gt;</code></pre>
+<ul>
+  <li>Environment: the session environment without <code>CLAUDE_*</code> and <code>CCR_*</code>, plus the opened credentials and <code>PI_FALLBACK_TIERS</code> (the start command's routes).</li>
+  <li>Limits: Pi is ended at <code>max_seconds</code> (2400) or after <code>idle_seconds</code> (180) with no output and no change in the worktree. Idle time does not count while a question waits.</li>
+  <li>Exit reason: <code>completed</code> for exit 0 without an error reply, else <code>failed</code>; or <code>timeout</code>, <code>idle</code>, <code>stopped</code>.</li>
+  <li>Summary: Pi's last reply.</li>
+</ul>
+<table>
+  <tr><th>Pi event</th><th>Progress kind</th></tr>
+  <tr><td>Tool call starts</td><td><code>tool</code>: tool name and command or path</td></tr>
+  <tr><td>Tool call ends</td><td><code>output</code>, or <code>error</code></td></tr>
+  <tr><td>Assistant thinking</td><td><code>thinking</code></td></tr>
+  <tr><td>Assistant text</td><td><code>say</code></td></tr>
+  <tr><td>Usage of a reply</td><td><code>usage</code>: provider, model, tokens, cost; summed per model for the result</td></tr>
+</table>
+
+<h3>Route extension</h3>
+<p><code>pi-support/codex-cursor-fallback.ts</code> registers the virtual model <code>fallback/codex-cursor</code>. A route is tried only when its model is known to Pi, has auth, is not cooling down and was not tried for this request. On HTTP 401, 403 or 429, an auth, quota or rate-limit error, or 90 s of stream silence, the provider cools down for 30 minutes and the next route is tried.</p>
+<h3>Questions</h3>
+<p>The <code>ask_orchestrator</code> tool lets Pi ask the task owner when it cannot continue without a decision. The question goes to the task thread; the first reply of a person comes back. After <code>question_wait_seconds</code> (3600) Pi is told to stop and report what is done.</p>
+
+<h2>Round end</h2>
+<ol>
+  <li>Checks from <code>start</code> run with <code>bash -lc</code> in the worktree, each with its timeout; the last 2,000 characters of output are kept.</li>
+  <li><code>git add --all</code> and a commit <code>Task N round R</code> when something changed.</li>
+  <li>Bundle of <code>claude/task-N ^base</code> with its SHA-256, sent in parts of 48,000 base64 characters. More than 64 parts (about 2.3 MB) is not sent and is reported as truncated.</li>
+  <li><code>result</code> with exit reason, summary, head and base commit, bundle digest, diff stat, checks, models with tokens and cost.</li>
+</ol>
+
+<h2>Stops</h2>
+<table>
+  <tr><th>Cause</th><th>Exit reason</th><th>Exit code</th></tr>
+  <tr><td><code>stop</code> command</td><td><code>stopped</code></td><td>0</td></tr>
+  <tr><td>No command for <code>max_seconds</code> after the last result</td><td><code>stopped</code></td><td>0</td></tr>
+  <tr><td>No relay contact for 900 s</td><td><code>lost_contact</code></td><td>4</td></tr>
+  <tr><td>Token expires within 120 s, or the relay answers 401</td><td><code>token_expired</code></td><td>4</td></tr>
+  <tr><td>Relay answers 403, worktree error, no credentials in 300 s</td><td><code>worker_error</code></td><td>3</td></tr>
+  <tr><td>Setup fails</td><td>no message</td><td>3</td></tr>
+  <tr><td>Uncaught error</td><td>no message</td><td>5</td></tr>
+</table>
+
+<h2>Restart</h2>
+<p>The session agent restarts the client once after exit code 5. The client resumes from <code>~/.politburo_worker/&lt;channel&gt;/</code>: the command cursor, the unsent telemetry, the token with the latest expiry and <code>start.json</code>. A saved round runs again with the task prompt. The new process makes a new key, so the orchestrator seals the credentials again.</p>
+<table>
+  <tr><th>File</th><th>Content</th></tr>
+  <tr><td><code>token</code></td><td>Relay token with the latest expiry</td></tr>
+  <tr><td><code>cursor.json</code></td><td>Last command sequence and processed ids</td></tr>
+  <tr><td><code>outbox.json</code></td><td>Unsent telemetry, posted in order</td></tr>
+  <tr><td><code>start.json</code></td><td>The start command and the current round</td></tr>
+  <tr><td><code>status.log</code>, <code>exit.json</code></td><td>What <code>status</code> prints and returns</td></tr>
+  <tr><td><code>round_N.jsonl</code>, <code>round_N.bundle</code>, <code>result_round_N.json</code></td><td>Pi events, bundle and result of each round</td></tr>
+  <tr><td><code>work/</code></td><td>The task worktree</td></tr>
+</table>
+</main>
+<script src="assets/schematic.js"></script>
+</body>
+</html>

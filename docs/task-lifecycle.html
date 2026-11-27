@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Politburo · Task lifecycle</title>
+<link rel="stylesheet" href="assets/politburo.css">
+</head>
+<body>
+<nav>
+  <a class="brand" href="index.html"><img src="assets/politburo-emblem.png" alt="">Politburo</a>
+  <div class="group">System</div>
+  <a href="index.html">Overview</a>
+  <a href="task-lifecycle.html">Task lifecycle</a>
+  <a href="deployment.html">Deployment</a>
+  <div class="group">Services</div>
+  <a href="board.html">Board</a>
+  <a href="orchestrator.html">Orchestrator</a>
+  <a href="relay.html">Relay</a>
+  <a href="worker.html">Worker</a>
+</nav>
+<main>
+<h1>Task lifecycle</h1>
+<p class="lead">A task is a thread root with a state on the board. The orchestrator moves it with claims; people move it with answers and the task card. The attempt states inside the orchestrator are on the <a href="orchestrator.html">Orchestrator</a> page.</p>
+
+<figure class="schematic">
+<svg viewBox="0 0 1000 370" role="img" aria-label="Board task states">
+  <g class="state" id="t-waiting"><rect x="40" y="60" width="130" height="36"/><text x="105" y="83" text-anchor="middle">waiting</text></g>
+  <g class="state" id="t-ready"><rect x="240" y="60" width="130" height="36"/><text x="305" y="83" text-anchor="middle">ready</text></g>
+  <g class="state" id="t-claimed"><rect x="440" y="60" width="130" height="36"/><text x="505" y="83" text-anchor="middle">claimed</text></g>
+  <g class="state terminal" id="t-completed"><rect x="700" y="60" width="130" height="36"/><text x="765" y="83" text-anchor="middle">completed</text></g>
+  <g class="state" id="t-blocked"><rect x="440" y="200" width="130" height="36"/><text x="505" y="223" text-anchor="middle">blocked</text></g>
+  <g class="state terminal" id="t-failed"><rect x="700" y="200" width="130" height="36"/><text x="765" y="223" text-anchor="middle">failed</text></g>
+  <g class="state terminal" id="t-canceled"><rect x="700" y="320" width="130" height="36"/><text x="765" y="343" text-anchor="middle">canceled</text></g>
+
+  <polyline class="link" id="x-ready" points="170,78 240,78"/>
+  <polyline class="link command" id="x-claim" points="370,78 440,78"/>
+  <polyline class="link result" id="x-complete" points="570,78 700,78"/>
+  <polyline class="link" id="x-release" points="505,60 505,30 305,30 305,60"/>
+  <polyline class="link result" id="x-block" points="485,96 485,200"/>
+  <polyline class="link board" id="x-unblock" points="440,218 325,218 325,96"/>
+  <polyline class="link result" id="x-fail" points="570,90 640,90 640,218 700,218"/>
+  <polyline class="link board" id="x-reopen" points="765,236 765,290 285,290 285,96"/>
+  <polyline class="link board" id="x-cancel" points="525,236 525,338 700,338"/>
+  <text class="link-label" x="178" y="70">needs done</text>
+  <text class="link-label" x="378" y="70">claim</text>
+  <text class="link-label" x="590" y="70">complete</text>
+  <text class="link-label" x="340" y="24">release · lease expired</text>
+  <text class="link-label" x="400" y="160">block · ask</text>
+  <text class="link-label" x="334" y="236">unblock · answer</text>
+  <text class="link-label" x="648" y="160">fail</text>
+  <text class="link-label" x="560" y="306">reopen</text>
+  <text class="link-label" x="560" y="352">cancel (any open state)</text>
+</svg>
+<script type="application/json" class="steps">[
+  {"text": "A person posts with the task switch on. Without needs the task is <code>ready</code>; with unfinished needs it is <code>waiting</code> until they complete.", "links": ["x-ready"], "label": "needs", "states": ["t-waiting", "t-ready"]},
+  {"text": "The orchestrator claims it with a 900 s lease and renews the lease every 300 s. A claim keeps only the hash of its token; every later write must prove it.", "links": ["x-claim"], "label": "claim", "kind": "command", "states": ["t-claimed"]},
+  {"text": "The worker's work is published: draft PR or merge. The orchestrator completes the task with the PR URL or the new <code>main</code> commit. Tasks that need it become ready.", "links": ["x-complete"], "label": "complete", "kind": "result", "states": ["t-completed"]},
+  {"text": "A retry releases the claim: the task is ready again and the next attempt starts. A lease that runs out, or a claim from before a pause, has the same effect.", "links": ["x-release"], "label": "retry", "states": ["t-ready"]},
+  {"text": "REVIEW, a hold or a merge conflict blocks the task for a person, with the reason. A question to a person blocks it too, until the answer.", "links": ["x-block"], "label": "hold", "kind": "result", "states": ["t-blocked"]},
+  {"text": "The person unblocks the task on its card, or answers the question. It is ready again, and the orchestrator takes it.", "links": ["x-unblock"], "label": "unblock", "states": ["t-ready"]},
+  {"text": "Limits used up, or a stop: the task fails with the reason, and the decision label is REVIEW.", "links": ["x-fail"], "label": "fail", "kind": "result", "states": ["t-failed"]},
+  {"text": "The owner can reopen a failed task. It goes back to <code>ready</code>, or <code>waiting</code> when its needs are not done.", "links": ["x-reopen"], "label": "reopen", "states": ["t-ready"]},
+  {"text": "The owner can cancel any open task. Deleting the thread root cancels it too.", "links": ["x-cancel"], "label": "cancel", "states": ["t-canceled"]}
+]</script>
+</figure>
+
+<h2>Transitions</h2>
+<table>
+  <tr><th>Change</th><th>From → to</th><th>Who</th></tr>
+  <tr><td>Create</td><td>→ <code>ready</code>, or <code>waiting</code> with unfinished needs</td><td>Anyone who may post; the poster owns it</td></tr>
+  <tr><td>Needs complete</td><td><code>waiting</code> → <code>ready</code></td><td>The board</td></tr>
+  <tr><td>Claim</td><td><code>ready</code> → <code>claimed</code></td><td><code>label</code> permission; refused while the board is paused</td></tr>
+  <tr><td>Renew</td><td><code>claimed</code> → <code>claimed</code></td><td>Claim holder</td></tr>
+  <tr><td>Release, lease expired</td><td><code>claimed</code> → <code>ready</code> or <code>waiting</code></td><td>Claim holder; the board</td></tr>
+  <tr><td>Complete</td><td><code>claimed</code> → <code>completed</code></td><td>Claim holder</td></tr>
+  <tr><td>Fail</td><td><code>claimed</code> → <code>failed</code></td><td>Claim holder</td></tr>
+  <tr><td>Block (<code>needs_input</code>, <code>awaiting_approval</code>)</td><td><code>claimed</code>, <code>ready</code>, <code>waiting</code> → <code>blocked</code></td><td>Claim holder, or the owner</td></tr>
+  <tr><td>Root edited by another person</td><td>open → <code>blocked</code> (kind <code>edited</code>)</td><td>The board</td></tr>
+  <tr><td>Ask a question</td><td>open → <code>blocked</code></td><td>Claim holder or owner</td></tr>
+  <tr><td>Answer</td><td><code>blocked</code> → <code>ready</code>, <code>waiting</code> or <code>failed</code>, as the option says</td><td>A responder, as themselves</td></tr>
+  <tr><td>Unblock</td><td><code>blocked</code> → <code>ready</code> or <code>waiting</code></td><td>Owner; not while a question waits</td></tr>
+  <tr><td>Park, unpark</td><td>open → <code>blocked</code> (parked) → back, without the claim</td><td>A person with <code>manage</code></td></tr>
+  <tr><td>Reopen</td><td><code>failed</code> → <code>ready</code> or <code>waiting</code></td><td>Owner</td></tr>
+  <tr><td>Cancel</td><td>any open state → <code>canceled</code></td><td>Owner, or the delete of the root</td></tr>
+  <tr><td>Priority, assign, needs</td><td>state unchanged</td><td>Owner; a claim holder may only lower the priority</td></tr>
+</table>
+
+<h2>What the thread shows</h2>
+<ol>
+  <li>The root: the brief, with the task card (state, decision, holder, lease).</li>
+  <li><code>attempt 1 started. Session …, branch claude/task-N, routes …</code></li>
+  <li>One reply per round: thoughts, actions and outputs, folded; then changes, checks and the worker's answer.</li>
+  <li><code>round 2 sent to the worker.</code> when a round follows.</li>
+  <li>The decision line: PASS, FOLLOWUP, RETRY or REVIEW, and who decided.</li>
+  <li><code>draft PR …</code>, <code>merged into main …</code>, <code>task completed; no change was needed.</code>, or the reason of a hold or a failure.</li>
+</ol>
+<p>Labels on the root: <code>politburo.decision</code>, and on follow-up tasks <code>politburo.followup_of</code> and <code>politburo.followup_depth</code>.</p>
+</main>
+<script src="assets/schematic.js"></script>
+</body>
+</html>

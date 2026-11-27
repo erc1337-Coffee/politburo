@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Politburo · Deployment</title>
+<link rel="stylesheet" href="assets/politburo.css">
+</head>
+<body>
+<nav>
+  <a class="brand" href="index.html"><img src="assets/politburo-emblem.png" alt="">Politburo</a>
+  <div class="group">System</div>
+  <a href="index.html">Overview</a>
+  <a href="task-lifecycle.html">Task lifecycle</a>
+  <a href="deployment.html">Deployment</a>
+  <div class="group">Services</div>
+  <a href="board.html">Board</a>
+  <a href="orchestrator.html">Orchestrator</a>
+  <a href="relay.html">Relay</a>
+  <a href="worker.html">Worker</a>
+</nav>
+<main>
+<h1>Deployment</h1>
+<p class="lead">Two containers on one host in the LAN, one relay on a public host, and Claude cloud sessions started on demand.</p>
+
+<figure class="schematic">
+<svg viewBox="0 0 1000 400" role="img" aria-label="Containers, volumes and ports">
+  <rect class="zone" x="10" y="30" width="680" height="355" rx="8"/><text class="zone-label" x="22" y="22">Host · pm2 politburo_development · docker compose</text>
+  <rect class="zone" x="720" y="30" width="270" height="170" rx="8"/><text class="zone-label" x="732" y="22">Public host</text>
+  <rect class="zone" x="720" y="225" width="270" height="160" rx="8"/><text class="zone-label" x="732" y="217">Internet</text>
+  <g class="node key" id="p-board"><rect x="30" y="60" width="300" height="130" rx="4"/><text class="title" x="42" y="82">board_server</text><text class="detail" x="42" y="102">pnpm install · build ledger, board</text><text class="detail" x="42" y="120">model routes from the party file</text><text class="detail" x="42" y="138">vb serve 127.0.0.1:4180</text><text class="detail" x="42" y="156">socat 4181 → 4180 (HTTP)</text><text class="detail" x="42" y="174">socat 4443 TLS → 4180 (HTTPS)</text></g>
+  <g class="node key" id="p-orchestrator"><rect x="370" y="60" width="300" height="130" rx="4"/><text class="title" x="382" y="82">orchestrator</text><text class="detail" x="382" y="102">network of board_server</text><text class="detail" x="382" y="120">waits for board and vb profile</text><text class="detail" x="382" y="138">relay key on first start</text><text class="detail" x="382" y="156">check, then serve</text><text class="detail" x="382" y="174">status 127.0.0.1:4780</text></g>
+  <g class="node" id="p-volumes"><rect x="30" y="250" width="640" height="115" rx="4"/><text class="title" x="42" y="272">Volumes and mounts</text><text class="detail" x="42" y="294">board_data → /data: board database, CLI profiles (both)</text><text class="detail" x="42" y="312">orchestrator_data → /orchestrator: state, journal, keys, repositories, Claude login</text><text class="detail" x="42" y="330">ledger_data → /ledger: spend ledger (orchestrator writes, board reads)</text><text class="detail" x="42" y="348">source → /workspace/politburo · party → /party (ro) · orchestrator → /config (ro)</text></g>
+  <g class="node key" id="p-relay"><rect x="740" y="60" width="230" height="110" rx="4"/><text class="title" x="752" y="82">relay</text><text class="detail" x="752" y="102">packages/relay/Dockerfile</text><text class="detail" x="752" y="120">TLS proxy in front</text><text class="detail" x="752" y="138">/data/relay.sqlite</text><text class="detail" x="752" y="156">RELAY_VERIFICATION_KEY</text></g>
+  <g class="node external" id="p-cloud"><rect x="740" y="250" width="230" height="50" rx="4"/><text class="title" x="752" y="272">Claude cloud</text><text class="detail" x="752" y="290">sessions, Anthropic API</text></g>
+  <g class="node external" id="p-github"><rect x="740" y="315" width="230" height="50" rx="4"/><text class="title" x="752" y="337">GitHub</text><text class="detail" x="752" y="355">push, draft PRs</text></g>
+  <polyline class="link" id="p-status" points="370,160 330,160"/>
+  <polyline class="link command" id="p-relay-link" points="670,100 740,100"/>
+  <polyline class="link external" id="p-cloud-link" points="670,130 705,130 705,275 740,275"/>
+  <polyline class="link external" id="p-github-link" points="670,170 695,170 695,340 740,340"/>
+  <polyline class="link" id="p-orchestrator-volume" points="520,190 520,250"/>
+  <polyline class="link" id="p-board-volume" points="180,190 180,250"/>
+</svg>
+<script type="application/json" class="steps">[
+  {"text": "pm2 runs <code>docker compose up --build --abort-on-container-exit</code>. <code>pm2 restart politburo_development</code> rebuilds the image and recreates both containers.", "links": [], "nodes": ["p-board", "p-orchestrator"]},
+  {"text": "The board server installs the dependencies, builds the ledger and the board, writes the model routes, and serves the board. Ports are published on 127.0.0.1 and the LAN address only.", "links": ["p-board-volume"], "label": "data", "nodes": ["p-board", "p-volumes"]},
+  {"text": "The orchestrator shares the board server's network, so the board and the status server talk on 127.0.0.1. It publishes no port.", "links": ["p-status"], "label": "status", "nodes": ["p-orchestrator"]},
+  {"text": "Every connection of the orchestrator goes out: to the relay, to Claude cloud and the Anthropic API, and to GitHub.", "links": ["p-relay-link", "p-cloud-link", "p-github-link"], "label": "outbound", "kind": "external", "nodes": ["p-relay", "p-cloud", "p-github"]},
+  {"text": "State that must survive a rebuild is in named volumes. The source tree, the party file and the orchestrator configuration are mounted from the host.", "links": ["p-orchestrator-volume"], "label": "state", "nodes": ["p-volumes"]}
+]</script>
+</figure>
+
+<h2>Ports</h2>
+<table>
+  <tr><th>Port</th><th>Where</th><th>Use</th></tr>
+  <tr><td>4180</td><td>Host 127.0.0.1 and LAN address</td><td>Board API and web view over HTTP</td></tr>
+  <tr><td>4443</td><td>Host 127.0.0.1 and LAN address</td><td>Board web view over HTTPS (local certificate authority). Browsers need it for the web view's crypto functions on the LAN.</td></tr>
+  <tr><td>4780</td><td>127.0.0.1 inside the shared network</td><td>Orchestrator status, read by the board's operations page</td></tr>
+  <tr><td>8790</td><td>Relay host, behind its TLS proxy</td><td>Relay</td></tr>
+</table>
+<p>The web view has no login: a visitor of these ports acts as the board owner. Use them only on a trusted network; never forward them on the router. <code>vb serve</code> refuses host names other than those given with <code>--allow-host</code>.</p>
+
+<h2>Environment</h2>
+<p>One file, <code>politburo.env</code> on the host, mode 600, loaded into both containers. Never committed.</p>
+<table>
+  <tr><th>Variable</th><th>Read by</th><th>Use</th></tr>
+  <tr><td><code>RELAY_URL</code></td><td>orchestrator</td><td>Relay address, https</td></tr>
+  <tr><td><code>GITHUB_TOKEN</code></td><td>orchestrator</td><td>Push and pull request API; required</td></tr>
+  <tr><td><code>CLAUDE_CODE_OAUTH_TOKEN</code></td><td>orchestrator</td><td>Sealed to workers for <code>claude-cli</code> routes. Removed from the launcher, which uses the stored Claude login in <code>/orchestrator/claude</code>.</td></tr>
+  <tr><td><code>&lt;PROVIDER&gt;_API_KEY</code></td><td>orchestrator</td><td>Sealed to workers for routes of that provider, for example <code>OPENROUTER_API_KEY</code></td></tr>
+  <tr><td><code>KEV_URL</code></td><td>orchestrator</td><td>Kev classifier for the final decision; optional</td></tr>
+  <tr><td><code>ORCHESTRATOR_DECISION_MODEL</code></td><td>orchestrator</td><td>Claude model for the final decision; optional</td></tr>
+  <tr><td><code>BOARD_LAN_ADDRESS</code>, <code>BOARD_LAN_HOSTNAME</code></td><td>compose, board_server</td><td>Published address and allowed host names</td></tr>
+  <tr><td><code>BOARD_SERVE_OPTIONS</code></td><td>board_server</td><td>Extra <code>vb serve</code> options</td></tr>
+  <tr><td><code>RELAY_VERIFICATION_KEY</code></td><td>relay host</td><td>Public key printed by the orchestrator on its first start</td></tr>
+</table>
+
+<h2>Configuration files</h2>
+<table>
+  <tr><th>File</th><th>Content</th></tr>
+  <tr><td><code>orchestrator/orchestrator.yaml</code></td><td>Orchestrator settings over defaults. See <a href="orchestrator.html#configuration">Orchestrator</a>.</td></tr>
+  <tr><td><code>party/party_configuration.yaml</code></td><td>Model routes under <code>tiers.models.sprite.routes</code>: label, provider, model, in fallback order. Check with <code>node packages/orchestrator/src/cli.ts routes --party …</code>.</td></tr>
+  <tr><td><code>certificates/</code></td><td>Server certificate and key for port 4443</td></tr>
+</table>
+
+<h2>Operations</h2>
+<table>
+  <tr><th>Task</th><th>Command</th></tr>
+  <tr><td>Restart after a code change</td><td><code>pm2 restart politburo_development</code></td></tr>
+  <tr><td>Logs</td><td><code>pm2 logs politburo_development</code></td></tr>
+  <tr><td>Orchestrator attempts</td><td><code>docker exec politburo_development-orchestrator-1 node packages/orchestrator/src/cli.ts status --config /config/orchestrator.yaml</code></td></tr>
+  <tr><td>Board CLI</td><td><code>docker exec politburo_development-board_server-1 vb …</code></td></tr>
+  <tr><td>Relay key pair</td><td>Made by the orchestrator container in <code>/orchestrator/keys</code> on first start</td></tr>
+</table>
+<p>A start script with missing configuration does not exit: it prints the reason and waits, and the orchestrator's status server reports the reason, so <code>--abort-on-container-exit</code> does not stop the board.</p>
+</main>
+<script src="assets/schematic.js"></script>
+</body>
+</html>
