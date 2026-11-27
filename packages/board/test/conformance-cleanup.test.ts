@@ -74,19 +74,6 @@ const survives = async (elsewhere: Awaited<ReturnType<typeof handle>>, id: strin
   return { text: message.text, deleted: message.deleted }
 }
 
-it("leaves another board's message alone, and reports it, when the mount changes boards after the run-health probe is made", async ({ onTestFinished }) => {
-  const { client, elsewhere, planted } = await swapping('conformance: run health', onTestFinished)
-  const report = await conformance(client, { channel: CHANNEL })
-  const id = planted()
-  expect(id).not.toBeNull()
-  // The same ID, by the same principal, on a board the probe was never made on.
-  expect(await survives(elsewhere, id!)).toEqual({ text: NOT_THE_RUNS, deleted: false })
-  expect(report.checks.find(({ name }) => name === RUN_HEALTH)).toMatchObject({
-    status: 'failed', detail: expect.stringMatching(new RegExp(`${id} is not the message this run created .*, so it was not touched`)),
-  })
-  expect(report.ok).toBe(false)
-}, 60_000)
-
 it("fails a delete a check makes rather than send it to another board's message with the same ID", async ({ onTestFinished }) => {
   const { client, elsewhere, planted } = await swapping('conformance: to delete', onTestFinished)
   const report = await conformance(client, { channel: CHANNEL })

@@ -454,16 +454,16 @@ it('passes lifecycle and access-fence conformance instead of legacy queue confor
   expect(lifecycle.every((check) => check.status === 'passed')).toBe(true)
 })
 
-it('runs the staged, network pause, registry, and attention conformance checks together', async () => {
+it('runs the staged, network pause, and attention conformance checks together', async () => {
   const { scoper, scoperToken, handle, web } = await setup({ parity: true })
-  expect(await scoper.discovery()).toMatchObject({ workLifecycle: 1, accessFence: 1, agent_ops: true, task_attention: true })
+  expect(await scoper.discovery()).toMatchObject({ workLifecycle: 1, accessFence: 1, task_attention: true })
   const report = await conformance(scoper, {
     networkPause: true,
     withHeaders: (headers) => handle(scoperToken, headers),
     principals: { project: 'prj_web', scoper: web },
   })
   expect(report.checks.filter((check) => check.status === 'failed')).toEqual([])
-  for (const group of ['work-lifecycle', 'network-pause', 'agents', 'tasks']) {
+  for (const group of ['work-lifecycle', 'network-pause', 'tasks']) {
     const checks = report.checks.filter((check) => check.group === group)
     expect(checks.length).toBeGreaterThan(0)
     expect(checks.every((check) => check.status === 'passed')).toBe(true)

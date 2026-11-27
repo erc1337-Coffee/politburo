@@ -817,7 +817,7 @@ describe('cli', () => {
   })
 
   it('checks that the board speaks the protocol, a group at a time', async () => {
-    // The core protocol, schedules included, on a board that hasn't opted into agent operations.
+    // The core protocol, schedules included.
     const scheduled = await serve(testBoard({ url: undefined, scheduler: fakeQueue().scheduler }).fetch)
     const board = `${scheduled.origin}/api/board`
     const as = { BOARD_URL: board, BOARD_TOKEN: await personToken('u_julian', board) }
@@ -827,16 +827,8 @@ describe('cli', () => {
       expect(run.stdout).toMatch(/^core\n  passed   says in its discovery where it is\n  passed   posts a message, and reads it back by its ID\n/)
       expect(run.stdout).toContain('\n\nschedules\n  passed   schedules a reply')
       expect(run.stdout).toContain('\n\nwatchers\n  passed   matches a registered tail')
-      expect(run.stdout).toContain(
-        '\n\nagents\n' +
-          '  skipped  registers, lists, heartbeats, and retires an agent under its verified binding\n' +
-          '           not kept here: agent operations are not advertised\n' +
-          '  skipped  confirms a claimed run only through a taken and reported status probe\n' +
-          '           not kept here: agent operations are not advertised\n',
-      )
-      expect(run.stdout).toContain('\n\noperational-inbox\n  passed   keeps operational messages private')
-      // Four grants checks and two agent checks are skipped.
-      expect(run.stdout).toMatch(/\n\n\d+ passed, 6 skipped\n$/)
+      // Four grants checks are skipped.
+      expect(run.stdout).toMatch(/\n\n\d+ passed, 4 skipped\n$/)
       expect(JSON.parse((await vb(['conformance', '--json', '--channel', 'conformance/json'], as)).stdout)).toMatchObject({ ok: true })
     } finally {
       await scheduled.close()
@@ -850,8 +842,8 @@ describe('cli', () => {
       expect(partial.stdout).toContain(
         '\n\nschedules\n  skipped  schedules a reply, lists it, and cancels it\n           not kept here: this board has no scheduler, so it can\'t send later\n',
       )
-      // The same six skips, plus two schedules checks.
-      expect(partial.stdout).toMatch(/\n\n\d+ passed, 8 skipped\n$/)
+      // The same four skips, plus two schedules checks.
+      expect(partial.stdout).toMatch(/\n\n\d+ passed, 6 skipped\n$/)
     } finally {
       await unscheduled.close()
     }

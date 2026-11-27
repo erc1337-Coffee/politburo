@@ -72,7 +72,7 @@ beforeAll(async () => {
   await mkdir(join(dir, '.git'))
   adminEnv = homeEnv(await mkdtemp(join(dir, 'admin-')))
   memberEnv = homeEnv(await mkdtemp(join(dir, 'member-')))
-  const child = spawn(process.execPath, [CLI, 'serve', '--agent-ops', '--no-inspect', '--port', '0', '--dir', join(dir, 'data')], {
+  const child = spawn(process.execPath, [CLI, 'serve', '--no-inspect', '--port', '0', '--dir', join(dir, 'data')], {
     cwd: dir, env: adminEnv, stdio: ['ignore', 'pipe', 'pipe'],
   })
   server = watchServe(child)
@@ -242,32 +242,11 @@ it('runs a work queue from invitation to handoff, pause, and follow-up', async (
     return principal
   })
 
-  await step('register the controller and worker and record the worker heartbeat', async () => {
-    async function register(role: string, profile: string) {
-      const lines = (await admin.text(['agents', 'register', 'work', '--role', role, '--harness', 'shell', '--as', profile])).split('\n')
-      expect(lines[0]).toMatch(new RegExp(`^\\S+  ${role}$`))
-      expect(lines).toEqual(expect.arrayContaining([
-        '  channel     work', `  principal   ${adminPrincipal}`, `  profile     ${profile}`,
-        '  harness     shell', '  generation  1', '  status      enabled', '  heartbeat   none',
-      ]))
-      return lines[0]!.split('  ')[0]!
-    }
-    const boss = await register('controller', 'boss')
-    const runner = await register('implementation-worker', 'worker')
-    expect(await worker.text(['agents', 'heartbeat', runner, '--generation', '1'])).toMatch(new RegExp(`^  heartbeat   ${ISO.source}$`, 'm'))
-    expect(await admin.json(['agents', 'list', 'work'])).toMatchObject({
-      agents: expect.arrayContaining([
-        expect.objectContaining({ id: boss, role: 'controller' }),
-        expect.objectContaining({ id: runner, role: 'implementation-worker', heartbeatAt: expect.stringMatching(ISO) }),
-      ]),
-    })
-  })
-
   const lowText = 'Tidy the runbook'
   const urgentText = 'Check the release notes'
   const dependentText = 'Publish the release notes'
   const next = ['tasks', 'claim', 'work', '--ready', '--lease', '5m']
-  const { low, urgent, dependent } = await step('queue tasks, check unclaimed health, and claim urgent work first', async () => {
+  const { low, urgent, dependent } = await step('queue tasks and claim urgent work first', async () => {
     async function create(text: string, ...flags: string[]) {
       const id = await admin.text(['tasks', 'create', 'work', text, ...flags])
       expect(id).toMatch(/^\d+$/)
@@ -280,7 +259,6 @@ it('runs a work queue from invitation to handoff, pause, and follow-up', async (
     expect(tasks).toMatch(new RegExp(`^#${low} +ready +low +${lowText}$`, 'm'))
     expect(tasks).toMatch(new RegExp(`^#${urgent} +ready +urgent +${urgentText}$`, 'm'))
     expect(tasks).toMatch(new RegExp(`^#${dependent} +waiting +normal +${dependentText} +needs #${urgent}$`, 'm'))
-    expect(await admin.json(['agents', 'health', urgent])).toEqual({ health: { state: 'not_confirmed' } })
     expect(await worker.text(next, claimFiles)).toBe(`#${urgent}  yours for 5m  ${urgentText}`)
     return { low, urgent, dependent }
   })
@@ -310,13 +288,9 @@ it('runs a work queue from invitation to handoff, pause, and follow-up', async (
     expect(await worker.text(next, claimFiles)).toBe(`#${dependent}  yours for 5m  ${dependentText}`)
   })
 
-  await step('document the task attention refusal on vb serve', async () => {
-    const { message } = await admin.json<{ message: MessageView }>(['read', low])
-    await writeDraft(draftPath, message)
-    // vb serve does not configure attentionResponders.
-    for (const args of [['tasks', 'ask', low, '--file', draftPath], ['tasks', 'attention', low]]) {
-      expect(await admin.refuses(args, 'no_task_attention')).toMatchObject({ data: { error: { status: 501 } } })
-    }
+  await step('serve task attention on vb serve', async () => {
+    // vb serve lets its serving principal answer task attention in every channel.
+    expect(await admin.json(['tasks', 'attention', low])).toBeDefined()
   })
 
   await step('pause work and fence the old claim even after the same worker reclaims it', async () => {
