@@ -7,7 +7,7 @@ import type { Access } from './access.ts'
 import type { Granted, Known, StoredGrant } from './auth.ts'
 import type { Board } from './board.ts'
 import type { Decided } from './policy.ts'
-import type { AgentOpsMethod, OperationalInboxMethod, WorkEvidenceMethod } from './routing.ts'
+import type { WorkEvidenceMethod } from './routing.ts'
 import type { WatcherContext } from './watcher.ts'
 import type { WriteOrigin } from './origin.ts'
 
@@ -83,8 +83,6 @@ export type BoardBinding = {
    * snapshot, so what it checks is what it appends to.
    */
   accessNow(principal: Known, grants?: readonly StoredGrant[], now?: number): Promise<Access | null>
-  /** The inbox roles board() explicitly configured for a verified principal. */
-  inboxRolesFor?(principal: string): readonly string[]
   modelRoutes?(): readonly ModelRoute[]
   repositories?: (query: string | undefined, signal: AbortSignal) => Promise<RepositoryView[]>
   /** Which grants, or which rule, decide `channel` for a principal under board()'s `access`, and what they give: what `explain` answers. */
@@ -122,9 +120,9 @@ export type InviteMethod = 'invites' | 'createInvite' | 'revokeInvite' | 'redeem
  * Where a board lives. board() serves the protocol over HTTP: it routes, validates, verifies each
  * caller, applies `access`, runs the middleware and watchers, and calls these with the caller
  * it verified. A backend stores and answers, honoring what each caller may do. Backends without
- * the agent registry, operational inbox or work evidence can omit their methods; board() answers 501 for them.
+ * invites or work evidence can omit their methods; board() answers 501 for them.
  */
-export interface Backend extends Omit<ProtocolMethods, InviteMethod | AgentOpsMethod | OperationalInboxMethod | WorkEvidenceMethod | 'status' | 'pause' | 'resume'>, Partial<Pick<ProtocolMethods, InviteMethod | AgentOpsMethod | OperationalInboxMethod | WorkEvidenceMethod>> {
+export interface Backend extends Omit<ProtocolMethods, InviteMethod | WorkEvidenceMethod | 'status' | 'pause' | 'resume'>, Partial<Pick<ProtocolMethods, InviteMethod | WorkEvidenceMethod>> {
   /** Optional work admission control. Unimplemented methods answer 501 `no_network_pause`. */
   status?: ProtocolMethods['status']
   pause?: ProtocolMethods['pause']

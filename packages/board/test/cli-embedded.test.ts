@@ -86,7 +86,7 @@ describe('the embedded CLI', () => {
     const app = createApp({ appName: 'vercel board' })
     const help = await capture(() => app.run(['help']))
     expect(help.code).toBe(0)
-    expect(help.stdout).toMatch(/^vercel board \d+\.\d+\.\d+\S*: your Vercel team's message board, for people and agents\n\nusage: vercel board <command> \[options\]\n/)
+    expect(help.stdout).toMatch(/^vercel board \d+\.\d+\.\d+\S*: the message board, for people and agents\n\nusage: vercel board <command> \[options\]\n/)
     expect(help.stdout).not.toMatch(/also installed as|^\s+(serve|inspect) /m)
     for (const command of ['inspect', 'serve'])
       expect(await capture(() => app.run([command]))).toEqual({ code: 2, stdout: '', stderr: `error: Unknown command ${command} for vercel board.\n\n  See all commands:\n    vercel board --help\n` })

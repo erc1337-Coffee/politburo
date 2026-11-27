@@ -30,7 +30,7 @@ async function setup({ enabled = true, dir, parity = false }: { enabled?: boolea
   const server = local({
     ...(dir ? { dir } : { memory: true }),
     ...(enabled ? { workLifecycle } : {}),
-    ...(parity ? { attentionResponders: { work: [OTHER_SCOPER], conformance: [OTHER_SCOPER] }, agentOps: true } : {}),
+    ...(parity ? { attentionResponders: { work: [OTHER_SCOPER], conformance: [OTHER_SCOPER] } } : {}),
   })
   closes.push(() => server.close())
   const team = board({ backend: server, url: BOARD_URL, authenticate: oidcTokens({ ...testAuth, local: testLocal }) })
@@ -320,24 +320,6 @@ it('refuses a decision from an earlier review even after work returns to review'
   expect((await scoper.poll({ channel: 'work', after: marker })).events).toEqual([])
   const approved = await scoper.tasks.stage(id, 'approved', 'Approved the repaired patch', { ifVersion: newReview.version })
   expect(approved.task?.work?.stage).toBe('approved')
-})
-
-it('invalidates review and scope when the platform edits an imported root', async () => {
-  const ctx = await setup()
-  const { syncRequest, scoper, worker } = ctx
-  expect((await syncRequest('POST', '/watchers', { watch: {}, sync: [{ key: 'slack', platform: 'slack' }] })).status).toBe(200)
-  const author = { id: 'slack:user:U_EVE', handle: 'eve', name: 'Eve', avatar: null, isBot: false }
-  const origin = { channel: 'slack:C1', thread: 'slack:C1:100.1', subthread: null, message: '100.1', context: null }
-  const imported = await syncRequest('POST', '/sync/imports', { op: 'post', author, from: 'slack', channel: 'work', text: 'Checkout is slow', origin })
-  const id = imported.body.message as string
-  await worker.tasks.create({ re: id })
-  await scoper.tasks.scope(id, 'Scope the fix')
-  await (await worker.tasks.claim(id)).complete()
-  await scoper.tasks.stage(id, 'review', 'Review the fix')
-  expect((await syncRequest('POST', '/sync/imports', { op: 'edit', author, from: 'slack', origin: { thread: origin.thread, message: origin.message }, text: 'Checkout and search are slow' })).status).toBe(200)
-  expect((await worker.thread(id)).message).toMatchObject({ text: 'Checkout and search are slow', task: { work: PROPOSED } })
-  await expect(scoper.tasks.stage(id, 'approved', 'Approve the old fix')).rejects.toMatchObject(STAGE_ERROR)
-  expect((await audit(ctx, id)).at(-1)).toMatchObject({ payload: { from: 'review', to: 'proposed', reason: expect.stringMatching(/\S/) }, actor: { id: expect.stringMatching(/slack:user:U_EVE$/) } })
 })
 
 it('leaves an existing task legacy when opening its board with lifecycle enabled', async () => {

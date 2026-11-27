@@ -7,23 +7,8 @@ import type { ConfigureChannelBody, ModelRoute, RepositoriesQuery, RepositoryVie
 import type { IdentityView, SetIdentityBody } from '../contract/identities.ts'
 import type {
   AckBody,
-  AckOperationalMessageBody,
   ActorsQuery,
   ActorView,
-  OperationalMessage,
-  SendOperationalMessageBody,
-  AgentHealth,
-  AgentIntent,
-  AgentView,
-  IssueOpsIntentBody,
-  IssueOpsRoleIntentBody,
-  ListOpsAgentsQuery,
-  ListOpsIntentsQuery,
-  OpsAgentGenerationBody,
-  OpsIntentsIssued,
-  OpsIntentsPage,
-  RegisterOpsAgentBody,
-  ReportOpsIntentBody,
   AssignTaskBody,
   AttentionAnswerBody,
   AttentionView,
@@ -101,7 +86,6 @@ import type {
 
 type Input<S extends z.ZodType> = NonNullable<z.output<S>>
 type Id = { id: string }
-type OpsAgentId = { agent: string }
 type Key = { key: string }
 type Nothing = Record<string, never>
 
@@ -145,19 +129,6 @@ export type Protocol = {
   schedule: { input: Input<typeof ScheduleBody>; output: { schedule: ScheduleView; mentions?: Mentioned[] } }
   schedules: { input: Input<typeof SchedulesQuery>; output: { schedules: ScheduleView[] } }
   cancelSchedule: { input: Id; output: { schedule: ScheduleView; canceled: boolean } }
-  /** Fork-only agent registry. 501 `no_agent_ops` on a board without it. */
-  listOpsAgents: { input: Input<typeof ListOpsAgentsQuery>; output: { agents: AgentView[] } }
-  registerOpsAgent: { input: Input<typeof RegisterOpsAgentBody>; output: AgentView }
-  heartbeatOpsAgent: { input: OpsAgentId & Input<typeof OpsAgentGenerationBody>; output: AgentView }
-  retireOpsAgent: { input: OpsAgentId & Input<typeof OpsAgentGenerationBody>; output: AgentView }
-  issueOpsIntent: { input: OpsAgentId & Input<typeof IssueOpsIntentBody>; output: OpsIntentsIssued }
-  issueOpsRoleIntent: { input: Input<typeof IssueOpsRoleIntentBody>; output: OpsIntentsIssued }
-  /** Pending intents, oldest first, with expiry and generation fences applied. */
-  listOpsIntents: { input: OpsAgentId & Input<typeof ListOpsIntentsQuery>; output: OpsIntentsPage }
-  takeOpsIntent: { input: Id & Input<typeof OpsAgentGenerationBody>; output: AgentIntent }
-  reportOpsIntent: { input: Id & Input<typeof ReportOpsIntentBody>; output: AgentIntent }
-  /** Health from a status probe's report for the exact live task claim. */
-  getOpsHealth: { input: { task: string }; output: AgentHealth }
   /** Tasks, oldest first, each as its thread's summary. 501 `no_tasks` where the board keeps none. */
   tasks: { input: Input<typeof TasksQuery>; output: TasksPage }
   /** `task` is the task's root. `claim` comes with a task made with `claim`; a retry of one that landed gets the task without it. */
@@ -253,11 +224,6 @@ export type Protocol = {
   ack: { input: Id & Input<typeof AckBody>; output: { ok: true } }
   /** Long-polls with `wait`. board() serves SSE from it, so a backend has one way to read events. */
   events: { input: Input<typeof EventsQuery>; output: EventsPage }
-  /** Private mail to a verified principal or a configured role. A board that keeps none answers 501 `no_operational_inbox`. */
-  sendOperationalMessage: { input: Input<typeof SendOperationalMessageBody>; output: { message: OperationalMessage } }
-  readOperationalInbox: { input: Nothing; output: { messages: OperationalMessage[] } }
-  ackOperationalMessage: { input: Id & Input<typeof AckOperationalMessageBody>; output: { message: OperationalMessage } }
-  archiveOperationalMessage: { input: Id; output: { message: OperationalMessage } }
 }
 
 export type Method = keyof Protocol

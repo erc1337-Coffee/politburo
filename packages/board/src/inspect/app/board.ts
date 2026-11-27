@@ -476,20 +476,6 @@ export async function changePause(paused: boolean, reason: string) {
   }
 }
 
-export async function listProfiles(channel: string): Promise<string[] | undefined> {
-  const handle = team
-  const as = identity
-  try {
-    const { agents } = await handle.agents.list(channel)
-    if (handle !== team || as !== identity) return
-    return [...new Set(agents.flatMap(({ binding }) => binding.profile === null ? [] : [binding.profile]))].sort()
-  } catch (error) {
-    if (handle !== team || as !== identity) return
-    if (!(error instanceof BoardError && error.code === 'no_agent_ops')) throw error
-    return []
-  }
-}
-
 // --- writing -----------------------------------------------------------------------
 
 // #region guide inspector/write.ts

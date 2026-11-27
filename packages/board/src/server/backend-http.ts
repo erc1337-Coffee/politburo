@@ -5,10 +5,10 @@ import type { Method, Protocol } from '../api/protocol.ts'
 import { BoardError, createBoardClient, type BoardClient, type ProfileOption } from '../client/client.ts'
 import { DERIVED_ID, keyId } from '../client/ids.ts'
 import { boardEvents } from '../contract/events.ts'
-import { AgentIntent, AgentRun, ATTACHMENT_BYTES_MAX, type Attachment } from '../contract/schemas.ts'
+import { ATTACHMENT_BYTES_MAX, type Attachment } from '../contract/schemas.ts'
 import { type Backend, type BoardBinding, type Caller, type ProtocolMethods, type SelfCaller } from './backend.ts'
-import { HttpError, noAgentOps } from './errors.ts'
-import { isAgentIntentMethod, isAgentOpsMethod, METHODS, type AgentOpsMethod } from './routing.ts'
+import { HttpError } from './errors.ts'
+import { METHODS } from './routing.ts'
 import { compileWatcher } from './watch-spec.ts'
 import { tailWatchers } from './tails.ts'
 
@@ -34,32 +34,6 @@ export type Environment = {
 /** A watcher's or client's name is the profile its writes are by. */
 const PROFILE = /^[A-Za-z][A-Za-z0-9-]{0,31}$/
 const PROFILE_RULE = 'ids start with a letter and use up to 32 letters, numbers, and hyphens'
-
-const Agent = boardEvents['ops.agent_changed'].shape.agent
-// Strip extra fields from HTTP replies without loosening the schemas for requests or the log.
-const AgentIntentResponse = AgentIntent.strip().extend({
-  run: AgentRun.strip().optional(),
-  taken: AgentIntent.shape.taken.unwrap().strip().nullable(),
-  report: AgentIntent.shape.report.unwrap().strip().nullable(),
-})
-const IssuedIntents = z.object({ intents: z.array(AgentIntentResponse) })
-const AgentHealthResponse = z.discriminatedUnion('state', [
-  z.object({ state: z.literal('working'), validUntil: z.iso.datetime() }),
-  // Only a working run has a deadline. Don't silently strip a deadline from this branch.
-  z.object({ state: z.literal('not_confirmed'), validUntil: z.never().optional() }),
-])
-const agentResponses = {
-  listOpsAgents: z.object({ agents: z.array(Agent) }),
-  registerOpsAgent: Agent,
-  heartbeatOpsAgent: Agent,
-  retireOpsAgent: Agent,
-  issueOpsIntent: IssuedIntents,
-  issueOpsRoleIntent: IssuedIntents,
-  listOpsIntents: IssuedIntents.extend({ next: z.string().nullable() }),
-  takeOpsIntent: AgentIntentResponse,
-  reportOpsIntent: AgentIntentResponse,
-  getOpsHealth: AgentHealthResponse,
-} satisfies { [M in AgentOpsMethod]: z.ZodType<Protocol[M]['output']> }
 
 const describe = (error: unknown) => ((error instanceof Error ? error.message : String(error)) || 'unknown error').slice(0, 500)
 
@@ -253,7 +227,6 @@ export function createHttp(url: string | undefined, options: HttpOptions, enviro
         })
         .catch(rethrow)
     } else if (route.method === 'GET') response = await client.request(`${path}${queryString(fields)}`, { signal }).catch(rethrow)
-    else if (method === 'archiveOperationalMessage') response = await client.request(path, { method: 'POST', signal }).catch(rethrow)
     else
       response = await client
         .request(path, {
@@ -311,20 +284,6 @@ export function createHttp(url: string | undefined, options: HttpOptions, enviro
         (await fetchDiscovery({ signal, cache: 'no-store' }))?.task_claim_hold !== true) {
       throw new HttpError(501, 'no_claim_hold', 'the HTTP board does not advertise a hard end for claims', { origin: 'handle' })
     }
-    const agentOps = isAgentOpsMethod(method)
-    if (agentOps) {
-      // The mount can change. A registry-only mount can return discovery with 200 on an unknown intent or health GET.
-      const intents = isAgentIntentMethod(method)
-      const capability = intents ? 'agent_intents' : 'agent_ops'
-      if ((await fetchDiscovery({ signal, cache: 'no-store' }))[capability] !== true) {
-        throw noAgentOps(intents ? 'intents' : 'registry', {
-          origin: 'handle',
-          hint: intents
-            ? 'Upgrade the board or use one started with vb serve --agent-ops that supports intents.'
-            : 'Use a board started with vb serve --agent-ops.',
-        })
-      }
-    }
     start()
     const client = clientOf(caller)
     // A post board() gave an ID derived from a trigger, a task's new thread included: the remote
@@ -352,12 +311,6 @@ export function createHttp(url: string | undefined, options: HttpOptions, enviro
           origin: 'handle', hint: 'Use a board that supports work evidence.',
         })
       return work
-    }
-    if (agentOps) {
-      const body: unknown = await response.json().catch(() => null)
-      const parsed = agentResponses[method].safeParse(body)
-      if (!parsed.success) throw new HttpError(502, 'remote_error', `the remote board did not answer ${routes[method].path} with the expected response`)
-      return parsed.data
     }
     return response.json()
   }

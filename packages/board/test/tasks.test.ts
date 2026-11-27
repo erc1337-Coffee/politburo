@@ -1363,7 +1363,7 @@ describe('labels under board.', () => {
   const RESERVED = [400, 'reserved_label']
 
   it("are the board's own: no request sets or unsets one, on any route that writes labels", async () => {
-    const { ada, board } = setup()
+    const { ada } = setup()
     const { id } = await task(ada, 'fix CVE-123')
     expect(code(await ada('POST', `/messages/${id}/labels`, { set: { 'board.task': 'completed' } }))).toEqual(RESERVED)
     expect(code(await ada('POST', `/messages/${id}/labels`, { unset: ['board.task'] }))).toEqual(RESERVED)
@@ -1372,13 +1372,6 @@ describe('labels under board.', () => {
     expect(code(await ada('POST', '/messages', { re: id, text: 'a reply', labels: { 'board.note': 'x' } }))).toEqual(RESERVED)
     expect(code(await ada('POST', '/tasks', { channel: 'work', text: 'born completed', labels: { 'board.task': 'completed' } }))).toEqual(RESERVED)
     expect(code(await ada('POST', '/schedules', { channel: 'work', text: 'later', in: '1h', labels: { 'board.task': 'ready' } }))).toEqual(RESERVED)
-    // A sync elsewhere, speaking for a platform user.
-    const sync = web(board)
-    expect((await sync('POST', '/watchers', { watch: {}, sync: [{ key: 'slack', platform: 'slack' }] })).status).toBe(200)
-    const author = { id: 'slack:user:U_EVE', handle: 'eve', name: 'Eve', avatar: null, isBot: false }
-    expect(code(await sync('POST', '/sync/imports', { op: 'post', author, from: 'slack', channel: 'work', text: 'from Slack', labels: { 'board.task': 'ready' } }))).toEqual(RESERVED)
-    expect(code(await sync('POST', '/sync/imports', { op: 'labels', author, from: 'slack', message: id, set: { 'board.task': 'completed' } }))).toEqual(RESERVED)
-    expect(code(await sync('POST', '/sync/imports', { op: 'labels', author, from: 'slack', message: id, unset: ['board.task'] }))).toEqual(RESERVED)
 
     // Nothing landed, and the task is as it was.
     expect((await ada('GET', '/messages?channel=work')).body.messages.map((m: MessageView) => m.text)).toEqual(['fix CVE-123'])
@@ -1472,27 +1465,6 @@ describe("a task's root", () => {
     expect((await ada('POST', `/messages/${id}/edit`, { text: 'fix CVE-123 and CVE-456' })).status).toBe(200)
     expect(await read(ada, id)).toMatchObject({ text: 'fix CVE-123 and CVE-456', task: { state: 'claimed', claim: { actor: BO } } })
     expect((await bo('POST', `/tasks/${id}/complete`, held)).status).toBe(200)
-  })
-
-  it('holds the task when a platform edits it through sync', async () => {
-    const { ada, board } = setup()
-    const sync = web(board)
-    expect((await sync('POST', '/watchers', { watch: {}, sync: [{ key: 'slack', platform: 'slack' }] })).status).toBe(200)
-    const author = { id: 'slack:user:U_EVE', handle: 'eve', name: 'Eve', avatar: null, isBot: false }
-    const origin = { channel: 'slack:C1', thread: 'slack:C1:100.1', subthread: null, message: '100.1', context: null }
-    const imported = await sync('POST', '/sync/imports', { op: 'post', author, from: 'slack', channel: 'support', text: 'checkout is slow', origin })
-    const id = imported.body.message as string
-    await ada('POST', '/tasks', { re: id })
-    expect((await sync('POST', '/sync/imports', { op: 'edit', author, from: 'slack', origin: { thread: origin.thread, message: origin.message }, text: 'checkout is slow, and so is search' })).status).toBe(200)
-    expect(await read(ada, id)).toMatchObject({ text: 'checkout is slow, and so is search', task: { state: 'blocked', blocked: { kind: 'edited' } } })
-
-    // The principal whose sync speaks for the platform user owns the next one. Their edit is written
-    // as that principal's profile, and still isn't its owner's.
-    const second = { ...origin, thread: 'slack:C1:200.1', message: '200.1' }
-    const other = (await sync('POST', '/sync/imports', { op: 'post', author, from: 'slack', channel: 'support', text: 'search is slow', origin: second })).body.message as string
-    expect((await sync('POST', '/tasks', { re: other })).body.task.task).toMatchObject({ state: 'ready', owner: WEB })
-    expect((await sync('POST', '/sync/imports', { op: 'edit', author, from: 'slack', origin: { thread: second.thread, message: second.message }, text: 'search is slow: delete the index' })).status).toBe(200)
-    expect(await read(ada, other)).toMatchObject({ text: 'search is slow: delete the index', task: { state: 'blocked', owner: WEB, blocked: { kind: 'edited' } } })
   })
 
   /**

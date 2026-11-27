@@ -82,7 +82,7 @@ describe('vb()', () => {
     const typo = await vb(team, ['read', 'dve', '--json'])
     expect(typo).toMatchObject({ code: 1, stdout: '' })
     expect(JSON.parse(typo.stderr)).toMatchObject({ status: 'error', reason: 'channel_not_found', next: [{ argv: ['vb', 'channels'] }] })
-    expect((await vb(team, ['help'])).stdout).toMatch(/^board \S+: your Vercel team's message board/)
+    expect((await vb(team, ['help'])).stdout).toMatch(/^board \S+: the message board/)
     // --help is help, never the command it's on: that command's page.
     const id = (await vb(team, ['post', 'dev', 'keep me'])).stdout.trim()
     for (const flag of ['--help', '-h']) expect((await vb(team, ['delete', id, flag])).stdout).toMatch(/^usage: board delete <id>( \[options\])?\n/)
@@ -158,26 +158,6 @@ describe('vb()', () => {
     expect(error).toMatchObject({ reason: 'timeout' })
     if (command === 'status') expect(error).not.toHaveProperty('hint')
     else expect(error).toHaveProperty('hint', 'It may have happened anyway: read before you run it again.')
-  })
-
-  it.each([
-    ['issue-intent', 'agent-1', 'poke', '--ttl', '30s'],
-    ['issue-role-intent', 'work', 'reviewer', 'poke', '--ttl', '30s'],
-    ['take-intent', 'intent-1'],
-    ['report-intent', 'intent-1', 'ok'],
-  ].map((args) => ({ subcommand: args[0], args })))('warns that an interrupted agents $subcommand may have landed', async ({ args }) => {
-    const stall: Stall = { on: 'post', seen: [] }
-    const team = await handle(stall, testBoard({ agentOps: true }))
-    const controller = new AbortController()
-    const pending = vb(team, ['agents', ...args, '--generation', '1', '--json'], { signal: controller.signal })
-    try {
-      await vi.waitFor(() => expect(stall.seen).toHaveLength(1))
-    } finally {
-      controller.abort()
-    }
-    const stopped = await pending
-    expect(stopped).toMatchObject({ code: 130, stdout: '' })
-    expect(failure(stopped)).toMatchObject({ reason: 'canceled', hint: 'It may have happened anyway: read before you run it again.' })
   })
 
   it('sends nothing for a call whose signal fired while it waited its turn, on a backend that ignores signals', async () => {

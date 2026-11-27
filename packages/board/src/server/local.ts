@@ -27,12 +27,6 @@ export type LocalOptions = {
   workEvidence?: EvidencePolicy
   /** Enables structured attention. Lists verified responders by exact channel or `*` for all channels. */
   attentionResponders?: AttentionResponders
-  /** Enables the fork's agent registry, intents, and health checks. Off by default. */
-  agentOps?: boolean
-  /** The Politburo discovery version on a swarm board. */
-  politburo?: 1
-  /** How many seconds a run probe's report stays fresh, subject to its intent and lease deadlines. Default: 30. */
-  agentHealthFreshnessSeconds?: number
 }
 
 /** A board kept in this process. `close()` closes its file, once nothing uses it. */
@@ -118,9 +112,6 @@ export function local(options: LocalOptions = {}): LocalBackend {
           ...(workLifecycle ? { workLifecycle } : {}),
           ...(options.workEvidence ? { workEvidence: options.workEvidence } : {}),
           ...(options.attentionResponders !== undefined ? { attentionResponders: options.attentionResponders } : {}),
-          agentOps: options.agentOps === true,
-          ...(options.politburo === 1 ? { politburo: 1 } : {}),
-          ...(options.agentHealthFreshnessSeconds === undefined ? {} : { agentHealthFreshnessSeconds: options.agentHealthFreshnessSeconds }),
         })
         backend.bind(bound)
         return { backend, close }

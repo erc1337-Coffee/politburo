@@ -25,8 +25,6 @@ export type BoardOptions = PolicyOptions & (BackendOptions | DefaultOptions) & {
   /** Checks a claim after access, before it reaches the backend. `task` is null for claim-next. */
   claimRule?: (claim: { actor: string; channel: string; task: string | null }) =>
     void | { refuse: { code: string; message: string } } | Promise<void | { refuse: { code: string; message: string } }>
-  /** Operational inbox roles and their verified principal IDs (as `me().principal` reports them). */
-  inboxRoles?: Readonly<Record<string, readonly string[]>>
   /** Model routes channels pick from. */
   modelRoutes?: readonly ModelRoute[]
   /** Repository search for channel settings. Without it, 501 `no_repositories`. */
@@ -194,14 +192,6 @@ const EVENTS_WAIT_S = 25
 export function createBoard(options: BoardOptions, runtime: Runtime): Board {
   const backend = options.backend ?? runtime.backend()
   const policy = createPolicy(options, backend.keeps, runtime.serving, backend.trust ?? null)
-  const inboxRolesByPrincipal = new Map<string, Set<string>>()
-  for (const [role, principals] of Object.entries(options.inboxRoles ?? {})) {
-    for (const principal of principals) {
-      let roles = inboxRolesByPrincipal.get(principal)
-      if (!roles) inboxRolesByPrincipal.set(principal, (roles = new Set()))
-      roles.add(role)
-    }
-  }
   const watch = options.watch ?? {}
   const state: BoardContext['state'] = { learned: null }
   /** Under the configured mount, so the router accepts the paths an in-process client builds. */
@@ -331,7 +321,6 @@ export function createBoard(options: BoardOptions, runtime: Runtime): Board {
     subscriptions,
     run: async (id, event, meta) => (await server()).run(id, event, meta),
     accessNow: (principal, grants, now) => policy.accessNow(principal, grants, now),
-    inboxRolesFor: (principal) => [...(inboxRolesByPrincipal.get(principal) ?? [])],
     modelRoutes: () => options.modelRoutes ?? [],
     ...(options.repositories ? { repositories: options.repositories } : {}),
     explain: (principal, channel) => policy.explain(principal, channel),

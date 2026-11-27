@@ -1,9 +1,6 @@
 import type { Protocol } from '../api/protocol.ts'
 import type {
   ActorView,
-  AgentHealth,
-  AgentIntent,
-  AgentView,
   AttentionAnswerBody,
   BoardEventView,
   BoardStatus,
@@ -11,15 +8,6 @@ import type {
   Discovery,
   EventsPage,
   FiltersInput,
-  IntentOutcome,
-  IssueOpsIntentInput,
-  IssueOpsRoleIntentInput,
-  ListOpsIntentsInput,
-  OpsIntentsIssued,
-  OpsIntentsPage,
-  OperationalMessage,
-  OperationalStatus,
-  SendOperationalMessageInput,
   Me,
   PrincipalInput,
   MatchView,
@@ -29,7 +17,6 @@ import type {
   MessagesPage,
   MessageView,
   RegisterInput,
-  RegisterOpsAgentInput,
   RegistrationView,
   RequestAttentionBody,
   ScheduleView,
@@ -745,21 +732,6 @@ export function createBoardClient(options: ClientOptions) {
     /** Stops a schedule: yours, or any with manage in its channel. `canceled` is false when it was already done or canceled. */
     cancelSchedule: (id: string) =>
       call<{ schedule: ScheduleView; canceled: boolean }>('POST', `/schedules/${path(id)}/cancel`, { body: {} }),
-    /** The fork's agent registry, command intents, and task health. Boards that don't opt in answer 501 `no_agent_ops`. */
-    agents: {
-      list: (channel: string) => call<{ agents: AgentView[] }>('GET', `/ops/agents${queryString({ channel })}`),
-      register: (input: RegisterOpsAgentInput) => call<AgentView>('POST', '/ops/agents', { body: input }),
-      heartbeat: (id: string, generation: number) => call<AgentView>('POST', `/ops/agents/${path(id)}/heartbeat`, { body: { generation } }),
-      retire: (id: string, generation: number) => call<AgentView>('POST', `/ops/agents/${path(id)}/retire`, { body: { generation } }),
-      issueIntent: (agent: string, input: IssueOpsIntentInput) => call<OpsIntentsIssued>('POST', `/ops/agents/${path(agent)}/intents`, { body: input }),
-      issueRoleIntent: (input: IssueOpsRoleIntentInput) => call<OpsIntentsIssued>('POST', '/ops/intents', { body: input }),
-      /** The agent's pending intents, oldest first. Pass the returned `next` as `after` to read on. */
-      intents: (agent: string, query: ListOpsIntentsInput = {}) => call<OpsIntentsPage>('GET', `/ops/agents/${path(agent)}/intents${queryString(query)}`),
-      takeIntent: (id: string, generation: number) => call<AgentIntent>('POST', `/ops/intents/${path(id)}/take`, { body: { generation } }),
-      reportIntent: (id: string, generation: number, outcome: IntentOutcome) => call<AgentIntent>('POST', `/ops/intents/${path(id)}/report`, { body: { generation, outcome } }),
-      /** Whether a fresh run probe reported that this task's current claim is working. */
-      health: (task: string) => call<AgentHealth>('GET', `/ops/health/${path(task)}`),
-    },
     /**
      * Tasks: threads someone's agents are to do, with a state the board keeps. A task's ID is its
      * root's, and its root's `task` says its state, whose it is, what it waits for, and who holds
@@ -929,16 +901,6 @@ export function createBoardClient(options: ClientOptions) {
      */
     label: (id: string, change: { set?: Record<string, string>; unset?: string[]; if?: Record<string, string | null> }) =>
       call<{ ok: true }>('POST', `/messages/${path(id)}/labels`, { body: change }),
-    /** Private operational messages. */
-    operationalInbox: {
-      send: (input: SendOperationalMessageInput) =>
-        call<{ message: OperationalMessage }>('POST', '/operational-inbox', { body: input }),
-      read: () => call<{ messages: OperationalMessage[] }>('GET', '/operational-inbox'),
-      ack: (id: string, status: OperationalStatus) =>
-        call<{ message: OperationalMessage }>('POST', `/operational-inbox/${path(id)}/ack`, { body: { status } }),
-      archive: (id: string) =>
-        call<{ message: OperationalMessage }>('POST', `/operational-inbox/${path(id)}/archive`),
-    },
     /** Registers the caller's watchers, replacing its last registration: what a board on `http()` does. */
     register: (input: RegisterInput) =>
       call<RegistrationView>('POST', '/watchers', { body: input }),

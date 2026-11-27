@@ -145,7 +145,7 @@ export const options = {
   dir: { type: 'string', value: 'dir', description: 'where the board keeps its log (default: .board/)' },
   ...fork.teamOptions,
   'no-inspect': { type: 'boolean', description: "don't start the inspector" },
-  ...fork.swarmOptions,
+  ...fork.serveOptions,
   // Tasks.
   state: { type: 'string', value: 'state', description: 'in a state: waiting, ready, claimed, blocked, completed, failed, canceled, open, or all (default: open)' },
   needs: { type: 'string', multiple: true, value: 'id', description: 'wait for a task to complete first' },
@@ -503,15 +503,6 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
   },
   {
     group: 'messages',
-    name: 'inbox',
-    description: 'your operational inbox',
-    arguments: [],
-    options: [],
-    examples: [{ name: 'read your operational inbox', value: 'inbox read' }],
-    subcommands: fork.inboxCommands(option),
-  },
-  {
-    group: 'messages',
     name: 'download',
     description: "save an attachment (its name, here, by default; - for stdout)",
     arguments: [
@@ -720,7 +711,6 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
       },
     ],
   },
-  fork.agentsCommand(option, id, task),
   {
     group: 'live',
     name: 'tail',

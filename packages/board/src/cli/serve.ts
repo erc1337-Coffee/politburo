@@ -12,10 +12,10 @@ import { local, lockLocalDirectory } from '../server/local.ts'
 import { oidcTokens } from '../server/tokens.ts'
 import { board } from '../server/index.ts'
 import { hostCheckedBy } from '../server/board.ts'
-import type { Authenticate, HostPrincipal } from '../server/auth.ts'
+import { isPrincipalId, type Authenticate, type HostPrincipal } from '../server/auth.ts'
 import { unauthorized } from '../server/errors.ts'
+import type { AttentionResponders } from '../contract/attention.ts'
 import { Failed } from './main.ts'
-import { swarmOptions } from './swarm.ts'
 
 export const DEFAULT_SERVE_PORT = 4100
 /** Where the board is mounted on its server: every other path is the inspector's, when it's served. */
@@ -57,9 +57,7 @@ type ServeOptions = {
   teamTokens?: string
   handle?: string
   hosts?: readonly string[]
-  agentOps?: true
   modelRoutes?: string
-  swarm?: true
   responders?: readonly string[]
 }
 
@@ -160,6 +158,19 @@ async function localIssuer() {
   }
 }
 
+/** Who may answer task attention requests in every channel: the serving principal, and each `--responder`. */
+function responders(principal: string, named: readonly string[] = []): AttentionResponders {
+  for (const id of named) {
+    if (!isPrincipalId(id)) throw new Failed({
+      class: 'usage',
+      reason: 'invalid_responder',
+      message: '--responder needs a principal ID, not a handle or profile.',
+      next: [{ instruction: 'Use the principal from vb whoami --json' }],
+    })
+  }
+  return { '*': [...new Set([principal, ...named])] }
+}
+
 /**
  * A standalone `local()` board with SQLite and attachments under `dir`. `hosts` adds
  * proxy names for discovery and auth. Normally it listens on loopback and writes a local JWT for
@@ -170,13 +181,13 @@ export async function serveLocal(options: ServeOptions): Promise<LocalBoard | Te
   const { ip, hostname } = bindHost(options)
   const handle = options.handle ?? localHandle()
   const principal = `local:user:${handle}`
-  const features = swarmOptions(options, principal)
+  const attentionResponders = responders(principal, options.responders)
   const auth = options.teamTokens === undefined
     ? await localIssuer()
     : { authenticate: await teamVerifier(options.teamTokens) }
   const dir = resolve(options.dir)
   quietSqliteWarning()
-  const backend = local({ dir, ...features })
+  const backend = local({ dir, attentionResponders })
   const modelRoutes = options.modelRoutes === undefined ? [] : readModelRoutes(options.modelRoutes)
   const githubToken = process.env.GITHUB_TOKEN?.trim()
 

@@ -31,22 +31,6 @@ type Pattern = { method: string; pattern: RegExp; names: string[]; target: Targe
 
 export const INVITE_METHODS: ReadonlySet<Method> = new Set<InviteMethod>(['invites', 'createInvite', 'revokeInvite', 'redeemInvite'])
 
-const AGENT_INTENT_METHODS = [
-  'issueOpsIntent', 'issueOpsRoleIntent', 'listOpsIntents', 'takeOpsIntent', 'reportOpsIntent', 'getOpsHealth',
-] as const satisfies readonly Method[]
-export const isAgentIntentMethod = (name: Method) => (AGENT_INTENT_METHODS as readonly Method[]).includes(name)
-
-const AGENT_OPS_METHODS = [
-  'listOpsAgents', 'registerOpsAgent', 'heartbeatOpsAgent', 'retireOpsAgent',
-  ...AGENT_INTENT_METHODS,
-] as const satisfies readonly Method[]
-export type AgentOpsMethod = (typeof AGENT_OPS_METHODS)[number]
-export const isAgentOpsMethod = (name: string): name is AgentOpsMethod => (AGENT_OPS_METHODS as readonly string[]).includes(name)
-
-export const OPERATIONAL_INBOX_METHODS = ['sendOperationalMessage', 'readOperationalInbox', 'ackOperationalMessage', 'archiveOperationalMessage'] as const
-export type OperationalInboxMethod = (typeof OPERATIONAL_INBOX_METHODS)[number]
-export const isOperationalInboxMethod = (name: Method): name is OperationalInboxMethod => (OPERATIONAL_INBOX_METHODS as readonly Method[]).includes(name)
-
 const WORK_EVIDENCE_METHODS = ['workEvidence', 'submitWork', 'recordEvidence', 'overrideEvidence', 'resolveWorkEdge'] as const
 export type WorkEvidenceMethod = (typeof WORK_EVIDENCE_METHODS)[number]
 export const isWorkEvidenceMethod = (name: Method): name is WorkEvidenceMethod => (WORK_EVIDENCE_METHODS as readonly Method[]).includes(name)
@@ -56,13 +40,11 @@ export const METHODS: readonly Method[] = [
   'discovery', 'me', 'channels', 'createChannel', 'configureChannel', 'identities', 'setIdentity', 'modelRoutes', 'repositories', 'actors', 'channelMessages', 'threads', 'message', 'post', 'posted', 'edit', 'delete', 'react', 'label',
   'status', 'pause', 'resume',
   'schedule', 'schedules', 'cancelSchedule',
-  ...AGENT_OPS_METHODS,
   'tasks', 'createTask', 'createTasks', 'createdTasks', 'claimReadyTask', 'claimTask', 'renewTask', 'releaseTask', 'completeTask', 'failTask', 'blockTask', 'unblockTask', 'parkTask', 'unparkTask', 'handoffTask', 'reopenTask', 'scopeTask', 'stageTask', 'assignTask', 'setTaskNeeds', 'setTaskPriority', 'cancelTask',
   'requestTaskAttention', 'taskAttention', 'answerTaskAttention',
   ...WORK_EVIDENCE_METHODS,
   'grants', 'createGrant', 'createGrants', 'updateGrant', 'explain', 'revokeGrant', 'schemas', 'schema', 'createSchema', 'upload', 'attachment', 'uploadStart', 'uploadFinish', 'watchers', 'register', 'matches', 'ack', 'events',
   ...INVITE_METHODS,
-  ...OPERATIONAL_INBOX_METHODS,
 ]
 
 export const ATTENTION_METHODS: ReadonlySet<Method> = new Set(['requestTaskAttention', 'taskAttention', 'answerTaskAttention'])

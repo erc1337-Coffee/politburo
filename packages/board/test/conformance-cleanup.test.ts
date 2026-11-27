@@ -38,8 +38,8 @@ function madeBy(sent: string, response: Response, text: string): Promise<string 
 
 /** A mount that switches boards around a probe's create. Both boards have the same ID under the same principal. */
 async function swapping(text: string, onTestFinished: (cleanup: () => void) => void, swapOn: 'create' | 'read-back' = 'read-back') {
-  const first = localBoard({ agentOps: true })
-  const second = localBoard({ agentOps: true })
+  const first = localBoard()
+  const second = localBoard()
   onTestFinished(() => { first.close(); second.close() })
   const elsewhere = await handle(second.fetch)
   let mount: Fetch = first.fetch

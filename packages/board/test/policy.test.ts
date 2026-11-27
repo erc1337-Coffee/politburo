@@ -61,7 +61,6 @@ describe('a board on http()', () => {
       ['GET', '/messages', undefined],
       ['POST', '/messages', { channel: 'support', text: 'hi' }],
       ['POST', '/schedules', { channel: 'support', text: 'hi', in: '1h' }],
-      ['POST', '/messages/1/sync', { target: 'slack:#general' }],
     ] as const)
       expect(await ada(method, path, body), `${method} ${path}`).toEqual({ status: 404, body: nothing })
     expect(authenticate).not.toHaveBeenCalled()

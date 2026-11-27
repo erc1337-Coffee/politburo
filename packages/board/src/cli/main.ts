@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { readFile, stat, writeFile } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { parseArgs } from 'node:util'
-import { CHANNELS_LIMIT_MAX, GRANT_BATCH_MAX, THREADS_LIMIT_DEFAULT, THREADS_LIMIT_MAX, type AgentView, type GrantInput, type Me, type MessageView } from '../api/routes.ts'
+import { CHANNELS_LIMIT_MAX, GRANT_BATCH_MAX, THREADS_LIMIT_DEFAULT, THREADS_LIMIT_MAX, type GrantInput, type Me, type MessageView } from '../api/routes.ts'
 import { everyChannel } from '../client/channels.ts'
 import { withMentions } from '../api/tail.ts'
 import { BoardError, type ClaimedTask, type Filters, type ProfileOption, type Written } from '../client/client.ts'
@@ -12,21 +12,20 @@ import { http } from '../backend-http/index.ts'
 import { board as boardAt, type Board } from '../server/index.ts'
 import { normalizeEmoji } from '../contract/emoji.ts'
 import { AttestationGate, Commit, Verdict } from '../contract/evidence.ts'
-import { AgentRole, ATTACHMENTS_PER_MESSAGE_MAX, DIRECT_UPLOAD_BYTES_MAX, IntentOutcome, IntentVerb, MESSAGE_TEXT_MAX, type AgentIntent, type Attachment, AttachmentId, TaskPriority, WorkStageTarget } from '../contract/schemas.ts'
+import { ATTACHMENTS_PER_MESSAGE_MAX, DIRECT_UPLOAD_BYTES_MAX, MESSAGE_TEXT_MAX, type Attachment, AttachmentId, TaskPriority, WorkStageTarget } from '../contract/schemas.ts'
 import { TaskBinding, TaskPacket } from '../contract/task-authority.ts'
 import { VERSION } from '../version.ts'
 import { explainPrincipalOf, explanationLine, GrantMisuse, grantCanOf, KINDS, patternsIn, principalsIn, type OptionToken } from './grants.ts'
 import { formatSchema, formatSchemas } from './schemas.ts'
 import { parseSchemaId } from '../contract/data-schemas.ts'
 import { block } from '../contract/blocks.ts'
-import { actorName, claimLine, formatAccess, formatAttention, formatConformance, formatEvent, formatGrants, grantRow, formatOperationalInbox, formatSchedule, formatTasks, grantCan, lineText, mentionedIn, reactionNames, formatThreadSummaries, formatThreads, terminalText, who } from './format.ts'
+import { actorName, claimLine, formatAccess, formatAttention, formatConformance, formatEvent, formatGrants, grantRow, formatSchedule, formatTasks, grantCan, lineText, mentionedIn, reactionNames, formatThreadSummaries, formatThreads, terminalText, who } from './format.ts'
 import { fileClaims, memoryClaims, tokenClaims, type ClaimProof, type Claims } from './claims.ts'
 import { commands, filters as filterOptions, globalOptions, options, type CliCommand } from './commands.ts'
 import { commandHelp, commandPath, rootHelp } from './help.ts'
 import { closest, commandLine, exitCode, failureDocument, formatFailure, type Failure, type Recovery, type Warning } from './failure.ts'
-import { AGENT_WRITES, agentConflictRecovery, doingAgents, formatAgent, missingAgent } from './politburo-agents.ts'
 import { checkConformance, inviteFailure, outputText, redactCredentials, runInvite, runJoin } from './politburo-invites.ts'
-import { boardStatus, doingInbox, inbox, portFlag } from './politburo-operations.ts'
+import { boardStatus, portFlag } from './politburo-operations.ts'
 import { AttentionAnswerBody } from '../contract/attention.ts'
 import { attentionFrom, createPlan, doingTasks, heldBy, priorityOf, readyLabels, resetTaskBoard } from './politburo-tasks.ts'
 
@@ -796,8 +795,6 @@ function doing(): string {
     case 'schedules':
     case 'actors':
       return `list ${command}`
-    case 'agents':
-      return doingAgents(a, b)
     case 'tasks':
       return doingTasks(a, b)
     case 'join':
@@ -810,8 +807,6 @@ function doing(): string {
       return a === 'create' ? `register schema ${b ?? ''}`.trimEnd() : a === 'inspect' ? `read schema ${b ?? ''}`.trimEnd() : 'list schemas'
     case 'download':
       return `download ${a ?? 'the attachment'}`
-    case 'inbox':
-      return doingInbox(a, b)
     case 'tail':
       return `follow ${a ?? 'the board'}`
     case 'wait':
@@ -844,9 +839,7 @@ function missing(): string | undefined {
   if (command === 'tasks' && TASK_VERBS.has(a) && b !== undefined && isMessageRef(b)) return `message ${ref(b)}`
   if (command === 'grants' && (a === 'revoke' || a === 'update') && b !== undefined) return `grant ${b}`
   if (command === 'schemas' && a === 'inspect' && b !== undefined) return `schema ${b}`
-  if (command === 'agents' && b !== undefined) return missingAgent(a, b)
   if (command === 'download') return `attachment ${a}`
-  if (command === 'inbox' && (a === 'ack' || a === 'archive') && b !== undefined) return `inbox message ${b}`
   return undefined
 }
 
@@ -874,8 +867,6 @@ function failureOf(error: unknown, hold: TaskHold = 'unknown'): Failure {
     switch (code) {
       case 'no_token':
         return own('auth', 'token_unavailable')
-      case 'no_agent_ops':
-        return own('platform', code)
       case 'no_board':
         return own('not_found', 'board_not_found')
       case 'board_dir_locked':
@@ -964,10 +955,6 @@ function failureOf(error: unknown, hold: TaskHold = 'unknown'): Failure {
   if (status === 409) {
     // A grant change this caller couldn't take back: it keeps itself in, or says to go ahead.
     if (code === 'grant_lockout' && current.command === 'grants') return theirs('conflict', code, `Can't ${doing()}: it would lock you out.`, lockoutRecoveries())
-    if (code === 'agent_generation_conflict' && current.command === 'agents') {
-      const recovery = agentConflictRecovery()
-      return theirs('conflict', code, `Can't ${doing()}.`, recovery)
-    }
     // A reply's --after: what's newer is in its thread, after the message it named.
     const { args } = current
     const newer = code === 'newer_message' && flags.after !== undefined && args[0] !== undefined
@@ -994,10 +981,6 @@ function failureOf(error: unknown, hold: TaskHold = 'unknown'): Failure {
   if (status === 429)
     return theirs('rate_limit', 'rate_limited', `Can't ${doing()}. Too many requests to the board.`, [
       { instruction: wait !== undefined ? `Wait ${waitFor(wait)}, then run it again` : 'Wait a minute, then run it again' },
-    ])
-  if (status === 501 && code === 'no_agent_ops' && current.command === 'agents')
-    return theirs('platform', code, `Can't ${doing()}. This board doesn't keep an agent registry.`, [
-      { instruction: 'Use a local board started with vb serve --agent-ops' },
     ])
   if (status === 501) return theirs('platform', specific('not_supported'), `Can't ${doing()}. This board doesn't support it.`, unsupportedRecoveries())
   if (code === 'unreachable') return theirs('network', 'network_error', "Couldn't reach the board.")
@@ -1726,9 +1709,6 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       return 0
     }
 
-    case 'inbox':
-      return inbox(args)
-
     case 'tail': {
       const controller = new AbortController()
       // Its handler goes when it's done: inside another CLI, the process goes on, and Ctrl-C should stop it.
@@ -1782,8 +1762,6 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       return 0
     }
 
-    case 'agents':
-      return agents(args)
     case 'tasks':
       return tasks(args)
 
@@ -1813,133 +1791,6 @@ function unknownCommand(command: string): Failed {
   })
 }
 
-function formatIntent(intent: AgentIntent): string {
-  const { id, agent, generation, verb, run, state, expiresAt, report } = intent
-  return [
-    `${lineText(id)}  ${verb} ${state}`,
-    `  agent       ${lineText(agent)}`,
-    `  generation  ${generation}`,
-    `  expires     ${lineText(expiresAt)}`,
-    ...(run ? [`  task        ${lineText(run.task)}`, `  epoch       ${run.epoch}`] : []),
-    ...(report ? [`  outcome     ${report.outcome.replaceAll('_', ' ')}`] : []),
-  ].join('\n')
-}
-
-async function agents(args: string[]): Promise<number> {
-  const [verb, ...given] = args
-  if (verb === undefined) throw usage('Missing the agent command.', { reason: 'missing_arguments' })
-  const sub = specOf('agents')?.subcommands?.find(({ name }) => name === verb)
-  if (!sub) throw usage(`Unknown agent command ${verb}.`, { reason: 'unknown_command' })
-  const next = [{ instruction: 'See how to use it', argv: [...cli(), 'agents', verb, '--help'] }]
-  const missing = sub.arguments.find((arg, i) => arg.required && !given[i])
-  if (missing) throw usage(`Missing <${missing.name}>.`, { reason: 'missing_arguments', next })
-  if (given.length > sub.arguments.length) throw usage(`Too many arguments for agents ${verb}.`, { next })
-  const target = given[0]!
-  const seen = new Set<string>()
-  for (const { name } of ordered) {
-    if (globalOptions.some((option) => option.name === name)) continue
-    if (!sub.options.some((option) => option.name === name))
-      throw usage(`Unknown option --${name} for ${named()} agents ${verb}.`, { reason: 'unknown_option', next })
-    if (seen.has(name)) throw usage(`Pass --${name} once.`, { next })
-    seen.add(name)
-  }
-  if (verb === 'list') {
-    const { agents } = await client().agents.list(target)
-    if (flags.json) result({ agents })
-    else out(agents.length ? agents.map(formatAgent).join('\n\n') : 'no agents registered')
-    return 0
-  }
-
-  if (verb === 'intents') {
-    const page = await client().agents.intents(target, flags.after === undefined ? undefined : { after: flags.after })
-    if (flags.json) result(page)
-    else {
-      out(page.intents.length ? page.intents.map(formatIntent).join('\n\n') : 'no pending intents on this page')
-      if (page.next !== null) out(`next  ${commandLine(rerunWithout(['--after'], `--after=${page.next}`))}`)
-    }
-    return 0
-  }
-  if (verb === 'health') {
-    const id = taskId(target)
-    const health = await client().agents.health(id)
-    if (flags.json) result({ health })
-    else out(`${lineText(id)}  ${health.state === 'working' ? `working until ${lineText(health.validUntil)}` : 'stale'}`)
-    return 0
-  }
-
-  function positive(flag: 'generation' | 'epoch'): number {
-    const value = flags[flag]
-    if (value === undefined) throw usage(`Missing --${flag}.`, { reason: 'missing_arguments', next })
-    const number = Number(value)
-    if (!/^\d+$/.test(value) || !Number.isSafeInteger(number) || number < 1) throw usage(`--${flag} takes a positive integer.`, { next })
-    return number
-  }
-
-  if (verb === 'issue-intent' || verb === 'issue-role-intent') {
-    const byRole = verb === 'issue-role-intent'
-    const command = IntentVerb.safeParse(given[byRole ? 2 : 1])
-    if (!command.success) throw usage('Pass one of the intent verbs shown in help.', { next })
-    if ((flags.task === undefined) !== (flags.epoch === undefined)) throw usage('Pass --task and --epoch together.', { next })
-    const run = flags.task === undefined ? undefined : { task: taskId(flags.task), epoch: positive('epoch') }
-    if (run && command.data !== 'status') throw usage('Only status takes --task and --epoch.', { next })
-    const generation = positive('generation')
-    const max = run ? 30 : 60
-    if (flags.ttl === undefined) throw usage('Missing --ttl.', { reason: 'missing_arguments', next })
-    const ttlSeconds = seconds('ttl')!
-    if (!Number.isInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > max)
-      throw usage(`--ttl takes a whole number of seconds from 1s to ${max}s.`, { next })
-    const input = {
-      verb: command.data,
-      ...(run ? { run } : {}),
-      generation,
-      ttlSeconds,
-      requestId: flags['idempotency-key'] ?? crypto.randomUUID(),
-    }
-    const role = byRole ? AgentRole.safeParse(given[1]) : undefined
-    if (role && !role.success) throw usage('Pass a role as agents list shows it.', { next })
-    const issued = role
-      ? await client().agents.issueRoleIntent({ channel: target, role: role.data, ...input })
-      : await client().agents.issueIntent(target, input)
-    if (flags.json) result(issued)
-    else out(issued.intents.map(formatIntent).join('\n\n'))
-    return 0
-  }
-  if (verb === 'take-intent' || verb === 'report-intent') {
-    const generation = positive('generation')
-    let intent: AgentIntent
-    if (verb === 'report-intent') {
-      const outcome = IntentOutcome.safeParse(given[1])
-      if (!outcome.success) throw usage('Pass one of the outcomes shown in help.', { next })
-      intent = await client().agents.reportIntent(target, generation, outcome.data)
-    } else intent = await client().agents.takeIntent(target, generation)
-    if (flags.json) result({ intent })
-    else out(formatIntent(intent))
-    return 0
-  }
-
-  let agent: AgentView
-  if (verb === 'register') {
-    const { harness, parent } = flags
-    if (!flags.role) throw usage('Missing --role.', { reason: 'missing_arguments', next })
-    if (!harness) throw usage('Missing --harness.', { reason: 'missing_arguments', next })
-    const role = AgentRole.safeParse(flags.role)
-    if (!role.success) throw usage('--role takes one of the roles shown in help.', { next })
-    agent = await client().agents.register({
-      channel: target,
-      role: role.data,
-      harness,
-      ...(parent !== undefined ? { parent } : {}),
-      ...(flags.generation !== undefined ? { ifGeneration: positive('generation') } : {}),
-    })
-  } else {
-    const generation = positive('generation')
-    agent = verb === 'heartbeat' ? await client().agents.heartbeat(target, generation) : await client().agents.retire(target, generation)
-  }
-  if (flags.json) result({ agent })
-  else out(formatAgent(agent))
-  return 0
-}
-
 /** What `tasks` does to a task, by the word after it: any other word is a channel to list. */
 const TASK_EVIDENCE_VERBS = new Set(['submit', 'evidence', 'attest', 'override', 'resolve'])
 const TASK_VERBS = new Set(['create', 'claim', 'renew', 'release', 'complete', 'fail', 'block', 'ask', 'attention', 'answer', 'unblock', 'park', 'unpark', 'handoff', 'scope', 'stage', 'reopen', 'assign', 'needs', 'priority', 'show', 'cancel', ...TASK_EVIDENCE_VERBS])
@@ -1959,7 +1810,7 @@ const TASK_STATES = ['waiting', 'ready', 'claimed', 'blocked', 'completed', 'fai
 const taskId = (value: string | undefined) => messageId(value, 'task ID')
 
 /** A duration in seconds: a number and a unit, as `schedule` takes a duration. A lease is 30s to 1h. */
-function seconds(flag: 'wait' | 'lease' | 'ttl'): number | undefined {
+function seconds(flag: 'wait' | 'lease'): number | undefined {
   const value = flags[flag]
   if (value === undefined) return undefined
   const found = /^(\d+(?:\.\d+)?)(s|m|h|d)$/.exec(value)
@@ -2813,8 +2664,6 @@ function stopped(reason: unknown): Failed {
   const sub = current.args[0]
   const writes = WRITES.has(current.command ?? '') || ['create', 'update', 'revoke', 'cancel', 'join'].includes(sub ?? '')
     || (current.command === 'tasks' && sub !== undefined && isTaskVerb(sub, current.args[1]) && !TASK_READS.has(sub))
-    || (current.command === 'agents' && AGENT_WRITES.has(sub ?? ''))
-    || (current.command === 'inbox' && (sub === 'ack' || sub === 'archive'))
   return new Failed({
     class: timedOut ? 'timeout' : 'canceled',
     reason: timedOut ? 'timeout' : 'canceled',

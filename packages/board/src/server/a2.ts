@@ -5,8 +5,6 @@ import { boardContract, SCHEDULES_SESSION } from '../contract/contract.ts'
 import type { AttentionResponders } from '../contract/attention.ts'
 import { BOARD_SESSION } from '../contract/events.ts'
 import { createTrust } from './trust.ts'
-import { createAgents } from './agents.ts'
-import { createAgentIntents } from './agent-intents.ts'
 import { createSchemas } from './schemas.ts'
 import { actorsReducer, channelsReducer, identitiesReducer } from '../contract/reducers.ts'
 import { type Actor, type ExternalCopy, type Message } from '../contract/folds.ts'
@@ -21,14 +19,13 @@ import { viaOf } from './actors.ts'
 import { type Backend, type BackendRoute, type BoardBinding, type Caller, type ProtocolMethods, type SelfCaller, type Trust } from './backend.ts'
 import { BoardError } from '../client/client.ts'
 import { attachmentBody, attachmentNotFound, finishUpload, ownUpload, readUpload, startUpload, writeUpload, type BlobStore, type Uploader } from './blob.ts'
-import { badRequest, duplicateId, forbidden, HttpError, noAgentOps, notFound, textTooLong, toErrorResponse } from './errors.ts'
+import { badRequest, duplicateId, forbidden, HttpError, notFound, textTooLong, toErrorResponse } from './errors.ts'
 import { eventView, foldEvent, indexOf, lastFeed, loadBefore, OWN_CODE, pollFeed, readableFilter, ref, toMessageFilter, verifiedRecord, view, viewedBy, viewLinkedIds, viaOfRecord } from './feed.ts'
 import { createReads, tablesConsumer } from './reads.ts'
 import { createdBy, createSchedules, type Schedule } from './schedules.ts'
 import { createControl, publicStatus } from './control.ts'
 import { createTasks, taskLimits, type WorkLifecycleOptions } from './tasks.ts'
 import type { EvidencePolicy } from '../contract/evidence.ts'
-import { createOperationalInbox } from './operational-inbox.ts'
 import { AccessMoved, appendRefusal, wallTime, writerFor } from '../store/single-writer.ts'
 import type { BoardStore, MessageFilter, ThreadPosition } from '../store/types.ts'
 import { compileWatcher, createWatchers, ID, registrantSession } from './watch.ts'
@@ -63,9 +60,6 @@ export type A2Options = {
   workEvidence?: EvidencePolicy | undefined
   /** Enables structured attention with a responder allowlist. */
   attentionResponders?: AttentionResponders
-  agentOps?: boolean
-  politburo?: 1
-  agentHealthFreshnessSeconds?: number
 }
 
 const boardServer = (options: A2Options) =>
@@ -230,7 +224,6 @@ function build(options: A2Options, binding: BoardBinding) {
     consumers,
   })
   const session = server.session(BOARD_SESSION)
-  const operationalInbox = createOperationalInbox(session, binding.inboxRolesFor ?? (() => []))
   const reads = createReads(store.tables, session, projection)
   const work = createControl(log, session, binding.initiallyPaused)
   // Who the board trusts beside its defaults: its grants.
@@ -264,21 +257,6 @@ function build(options: A2Options, binding: BoardBinding) {
       return { paused, pauseEpoch }
     })
   }
-
-  const agents = options.agentOps === true ? createAgents(writes) : null
-  const intents = agents ? createAgentIntents(writes, binding, options.agentHealthFreshnessSeconds) : null
-  const agentIntents = () => {
-    if (!intents) throw noAgentOps('intents')
-    return intents
-  }
-  const agentRegistry = () => {
-    if (!agents) throw noAgentOps('registry')
-    return agents
-  }
-  // In-process profiles are separate deployment identities. Match their names case-insensitively
-  // here as the verifier does for HTTP profiles, without merging them into one deployment identity.
-  const agentIdentityOf = (caller: Caller) =>
-    identityOf('self' in caller && caller.self !== null && caller.origin.via?.kind === 'client' ? { ...caller, self: caller.self.toLowerCase() } : caller)
 
   // The schema registry, in a session of its own beside the board's.
   const schemaRegistry = createSchemas({ store: log })
@@ -425,9 +403,6 @@ function build(options: A2Options, binding: BoardBinding) {
         ...(options.workLifecycle ? { workLifecycle: 1, ...(store.fence ? { accessFence: 1, accessFenceScope: 'process' } : {}) } : {}),
         task_authority: true,
         ...(tasks.workCapability ? { workEvidence: tasks.workCapability } : {}),
-        ...(agents ? { agent_ops: true } : {}),
-        ...(intents ? { agent_intents: true } : {}),
-        ...(options.politburo === 1 ? { politburo: 1 } : {}),
       }
       return body
     },
@@ -446,18 +421,6 @@ function build(options: A2Options, binding: BoardBinding) {
         can: principal.access.summary(),
       }
       return body
-    },
-    async sendOperationalMessage(caller, input, signal) {
-      return operationalInbox.send((await identityOf(caller)).author, input, signal)
-    },
-    async readOperationalInbox(caller) {
-      return operationalInbox.read((await identityOf(caller)).principal.id)
-    },
-    async ackOperationalMessage(caller, { id, status }, signal) {
-      return operationalInbox.change((await identityOf(caller)).author, id, status, signal)
-    },
-    async archiveOperationalMessage(caller, { id }, signal) {
-      return operationalInbox.change((await identityOf(caller)).author, id, 'archive', signal)
     },
     async channels(caller, { prefix, after, limit = CHANNELS_LIMIT_DEFAULT }) {
       const { principal } = (await identityOf(caller))
@@ -625,36 +588,6 @@ function build(options: A2Options, binding: BoardBinding) {
       const identity = await identityOf(caller)
       const answer = await schedules.cancel(identity, scheduleAt(id))
       return { ...answer, schedule: blindSchedule(answer.schedule, identity.principal.access, identity.actor.id) }
-    },
-    async listOpsAgents(caller, { channel }) {
-      return agentRegistry().list(await agentIdentityOf(caller), channel)
-    },
-    async registerOpsAgent(caller, input) {
-      return agentRegistry().register(await agentIdentityOf(caller), input)
-    },
-    async heartbeatOpsAgent(caller, { agent, generation }) {
-      return agentRegistry().heartbeat(await agentIdentityOf(caller), agent, generation)
-    },
-    async retireOpsAgent(caller, { agent, generation }) {
-      return agentRegistry().retire(await agentIdentityOf(caller), agent, generation)
-    },
-    async issueOpsIntent(caller, input) {
-      return agentIntents().issue(caller, input)
-    },
-    async issueOpsRoleIntent(caller, input) {
-      return agentIntents().issue(caller, input)
-    },
-    async listOpsIntents(caller, { agent, after }) {
-      return agentIntents().list(await agentIdentityOf(caller), agent, after)
-    },
-    async takeOpsIntent(caller, { id, generation }) {
-      return agentIntents().take(caller, id, generation)
-    },
-    async reportOpsIntent(caller, { id, generation, outcome }) {
-      return agentIntents().report(caller, id, generation, outcome)
-    },
-    async getOpsHealth(caller, { task }) {
-      return agentIntents().health(await identityOf(caller), task)
     },
 
     tasks: async (caller, query) => tasks.list(await identityOf(caller), query),
@@ -910,15 +843,13 @@ function build(options: A2Options, binding: BoardBinding) {
  */
 const serialized: ReadonlySet<Method> = new Set([
   'createChannel', 'post', 'edit', 'delete', 'react', 'label', 'pause', 'resume',
-  'schedule', 'cancelSchedule', 'upload', 'registerOpsAgent', 'heartbeatOpsAgent', 'retireOpsAgent',
-  'issueOpsIntent', 'issueOpsRoleIntent', 'takeOpsIntent', 'reportOpsIntent',
+  'schedule', 'cancelSchedule', 'upload',
   'createTask', 'createTasks', 'claimTask', 'renewTask', 'releaseTask', 'completeTask', 'failTask',
   'blockTask', 'unblockTask', 'parkTask', 'unparkTask', 'handoffTask', 'reopenTask', 'scopeTask', 'stageTask', 'assignTask',
   'setTaskNeeds', 'setTaskPriority', 'cancelTask', 'requestTaskAttention', 'answerTaskAttention',
   'submitWork', 'recordEvidence', 'overrideEvidence', 'resolveWorkEdge',
   'createGrant', 'createGrants', 'updateGrant', 'revokeGrant', 'createInvite', 'revokeInvite', 'redeemInvite',
   'createSchema', 'register', 'ack',
-  'sendOperationalMessage', 'ackOperationalMessage', 'archiveOperationalMessage',
 ])
 
 export function a2(options: A2Options) {

@@ -8,7 +8,6 @@ import type { AttentionDraft, MessageView } from '../src/api/routes.ts'
 import { http } from '../src/backend-http/index.ts'
 import { local } from '../src/backend-local/index.ts'
 import { localHandle } from '../src/cli/serve.ts'
-import { swarmOptions } from '../src/cli/swarm.ts'
 import { bearer, board, BOARD_URL, caller, localUserToken, testLocal } from './harness.ts'
 
 const OWNER = 'local:user:ada'
@@ -34,8 +33,8 @@ function client(url: string, transport: typeof fetch) {
   return board({ backend: http(url, { fetch: transport }) }).as(null)
 }
 
-async function setup(cleanup: Cleanup, options: Parameters<typeof swarmOptions>[0]) {
-  const backend = local({ memory: true, ...swarmOptions(options, OWNER) })
+async function setup(cleanup: Cleanup, responders?: readonly string[]) {
+  const backend = local({ memory: true, ...(responders ? { attentionResponders: { '*': [...responders] } } : {}) })
   cleanup(() => backend.close())
   const team = board({ backend, url: BOARD_URL, authenticate: oidcTokens({ local: testLocal }) })
   const send: typeof fetch = async (input, init) => team.fetch(new Request(input, init))
@@ -50,18 +49,17 @@ async function ask(author: ReturnType<typeof client>, channel = CHANNEL) {
   return [task.id, attention.id, ANSWER] as const
 }
 
-it('lets only listed people answer and leaves agent ops off', async ({ onTestFinished }) => {
-  const { owner, responder } = await setup(onTestFinished, { responders: [RESPONDER] })
+it('lets only listed people answer', async ({ onTestFinished }) => {
+  const { owner, responder } = await setup(onTestFinished, [RESPONDER])
   const pending = await ask(owner)
   await expect(owner.tasks.answer(...pending)).rejects.toMatchObject({ status: 403, code: 'forbidden' })
   expect(await responder.tasks.answer(...pending)).toMatchObject({
     attention: { status: 'answered', receipt: { by: { principal: RESPONDER } } },
   })
-  await expect(owner.agents.list(CHANNEL)).rejects.toMatchObject({ status: 501, code: 'no_agent_ops' })
 })
 
 it('does not let a listed person answer with read-only access', async ({ onTestFinished }) => {
-  const { team, owner, responder, token } = await setup(onTestFinished, { responders: [RESPONDER] })
+  const { team, owner, responder, token } = await setup(onTestFinished, [RESPONDER])
   const pending = await ask(owner)
   const path = `/tasks/${pending[0]}/attention`
   const limited = caller(team.fetch, token, { 'x-board-can': `${CHANNEL}=read` })
@@ -72,7 +70,7 @@ it('does not let a listed person answer with read-only access', async ({ onTestF
 })
 
 it('hides attention from a listed responder with no read access', async ({ onTestFinished }) => {
-  const { team, owner, responder, token } = await setup(onTestFinished, { responders: [RESPONDER] })
+  const { team, owner, responder, token } = await setup(onTestFinished, [RESPONDER])
   const pending = await ask(owner)
   const postOnly = caller(team.fetch, token, { 'x-board-can': `${CHANNEL}=post` })
   expect(await postOnly('POST', `/tasks/${pending[0]}/attention/${pending[1]}/answer`, ANSWER))
@@ -80,8 +78,8 @@ it('hides attention from a listed responder with no read access', async ({ onTes
   expect(await responder.tasks.answer(...pending)).toMatchObject({ attention: { status: 'answered' } })
 })
 
-it('keeps the swarm owner and adds the listed responder', async ({ onTestFinished }) => {
-  const { owner, responder } = await setup(onTestFinished, { swarm: true, responders: [RESPONDER] })
+it('keeps the serving owner and adds the listed responder', async ({ onTestFinished }) => {
+  const { owner, responder } = await setup(onTestFinished, [OWNER, RESPONDER])
   expect(await owner.tasks.answer(...await ask(owner))).toMatchObject({
     attention: { receipt: { by: { principal: OWNER } } },
   })
@@ -90,8 +88,8 @@ it('keeps the swarm owner and adds the listed responder', async ({ onTestFinishe
   })
 })
 
-it('returns no_task_attention on a stock board without flags', async ({ onTestFinished }) => {
-  const { owner } = await setup(onTestFinished, {})
+it('returns no_task_attention on a board without responders', async ({ onTestFinished }) => {
+  const { owner } = await setup(onTestFinished)
   const { task } = await owner.tasks.create(CHANNEL, 'Release the build')
   await expect(owner.tasks.answer(task.id, task.id, ANSWER))
     .rejects.toMatchObject({ status: 501, code: 'no_task_attention' })

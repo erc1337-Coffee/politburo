@@ -36,12 +36,9 @@ async function accessRace(seed: number): Promise<Run> {
         expect(result.status).toBe(201)
         return result.body.message.id as string
       }
-      const root = await message('Separate target for reply, reaction, label, and receipt')
+      const root = await message('Separate target for reply, reaction, and label')
       const edit = await message('Before editing')
       const del = await message('Before deleting')
-      expect((await request('POST', '/watchers', { watch: {}, sync: [{ key: 'slack', platform: 'slack' }] })).status).toBe(200)
-      const target = 'slack:C1'
-      expect((await request('POST', '/sync/receipts', { kind: 'thread', message: root, target, targetKind: 'channel', cause: 'request' })).status).toBe(200)
       const { task } = await worker.tasks.create('work', 'Ready to claim')
       const lease = async (verb: string) => {
         const { task } = await worker.tasks.create('work', `Ready to ${verb}`)
@@ -73,9 +70,6 @@ async function accessRace(seed: number): Promise<Run> {
           }))
           return { status: response.status, body: await response.json() }
         }],
-        ['sync receipt', 'message.synced', () => request('POST', '/sync/receipts', {
-          kind: 'message', message: root, target, external: { thread: 'slack:C1:1', message: '1' },
-        })],
       ] as const
       const outcomes: { op: number; name: string; status: number; event: string }[] = []
       await sim.run([

@@ -34,14 +34,12 @@ import type { Link } from '../contract/external.ts'
 import type { Actor, Channel, Message, Task } from '../contract/folds.ts'
 import type { Via } from '../contract/profiles.ts'
 import type { AccessSummary, Permission, WrittenCan } from '../server/access.ts'
-import { controlRoutes, agentOpsRoutes, attentionRoutes, inviteRoutes, operationalInbox, taskAuthority, taskPriority } from './politburo-routes.ts'
+import { controlRoutes, attentionRoutes, inviteRoutes, taskAuthority, taskPriority } from './politburo-routes.ts'
 
 export { Ref }
 export { AttentionAnswerBody, AttentionDraft, AttentionReceipt, AttentionView, RequestAttentionBody } from '../contract/attention.ts'
-export type { AgentHealth, AgentIntent, AgentRole, AgentRun, IntentOutcome, IntentReceipt, IntentVerb } from '../contract/schemas.ts'
+export type { AgentRun } from '../contract/schemas.ts'
 
-export { ListOpsAgentsQuery, RegisterOpsAgentBody, OpsAgentGenerationBody, IssueOpsIntentBody, IssueOpsRoleIntentBody, ListOpsIntentsQuery, ReportOpsIntentBody } from './politburo-routes.ts'
-export type { RegisterOpsAgentInput, OpsAgentGenerationInput, Agent, AgentView, IssueOpsIntentInput, IssueOpsRoleIntentInput, ListOpsIntentsInput, OpsIntentsIssued, OpsIntentsPage } from './politburo-routes.ts'
 
 /** The message's `revision` as it was read: if it's been edited or deleted since, 409 `revision_conflict`. */
 const Revision = z.number().int().positive()
@@ -187,10 +185,6 @@ export const PostBody = z
 const Duration = z.string().regex(/^\d+(\.\d+)?(s|m|h|d)$/, 'durations look like 30s, 30m, 12h, or 1d')
 const Instant = z.string().datetime({ offset: true })
 
-const { SendOperationalMessageBody, AckOperationalMessageBody, operationalInboxRoutes } = operationalInbox(Instant)
-export { SendOperationalMessageBody, AckOperationalMessageBody }
-export type SendOperationalMessageInput = z.input<typeof SendOperationalMessageBody>
-export type { OperationalRecipient, OperationalStatus, OperationalMessage } from './politburo-routes.ts'
 
 /**
  * A message to post later, as the caller: once (`in` or `at`), or repeating
@@ -880,9 +874,6 @@ const DiscoveryResponse = z.object({
   accessFenceScope: z.literal('process').optional(),
   task_authority: z.boolean().optional(),
   task_attention: z.literal(true).optional(),
-  agent_ops: z.literal(true).optional(),
-  agent_intents: z.literal(true).optional(),
-  politburo: z.literal(1).optional(),
 })
 
 export type Discovery = z.infer<typeof DiscoveryResponse> & {
@@ -896,10 +887,6 @@ export type Discovery = z.infer<typeof DiscoveryResponse> & {
   task_authority?: boolean
   /** Whether this board is configured to keep structured task attention requests. */
   task_attention?: true
-  /** This board opts into the fork's agent registry. */
-  agent_ops?: true
-  /** Advertises command intents and run health. `agent_ops` alone only advertises the registry. */
-  agent_intents?: true
   /** Read from `X-Board-Task-Claim-Hold`, not the discovery JSON. */
   task_claim_hold?: true
 }
@@ -1012,7 +999,6 @@ export const routes = {
   schedules: { method: 'GET', path: '/schedules', query: SchedulesQuery },
   /** Its creator, or manage in its channel, may cancel a schedule. Canceling one that's done is a no-op. */
   cancelSchedule: { method: 'POST', path: '/schedules/:id/cancel' },
-  ...agentOpsRoutes,
   /** Tasks, oldest first: open ones unless `state` says otherwise. */
   tasks: { method: 'GET', path: '/tasks', query: TasksQuery },
   /** Starts a thread as a task (`post` there, and `label` for its labels), or makes the thread `re` roots one (`label` there). */
@@ -1070,7 +1056,6 @@ export const routes = {
   createSchema: { method: 'POST', path: '/schemas', body: SchemaBody },
   /** The caller's own post with the client ID it gave: what `POST /messages` answered, for telling a retry before posting. */
   posted: { method: 'GET', path: '/posts/:id' },
-  ...operationalInboxRoutes,
   events: { method: 'GET', path: '/events', query: EventsQuery },
   avatar: { method: 'GET', path: '/avatars/:name' },
   /** The file is the body; `content-type` is its type and `x-board-filename` its name, URI-encoded. */

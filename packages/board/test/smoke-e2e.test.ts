@@ -5,14 +5,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { afterAll, beforeAll, expect, it } from 'vitest'
-import type { AttentionDraft, AttentionView, GrantView, Me, MessageView, SendOperationalMessageInput } from '../src/api/routes.ts'
+import type { AttentionDraft, AttentionView, GrantView, Me, MessageView } from '../src/api/routes.ts'
 import { mount } from './harness.ts'
 import { serve } from './http.ts'
 import { createLeakCheck, watchServe, type Output } from './smoke-output.ts'
 import { personToken, testAuth } from './tokens.ts'
 
 const CLI = join(import.meta.dirname, '../src/cli/bin.ts')
-const INBOX_SENDER = join(import.meta.dirname, 'smoke-send-inbox.ts')
 const CLI_TIMEOUT = 180_000
 const CALL_TIMEOUT = 12_000
 const COMMIT = 'a'.repeat(40)
@@ -120,7 +119,7 @@ async function runNode(script: string, args: string[], env: NodeJS.ProcessEnv, c
     child.stdout!.setEncoding('utf8').on('data', (chunk: string) => { output.stdout += chunk })
     child.stderr!.setEncoding('utf8').on('data', (chunk: string) => { output.stderr += chunk })
     const [code, signal] = await once(child, 'close').catch(() => { throw new Error(`${command} could not start`) }) as [number | null, NodeJS.Signals | null]
-    capture(output, script === CLI ? 'vb' : 'SDK inbox send')
+    capture(output, 'vb')
     // Learn newly saved credentials before any assertion can echo the command's output.
     if (code === 0) await trackSecrets?.()
     expectNoCredential()
@@ -187,11 +186,6 @@ async function writeDraft(path: string, { id, revision }: Pick<MessageView, 'id'
   leakCheck.capture('draft file', await readFile(path, 'utf8'))
   expectNoCredential()
   return draft
-}
-
-// vb has no inbox send. Run the SDK with the selected home so it can use vb's saved login.
-function sendInbox(env: NodeJS.ProcessEnv, input: SendOperationalMessageInput) {
-  return runNode(INBOX_SENDER, [url, JSON.stringify(input)], env, 'SDK inbox send')
 }
 
 it('runs a work queue from invitation to handoff, pause, and follow-up', async () => {
@@ -348,40 +342,6 @@ it('runs a work queue from invitation to handoff, pause, and follow-up', async (
     await restore(afterReclaim)
     expect(await worker.text(['tasks', 'complete', dependent, 'published'])).toBe(`completed ${dependent}`)
     expect(await worker.text(['tasks', 'complete', low, 'done'])).toBe(`completed ${low}`)
-  })
-
-  await step('deliver private inbox mail and record seen, acted, and archived receipts', async () => {
-    const outgoing = { to: { agent: memberPrincipal }, topic: 'Release', text: 'The release notes are published.' }
-    await member.refuses(['inbox', 'read'], 'permission_denied')
-
-    // The inbox requires board-wide read. Add it to Sam's invite grant, keeping post scoped to work/.
-    const { grants } = await admin.json<{ grants: GrantView[] }>(['grants', 'list'])
-    const grant = grants.find(({ principals }) => principals.some((p) => p.kind === 'invitee' && p.id === memberPrincipal))
-    expect(grant, 'grant for the joined member').toBeDefined()
-    await admin.text(['grants', 'update', grant!.id, '--can', '*=read;work/=read,post'])
-
-    // A sender's credentials must not depend on which other request is in flight.
-    const [sent, denied] = await Promise.all([
-      sendInbox(adminEnv, outgoing),
-      sendInbox(memberEnv, { to: { agent: adminPrincipal }, topic: 'Release', text: 'Thanks for the update.' }),
-    ])
-    expect(sent).toMatchObject({ code: 0, stderr: '' })
-    const { id } = parse<{ id: string }>(sent.stdout, 'SDK inbox send')
-    expect(denied).toMatchObject({ code: 1, stdout: '' })
-    expect(parse(denied.stderr, 'unauthorized SDK inbox send')).toMatchObject({ status: 403, code: 'forbidden' })
-
-    expect(await admin.json(['inbox', 'read'])).toEqual({ messages: [] })
-    await admin.refuses(['inbox', 'ack', id, 'seen'], 'operational_message_not_found')
-    await admin.refuses(['inbox', 'archive', id], 'operational_message_not_found')
-    expect(await member.json(['inbox', 'read'])).toMatchObject({ messages: [
-      { id, ...outgoing, by: { principal: adminPrincipal }, seenAt: null, actedAt: null, archivedAt: null },
-    ] })
-    const seen = { id, seenAt: expect.stringMatching(ISO), actedAt: null, archivedAt: null }
-    const acted = { ...seen, actedAt: expect.stringMatching(ISO) }
-    expect(await member.json(['inbox', 'ack', id, 'seen'])).toMatchObject({ message: seen })
-    expect(await member.json(['inbox', 'ack', id, 'acted'])).toMatchObject({ message: acted })
-    expect(await member.json(['inbox', 'archive', id])).toMatchObject({ message: { ...acted, archivedAt: expect.stringMatching(ISO) } })
-    expect(await member.json(['inbox', 'read'])).toEqual({ messages: [] })
   })
 
   await step('ask, show, and answer attention on a second, in-process board with responders configured', async () => {

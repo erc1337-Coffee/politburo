@@ -10,13 +10,12 @@ import { fakeQueue } from './queue.ts'
  * 403. A new route fails the first test until it has an entry here.
  */
 type Fixture = {
-  secret: { root: number; reply: number; schedule: number; file: string; task: number; agent: string; intent: string }
-  open: { root: number; schedule: number; task: number; agent: string; intent: string }
+  secret: { root: number; reply: number; schedule: number; file: string; task: number }
+  open: { root: number; schedule: number; task: number }
 }
 type Call = { method: 'GET' | 'POST' | 'PATCH'; path: string; body?: unknown; status: number; check?: (body: any) => void }
 type Walk = 'public' | ((fixture: Fixture) => Call[])
 
-const INTENT = { verb: 'inspect', generation: 1, ttlSeconds: 60, requestId: 'walker' }
 
 const nothingFrom = (field: string) => (body: any) => expect(JSON.stringify(body[field])).not.toContain('secret')
 const work = (verb: string, body: object): Walk => ({ secret, open }) => [
@@ -236,29 +235,6 @@ const WALK: Record<RouteName, Walk> = {
     { method: 'POST', path: `/tasks/${secret.task}/cancel`, body: { reason: 'mine now' }, status: 404 },
     { method: 'POST', path: `/tasks/${open.task}/cancel`, body: { reason: 'mine now' }, status: 403 },
   ],
-  listOpsAgents: ({ open }) => [
-    { method: 'GET', path: '/ops/agents?channel=secret', status: 403 },
-    { method: 'GET', path: '/ops/agents?channel=open', status: 200, check: (body) => expect(body.agents).toMatchObject([{ id: open.agent }]) },
-  ],
-  registerOpsAgent: () => ['secret', 'open'].map((channel) => ({ method: 'POST', path: '/ops/agents', body: { channel, role: 'reviewer', harness: 'shell' }, status: 403 })),
-  // Even where an agent is visible, it is no target for another caller's writes.
-  heartbeatOpsAgent: ({ secret, open }) => [secret.agent, open.agent].map((id) => ({ method: 'POST', path: `/ops/agents/${encodeURIComponent(id)}/heartbeat`, body: { generation: 1 }, status: 404 })),
-  retireOpsAgent: ({ secret, open }) => [secret.agent, open.agent].map((id) => ({ method: 'POST', path: `/ops/agents/${encodeURIComponent(id)}/retire`, body: { generation: 1 }, status: 404 })),
-  issueOpsIntent: ({ secret, open }) => [
-    { method: 'POST', path: `/ops/agents/${encodeURIComponent(secret.agent)}/intents`, body: INTENT, status: 404 },
-    { method: 'POST', path: `/ops/agents/${encodeURIComponent(open.agent)}/intents`, body: INTENT, status: 403 },
-  ],
-  issueOpsRoleIntent: () => [
-    { method: 'POST', path: '/ops/intents', body: { ...INTENT, role: 'reviewer', channel: 'secret' }, status: 404 },
-    { method: 'POST', path: '/ops/intents', body: { ...INTENT, role: 'reviewer', channel: 'open' }, status: 403 },
-  ],
-  listOpsIntents: ({ secret, open }) => [secret.agent, open.agent].map((id) => ({ method: 'GET', path: `/ops/agents/${encodeURIComponent(id)}/intents`, status: 404 })),
-  takeOpsIntent: ({ secret, open }) => [secret.intent, open.intent].map((id) => ({ method: 'POST', path: `/ops/intents/${encodeURIComponent(id)}/take`, body: { generation: 1 }, status: 404 })),
-  reportOpsIntent: ({ secret, open }) => [secret.intent, open.intent].map((id) => ({ method: 'POST', path: `/ops/intents/${encodeURIComponent(id)}/report`, body: { generation: 1, outcome: 'ok' }, status: 404 })),
-  getOpsHealth: ({ secret, open }) => [
-    { method: 'GET', path: `/ops/health/${secret.task}`, status: 404 },
-    { method: 'GET', path: `/ops/health/${open.task}`, status: 200, check: (body) => expect(body).toEqual({ state: 'not_confirmed' }) },
-  ],
   // Listing grants takes manage at *, and changing one manage at each pattern it names: g1 names *.
   grants: () => [{ method: 'GET', path: '/grants', status: 403 }],
   createGrant: () => [
@@ -311,11 +287,6 @@ const WALK: Record<RouteName, Walk> = {
   uploadStart: () => [{ method: 'POST', path: '/attachments/uploads', body: { name: 'big.mp4', type: 'video/mp4', size: 10_000_000 }, status: 403 }],
   // Only its uploader finishes an upload: anyone else's is as if it didn't exist.
   uploadFinish: () => [{ method: 'POST', path: '/attachments/uploads/AAAAAAAAAAAAAAAAAAAAAA', body: {}, status: 404 }],
-  // The operational inbox needs board-wide permissions, even for an unknown ID.
-  sendOperationalMessage: () => [{ method: 'POST', path: '/operational-inbox', body: { to: { role: 'reviewer' }, topic: 'review', text: 'review this' }, status: 403 }],
-  readOperationalInbox: () => [{ method: 'GET', path: '/operational-inbox', status: 403 }],
-  ackOperationalMessage: () => [{ method: 'POST', path: '/operational-inbox/1/ack', body: { status: 'seen' }, status: 403 }],
-  archiveOperationalMessage: () => [{ method: 'POST', path: '/operational-inbox/1/archive', status: 403 }],
   // Registered watchers: each sees only what its registrant reads, and pulls only its own.
   watchers: () => [{ method: 'GET', path: '/watchers', status: 200, check: (body) => expect(body.watchers).toEqual([]) }],
   register: () => [{ method: 'POST', path: '/watchers', body: { watch: { fix: { tail: 'secret' } } }, status: 200 }],
@@ -325,7 +296,7 @@ const WALK: Record<RouteName, Walk> = {
 }
 
 async function setup() {
-  const board = testBoard({ scheduler: fakeQueue().scheduler, attentionResponders: {}, agentOps: true, workEvidence: { releaseDependencies: true } })
+  const board = testBoard({ scheduler: fakeQueue().scheduler, attentionResponders: {}, workEvidence: { releaseDependencies: true } })
   await board.createGrant({ principals: [{ kind: 'github', repository: 'acme/web' }], can: { open: ['read'] } })
   const keeper = caller(board.fetch, await personToken('u_keeper'), {})
   const host = caller(board.fetch, await personToken('u_host'), {})
@@ -353,14 +324,9 @@ async function setup() {
   // And a batch of them under an id, which finds it again for whoever made it, and no one else.
   expect((await keeper('POST', '/tasks/batch', { channel: 'secret', id: 'secret-plan', tasks: [{ text: 'hush, a plan', labels: { private: 'yes' } }] })).status).toBe(201)
   expect((await keeper('GET', '/tasks/batch/secret-plan')).body.tasks).toMatchObject([{ text: 'hush, a plan' }])
-  const agentAndIntent = async (send: typeof keeper, channel: string) => {
-    const { body: agent } = await send('POST', '/ops/agents', { channel, role: 'reviewer', harness: 'shell' })
-    const { body: { intents: [intent] } } = await send('POST', `/ops/agents/${encodeURIComponent(agent.id)}/intents`, INTENT)
-    return { agent: agent.id as string, intent: intent.id as string }
-  }
   const fixture: Fixture = {
-    secret: { root, reply, schedule, file, task, ...await agentAndIntent(keeper, 'secret') },
-    open: { root: openRoot, schedule: openSchedule, task: openTask, ...await agentAndIntent(host, 'open') },
+    secret: { root, reply, schedule, file, task },
+    open: { root: openRoot, schedule: openSchedule, task: openTask },
   }
   return { board, fixture, outsider: caller(board.fetch, await workflowToken()) }
 }

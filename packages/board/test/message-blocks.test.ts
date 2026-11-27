@@ -109,21 +109,6 @@ describe('blocks in messages', () => {
     expect(posted.body.message.blocks).toEqual([])
   })
 
-  it("takes a platform's message as text, whatever it says: never refused, and no blocks", async () => {
-    const { board, julian, read } = await setUp()
-    const sync = caller(board.fetch, await deploymentToken('sync', 'prj_sync'))
-    expect((await sync('POST', '/watchers', { watch: {}, sync: [{ key: 'reviews', platform: 'github' }] })).status).toBe(200)
-    const author = { id: 'reviews:user:9', handle: 'ada', name: 'Ada', avatar: null, isBot: false }
-    // One that wouldn't match, and one that would: a platform's text is never checked, so neither is data.
-    for (const data of [{ id: 'sbx-9', action: 'boot' }, started]) {
-      const imported = await sync('POST', '/sync/imports', { op: 'post', author, from: 'reviews', channel: 'deploys', text: block('sandbox@1', data) })
-      expect(imported.status).toBe(200)
-      expect(await read(imported.body.message)).toMatchObject({ text: block('sandbox@1', data), from: 'reviews', blocks: [] })
-    }
-    // The same text, written on the board, is checked.
-    expect((await julian('POST', '/messages', { channel: 'deploys', text: block('sandbox@1', { id: 'sbx-9', action: 'boot' }) })).status).toBe(400)
-  })
-
   it('drops its blocks with a deleted message', async () => {
     const { julian, read } = await setUp()
     const { message } = (await julian('POST', '/messages', { channel: 'deploys', text: block('sandbox@1', started) })).body
@@ -193,71 +178,6 @@ describe('blocks in messages', () => {
     // Where it may post, its block is checked.
     const poster = caller(board.fetch, await personToken(), { 'x-board-can': 'deploys=post' })
     expect((await poster('POST', '/messages', { channel: 'deploys', text: bad })).status).toBe(400)
-  })
-
-  it('checks what a sync writes on the board itself as any write, before the middleware and after', async () => {
-    const breaks: Middleware = async ({ write, next }) => next({ text: write.text.replace('"started"', '"rewritten"') })
-    for (const middleware of [[], [breaks]]) {
-      const { board, read, texts } = await setUp({ middleware })
-      const sync = caller(board.fetch, await deploymentToken('sync', 'prj_sync'))
-      expect((await sync('POST', '/watchers', { watch: {}, sync: [{ key: 'reviews', platform: 'github' }] })).status).toBe(200)
-      const author = { id: 'reviews:user:9', handle: 'ada', name: 'Ada', avatar: null, isBot: false }
-      // `from: null`: written on the board, as that platform user, by a sync that calls the board itself.
-      const write = (text: string) => sync('POST', '/sync/imports', { op: 'post', author, from: null, channel: 'deploys', text })
-      const bad = block('sandbox@1', { id: 'sbx-9', action: 'boot' })
-      expect(await write(bad)).toMatchObject({ status: 400, body: { error: { code: 'invalid_block' } } })
-      const good = await write(block('sandbox@1', { id: 'sbx-9', action: 'stopped' }))
-      expect(good.status).toBe(200)
-      expect((await read(good.body.message)).blocks).toEqual([{ schema: 'sandbox', version: 1, data: { id: 'sbx-9', action: 'stopped' } }])
-      expect(await sync('POST', '/sync/imports', { op: 'edit', author, from: null, message: good.body.message, text: bad })).toMatchObject({ status: 400, body: { error: { code: 'invalid_block' } } })
-      // What the middleware made of a block that matched is what's written, so it's what's checked.
-      const rewritten = await write(block('sandbox@1', started))
-      expect(rewritten.status).toBe(middleware.length ? 400 : 200)
-      expect((await texts()).filter((text) => text.includes('rewritten') || text.includes('boot'))).toEqual([])
-    }
-  })
-
-  it("shows no blocks once a platform's edit is its text, and shows them again after an edit on the board", async () => {
-    const { board, read } = await setUp()
-    const sync = caller(board.fetch, await deploymentToken('sync', 'prj_sync'))
-    expect((await sync('POST', '/watchers', { watch: {}, sync: [{ key: 'reviews', platform: 'github' }] })).status).toBe(200)
-    const author = { id: 'reviews:user:9', handle: 'ada', name: 'Ada', avatar: null, isBot: false }
-    const imports = (body: Record<string, unknown>) => sync('POST', '/sync/imports', { author, ...body })
-    const written = await imports({ op: 'post', from: null, channel: 'deploys', text: block('sandbox@1', started) })
-    expect((await read(written.body.message)).blocks).toHaveLength(1)
-
-    // The same message, edited as the platform did it: never refused, and no longer the board's text.
-    const bad = block('sandbox@1', { id: 'sbx-9', action: 'boot' })
-    expect((await imports({ op: 'edit', from: 'reviews', message: written.body.message, text: bad })).status).toBe(200)
-    expect(await read(written.body.message)).toMatchObject({ text: bad, from: null, blocks: [] })
-    // Even one that would match is a platform's text, which the board never checked.
-    expect((await imports({ op: 'edit', from: 'reviews', message: written.body.message, text: block('sandbox@1', { id: 'sbx-9', action: 'stopped' }) })).status).toBe(200)
-    expect((await read(written.body.message)).blocks).toEqual([])
-
-    // Edited on the board again, it's checked, and carries what it says.
-    expect((await imports({ op: 'edit', from: null, message: written.body.message, text: bad })).status).toBe(400)
-    expect((await imports({ op: 'edit', from: null, message: written.body.message, text: block('sandbox@1', started) })).status).toBe(200)
-    expect((await read(written.body.message)).blocks).toEqual([{ schema: 'sandbox', version: 1, data: started }])
-  })
-
-  it("keeps a block's data as it was checked: a mention in it is never rewritten", async () => {
-    const { board, julian, read } = await setUp()
-    expect((await julian('POST', '/schemas', { name: 'note', version: 1, schema: { type: 'object', required: ['text'], properties: { text: { type: 'string', maxLength: 24 } } } })).status).toBe(200)
-    const sync = caller(board.fetch, await deploymentToken('sync', 'prj_sync'))
-    expect((await sync('POST', '/watchers', { watch: {}, sync: [{ key: 'reviews', platform: 'github' }] })).status).toBe(200)
-    const author = { id: 'reviews:user:9', handle: 'ada', name: 'Ada', avatar: null, isBot: false }
-    // In prose, an import's mention of its own key's user is named as this sync names them, which is longer.
-    const data = { text: 'ask @[reviews:user:9]' }
-    for (const fenced of [block('note@1', data), `~~~json#note@1\n${JSON.stringify(data)}\n~~~`, `${F}json#note@1\n{ "text": "ask @[reviews:user:9]" }\n${F}`]) {
-      const text = `for @[reviews:user:9]\n\n${fenced}`
-      const imported = await sync('POST', '/sync/imports', { op: 'post', author, from: null, channel: 'deploys', text })
-      expect(imported.status).toBe(200)
-      const message = await read(imported.body.message)
-      // The mention in the prose was renamed, and the one in the data was left as it was checked.
-      expect(message.text).not.toBe(text)
-      expect(message.text.endsWith(fenced)).toBe(true)
-      expect(message.blocks).toEqual([{ schema: 'note', version: 1, data }])
-    }
   })
 
   it("posts a block from the board's own code, built with block()", async () => {

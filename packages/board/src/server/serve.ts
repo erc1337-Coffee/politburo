@@ -1,8 +1,6 @@
 import { DEFAULT_TASK_PRIORITY } from '../contract/schemas.ts'
 import {
   AckBody,
-  AckOperationalMessageBody,
-  SendOperationalMessageBody,
   AssignTaskBody,
   AttentionAnswerBody,
   RequestAttentionBody,
@@ -34,13 +32,8 @@ import {
   DeleteBody,
   EditBody,
   EventsQuery,
-  IssueOpsIntentBody,
-  IssueOpsRoleIntentBody,
   LabelBody,
-  ListOpsAgentsQuery,
-  ListOpsIntentsQuery,
   MatchesQuery,
-  OpsAgentGenerationBody,
   PostBody,
   ReactBody,
   ChannelMessagesQuery,
@@ -49,8 +42,6 @@ import {
   CreateChannelBody,
   Ref,
   RegisterBody,
-  RegisterOpsAgentBody,
-  ReportOpsIntentBody,
   ScheduleBody,
   CreateGrantsBody,
   CreateInviteBody,
@@ -80,12 +71,12 @@ import { claimsOf, KNOWN_AGENTS } from './actors.ts'
 import type { CallerRequest } from './auth.ts'
 import { isJoinedCredential } from './policy.ts'
 import { avatarSvg } from './avatars.ts'
-import { badRequest, batchTooLarge, forbidden, HttpError, json, noAgentOps, noWorkEvidence, notFound, toErrorResponse, unauthorized } from './errors.ts'
+import { badRequest, batchTooLarge, forbidden, HttpError, json, noWorkEvidence, notFound, toErrorResponse, unauthorized } from './errors.ts'
 import { extractMentions, settleMentions, type Mentioned, type MentionedActor } from '../contract/mentions.ts'
 import { DroppedError, runMiddleware, type Write, type WriteSource } from './middleware.ts'
 import { ConfigureChannelBody, RepositoriesQuery } from '../contract/channel-settings.ts'
 import { SetIdentityBody } from '../contract/identities.ts'
-import { ATTENTION_METHODS, createRouter, INVITE_METHODS, isAgentIntentMethod, isAgentOpsMethod, isOperationalInboxMethod, isWorkEvidenceMethod, openapi, queryObject, readCapped, readJson } from './routing.ts'
+import { ATTENTION_METHODS, createRouter, INVITE_METHODS, isWorkEvidenceMethod, openapi, queryObject, readCapped, readJson } from './routing.ts'
 import { authorize, compileAccess, FULL_ACCESS, parseCan, type Access } from './access.ts'
 import type { WriteOrigin } from './origin.ts'
 import type { WatcherContext } from './watcher.ts'
@@ -93,7 +84,7 @@ import { VERSION } from '../version.ts'
 import { atAudience, CONTROL, noInvites, redeem, SECRET_RESPONSE } from './politburo-serve.ts'
 
 /** The methods whose answer is something new. */
-const CREATED = new Set<Method>(['post', 'schedule', 'createTask', 'createTasks', 'requestTaskAttention', 'upload', 'uploadFinish', 'createInvite', 'sendOperationalMessage'])
+const CREATED = new Set<Method>(['post', 'schedule', 'createTask', 'createTasks', 'requestTaskAttention', 'upload', 'uploadFinish', 'createInvite'])
 
 /**
  * Refuses a label write under `board.`: those keys are the board's own, which only its task writes
@@ -144,19 +135,12 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
     case 'invites':
     case 'schemas':
     case 'status':
-    case 'readOperationalInbox':
     case 'modelRoutes':
     case 'identities':
       return {}
     case 'pause':
     case 'resume':
       return ControlBody.parse(await body())
-    case 'sendOperationalMessage':
-      return SendOperationalMessageBody.parse(await body())
-    case 'ackOperationalMessage':
-      return { id: Ref.parse(id), ...AckOperationalMessageBody.parse(await body()) }
-    case 'archiveOperationalMessage':
-      return { id: Ref.parse(id) }
     case 'message':
       return { id, ...ThreadQuery.parse(queryObject(url)) }
     case 'posted':
@@ -175,25 +159,6 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
       return ThreadsQuery.parse(queryObject(url))
     case 'schedules':
       return SchedulesQuery.parse(queryObject(url))
-    case 'listOpsAgents':
-      return ListOpsAgentsQuery.parse(queryObject(url))
-    case 'registerOpsAgent':
-      return RegisterOpsAgentBody.parse(await body())
-    case 'heartbeatOpsAgent':
-    case 'retireOpsAgent':
-      return { agent: Ref.parse(params.agent), ...OpsAgentGenerationBody.parse(await body()) }
-    case 'issueOpsIntent':
-      return { agent: Ref.parse(params.agent), ...IssueOpsIntentBody.parse(await body()) }
-    case 'issueOpsRoleIntent':
-      return IssueOpsRoleIntentBody.parse(await body())
-    case 'listOpsIntents':
-      return { agent: Ref.parse(params.agent), ...ListOpsIntentsQuery.parse(queryObject(url)) }
-    case 'takeOpsIntent':
-      return { id: Ref.parse(id), ...OpsAgentGenerationBody.parse(await body()) }
-    case 'reportOpsIntent':
-      return { id: Ref.parse(id), ...ReportOpsIntentBody.parse(await body()) }
-    case 'getOpsHealth':
-      return { task: Ref.parse(params.task) }
     case 'matches':
       return MatchesQuery.parse(queryObject(url))
     case 'events': {
@@ -759,15 +724,6 @@ export async function createServe(context: BoardContext): Promise<Serve> {
 
   /** The protocol method `name`, as board() serves it: what it posts, edits, and imports goes through the middleware. */
   async function invoke(name: Method, caller: Caller, input: unknown, signal: AbortSignal): Promise<unknown> {
-    if (isOperationalInboxMethod(name)) {
-      const permission = name === 'sendOperationalMessage' ? 'post' : 'read'
-      const access = accessOf(caller)
-      if (access !== null && !access.everywhere(permission))
-        throw forbidden(`this token needs ${permission} in every channel to use the operational inbox`)
-      const method = backend[name] as ((caller: Caller, input: unknown, signal: AbortSignal) => Promise<unknown>) | undefined
-      if (!method) throw new HttpError(501, 'no_operational_inbox', 'this board keeps no operational inbox')
-      return method.call(backend, caller, input, signal)
-    }
     switch (name) {
       case 'post':
         ownLabels((input as Protocol['post']['input']).labels)
@@ -980,10 +936,7 @@ export async function createServe(context: BoardContext): Promise<Serve> {
       } : {}),
       ...(backend.supportsTaskAuthority === true ? { task_authority: true } : {}),
       ...(capabilities?.task_attention === true ? { task_attention: true } : {}),
-      ...(capabilities?.agent_ops === true ? { agent_ops: true } : {}),
       ...(capabilities?.workEvidence ? { workEvidence: capabilities.workEvidence } : {}),
-      ...(capabilities?.agent_intents === true ? { agent_intents: true } : {}),
-      ...(capabilities?.politburo === 1 ? { politburo: 1 } : {}),
     }, 200, capabilities?.task_claim_hold === true ? { [TASK_CLAIM_HOLD_HEADER]: '1' } : undefined)
   }
 
@@ -1011,16 +964,13 @@ export async function createServe(context: BoardContext): Promise<Serve> {
 
       // Everything else is for a caller: this deployment's own code, or a request, which a board that
       // uses another board's doesn't serve. Nothing runs for one before that.
-      const ops = target.kind === 'protocol' && isAgentOpsMethod(target.name)
-        ? (isAgentIntentMethod(target.name) ? 'intents' : 'registry')
-        : null
-      if (!injected && !policy.open) throw ops ? noAgentOps(ops) : servesOnly()
+      if (!injected && !policy.open) throw servesOnly()
       if (!injected && target.kind === 'protocol' && target.name === 'discovery') return await discovery(request, audienceOf(at), request.signal)
       if (target.kind === 'protocol' && target.name === 'redeemInvite') return await redeem(request, at, injected !== null, backend, OWN, ownUrl, audienceOf)
       if (target.kind === 'protocol' && !CONTROL.has(target.name) && !ATTENTION_METHODS.has(target.name)
-        && !isOperationalInboxMethod(target.name) && !isWorkEvidenceMethod(target.name) && typeof backend[target.name] !== 'function') {
+        && !isWorkEvidenceMethod(target.name) && typeof backend[target.name] !== 'function') {
         if (INVITE_METHODS.has(target.name)) throw noInvites()
-        throw ops ? noAgentOps(ops) : notFound(`no route: ${request.method} ${url.pathname}`)
+        throw notFound(`no route: ${request.method} ${url.pathname}`)
       }
       const asked = injected ? null : requestOf(request, at)
       const caller: Caller = injected ?? (await callerOf(asked!))
@@ -1035,9 +985,7 @@ export async function createServe(context: BoardContext): Promise<Serve> {
       if (target.name === 'attachment') return attachmentResponse(output as Protocol['attachment']['output'])
       // A channel that was there already is answered, not created.
       const made = CREATED.has(target.name) || (target.name === 'createChannel' && (output as Protocol['createChannel']['output']).created)
-      // Pending intents and health can change with time alone; a poll must not reuse a cached answer.
-      const headers = target.name === 'createInvite' ? SECRET_RESPONSE
-        : (ops && request.method === 'GET') || isOperationalInboxMethod(target.name) ? { 'cache-control': 'private, no-store' } : undefined
+      const headers = target.name === 'createInvite' ? SECRET_RESPONSE : undefined
       return json(output, made ? 201 : 200, headers)
     } catch (error) {
       // Stopped by its caller (a page reloaded, a long-poll let go): no one reads the answer, and

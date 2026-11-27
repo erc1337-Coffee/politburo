@@ -1,4 +1,3 @@
-import { formatOperationalInbox, lineText } from './format.ts'
 import { cli, client, flags, out, result, usage } from './main.ts'
 
 export function portFlag(): number | undefined {
@@ -22,37 +21,4 @@ export async function boardStatus(command: 'status' | 'pause' | 'resume', args: 
   if (flags.json) result(status)
   else out(`board  ${status.paused ? 'paused' : 'running'}`)
   return 0
-}
-
-export async function inbox(args: string[]): Promise<number> {
-  const [verb, id, status, extra] = args
-  if (verb === 'read' || verb === 'ack' || verb === 'archive') {
-    if (verb === 'read') {
-      if (args.length > 1) throw usage('inbox read takes no arguments.')
-      const read = await client().operationalInbox.read()
-      if (flags.json) return result(read), 0
-      return out(formatOperationalInbox(read.messages)), 0
-    }
-    if (!id) throw usage('Missing the message ID from inbox read.', { reason: 'missing_arguments' })
-    if (verb === 'archive') {
-      if (status !== undefined) throw usage('inbox archive takes one message ID.')
-      const archived = await client().operationalInbox.archive(id)
-      if (flags.json) return result(archived), 0
-      return out(`${lineText(archived.message.id)}  archived`), 0
-    }
-    if (status === undefined) throw usage('Missing the receipt: seen or acted.', { reason: 'missing_arguments' })
-    if (status !== 'seen' && status !== 'acted') throw usage('The receipt must be seen or acted.')
-    if (extra !== undefined) throw usage('inbox ack takes a message ID and a receipt.')
-    const acked = await client().operationalInbox.ack(id, status)
-    if (flags.json) return result(acked), 0
-    return out(`${lineText(acked.message.id)}  ${status}`), 0
-  }
-  throw usage(verb === undefined ? 'Missing what to do: read, ack, or archive.' : `Unknown command ${verb} for inbox.`, { reason: verb === undefined ? 'missing_arguments' : 'unknown_command' })
-}
-
-export function doingInbox(a: string | undefined, b: string | undefined): string {
-  if (a === 'read') return 'read your operational inbox'
-  if (a === 'ack') return `acknowledge inbox message ${b}`
-  if (a === 'archive') return `archive inbox message ${b}`
-  return 'use the operational inbox'
 }

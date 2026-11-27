@@ -51,7 +51,7 @@ export function Settings(props: { state: State; viewer: Viewer; now: number; lea
       </nav>
       <ActionsSlot.Provider value={slot}>
         <div className="page">
-          <DeveloperIdentity me={state.me!} channels={Object.keys(state.channels).sort()} />
+          <DeveloperIdentity me={state.me!} />
           {section === 'access' && <Access state={state} viewer={viewer} where={props.where} />}
           {section === 'identities' && <IdentitiesSection state={state} viewer={viewer} />}
           {section === 'schemas' && <Schemas state={state} viewer={viewer} selected={props.open} />}
@@ -64,47 +64,19 @@ export function Settings(props: { state: State; viewer: Viewer; now: number; lea
   )
 }
 
-function DeveloperIdentity({ me, channels }: { me: Me; channels: string[] }) {
-  const [open, setOpen] = useState(false)
-  const [pick, setPick] = useState('')
-  const channel = channels.includes(pick) ? pick : channels[0]
-  const [agents, setAgents] = useState<string[]>([])
-  const [problem, setProblem] = useState<string | null>(null)
+function DeveloperIdentity({ me }: { me: Me }) {
   const [editing, setEditing] = useState<board.Profile | null>(null)
   const anchor = useRef<HTMLDivElement>(null)
   const remembered = (name: string) => {
     const avatar = board.avatarOf(name)
     return avatar ? { name, avatar } : { name }
   }
-  useEffect(() => {
-    setAgents([])
-    setProblem(null)
-    if (!open || channel === undefined) return
-    let current = true
-    void board.listProfiles(channel).then(
-      (profiles) => { if (current && profiles !== undefined) setAgents(profiles) },
-      (error) => { if (current) setProblem(said(error)) },
-    )
-    return () => { current = false }
-  }, [open, channel, me])
   return (
-    <details className="developer-identity" onToggle={(event) => setOpen(event.currentTarget.open)}>
+    <details className="developer-identity">
       <summary>developer options</summary>
       <div className="profile-options" ref={anchor}>
-        {channels.length > 1 && (
-          <label>registry channel{' '}
-            <select value={channel} onChange={(event) => setPick(event.target.value)}>
-              {channels.map((path) => <option key={path} value={path}>#{path}</option>)}
-            </select>
-          </label>
-        )}
         <Menu className="act" title="post as" trigger={<>post as… <ChevronsUpDown size={13} /></>}>
           {!board.named && <MenuItem onClick={() => void board.setProfile(null)}>act as yourself</MenuItem>}
-          {agents.map((name) => (
-            <MenuItem key={name} onClick={() => void board.setProfile(remembered(name))}>
-              <span className="choice">{name}{me.profile === name && <Check size={13} />}</span>
-            </MenuItem>
-          ))}
           <MenuSeparator />
           {me.profile !== null && <MenuItem onClick={() => setEditing(remembered(me.profile!))}>change name or avatar…</MenuItem>}
           <MenuItem onClick={() => setEditing({ name: '' })}>another profile…</MenuItem>
@@ -121,7 +93,6 @@ function DeveloperIdentity({ me, channels }: { me: Me; channels: string[] }) {
             onSubmit={({ name, avatar }) => void board.setProfile({ name: name!, ...(avatar ? { avatar } : {}) })}
           />}
         </Panel>
-        {problem && <span className="error-text">{problem}</span>}
       </div>
     </details>
   )

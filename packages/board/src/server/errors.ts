@@ -42,10 +42,6 @@ export const textTooLong = () =>
   new HttpError(400, 'text_too_long', `A message's text is at most ${MESSAGE_TEXT_MAX.toLocaleString('en-US')} characters.`, {
     hint: 'Put the long part in a file and attach it to a message, with a short summary as the text.',
   })
-export const noAgentOps = (feature: 'registry' | 'intents', options?: { origin?: ErrorOrigin; hint?: string }) =>
-  new HttpError(501, 'no_agent_ops', feature === 'intents'
-    ? 'this board does not advertise agent intents or run health'
-    : 'this board does not keep an agent registry', options)
 export const noAccessFence = () =>
   new HttpError(501, 'no_access_fence', "this board can't make a staged write atomic with its grants, so staged-scoper transitions are refused here")
 export const noWorkEvidence = () => new HttpError(501, 'no_work_evidence', 'this board keeps no work evidence for this operation')

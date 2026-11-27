@@ -1386,20 +1386,6 @@ async function switchProfile(name: string, fromRegistry = false) {
   await vi.waitFor(() => expect(document.querySelector('.whoami .as')!.textContent).toContain(name))
 }
 
-it('labels the signed-in person and lists only registered profiles in Settings', async () => {
-  const { as, client, open } = await workbench({ agentOps: true })
-  await client.post('work', 'Ready for review')
-  await as('reviewer').agents.register({ channel: 'work', role: 'implementation-worker', harness: 'shell' })
-  await open('/settings/access')
-  const me = await client.me()
-  await vi.waitFor(() => expect(document.querySelector('.whoami .as')!.textContent).toContain(me.name))
-  expect(document.querySelector('.sidebar-foot button[title="post as"]')).toBeNull()
-  await switchProfile('reviewer', true)
-  button('post as').click()
-  await vi.waitFor(() => expect(menuItem('another profile…')).toBeDefined())
-  expect([...document.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent?.trim())).not.toContain('claude')
-})
-
 it('waits for a name in app-served mode and then shows that profile', async () => {
   const { open } = await workbench()
   await open('/', { named: true, profile: 'deployment' })
@@ -1451,38 +1437,6 @@ it('keeps the identity shown and the author of writes in sync when switching dur
     expect(document.querySelector('.whoami .as')?.textContent).toContain('editor')
   } finally {
     release.resolve()
-  }
-})
-
-it('drops a registry answer from the previous profile at the data boundary', async () => {
-  const { as, client, open } = await workbench({ agentOps: true })
-  await client.post('work', 'Ready for review')
-  await as('reviewer').agents.register({ channel: 'work', role: 'implementation-worker', harness: 'shell' })
-  const reading = Promise.withResolvers<void>()
-  const release = Promise.withResolvers<void>()
-  await open('/settings/access', {
-    profile: 'editor',
-    proxy: async (request, forward) => {
-      const response = await forward(request)
-      if (routePath(request) === '/ops/agents' && request.headers.get('x-board-profile') === 'editor') {
-        reading.resolve()
-        await release.promise
-      }
-      return response
-    },
-  })
-  // Test at the data boundary so effect cleanup cannot hide a stale result.
-  const page = await import('../src/inspect/app/board.ts')
-  const stale = page.listProfiles('work')
-  try {
-    await reading.promise
-    await switchProfile('writer')
-    release.resolve()
-    expect(await stale).toBeUndefined()
-    expect(await page.listProfiles('work')).toEqual(['reviewer'])
-  } finally {
-    release.resolve()
-    await stale
   }
 })
 

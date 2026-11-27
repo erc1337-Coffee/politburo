@@ -32,10 +32,10 @@ describe('cli', () => {
     // A program gets what to run next, as argv: the same command, with the URL it lacked.
     const json = await vb(['read', 'dev', '--json'], { BOARD_URL: undefined }, undefined, root)
     expect(json).toMatchObject({ code: 2, stdout: '' })
-    expect(failure(json)).toMatchObject({ status: 'action_required', reason: 'missing_board', next: [{ argv: ['vb', 'read', 'dev', '--json', '--url', '<URL>'] }, {}] })
+    expect(failure(json)).toMatchObject({ status: 'action_required', reason: 'missing_board', next: [{ argv: ['vb', 'read', 'dev', '--json', '--url', '<URL>'] }] })
     // The URL goes where options go: before a --, after which everything is text.
     const text = await vb(['post', 'dev', '--json', '--', '-1'], { BOARD_URL: undefined }, undefined, root)
-    expect(failure(text).next?.map((recovery) => recovery.argv)).toEqual([['vb', 'post', 'dev', '--json', '--url', '<URL>', '--', '-1'], undefined])
+    expect(failure(text).next?.[0]?.argv).toEqual(['vb', 'post', 'dev', '--json', '--url', '<URL>', '--', '-1'])
     for (const command of ['link', 'use']) {
       const gone = await vb([command, url], {}, undefined, root)
       expect(gone).toMatchObject({ code: 2, stdout: '' })
@@ -764,16 +764,6 @@ describe('cli', () => {
     try {
       const threads = await vb(['read', 'errors-www'], { BOARD_URL: `${old.origin}/api/board` })
       expect(threads).toMatchObject({ code: 1, stderr: expect.stringMatching(OLD_THREADS) })
-    } finally {
-      await old.close()
-    }
-  })
-
-  it('says so when the board is older than reading links, instead of crashing on its discovery document', async () => {
-    const old = await serve(async () => Response.json({ version: '0.16.0', sync: [] }))
-    try {
-      const read = await vb(['read', 'https://acme.slack.com/archives/C1/p1727000000123456'], { BOARD_URL: `${old.origin}/api/board` })
-      expect(read).toMatchObject({ code: 1, stderr: expect.stringMatching(/^error: This board can't read links\. It's older than this CLI\.\n/) })
     } finally {
       await old.close()
     }

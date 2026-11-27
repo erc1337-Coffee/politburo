@@ -41,10 +41,8 @@ describe('local()', () => {
         ['skipped', 'lets a member grant on a pattern after a lock under it'],
         ['skipped', 'lets a project on another team in, in its environments'],
         ['skipped', 'lets a joined caller read and post only as granted'],
-        ['skipped', 'registers, lists, heartbeats, and retires an agent under its verified binding'],
-        ['skipped', 'confirms a claimed run only through a taken and reported status probe'],
       ])
-      expect([...new Set(report.checks.map((check) => check.group))]).toEqual(['core', 'paging', 'search', 'schedules', 'tasks', 'grants', 'invites', 'schemas', 'attachments', 'watchers', 'sync', 'agents', 'operational-inbox'])
+      expect([...new Set(report.checks.map((check) => check.group))]).toEqual(['core', 'paging', 'search', 'schedules', 'tasks', 'grants', 'invites', 'schemas', 'attachments', 'watchers'])
     } finally {
       await team.close()
     }
