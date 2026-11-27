@@ -13,9 +13,9 @@ export const CLAUDE_CLI_PROVIDER_PACKAGE = 'npm:@pi-plugins/claude-cli@0.3.0'
 
 /** The `packages` directory: the repository layout and the uploaded worker layout are the same. */
 const packagesDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
-export const SPRITE_DIRECTORY = join(packagesDirectory, 'swarm', 'sprite')
+export const PI_SUPPORT_DIRECTORY = join(packagesDirectory, 'worker', 'pi-support')
 export const QUESTION_EXTENSION = join(packagesDirectory, 'worker', 'pi-extension', 'ask_orchestrator.ts')
-export const ROUTER_EXTENSION = join(SPRITE_DIRECTORY, 'codex-cursor-fallback.ts')
+export const ROUTER_EXTENSION = join(PI_SUPPORT_DIRECTORY, 'codex-cursor-fallback.ts')
 
 function run(command: string, args: string[], timeoutMs = 10 * 60_000): Promise<{ code: number; output: string }> {
   return new Promise((resolvePromise) => {
@@ -53,8 +53,8 @@ export async function preparePi(log: (line: string) => void): Promise<PiSetup> {
   const agent = join(homedir(), '.pi', 'agent')
   mkdirSync(agent, { recursive: true })
   const catalog = join(agent, 'models-store.json')
-  if (!existsSync(catalog) && existsSync(join(SPRITE_DIRECTORY, 'models-store.json'))) copyFileSync(join(SPRITE_DIRECTORY, 'models-store.json'), catalog)
-  const authSeed = join(SPRITE_DIRECTORY, 'pi-auth-ensure')
+  if (!existsSync(catalog) && existsSync(join(PI_SUPPORT_DIRECTORY, 'models-store.json'))) copyFileSync(join(PI_SUPPORT_DIRECTORY, 'models-store.json'), catalog)
+  const authSeed = join(PI_SUPPORT_DIRECTORY, 'pi-auth-ensure')
   if (existsSync(authSeed)) await run('sh', [authSeed], 30_000)
   const claudeCli = await run(piCommand, ['install', CLAUDE_CLI_PROVIDER_PACKAGE])
   if (claudeCli.code !== 0) log(`the Claude CLI provider did not install: ${claudeCli.output.slice(-200)}`)

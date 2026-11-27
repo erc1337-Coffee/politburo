@@ -126,29 +126,7 @@ importers:
         specifier: ^7.0.2
         version: 7.0.2
 
-  packages/relay:
-    devDependencies:
-      '@types/node':
-        specifier: ^26.6.3
-        version: 26.6.3
-      typescript:
-        specifier: ^7.0.2
-        version: 7.0.2
-
-  packages/runtime:
-    dependencies:
-      '@vercel/board':
-        specifier: workspace:^
-        version: link:../board
-    devDependencies:
-      '@types/node':
-        specifier: ^26.6.3
-        version: 26.6.3
-      typescript:
-        specifier: ^7.0.2
-        version: 7.0.2
-
-  packages/swarm:
+  packages/orchestrator:
     dependencies:
       '@remilia/politburo-ledger':
         specifier: workspace:^
@@ -156,21 +134,21 @@ importers:
       '@remilia/politburo-relay':
         specifier: workspace:^
         version: link:../relay
-      '@remilia/politburo-runtime':
-        specifier: workspace:^
-        version: link:../runtime
       '@vercel/board':
         specifier: workspace:^
         version: link:../board
-      ajv:
-        specifier: ^8.17.1
-        version: 8.17.1
-      jose:
-        specifier: ^6.2.12
-        version: 6.2.12
       yaml:
         specifier: ^2.9.1
         version: 2.9.1
+    devDependencies:
+      '@types/node':
+        specifier: ^26.6.3
+        version: 26.6.3
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
+
+  packages/relay:
     devDependencies:
       '@types/node':
         specifier: ^26.6.3
