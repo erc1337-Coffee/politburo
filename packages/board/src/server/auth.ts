@@ -29,7 +29,7 @@ export type CallerRequest = {
   headers: Headers
 }
 
-/** `external`: a platform user writing through sync (`slack:user:U0456`). A local board's people are `local:user:<name>`. */
+/** `external`: a platform user writing through sync (`github:user:1234`). A local board's people are `local:user:<name>`. */
 export type PrincipalKind = 'person' | 'deployment' | 'workflow' | 'external'
 
 /**
@@ -608,8 +608,8 @@ export type HostPrincipal = {
   id: string
   kind: PrincipalKind
   /**
-   * Who it is to people, its handle and its name: the board takes it as checked, so a person posts to Slack under
-   * it as a plain sender. A verifier that knows only an ID gives that.
+   * Who it is to people, its handle and its name: the board takes it as checked. A verifier that knows only an
+   * ID gives that.
    */
   handle: string
   /** Optional absolute HTTPS picture URL for a person. Invalid pictures are ignored. */
@@ -620,8 +620,8 @@ export type HostPrincipal = {
 /** What marks `oidcTokens()`, so board() can tell it makes no host's principals. */
 export const TOKENS = Symbol('board.oidcTokens')
 /**
- * What marks a verifier whose people's user IDs are the logins they're known by (`ada@example.com`),
- * as Tailscale's are: a grant on its board names a user by one, where any other board that verifies
+ * What marks a verifier whose people's user IDs are the logins they're known by (`ada@example.com`):
+ * a grant on its board names a user by one, where any other board that verifies
  * tokens itself has nothing to look an email up with.
  */
 export const LOGINS = Symbol('board.logins')

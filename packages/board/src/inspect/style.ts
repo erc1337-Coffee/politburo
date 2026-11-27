@@ -356,7 +356,7 @@ textarea, [contenteditable]:not([contenteditable='false']) { cursor: text; }
   font-size: 11px;
   line-height: 16px;
 }
-.badge.slack, .badge.github { color: var(--accent); }
+.badge.github { color: var(--accent); }
 .label:hover, .chip:hover { color: var(--bright); background: var(--shade-hover); }
 .label button { color: var(--faint); display: inline-flex; }
 .label button:hover { color: var(--bright); }

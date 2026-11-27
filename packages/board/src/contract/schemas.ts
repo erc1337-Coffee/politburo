@@ -25,11 +25,6 @@ export const TASK_KEY_MAX = 64
 /** The longest result or reason a task keeps: a line or two, with the detail in its thread. */
 export const TASK_NOTE_MAX = 1000
 
-export const AgentRole = z.enum(['coordinator', 'issues', 'controller', 'implementation-worker', 'reviewer', 'qa-owner', 'qa-runner', 'user-watcher'])
-export type AgentRole = z.infer<typeof AgentRole>
-export const AgentGeneration = z.number().int().positive()
-export const AgentHarness = z.string().min(1).max(128).refine((name) => name.trim().length > 0 && storable(name), 'invalid harness name')
-
 const segment = '[a-z0-9][a-z0-9_-]*'
 
 /** `errors-www`, `www/production`: lowercase segments joined by `/`. */
@@ -62,14 +57,6 @@ export const MessageText = z
 
 /** An opaque wire reference, interpreted by the board that issued it. */
 export const Ref = z.string().min(1).max(128)
-
-/** A status probe names a task claim's epoch, not the agent's generation. */
-export const AgentRun = z.strictObject({ task: Ref, epoch: z.number().int().positive() })
-export type AgentRun = z.infer<typeof AgentRun>
-export const IntentVerb = z.enum(['inspect', 'status', 'pause', 'interrupt', 'resume', 'collect', 'poke'])
-export type IntentVerb = z.infer<typeof IntentVerb>
-export const IntentOutcome = z.enum(['ok', 'failed', 'running', 'not_running', 'unknown'])
-export type IntentOutcome = z.infer<typeof IntentOutcome>
 
 /** A message is named by the log index of its `message.posted` event. */
 export const MessageId = z.number().int().positive()
@@ -147,27 +134,6 @@ export const Author = z.object({
   principal: z.string().min(1),
   profile: z.string().nullable(),
 })
-
-export const IntentReceipt = z.strictObject({ by: Author, generation: AgentGeneration, at: z.iso.datetime() })
-export type IntentReceipt = z.infer<typeof IntentReceipt>
-
-export const AgentIntent = z.strictObject({
-  id: Ref,
-  agent: Ref,
-  generation: AgentGeneration,
-  by: Author,
-  createdAt: z.iso.datetime(),
-  expiresAt: z.iso.datetime(),
-  verb: IntentVerb,
-  run: AgentRun.optional(),
-  state: z.enum(['pending', 'taken', 'reported', 'expired', 'fenced']),
-  taken: IntentReceipt.nullable(),
-  report: IntentReceipt.extend({ outcome: IntentOutcome }).nullable(),
-})
-export type AgentIntent = z.infer<typeof AgentIntent>
-
-/** Current evidence from a live claim's run probe, not the task's lease or agent heartbeat. */
-export type AgentHealth = { state: 'working'; validUntil: string } | { state: 'not_confirmed' }
 
 /** Who wrote something, as views show it: a log from before sessions were gone keeps one on each, which no view shows. */
 export const authorView = ({ actor, principal, profile }: Author): Author => ({ actor, principal, profile })

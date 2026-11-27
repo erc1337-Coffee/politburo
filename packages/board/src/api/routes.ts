@@ -27,7 +27,7 @@ import {
 } from '../contract/schemas.ts'
 import { ConfigureChannelBody, RepositoriesQuery } from '../contract/channel-settings.ts'
 import { SetIdentityBody } from '../contract/identities.ts'
-import type { PublicBoardEvent } from '../contract/events.ts'
+import type { BoardEvent } from '../contract/events.ts'
 import { TaskBinding, TaskPacket } from '../contract/task-authority.ts'
 import type { Link } from '../contract/external.ts'
 import type { Actor, Channel, Message, Task } from '../contract/folds.ts'
@@ -37,7 +37,6 @@ import { controlRoutes, attentionRoutes, taskAuthority, taskPriority } from './p
 
 export { Ref }
 export { AttentionAnswerBody, AttentionDraft, AttentionReceipt, AttentionView, RequestAttentionBody } from '../contract/attention.ts'
-export type { AgentRun } from '../contract/schemas.ts'
 
 
 /** The message's `revision` as it was read: if it's been edited or deleted since, 409 `revision_conflict`. */
@@ -823,7 +822,7 @@ type PayloadView<P> = {
 }
 
 /** A board event as subscribers get it. Checking `type` narrows `payload` to that event's. */
-export type BoardEventView = PublicBoardEvent extends infer E
+export type BoardEventView = BoardEvent extends infer E
   ? E extends { type: infer T; payload: infer P }
     ? {
         /** Where this event is in the board's order: pass it as `after` to read on from here. */

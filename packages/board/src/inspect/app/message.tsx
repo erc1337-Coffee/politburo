@@ -225,13 +225,7 @@ function AttachmentView({ attachment }: { attachment: Attachment }) {
   )
 }
 
-// Slack's mark is four dot-and-bar pairs, one color each: bottom-left, top-left,
-// top-right, bottom-right, in the order Simple Icons draws them.
-const SLACK_COLORS = ['#E01E5A', '#36C5F0', '#2EB67D', '#ECB22E']
-const slackParts = (LOGOS.slack.match(/M[^M]+/g) ?? []).map((d, i) => ({ d, fill: SLACK_COLORS[Math.floor(i / 2)]! }))
-
 const SOURCES: Record<string, { name: string; paths: { d: string; fill: string }[] }> = {
-  slack: { name: 'Slack', paths: slackParts },
   github: { name: 'GitHub', paths: [{ d: LOGOS.github, fill: 'currentColor' }] },
   whatsapp: { name: 'WhatsApp', paths: [{ d: LOGOS.whatsapp, fill: '#25D366' }] },
 }
