@@ -1,13 +1,9 @@
-import { mkdtemp, rm } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { http } from '../src/backend-http/index.ts'
 import { board } from '../src/server/index.ts'
 import { createBoardClient } from '../src/client/client.ts'
-import { prepareJoinCredential } from '../src/client/join-config.ts'
 import { connect } from '../src/client/node.ts'
 import { inspector } from '../src/inspect/handler.ts'
 import { startInspector } from '../src/inspect/server.ts'
@@ -227,19 +223,10 @@ it('the local Node inspector refuses a redirect to a page write', async ({ onTes
   expect(configured.seen.filter((one) => one.method === 'POST').map((one) => one.body)).toEqual([body])
 })
 
-for (const kind of ['guarded', 'joined']) it(`the ${kind} Node transport returns the board redirect to a claim write`, async ({ onTestFinished }) => {
+it('the guarded Node transport returns the board redirect to a claim write', async () => {
   const elsewhere = await listen((_, respond) => respond.ok())
   const configured = await listen((_, respond) => respond.redirect(`${elsewhere.url}/sso-api`))
-  onTestFinished(() => { vi.unstubAllEnvs() })
-  if (kind === 'joined') {
-    const home = await mkdtemp(join(tmpdir(), 'board-claim-redirect-'))
-    onTestFinished(() => rm(home, { recursive: true, force: true }))
-    vi.stubEnv('XDG_CONFIG_HOME', home)
-    vi.stubEnv('BOARD_TOKEN', undefined)
-    const credential = await prepareJoinCredential(configured.url)
-    await credential.save(`vbj_${'a'.repeat(43)}`)
-  }
-  const transport = connect(configured.url, kind === 'guarded' ? { token: 'test' } : {})
+  const transport = connect(configured.url, { token: 'test' })
   const client = createBoardClient({ url: configured.url, fetch: transport.fetch })
 
   await expect(client.tasks.held('t', { epoch: 1, token: SECRET }).renew())

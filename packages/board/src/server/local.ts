@@ -139,7 +139,6 @@ export function local(options: LocalOptions = {}): LocalBackend {
     enforcesCommitEvidence: async () => (await open()).backend.enforcesCommitEvidence(),
     trust: {
       grants: async () => (await open()).backend.trust.grants(),
-      joined: async (digest, audience) => (await open()).backend.trust.joined(digest, audience),
     } satisfies Trust,
     bind(given: BoardBinding) {
       if (binding) throw new Error('local: this backend already serves a board: create one local() per board()')

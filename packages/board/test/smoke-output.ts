@@ -4,7 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 
 export type Output = { stdout: string; stderr: string }
 
-const CREDENTIAL = /vb[ij]_[\w-]{43}|\beyJ[\w-]+\.[\w-]+\.[\w-]+\b|"(?:secret|token)"\s*:/
+const CREDENTIAL = /\beyJ[\w-]+\.[\w-]+\.[\w-]+\b|"(?:secret|token)"\s*:/
 const LOOPBACK_BOARD_URL = /http:\/\/127\.0\.0\.1:\d+\/api\/board\b/
 
 export function createLeakCheck() {

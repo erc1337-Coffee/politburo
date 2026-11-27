@@ -1,4 +1,4 @@
-import type { AttentionDraft, CreatedInvite, InviteView, Joined, MessageView } from '../api/routes.ts'
+import type { AttentionDraft, MessageView } from '../api/routes.ts'
 import { BoardError } from '../client/client.ts'
 import { canonical } from '../contract/data-schemas.ts'
 import { compileAccess } from '../server/access.ts'
@@ -13,7 +13,7 @@ import type { Check, CheckResult, Context, PolitburoHelpers } from './index.ts'
 export type Made = { id: string; re: string | null; board: string | null; principal: string; channel: string; createdAt: string; check: string; unconfirmed?: string }
 
 export function politburo(helpers: PolitburoHelpers) {
-  const { Mismatch, Skip, alike, isRef, needRoot, refused, rejects, reply, same, show, task, taskBatch } = helpers
+  const { Mismatch, Skip, alike, isRef, refused, rejects, reply, same, show, task, taskBatch } = helpers
   const check: PolitburoHelpers['check'] = helpers.check
 
   const requestFailure = (error: unknown) =>
@@ -128,107 +128,6 @@ export function politburo(helpers: PolitburoHelpers) {
   async function onMade(ctx: Context, id: string, by: Board = ctx.board) {
     const why = await stays(by, madeOf(ctx, id))
     if (why !== null) throw new Mismatch(`a write the run expects refused: ${why}`)
-  }
-
-  const NO_INVITES = 'not kept here: this board keeps no invites'
-  const NO_INVITE_TOKEN = "this run can't call the board with a joined caller's token"
-
-  // An implementation can echo a credential in its errors, or even in fields meant to be public.
-  // Invite checks report only fixed text, counts, and HTTP statuses, never a value from the board.
-  const inviteError = (error: unknown, action: string) => new Mismatch(`${action}: ${requestFailure(error)}`)
-
-  async function inviteCall<T>(action: string, attempt: () => Promise<T>): Promise<T> {
-    try {
-      return await attempt()
-    } catch (error) {
-      throw inviteError(error, action)
-    }
-  }
-
-  function refusedInvite(result: PromiseSettledResult<Joined>, action: string) {
-    check(result.status === 'rejected', `${action}: it succeeded`)
-    // Unknown, expired, revoked and used credentials are indistinguishable to the caller.
-    check(result.reason instanceof BoardError && result.reason.status === 403 && result.reason.code === 'invalid_invite', `${action}: expected 403 invalid_invite`)
-  }
-
-  /** Each probe can grant only in the scratch channel or in a unique, unposted channel under it. */
-  async function withInvite(
-    ctx: Context,
-    purpose: string,
-    expiresIn: number,
-    canPost: boolean,
-    run: (probe: {
-      name: string
-      join: () => Promise<Joined>
-      listed: (state: InviteView['state']) => Promise<void>
-      revoke: () => Promise<{ revoked: boolean }>
-    }) => Promise<void>,
-  ): Promise<void | string> {
-    const board = ctx.board
-    const name = `conformance-${ctx.labels.conformance}-${purpose}`
-    const scope = `${ctx.channel}/${name}`
-    const can = { [scope]: ['read'] as const, ...(canPost ? { [ctx.channel]: ['read', 'post'] as const } : {}) }
-    let made: CreatedInvite
-    try {
-      made = await board.createInvite({ name, can, expiresIn })
-    } catch (error) {
-      if (error instanceof BoardError && error.status === 501 && error.code === 'no_invites') return NO_INVITES
-      if (error instanceof BoardError && error.status === 403) return "this caller can't manage invites"
-      throw inviteError(error, 'creating an invite')
-    }
-
-    const { invite, secret } = made
-    const id = invite?.id
-    // Never use a secret as a public ID, even if a broken board puts one there.
-    const validId = typeof id === 'string' && id.length > 0 && id.length <= 128 && id !== secret && !id.startsWith('vbi_') && !id.startsWith('vbj_')
-    const members = new Set<string>()
-    let joining = false
-    const revoke = () => inviteCall('revoking the invite', () => board.revokeInvite(id))
-    try {
-      check(validId, 'the new invite should have a public ID distinct from its credential')
-      check(typeof secret === 'string' && secret.length > 0, 'the new invite should have a secret')
-      const metadata = (view: InviteView, state: InviteView['state']) => {
-        check(view.name === name && view.state === state, `the invite should be named as requested and be ${state}`)
-        check(typeof view.expiresAt === 'string' && Number.isFinite(Date.parse(view.expiresAt)), 'the invite should give an expiry time')
-        check(canonical(view.can) === canonical(can), 'the invite should give only the requested permissions')
-        check(!JSON.stringify(view).includes(secret), 'the invite metadata should not expose the secret')
-      }
-      metadata(invite, 'pending')
-      await run({
-        name,
-        async join() {
-          joining = true
-          const joined = await board.join(secret)
-          check(typeof joined?.principal === 'string' && joined.principal.length > 0, 'redemption should return a principal')
-          members.add(joined.principal)
-          return joined
-        },
-        async listed(state) {
-          const views = await inviteCall('listing invites', () => board.invites())
-          const found = views.filter((view) => view.id === id)
-          check(found.length === 1, 'the invite should be listed exactly once')
-          metadata(found[0]!, state)
-          check(found[0]!.expiresAt === invite.expiresAt, 'listing should keep the original expiry time')
-        },
-        revoke,
-      })
-    } finally {
-      try {
-        if (validId) await revoke()
-      } finally {
-        if (joining) {
-          // The unique pattern also finds a grant left by a join that committed but didn't return
-          // a principal. Never revoke grants from a snapshot diff: another admin could be writing.
-          const grants = await inviteCall('looking up the invitee grant for cleanup', () => board.grants())
-          for (const grant of grants) {
-            if (grant.principals.some((principal) => principal.kind === 'invitee' && (members.has(principal.id) || Object.hasOwn(grant.can, scope)))) {
-              const revoked = await inviteCall('cleaning up the invitee grant', () => board.revokeGrant(grant.id))
-              check(revoked.revoked === true, 'the invitee grant should be revoked during cleanup')
-            }
-          }
-        }
-      }
-    }
   }
 
   /** Only the first extension call can declare that this board has no task authority. */
@@ -487,82 +386,6 @@ export function politburo(helpers: PolitburoHelpers) {
     },
   ]
 
-  const inviteChecks: Check[] = [
-    {
-      group: 'invites',
-      name: 'lists a pending invite and refuses it once revoked',
-      run: (ctx) =>
-        withInvite(ctx, 'revoke', 60, false, async ({ listed, revoke, join }) => {
-          await listed('pending')
-          check((await revoke()).revoked === true, 'revoking a pending invite should revoke it')
-          check((await revoke()).revoked === false, 'revoking an already revoked invite should change nothing')
-          await listed('revoked')
-          const [result] = await Promise.allSettled([join()])
-          refusedInvite(result, 'redeeming the revoked invite')
-        }),
-    },
-    {
-      group: 'invites',
-      name: 'lists a short-lived invite as expired and refuses it',
-      run: (ctx) =>
-        withInvite(ctx, 'expiry', 1, false, async ({ listed, join }) => {
-          // Wait relative to creation, not to a comparison between the board's clock and ours.
-          await new Promise((resolve) => setTimeout(resolve, 1100))
-          await listed('expired')
-          const [result] = await Promise.allSettled([join()])
-          refusedInvite(result, 'redeeming the expired invite')
-        }),
-    },
-    {
-      group: 'invites',
-      name: 'redeems an invite for only one of the callers that race for it',
-      run: (ctx) =>
-        withInvite(ctx, 'race', 60, false, async ({ join, listed, revoke }) => {
-          const attempts = await Promise.allSettled([join(), join(), join()])
-          const winners = attempts.filter((result) => result.status === 'fulfilled')
-          check(winners.length === 1, `exactly one redemption should succeed, got ${winners.length}`)
-          check(typeof winners[0]!.value.token === 'string' && winners[0]!.value.token.length > 0, 'redemption should return a bearer token')
-          for (const result of attempts) if (result.status === 'rejected') refusedInvite(result, 'a losing redemption')
-          await listed('redeemed')
-          check((await revoke()).revoked === false, 'revoking an already redeemed invite should change nothing')
-        }),
-    },
-    {
-      group: 'invites',
-      name: 'lets a joined caller read and post only as granted',
-      run: async (ctx) => {
-        const open = ctx.withInviteToken
-        if (!open) return NO_INVITE_TOKEN
-        return withInvite(ctx, 'access', 60, true, async ({ name, join }) => {
-          const { root } = needRoot(ctx)
-          const { principal, token } = await inviteCall('redeeming the invite', join)
-          check(typeof token === 'string' && token.length > 0, 'redemption should return a bearer token')
-          const joined = open(token)
-          const me = await inviteCall('identifying the joined caller', () => joined.me())
-          check(me.principal === principal && me.principal !== ctx.me.principal && me.handle === name, 'the caller should authenticate as the invitee under the invited name')
-          const read = await inviteCall('reading in the granted channel', () => joined.thread(root.id))
-          check(read.message.id === root.id, 'the invitee should read the message in the granted channel')
-          const cleanup: Made[] = []
-          const post = (channel: string) => keep(ctx, joined, () => joined.post(channel, { text: 'conformance: joined caller', noSync: true }), cleanup)
-          const posted = await inviteCall('posting in the granted channel', () => post(ctx.channel))
-          try {
-            check(posted.by.principal === principal, 'the post should be authored by the invitee')
-            const [outside, admin] = await Promise.allSettled([post(`${ctx.channel}/tasks`), joined.invites()])
-            check(outside.status === 'rejected' && outside.reason instanceof BoardError && outside.reason.status === 403, 'posting outside the grant should be forbidden')
-            check(admin.status === 'rejected' && admin.reason instanceof BoardError && admin.reason.status === 403, 'listing invites as the invitee should be forbidden')
-          } finally {
-            // Delete as the author, before revoking the grant. Don't report board-supplied provenance.
-            const deleted = await Promise.allSettled(cleanup.map((made) => deleteMade(made, joined)))
-            const left = deleted.flatMap((result) =>
-              result.status === 'rejected' ? [requestFailure(result.reason)] : result.value === null ? [] : ['could not confirm the post'],
-            )
-            if (left.length > 0) throw new Mismatch(`deleting the invitee posts: left ${left.length} (${left.join('; ')})`)
-          }
-        })
-      },
-    },
-  ]
-
   async function finishCleanup(ctx: Context, checks: CheckResult[]) {
     // Delete replies first. Report what stays on the check that made it.
     const staying = new Map<string, string[]>()
@@ -583,7 +406,6 @@ export function politburo(helpers: PolitburoHelpers) {
 
   return {
     finishCleanup,
-    inviteError,
     keep,
     onMade,
     remove,
@@ -591,6 +413,5 @@ export function politburo(helpers: PolitburoHelpers) {
     NETWORK_PAUSE,
     taskAuthorityChecks,
     taskPriorityChecks,
-    inviteChecks,
   }
 }

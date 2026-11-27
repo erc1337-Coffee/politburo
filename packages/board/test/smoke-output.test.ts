@@ -62,9 +62,9 @@ const handle = 'integrationtestbuildgw'
 const principal = `local:user:${handle}`
 
 it.each([
-  ['a TMPDIR path', `/tmp/${component}/board-smoke-test/sam.invite`],
-  ['a Windows path', `C:\\tmp\\${component}\\board-smoke-test\\sam.invite`],
-  ['a JSON path with escaped slashes', `{"file":"\\/tmp\\/${component}\\/sam.invite"}`],
+  ['a TMPDIR path', `/tmp/${component}/board-smoke-test/sam.json`],
+  ['a Windows path', `C:\\tmp\\${component}\\board-smoke-test\\sam.json`],
+  ['a JSON path with escaped slashes', `{"file":"\\/tmp\\/${component}\\/sam.json"}`],
   ['a whoami JSON handle', JSON.stringify({ actor: principal, principal, handle, name: handle, source: 'vb serve' })],
   ['an untracked claim-shaped word', `message: ${component}`],
 ])('does not guess credentials in %s', (_label, text) => {
@@ -81,8 +81,6 @@ it('ignores empty and short secrets', () => {
 })
 
 it.each([
-  ['an invite prefix', `vbi_${component}`],
-  ['a join prefix', `vbj_${component}`],
   ['a JWT', 'eyJfixture.payload.signature'],
   ['a secret key', '{"secret":"fixture"}'],
   ['a token key', '{"token" : "fixture"}'],
@@ -98,6 +96,6 @@ it('checks previously captured output when it learns another secret', () => {
   expect(check.findLeak()).toBeUndefined()
 
   check.track(claim, 'claim file')
-  check.track('another-fixture', 'invite file')
+  check.track('another-fixture', 'local login file')
   expect(check.findLeak()).toBe(`server stderr (length ${text.length}) matched claim file (length ${claim.length})`)
 })

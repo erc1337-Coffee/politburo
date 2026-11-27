@@ -34,7 +34,7 @@ import type { Link } from '../contract/external.ts'
 import type { Actor, Channel, Message, Task } from '../contract/folds.ts'
 import type { Via } from '../contract/profiles.ts'
 import type { AccessSummary, Permission, WrittenCan } from '../server/access.ts'
-import { controlRoutes, attentionRoutes, inviteRoutes, taskAuthority, taskPriority } from './politburo-routes.ts'
+import { controlRoutes, attentionRoutes, taskAuthority, taskPriority } from './politburo-routes.ts'
 
 export { Ref }
 export { AttentionAnswerBody, AttentionDraft, AttentionReceipt, AttentionView, RequestAttentionBody } from '../contract/attention.ts'
@@ -435,17 +435,12 @@ const Environments = z.array(z.string().min(1).max(100)).min(1).max(16)
 
 /**
  * Who a grant names, as people write it: a user by email (or, where the board can't look one up,
- * by ID), a project by name or ID, a repository by `owner/name`, an invitee by the id `join`
- * returned. The board resolves names and keeps IDs; a board that verifies tokens itself takes IDs
+ * by ID), a project by name or ID, a repository by `owner/name`. The board resolves names and keeps IDs; a board that verifies tokens itself takes IDs
  * only. A `user` names `email` or `userId`. Nothing else: a key it doesn't know (a misspelled
  * `workflows`, say) is a 400, never dropped, since dropping it would name more than was meant.
  */
 export const PrincipalInput = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('user'), email: z.string().min(3).max(320).optional(), userId: z.string().min(1).max(200).optional() }),
-  z.strictObject({
-    kind: z.literal('invitee'),
-    id: z.string().regex(/^joined:user:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, 'an invitee is the id join returned'),
-  }),
   // Its environments are where its deployments get in; a principal to remove leaves them out.
   z.strictObject({ kind: z.literal('project'), project: z.string().min(1).max(200), environments: Environments.optional() }),
   z.strictObject({
@@ -467,7 +462,6 @@ export const PrincipalInput = z.discriminatedUnion('kind', [
 /** What a grant lets its principals do: a map from channel pattern to `'all'` or a list, `[]` for none. Kept as written. */
 export const GrantCan = z.record(z.string().min(1).max(CHANNEL_PATTERN_MAX), CanGrant)
 
-export { INVITE_PERMISSIONS, CreateInviteBody, RedeemInviteBody } from './politburo-routes.ts'
 
 /**
  * Says to go ahead with a grant change its caller couldn't take back: one that takes their own
@@ -643,7 +637,6 @@ export type GrantCan = Readonly<Record<string, CanAt>>
 /** A grant, as a handle takes it: who it names, and what they may do. */
 export type GrantInput = { principals: readonly PrincipalInput[]; can: GrantCan }
 
-export type { CreateInviteInput, InviteView, CreatedInvite, Joined } from './politburo-routes.ts'
 /**
  * What a grant write takes beside its change. `lockMeOut` goes ahead with one you couldn't take
  * back: it takes your own `manage` at a pattern it names, and is 409 `grant_lockout` without it.
@@ -704,7 +697,6 @@ export type Explanation = {
 /** A principal as a grant keeps it: IDs, with the names the board knows beside them. */
 export type PrincipalView =
   | { kind: 'user'; userId: string; email: string | null }
-  | { kind: 'invitee'; id: string }
   | { kind: 'project'; projectId: string; name: string | null; environments: string[]; teamId: string | null }
   | { kind: 'github'; repositoryId: string | null; repository: string; workflow?: string; branch?: string; event?: string }
   | { kind: 'oidc'; issuer: string; claims: Record<string, string | string[]> }
@@ -1047,7 +1039,6 @@ export const routes = {
   /** Which grant decides a channel, for the caller or, with `manage` at `*`, a principal it names. */
   explain: { method: 'GET', path: '/grants/explain', query: ExplainQuery },
   revokeGrant: { method: 'POST', path: '/grants/:id/revoke', body: RevokeGrantBody },
-  ...inviteRoutes,
   /** Every schema: the built-ins, then the board's own. Anyone the board lets in reads them. */
   schemas: { method: 'GET', path: '/schemas' },
   /** One schema version, by `name@version`. */

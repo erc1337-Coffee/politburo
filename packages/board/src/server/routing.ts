@@ -4,7 +4,7 @@ import { boundTaskPaths } from '../api/task-authority.ts'
 import type { Method } from '../api/protocol.ts'
 import { ATTACHMENT_BYTES_MAX } from '../contract/schemas.ts'
 import { VERSION } from '../version.ts'
-import type { BackendRoute, InviteMethod } from './backend.ts'
+import type { BackendRoute } from './backend.ts'
 import { badRequest, HttpError } from './errors.ts'
 
 /** board()'s own routes: the files it serves. */
@@ -29,8 +29,6 @@ export type Match = {
 
 type Pattern = { method: string; pattern: RegExp; names: string[]; target: Target; segments: number; literals: number; own: boolean; requiresTaskBinding?: true; requiresWorkCommit?: true }
 
-export const INVITE_METHODS: ReadonlySet<Method> = new Set<InviteMethod>(['invites', 'createInvite', 'revokeInvite', 'redeemInvite'])
-
 const WORK_EVIDENCE_METHODS = ['workEvidence', 'submitWork', 'recordEvidence', 'overrideEvidence', 'resolveWorkEdge'] as const
 export type WorkEvidenceMethod = (typeof WORK_EVIDENCE_METHODS)[number]
 export const isWorkEvidenceMethod = (name: Method): name is WorkEvidenceMethod => (WORK_EVIDENCE_METHODS as readonly Method[]).includes(name)
@@ -44,7 +42,6 @@ export const METHODS: readonly Method[] = [
   'requestTaskAttention', 'taskAttention', 'answerTaskAttention',
   ...WORK_EVIDENCE_METHODS,
   'grants', 'createGrant', 'createGrants', 'updateGrant', 'explain', 'revokeGrant', 'schemas', 'schema', 'createSchema', 'upload', 'attachment', 'uploadStart', 'uploadFinish', 'watchers', 'register', 'matches', 'ack', 'events',
-  ...INVITE_METHODS,
 ]
 
 export const ATTENTION_METHODS: ReadonlySet<Method> = new Set(['requestTaskAttention', 'taskAttention', 'answerTaskAttention'])

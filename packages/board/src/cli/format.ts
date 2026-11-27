@@ -323,8 +323,6 @@ export function principalFlags(principal: PrincipalView): string {
       return `--all-projects --environment ${principal.environments.join(',')}`
     case 'app':
       return `--app ${principal.name ?? principal.clientId}`
-    case 'invitee':
-      return principal.id
     default:
       return `--${principal.kind}`
   }

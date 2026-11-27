@@ -1,5 +1,5 @@
 /**
- * Serializes grant and invite appends with staged writes that depend on them.
+ * Serializes grant appends with staged writes that depend on them.
  * All writers must share this store's fence. It does not lock a SQLite file
  * against other store objects or processes.
  */

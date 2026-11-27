@@ -1,5 +1,5 @@
 import { everyChannel } from '../client/channels.ts'
-import { type AttentionDraft, type BoardEventView, type CreatedInvite, type Discovery, type Explanation, type GrantView, type InviteView, type Joined, type Me, type MessageView, type RegistrationView } from '../api/routes.ts'
+import { type AttentionDraft, type BoardEventView, type Discovery, type Explanation, type GrantView, type Me, type MessageView, type RegistrationView } from '../api/routes.ts'
 import { BoardError, type ExplainPrincipal, type Filters, type NewTaskOptions, type TaskInBatch, type TaskOptions } from '../client/client.ts'
 import { block } from '../contract/blocks.ts'
 import { canonical } from '../contract/data-schemas.ts'
@@ -10,18 +10,17 @@ import { politburo, type Made } from './politburo.ts'
 /**
  * Checks that a board speaks the protocol, through a handle on it (`conformance(board())`), as
  * `vb` and agents use it: every board answers all of it. A board may keep no schedules, tasks,
- * invites, or files, or no index to find threads by what their messages say or who wrote them, and
+ * or files, or no index to find threads by what their messages say or who wrote them, and
  * says so with a 501, which the kit reports as not kept here. It writes ordinary messages to one
  * channel (`conformance` by default), and for the tasks checks that need two, to `tasks` under it,
  * keeps every post on the board, and deletes what it posted: only where and as whom it made it. A delete of
  * a message that isn't the one the run created (a mount pointed at another board mid-run, with a message
  * under the same ID) is skipped, and the check that made it reports what stays. The one schema it registers,
- * `conformance@1`, stays: a schema version is never removed. Invite checks leave terminal invite
- * records, but revoke the grants they make.
+ * `conformance@1`, stays: a schema version is never removed.
  */
 
 /** What a check is about, for the report's headings. */
-export type CheckGroup = 'core' | 'network-pause' | 'paging' | 'search' | 'schedules' | 'tasks' | 'work-evidence' | 'work-lifecycle' | 'grants' | 'invites' | 'schemas' | 'attachments' | 'watchers'
+export type CheckGroup = 'core' | 'network-pause' | 'paging' | 'search' | 'schedules' | 'tasks' | 'work-evidence' | 'work-lifecycle' | 'grants' | 'schemas' | 'attachments' | 'watchers'
 
 export type CheckResult = {
   group: CheckGroup
@@ -62,13 +61,6 @@ export type ConformanceOptions = {
    * skipped, and it stands in for `withCan` when that's left out.
    */
   withHeaders?: (headers: Record<string, string>) => Board
-  /**
-   * The same board using only the freshly joined caller's bearer. Bind the transport to the URL
-   * you configured (not the board's discovery response), allow that URL itself (the run reads the
-   * board's discovery with it to tell which board it deletes on), reject redirects, and never log or
-   * persist the token. Without this opt-in, only the check of the joined caller's access is skipped.
-   */
-  withInviteToken?: (token: string) => Board
   /**
    * Whom the grants checks name. A board that verifies tokens itself (`vb serve`) takes the made-up
    * IDs they use without it; one that looks names up, as Vercel's API does, needs real ones on its
@@ -177,7 +169,6 @@ export type Context = {
   running: string
   withCan?: (can: string) => Board
   withHeaders?: (headers: Record<string, string>) => Board
-  withInviteToken?: ConformanceOptions['withInviteToken']
   principals: Principals
   /** The board's own Vercel team, as its discovery names it. */
   team: string | null
@@ -771,7 +762,7 @@ const NETWORK_PAUSE: Check = {
 const helpers = { Mismatch, Skip, alike, check, isRef, needRoot, refused, rejects, reply, same, show, task, taskBatch }
 export type PolitburoHelpers = typeof helpers
 
-const { finishCleanup, inviteError, keep, onMade, remove, requestFailure, inviteChecks } =
+const { finishCleanup, keep, onMade, remove, requestFailure } =
   politburo(helpers)
 
 const CHECKS: Check[] = [
@@ -2564,7 +2555,6 @@ const CHECKS: Check[] = [
     // A skip, saying why, so a report shows it's left out on purpose.
     run: async () => "grants across teams aren't specified yet: what a project on another team needs, and what all-projects means for one, comes later",
   },
-  ...inviteChecks,
   {
     group: 'schemas',
     name: 'lists the built-in schemas first, and reads a schema by its ID',
@@ -2827,7 +2817,6 @@ export async function conformance(board: Board, options: ConformanceOptions = {}
     running: '',
     ...(options.withCan ? { withCan: options.withCan } : options.withHeaders ? { withCan: (can: string) => options.withHeaders!({ 'x-board-can': can }) } : {}),
     ...(options.withHeaders ? { withHeaders: options.withHeaders } : {}),
-    ...(options.withInviteToken ? { withInviteToken: options.withInviteToken } : {}),
     principals: {
       project: options.principals?.project ?? `prj_conformance${label}`,
       repository: options.principals?.repository ?? `acme/conformance-${label}`,
@@ -2872,7 +2861,6 @@ export async function conformance(board: Board, options: ConformanceOptions = {}
         else if (group === 'watchers' && error instanceof BoardError && error.code === 'watchers_need_project') checks.push({ group, name, status: 'skipped', detail: 'only a deployment registers watchers here' })
         // A board that takes no GitHub or OIDC principal in a grant can't check what names one.
         else if (group === 'grants' && error instanceof BoardError && error.code === 'unsupported_principal') checks.push({ group, name, status: 'skipped', detail: 'this board takes no GitHub or OIDC principals in a grant' })
-        else if (group === 'invites' && !(error instanceof Mismatch)) checks.push({ group, name, status: 'failed', detail: inviteError(error, 'checking invites').message })
         else checks.push({ group, name, status: 'failed', detail: error instanceof Error ? error.message : String(error) })
       }
     }

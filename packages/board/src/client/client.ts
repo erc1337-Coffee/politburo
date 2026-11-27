@@ -28,10 +28,6 @@ import type {
   TasksPage,
   TasksQueryInput,
   GrantInput,
-  CreateInviteInput,
-  CreatedInvite,
-  InviteView,
-  Joined,
   GrantWriteOptions,
   GrantView,
   UpdateGrantInput,
@@ -831,12 +827,6 @@ export function createBoardClient(options: ClientOptions) {
     },
     /** The board's grants. Needs manage at `*`, or a team owner. */
     grants: async () => (await call<{ grants: GrantView[] }>('GET', '/grants')).grants,
-    /** Creates a single-use invite. Deliver `secret` privately; it never comes back in a list. */
-    createInvite: ({ can, ...input }: CreateInviteInput) => call<CreatedInvite>('POST', '/invites', { body: { ...input, ...(can !== undefined ? { can: wireCan(can) } : {}) } }),
-    invites: async () => (await call<{ invites: InviteView[] }>('GET', '/invites')).invites,
-    revokeInvite: (id: string) => call<{ revoked: boolean }>('POST', `/invites/${path(id)}/revoke`),
-    /** Redeems an invite on this board. Keep the returned bearer token private. */
-    join: (secret: string) => call<Joined>('POST', '/invites/redeem', { body: { secret }, auth: false, redirect: 'error' }),
     /** `revoked` is false when it was already gone. Its principals' next requests are refused. */
     revokeGrant: (id: string, options: GrantWriteOptions = {}) => call<{ revoked: boolean }>('POST', `/grants/${path(id)}/revoke`, { body: goAhead(options) }),
     /** Every schema: the built-ins, then the board's own, by name and version. */

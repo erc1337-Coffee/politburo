@@ -44,7 +44,6 @@ import {
   RegisterBody,
   ScheduleBody,
   CreateGrantsBody,
-  CreateInviteBody,
   GrantBody,
   RevokeGrantBody,
   UpdateGrantBody,
@@ -69,22 +68,22 @@ import { hostTrusted, type Board, type BoardContext } from './board.ts'
 import { derivedId, sha256 } from '../client/ids.ts'
 import { claimsOf, KNOWN_AGENTS } from './actors.ts'
 import type { CallerRequest } from './auth.ts'
-import { isJoinedCredential } from './policy.ts'
 import { avatarSvg } from './avatars.ts'
-import { badRequest, batchTooLarge, forbidden, HttpError, json, noWorkEvidence, notFound, toErrorResponse, unauthorized } from './errors.ts'
+import { badRequest, batchTooLarge, forbidden, HttpError, json, noWorkEvidence, notFound, toErrorResponse } from './errors.ts'
 import { extractMentions, settleMentions, type Mentioned, type MentionedActor } from '../contract/mentions.ts'
 import { DroppedError, runMiddleware, type Write, type WriteSource } from './middleware.ts'
 import { ConfigureChannelBody, RepositoriesQuery } from '../contract/channel-settings.ts'
 import { SetIdentityBody } from '../contract/identities.ts'
-import { ATTENTION_METHODS, createRouter, INVITE_METHODS, isWorkEvidenceMethod, openapi, queryObject, readCapped, readJson } from './routing.ts'
+import { ATTENTION_METHODS, createRouter, isWorkEvidenceMethod, openapi, queryObject, readCapped, readJson } from './routing.ts'
 import { authorize, compileAccess, FULL_ACCESS, parseCan, type Access } from './access.ts'
 import type { WriteOrigin } from './origin.ts'
 import type { WatcherContext } from './watcher.ts'
 import { VERSION } from '../version.ts'
-import { atAudience, CONTROL, noInvites, redeem, SECRET_RESPONSE } from './politburo-serve.ts'
 
 /** The methods whose answer is something new. */
-const CREATED = new Set<Method>(['post', 'schedule', 'createTask', 'createTasks', 'requestTaskAttention', 'upload', 'uploadFinish', 'createInvite'])
+const CREATED = new Set<Method>(['post', 'schedule', 'createTask', 'createTasks', 'requestTaskAttention', 'upload', 'uploadFinish'])
+/** The board's work admission control, which a backend may leave out. */
+const CONTROL = new Set<Method>(['status', 'pause', 'resume'])
 
 /**
  * Refuses a label write under `board.`: those keys are the board's own, which only its task writes
@@ -132,7 +131,6 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
       return ActorsQuery.parse(queryObject(url))
     case 'watchers':
     case 'grants':
-    case 'invites':
     case 'schemas':
     case 'status':
     case 'modelRoutes':
@@ -151,7 +149,6 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
     case 'schema':
     case 'attachment':
     case 'uploadFinish':
-    case 'revokeInvite':
       return { id }
     case 'channelMessages':
       return ChannelMessagesQuery.parse(queryObject(url))
@@ -247,8 +244,6 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
       return GrantBody.parse(await body())
     case 'createGrants':
       return CreateGrantsBody.parse(await body())
-    case 'createInvite':
-      return CreateInviteBody.parse(await body())
     case 'updateGrant':
       return { id, ...UpdateGrantBody.parse(await body()) }
     case 'revokeGrant':
@@ -324,7 +319,6 @@ export async function createServe(context: BoardContext): Promise<Serve> {
     const credential = header.match(/^Bearer\s+(.+)$/i)?.[1] ?? null
     // Only a token is checked against the audience: a request without one (a cookie, no one) needs no URL to be sure of.
     const audience = credential === null ? (options.url?.replace(/\/+$/, '') ?? at) : audienceOf(at)
-    if (backend.trust?.joined && isJoinedCredential(credential) && !atAudience(at, audience)) throw unauthorized('invalid board credential')
     return { credential, claims: claimsOf(request.headers), audience, headers: request.headers }
   }
 
@@ -362,8 +356,6 @@ export async function createServe(context: BoardContext): Promise<Serve> {
    */
   const accessOf = (caller: Caller): Access | null =>
     'identity' in caller ? caller.identity.principal.access : caller.can !== undefined ? FULL_ACCESS.narrow(parseCan(caller.can)) : null
-  /** Whether `caller` is narrowed with a `can`: a request's x-board-can, or a handle's from `as()`. */
-  const narrowed = (caller: Caller) => ('identity' in caller ? caller.identity.principal.scope !== undefined : caller.can !== undefined)
 
   /** Who this deployment's own code is on its backend, asked once each: the middleware is told who's writing. */
   const selves = new Map<string, Promise<{ principal: string; actor: Actor }>>()
@@ -966,17 +958,13 @@ export async function createServe(context: BoardContext): Promise<Serve> {
       // uses another board's doesn't serve. Nothing runs for one before that.
       if (!injected && !policy.open) throw servesOnly()
       if (!injected && target.kind === 'protocol' && target.name === 'discovery') return await discovery(request, audienceOf(at), request.signal)
-      if (target.kind === 'protocol' && target.name === 'redeemInvite') return await redeem(request, at, injected !== null, backend, OWN, ownUrl, audienceOf)
       if (target.kind === 'protocol' && !CONTROL.has(target.name) && !ATTENTION_METHODS.has(target.name)
-        && !isWorkEvidenceMethod(target.name) && typeof backend[target.name] !== 'function') {
-        if (INVITE_METHODS.has(target.name)) throw noInvites()
+        && !isWorkEvidenceMethod(target.name) && typeof backend[target.name] !== 'function')
         throw notFound(`no route: ${request.method} ${url.pathname}`)
-      }
       const asked = injected ? null : requestOf(request, at)
       const caller: Caller = injected ?? (await callerOf(asked!))
       if (target.kind === 'board') throw notFound(`no route: ${request.method} ${url.pathname}`)
 
-      if (INVITE_METHODS.has(target.name) && narrowed(caller)) throw forbidden("this caller is narrowed and can't manage invites")
       const input = await inputOf(target.name, request, url, match.params, match.requiresWorkCommit)
       if (match.requiresTaskBinding && !(input as { binding?: unknown }).binding) throw badRequest('a bound task request needs binding')
       if (target.name === 'events' && (request.headers.get('accept') ?? '').includes('text/event-stream'))
@@ -985,8 +973,7 @@ export async function createServe(context: BoardContext): Promise<Serve> {
       if (target.name === 'attachment') return attachmentResponse(output as Protocol['attachment']['output'])
       // A channel that was there already is answered, not created.
       const made = CREATED.has(target.name) || (target.name === 'createChannel' && (output as Protocol['createChannel']['output']).created)
-      const headers = target.name === 'createInvite' ? SECRET_RESPONSE : undefined
-      return json(output, made ? 201 : 200, headers)
+      return json(output, made ? 201 : 200)
     } catch (error) {
       // Stopped by its caller (a page reloaded, a long-poll let go): no one reads the answer, and
       // the abort isn't the board's failure. Any other failure still is, caller there or not.

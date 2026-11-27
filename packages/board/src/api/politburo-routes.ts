@@ -1,8 +1,7 @@
 import { z } from 'zod'
-import { CHANNEL_PATTERN_MAX, TaskNote, TaskPriority } from '../contract/schemas.ts'
+import { TaskNote, TaskPriority } from '../contract/schemas.ts'
 import { AttentionAnswerBody, RequestAttentionBody } from '../contract/attention.ts'
 import { TaskPacket } from '../contract/task-authority.ts'
-import type { GrantCan } from './routes.ts'
 
 /** Why a person is pausing or resuming the board. The authority supplies the audit author. */
 export const ControlBody = z.strictObject({ reason: TaskNote })
@@ -53,29 +52,3 @@ export function taskAuthority(Claimed: ClaimFields) {
   } as const
   return { ParkTaskBody, HandoffTaskBody, taskAuthorityRoutes }
 }
-
-export const INVITE_PERMISSIONS = ['read', 'post', 'react', 'label', 'sync'] as const
-export const CreateInviteBody = z.strictObject({
-  name: z.string().regex(/^[A-Za-z][A-Za-z0-9-]{0,31}$/, 'names start with a letter and use up to 32 letters, numbers, and hyphens'),
-  can: z.record(z.string().min(1).max(CHANNEL_PATTERN_MAX), z.array(z.enum(INVITE_PERMISSIONS)).max(INVITE_PERMISSIONS.length)).optional(),
-  expiresIn: z.number().int().min(1).max(604800).optional(),
-})
-export const RedeemInviteBody = z.strictObject({ secret: z.string().regex(/^vbi_[A-Za-z0-9_-]{43}$/) })
-
-export type CreateInviteInput = { name: string; can?: GrantCan; expiresIn?: number }
-export type InviteView = {
-  id: string
-  name: string
-  can: Record<string, (typeof INVITE_PERMISSIONS)[number][]>
-  expiresAt: string
-  state: 'pending' | 'expired' | 'revoked' | 'redeemed'
-}
-export type CreatedInvite = { invite: InviteView; secret: string }
-export type Joined = { principal: string; token: string }
-
-export const inviteRoutes = {
-  invites: { method: 'GET', path: '/invites' },
-  createInvite: { method: 'POST', path: '/invites', body: CreateInviteBody },
-  revokeInvite: { method: 'POST', path: '/invites/:id/revoke' },
-  redeemInvite: { method: 'POST', path: '/invites/redeem', body: RedeemInviteBody },
-} as const

@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { cp, mkdir, mkdtemp, open, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -17,13 +17,11 @@ const CALL_TIMEOUT = 12_000
 const COMMIT = 'a'.repeat(40)
 const OWNER = 'vercel:user:u_owner'
 const UUID = /[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}/
-const ISO = /\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z/
 const leakCheck = createLeakCheck()
 
 let dir: string
 let url: string
 let adminEnv: ReturnType<typeof homeEnv>
-let memberEnv: ReturnType<typeof homeEnv>
 let server: ReturnType<typeof watchServe> | undefined
 
 function homeEnv(home: string) {
@@ -55,7 +53,7 @@ function trackToken(token: unknown, source: string) {
   expect(leakCheck.track(secret, source), `${source} has no usable credential (length ${secret.length})`).toBe(true)
 }
 
-async function trackSavedTokens(config: string, kind: 'claims' | 'joined' | 'local', source: string) {
+async function trackSavedTokens(config: string, kind: 'claims' | 'local', source: string) {
   // Only the CLI's hashed credential files inside homes created by this test.
   const folder = join(config, 'board', kind)
   const files = (await readdir(folder)).filter((name) => /^[a-f0-9]+\.json$/.test(name))
@@ -71,7 +69,6 @@ beforeAll(async () => {
   // An empty .git is not a checkout: vb must find the board by URL.
   await mkdir(join(dir, '.git'))
   adminEnv = homeEnv(await mkdtemp(join(dir, 'admin-')))
-  memberEnv = homeEnv(await mkdtemp(join(dir, 'member-')))
   const child = spawn(process.execPath, [CLI, 'serve', '--no-inspect', '--port', '0', '--dir', join(dir, 'data')], {
     cwd: dir, env: adminEnv, stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -106,28 +103,22 @@ afterAll(async () => {
   }
 }, 20_000)
 
-type CommandFiles = { stdinFile?: string; trackSecrets?: () => Promise<void> }
+type CommandFiles = { trackSecrets?: () => Promise<void> }
 
-async function runNode(script: string, args: string[], env: NodeJS.ProcessEnv, command: string, { stdinFile, trackSecrets }: CommandFiles = {}) {
-  // Feed the invite file from stdin, never through argv.
-  const input = stdinFile === undefined ? undefined : await open(stdinFile, 'r')
-  try {
-    const child = spawn(process.execPath, [script, ...args], {
-      cwd: dir, env, stdio: [input?.fd ?? 'ignore', 'pipe', 'pipe'], timeout: CALL_TIMEOUT, killSignal: 'SIGKILL',
-    })
-    const output = { stdout: '', stderr: '' }
-    child.stdout!.setEncoding('utf8').on('data', (chunk: string) => { output.stdout += chunk })
-    child.stderr!.setEncoding('utf8').on('data', (chunk: string) => { output.stderr += chunk })
-    const [code, signal] = await once(child, 'close').catch(() => { throw new Error(`${command} could not start`) }) as [number | null, NodeJS.Signals | null]
-    capture(output, 'vb')
-    // Learn newly saved credentials before any assertion can echo the command's output.
-    if (code === 0) await trackSecrets?.()
-    expectNoCredential()
-    if (code === null) throw new Error(`${command} stopped by ${signal} (timeout ${CALL_TIMEOUT}ms)`)
-    return { code, ...output }
-  } finally {
-    await input?.close()
-  }
+async function runNode(script: string, args: string[], env: NodeJS.ProcessEnv, command: string, { trackSecrets }: CommandFiles = {}) {
+  const child = spawn(process.execPath, [script, ...args], {
+    cwd: dir, env, stdio: ['ignore', 'pipe', 'pipe'], timeout: CALL_TIMEOUT, killSignal: 'SIGKILL',
+  })
+  const output = { stdout: '', stderr: '' }
+  child.stdout!.setEncoding('utf8').on('data', (chunk: string) => { output.stdout += chunk })
+  child.stderr!.setEncoding('utf8').on('data', (chunk: string) => { output.stderr += chunk })
+  const [code, signal] = await once(child, 'close').catch(() => { throw new Error(`${command} could not start`) }) as [number | null, NodeJS.Signals | null]
+  capture(output, 'vb')
+  // Learn newly saved credentials before any assertion can echo the command's output.
+  if (code === 0) await trackSecrets?.()
+  expectNoCredential()
+  if (code === null) throw new Error(`${command} stopped by ${signal} (timeout ${CALL_TIMEOUT}ms)`)
+  return { code, ...output }
 }
 
 type Refusal = { reason: string; message: string; data?: { error?: { status: number } } }
@@ -155,8 +146,8 @@ function cli(env: NodeJS.ProcessEnv, prefix: string[] = []) {
     async json<T = unknown>(args: string[]): Promise<T> {
       return parse<T>(await text([...args, '--json']), command(args))
     },
-    async refuses(args: string[], reason: string, stdinFile?: string) {
-      const { code, stdout, stderr } = await run([...args, '--json'], { stdinFile })
+    async refuses(args: string[], reason: string) {
+      const { code, stdout, stderr } = await run([...args, '--json'])
       expect({ code, stdout }, command(args)).toEqual({ code: 1, stdout: '' })
       const error = parse<Refusal>(stderr, command(args))
       expect(error.reason, command(args)).toBe(reason)
@@ -188,14 +179,13 @@ async function writeDraft(path: string, { id, revision }: Pick<MessageView, 'id'
   return draft
 }
 
-it('runs a work queue from invitation to handoff, pause, and follow-up', async () => {
+it('runs a work queue from the first task to handoff, pause, and follow-up', async () => {
   const admin = cli({ ...adminEnv, BOARD_URL: url })
   const workerEnv = homeEnv(await mkdtemp(join(dir, 'worker-')))
   // The worker uses the local admin's login under a profile, but keeps its own config snapshot.
   await cp(adminEnv.XDG_CONFIG_HOME, workerEnv.XDG_CONFIG_HOME, { recursive: true })
   const worker = cli({ ...workerEnv, BOARD_URL: url }, ['--as', 'worker'])
   const claimFiles = { trackSecrets: () => trackSavedTokens(workerEnv.XDG_CONFIG_HOME, 'claims', 'claim file') }
-  const member = cli(memberEnv, ['--url', url])
   const draftPath = join(dir, 'draft.json')
 
   const adminPrincipal = await step('identify the running board and its local admin', async () => {
@@ -210,36 +200,6 @@ it('runs a work queue from invitation to handoff, pause, and follow-up', async (
       `${me.handle} (${me.principal})`, `board   ${url}`, 'source  vb serve',
     ]))
     return me.principal
-  })
-
-  const memberPrincipal = await step('invite Sam, join from stdin in a second config, and refuse reuse', async () => {
-    const file = join(dir, 'sam.invite')
-    const scope = 'work/=read,post'
-    const [created, written] = (await admin.text(['invite', 'create', 'sam', '--out', file, '--can', scope], {
-      trackSecrets: async () => trackToken((await readFile(file, 'utf8')).replace(/\n$/, ''), 'invite file'),
-    })).split('\n')
-    const pending = new RegExp(`^created (${UUID.source})  sam  pending  ${ISO.source}  ${scope}$`)
-    expect(created).toMatch(pending)
-    expect(written).toBe(`file  ${file}`)
-    const id = pending.exec(created!)![1]!
-    const row = (state: string) => new RegExp(`^${id}  sam  ${state}  ${ISO.source}  ${scope}$`, 'm')
-    expect(await admin.text(['invite', 'list'])).toMatch(row('pending'))
-
-    const joiner = cli(memberEnv)
-    const joinArgs = ['join', url, '-']
-    const [joined, where] = (await joiner.text(joinArgs, {
-      stdinFile: file,
-      trackSecrets: () => trackSavedTokens(memberEnv.XDG_CONFIG_HOME, 'joined', 'join file'),
-    })).split('\n')
-    expect(joined).toMatch(new RegExp(`^joined joined:user:${UUID.source}$`))
-    expect(where).toBe(`board  ${url}`)
-    const principal = joined!.slice('joined '.length)
-    expect((await member.text(['whoami'])).split('\n')).toEqual(expect.arrayContaining([
-      `sam (${principal})`, `board   ${url}`, 'source  vb join', 'can     work/  read post',
-    ]))
-    expect(await admin.text(['invite', 'list'])).toMatch(row('redeemed'))
-    await joiner.refuses(joinArgs, 'invalid_invite', file)
-    return principal
   })
 
   const lowText = 'Tidy the runbook'

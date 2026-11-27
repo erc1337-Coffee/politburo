@@ -7,7 +7,7 @@ import { everyChannel } from '../client/channels.ts'
 import { withMentions } from '../api/tail.ts'
 import { BoardError, type ClaimedTask, type Filters, type ProfileOption, type Written } from '../client/client.ts'
 import type { Mentioned } from '../contract/mentions.ts'
-import { boardUrl, connect, environmentProfile, JOINED } from '../client/node.ts'
+import { boardUrl, connect, environmentProfile } from '../client/node.ts'
 import { http } from '../backend-http/index.ts'
 import { board as boardAt, type Board } from '../server/index.ts'
 import { normalizeEmoji } from '../contract/emoji.ts'
@@ -24,7 +24,7 @@ import { fileClaims, memoryClaims, tokenClaims, type ClaimProof, type Claims } f
 import { commands, filters as filterOptions, globalOptions, options, type CliCommand } from './commands.ts'
 import { commandHelp, commandPath, rootHelp } from './help.ts'
 import { closest, commandLine, exitCode, failureDocument, formatFailure, type Failure, type Recovery, type Warning } from './failure.ts'
-import { checkConformance, inviteFailure, outputText, redactCredentials, runInvite, runJoin } from './politburo-invites.ts'
+import { checkConformance } from './conformance.ts'
 import { boardStatus, portFlag } from './politburo-operations.ts'
 import { AttentionAnswerBody } from '../contract/attention.ts'
 import { attentionFrom, createPlan, doingTasks, heldBy, priorityOf, readyLabels, resetTaskBoard } from './politburo-tasks.ts'
@@ -259,8 +259,6 @@ function parse(argv: string[]) {
     flags = parsed.values
     positionals = parsed.positionals.map((arg) => (arg.startsWith(MARK) ? arg.slice(MARK.length) : arg))
   } catch (error) {
-    // Unknown flags and values can themselves be the invite, even when it's malformed.
-    if (word === 'join' || word === 'invite') throw usage(`Invalid options for ${word}.`)
     throw parseFailure(error as Error & { code?: string }, argv, word)
   }
   // An option only another command takes would be dropped without a word (`edit --attach`): it's unknown here too.
@@ -409,11 +407,11 @@ const TERMINAL: Io = {
 let io: Io = TERMINAL
 
 // What a person reads can't drive their terminal; JSON otherwise keeps what the board said.
-const out = (text: string) => io.write(`${outputText(terminalText(text))}\n`)
+const out = (text: string) => io.write(`${terminalText(text)}\n`)
 /** `--json`'s result: one document, with what the run's writes warned about, indented at a terminal. */
-const result = (value: object) => io.write(`${outputText(JSON.stringify(warnings.length ? { ...value, warnings } : value, null, io.tty ? 2 : undefined))}\n`)
+const result = (value: object) => io.write(`${JSON.stringify(warnings.length ? { ...value, warnings } : value, null, io.tty ? 2 : undefined)}\n`)
 /** One line of a JSON stream (`tail`): compact, wherever it goes. */
-const line = (value: object) => io.write(`${outputText(JSON.stringify(value))}\n`)
+const line = (value: object) => io.write(`${JSON.stringify(value)}\n`)
 
 /** A message's ID as you'd write it: `#812` or `812`. It's passed to the board as it is. */
 function messageId(value: string | undefined, what = 'message ID'): string {
@@ -797,10 +795,6 @@ function doing(): string {
       return `list ${command}`
     case 'tasks':
       return doingTasks(a, b)
-    case 'join':
-      return 'join the board'
-    case 'invite':
-      return a === 'create' ? 'create the invite' : a === 'revoke' ? 'revoke the invite' : 'list invites'
     case 'grants':
       return a === 'create' ? (flags.file !== undefined ? 'create the grants' : 'create the grant') : a === 'update' ? `update grant ${b}` : a === 'explain' ? `explain ${b ?? 'the channel'}` : a === 'revoke' ? `revoke grant ${b}` : 'list grants'
     case 'schemas':
@@ -851,7 +845,6 @@ function missing(): string | undefined {
  */
 function failureOf(error: unknown, hold: TaskHold = 'unknown'): Failure {
   if (error instanceof Failed) return error.failure
-  if (current.command === 'invite' || current.command === 'join') return inviteFailure(error)
   const message = error instanceof Error ? error.message : String(error)
   const { code, status, hint, origin, retryAfter } = error as { code?: unknown; status?: unknown; hint?: unknown; origin?: unknown; retryAfter?: unknown }
   // Not the board's or the handle's: the system's (a file it couldn't write), or a bug.
@@ -937,14 +930,12 @@ function failureOf(error: unknown, hold: TaskHold = 'unknown'): Failure {
       'auth',
       'login_required',
       "The board didn't accept your credentials.",
-      // A token in BOARD_TOKEN is yours to replace, and a joined credential comes from a new invite.
+      // A token in BOARD_TOKEN is yours to replace.
       sent() === 'BOARD_TOKEN'
         ? [{ instruction: 'Pass a token it accepts in BOARD_TOKEN, or unset it' }]
-        : sent() === JOINED
-          ? [{ instruction: 'Ask for a new invite and join again' }]
-          : sent() === 'vb serve'
-            ? [{ instruction: 'Restart vb serve, which writes a new token' }]
-            : [{ instruction: 'Pass a token it accepts in BOARD_TOKEN' }],
+        : sent() === 'vb serve'
+          ? [{ instruction: 'Restart vb serve, which writes a new token' }]
+          : [{ instruction: 'Pass a token it accepts in BOARD_TOKEN' }],
     )
   if (status === 403) return theirs('permission', 'permission_denied', `You can't ${doing()}.`, refusedRecoveries())
   if (status === 404) {
@@ -1032,13 +1023,11 @@ const waitFor = (seconds: number) => (seconds < 120 ? `${Math.max(1, seconds)}s`
 /** How this run ends with `failure`: shown on stderr, or by the app, and its exit code. */
 function report(failure: Failure, json: boolean): number {
   if (app.onError) {
-    const encoded = JSON.stringify(failure)
-    const safe = redactCredentials(encoded)
-    app.onError(safe === encoded ? failure : JSON.parse(safe) as Failure, { json })
-  } else if (json) io.error(`${redactCredentials(JSON.stringify(failureDocument(failure)))}\n`)
+    app.onError(failure, { json })
+  } else if (json) io.error(`${JSON.stringify(failureDocument(failure))}\n`)
   else {
     const escapeLine = isEvidenceCommand() || failure.reason === 'evidence_required' ? lineText : undefined
-    io.error(`${redactCredentials(terminalText(formatFailure(failure, escapeLine)))}\n`)
+    io.error(`${terminalText(formatFailure(failure, escapeLine))}\n`)
   }
   return exitCode(failure)
 }
@@ -1090,8 +1079,8 @@ async function readStdin(): Promise<string> {
 /** Says what a write that went through had to say: in its JSON result with `--json`, on stderr otherwise. */
 function warn(warning: Warning) {
   if (flags.json) warnings.push(warning)
-  else if (app.onWarning) app.onWarning({ reason: outputText(warning.reason), message: outputText(warning.message) })
-  else io.error(`${outputText(terminalText(`warning: ${warning.message}`))}\n`)
+  else if (app.onWarning) app.onWarning(warning)
+  else io.error(`${terminalText(`warning: ${warning.message}`)}\n`)
 }
 
 /**
@@ -1191,12 +1180,6 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       for (const [subject, value] of rows) out(`${subject.padEnd(width)}  ${value}`)
       return 0
     }
-
-    case 'invite':
-      return runInvite(args)
-
-    case 'join':
-      return runJoin(args)
 
     case 'status':
     case 'pause':
@@ -2655,14 +2638,14 @@ export async function main(argv: string[], options: App): Promise<number> {
 }
 
 /** The commands that change the board, whatever their arguments. */
-const WRITES = new Set(['post', 'reply', 'edit', 'delete', 'label', 'react', 'schedule', 'pause', 'resume', 'join'])
+const WRITES = new Set(['post', 'reply', 'edit', 'delete', 'label', 'react', 'schedule', 'pause', 'resume'])
 
 /** What a run its caller's signal stopped says: a write it was making may have landed. */
 function stopped(reason: unknown): Failed {
   const timedOut = reason instanceof Error && reason.name === 'TimeoutError'
   // A subcommand that writes is the first word after the command: `channels create`.
   const sub = current.args[0]
-  const writes = WRITES.has(current.command ?? '') || ['create', 'update', 'revoke', 'cancel', 'join'].includes(sub ?? '')
+  const writes = WRITES.has(current.command ?? '') || ['create', 'update', 'revoke', 'cancel'].includes(sub ?? '')
     || (current.command === 'tasks' && sub !== undefined && isTaskVerb(sub, current.args[1]) && !TASK_READS.has(sub))
   return new Failed({
     class: timedOut ? 'timeout' : 'canceled',
@@ -2673,7 +2656,7 @@ function stopped(reason: unknown): Failed {
 }
 
 /** The commands about the machine the CLI runs on, not the board: none of them run in-process. */
-const MACHINE = new Set(['whoami', 'serve', 'inspect', 'join'])
+const MACHINE = new Set(['whoami', 'serve', 'inspect'])
 
 /** `main()` with `io` in place of the terminal, for `vb()`. One run at a time, as `main()`'s. */
 export async function mainWith(argv: string[], options: App, with_: Io): Promise<number> {

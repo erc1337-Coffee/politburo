@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { decodeJwt } from 'jose'
 import { BoardError, type ProfileOption, type Resolvable } from './client.ts'
-import { configDir, savedJoinToken } from './join-config.ts'
 
-export { configDir }
+/** The CLI's config directory: `$XDG_CONFIG_HOME/board`, or `~/.config/board`. */
+export const configDir = () => join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'board')
 
 /**
  * A Git checkout's root: `.git` is a directory with a `HEAD`, or a worktree's
@@ -69,16 +70,6 @@ export function boardUrl(): string {
   return url
 }
 
-/** Invite redemption must not use the normal credential. */
-export function redeemFetch(input: RequestInfo | URL, init: RequestInit = {}, send: typeof fetch = globalThis.fetch): Promise<Response> {
-  const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined))
-  for (const name of ['authorization', 'cookie', 'x-board-profile', 'x-board-can']) headers.delete(name)
-  return send(input, { ...init, headers, credentials: 'omit', redirect: 'error' })
-}
-
-/** Where `vb whoami` says a saved join credential came from. */
-export const JOINED = 'vb join'
-
 /** How `vb` reaches a board from Node: a fetch that carries your credentials, and who it found you are. */
 export type NodeTransport = {
   /** Every request to the board, with a token for it (all but discovery). */
@@ -88,8 +79,8 @@ export type NodeTransport = {
 }
 
 /**
- * How a client reaches the board at `url` from Node: with a token from `token`, `BOARD_TOKEN`, a
- * local board's token file (`vb serve`), or a joined board's credential (`vb join`), in that order.
+ * How a client reaches the board at `url` from Node: with a token from `token`, `BOARD_TOKEN`, or a
+ * local board's token file (`vb serve`), in that order.
  * Who you are is the token's to say: the board names you from what it verifies. With none of them,
  * a request goes with no token, for the board to say whose it is.
  */
@@ -100,7 +91,6 @@ export function connect(
   url = url.replace(/\/+$/, '')
   const rawFetch: typeof fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init))
   const doFetch: typeof fetch = (input, init = {}) => through(rawFetch, input, init)
-  const joinedFetch: typeof fetch = (input, init) => rawFetch(input, { ...init, redirect: init?.redirect === 'manual' ? 'manual' : 'error' })
 
   /** A token to send, or null where none is found: its requests go without one. */
   type Found = { token: string | null; expiresAt: number }
@@ -122,11 +112,6 @@ export function connect(
       source = 'vb serve'
       return { token: local.token, expiresAt: expiry(local.token) }
     }
-    const joined = await savedJoinToken(url)
-    if (joined) {
-      source = JOINED
-      return { token: joined, expiresAt: Infinity }
-    }
     return { token: null, expiresAt: Date.now() + 5 * 60_000 }
   }
   const token = async () => {
@@ -138,23 +123,17 @@ export function connect(
   const send = (async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const href = input instanceof Request ? input.url : String(input)
     const method = (init.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase()
-    if (method === 'POST' && href === `${url}/invites/redeem`) return redeemFetch(input, init, rawFetch)
     const path = (href.startsWith(url) ? href.slice(url.length) : new URL(href).pathname).split('?')[0] || '/'
     const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined))
     // Discovery is public: it needs no credential.
     const publicRead = method === 'GET' && path === '/'
     let bare = false
-    let joined = false
     if (!publicRead && !headers.has('authorization')) {
       const credential = await token()
       if (credential !== null) headers.set('authorization', `Bearer ${credential}`)
       else bare = true
-      joined = source === JOINED
-    } else if (publicRead && options.token === undefined && !process.env.BOARD_TOKEN && !localToken(url)) {
-      joined = source === JOINED || (await savedJoinToken(url)) !== null
     }
-    // A joined credential is only for this board, and never follows redirects.
-    const response = await (joined ? joinedFetch : doFetch)(input, { ...init, headers })
+    const response = await doFetch(input, { ...init, headers })
     // It went with no token, and the board took it for no one's.
     if (bare && response.status === 401) {
       await response.body?.cancel().catch(() => {})

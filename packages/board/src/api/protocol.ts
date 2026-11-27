@@ -52,10 +52,6 @@ import type {
   CreateGrantsBody,
   GrantBody,
   RevokeGrantBody,
-  CreateInviteBody,
-  CreatedInvite,
-  InviteView,
-  Joined,
   GrantView,
   UpdateGrantBody,
   ExplainQuery,
@@ -183,12 +179,6 @@ export type Protocol = {
   resolveWorkEdge: { input: Id & Input<typeof ResolveWorkEdgeBody>; output: { task: MessageView } }
   /** The board's grants: needs `manage` at `*`, or a team owner. 501 `no_grants` where the board keeps none. */
   grants: { input: Nothing; output: { grants: GrantView[] } }
-  /** Invite management needs board-wide admin access. A board not keeping invites answers 501 `no_invites`. */
-  invites: { input: Nothing; output: { invites: InviteView[] } }
-  createInvite: { input: Input<typeof CreateInviteBody>; output: CreatedInvite }
-  revokeInvite: { input: Id; output: { revoked: boolean } }
-  /** No existing caller. The audience is set by board(), never by the body. */
-  redeemInvite: { input: { secret: string; audience: string }; output: Joined }
   /**
    * A new grant, always: the same principals again are another. Needs `manage` at each pattern its
    * `can` names. One its caller couldn't take back is 409 `grant_lockout`, unless it says `lockMeOut`.

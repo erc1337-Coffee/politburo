@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import type { Discovery, MessageView, ThreadView } from '../src/api/routes.ts'
+import type { MessageView, ThreadView } from '../src/api/routes.ts'
 import { board } from '../src/server/index.ts'
 import { http } from '../src/backend-http/index.ts'
 import { conformance } from '../src/conformance/index.ts'
@@ -10,23 +10,12 @@ type Fetch = (request: Request) => Promise<Response>
 const CHANNEL = 'conformance'
 const RUN_HEALTH = 'confirms a claimed run only through a taken and reported status probe'
 const TOMBSTONE = 'deletes a message, leaving a tombstone'
-const INVITE_ACCESS = 'lets a joined caller read and post only as granted'
 const NOT_THE_RUNS = "conformance: not the run's"
 const pathOf = (request: Request) => new URL(request.url).pathname
 const mountPath = new URL(BOARD_URL).pathname
 const messagePath = (id: string) => `${mountPath}/messages/${encodeURIComponent(id)}`
 
 const handle = async (fetch: Fetch, token = personToken()) => board({ backend: http(BOARD_URL, { fetch: bearer((input, init) => fetch(new Request(input, init)), await token) }) }).as(null)
-
-/** The invitee uses only its own bearer, and rejects redirects. */
-const inviteBackend = (fetch: Fetch, token: string) => http(BOARD_URL, {
-  fetch: (input, init) => {
-    const request = new Request(input, { ...init, redirect: 'error' })
-    request.headers.set('authorization', `Bearer ${token}`)
-    return fetch(request)
-  },
-})
-const invitee = (fetch: Fetch, token: string) => board({ backend: inviteBackend(fetch, token) }).as(null)
 
 /** The ID of what a request that made something with `text` answered, or null. */
 function madeBy(sent: string, response: Response, text: string): Promise<string | null> {
@@ -87,18 +76,6 @@ it("fails a delete a check makes rather than send it to another board's message 
   expect(report.ok).toBe(false)
 }, 60_000)
 
-it("leaves another board's message alone when the mount changes boards after an invitee's post, which only the invitee can delete", async ({ onTestFinished }) => {
-  const { client, fetch, elsewhere, planted } = await swapping('conformance: joined caller', onTestFinished)
-  const report = await conformance(client, { channel: CHANNEL, withInviteToken: (token) => invitee(fetch, token) })
-  const id = planted()
-  expect(id).not.toBeNull()
-  expect(await survives(elsewhere, id!)).toEqual({ text: NOT_THE_RUNS, deleted: false })
-  expect(report.checks.find(({ name }) => name === INVITE_ACCESS)).toMatchObject({
-    status: 'failed', detail: 'deleting the invitee posts: left 1 (could not confirm the post)',
-  })
-  expect(report.ok).toBe(false)
-}, 90_000)
-
 it('does not adopt a colliding message when the mount changes before read-back', async ({ onTestFinished }) => {
   const text = 'conformance: to delete'
   const { client, elsewhere, planted } = await swapping(text, onTestFinished, 'create')
@@ -110,48 +87,6 @@ it('does not adopt a colliding message when the mount changes before read-back',
     status: 'failed', detail: expect.stringContaining(`${id} is not the message this run created`),
   })
 }, 60_000)
-
-it.for(['create', 'read-back', 'cleanup', 'unchanged'] as const)("uses the invitee's board identity from create through cleanup (%s)", { timeout: 60_000 }, async (when, { onTestFinished }) => {
-  const team = localBoard()
-  onTestFinished(() => team.close())
-  const admin = await handle(team.fetch)
-  const text = 'conformance: joined caller'
-  let id: string | null = null
-  let project = when === 'unchanged' ? 'prj_invitee' : null
-  const withInviteToken = (token: string) => {
-    const member: Fetch = async (request) => {
-      const sent = request.method === 'POST' ? await request.clone().text() : ''
-      const response = await team.fetch(request)
-      if (id === null) {
-        id = await madeBy(sent, response, text)
-        if (id !== null && (when === 'create' || when === 'read-back')) project = 'prj_replacement'
-      } else if (request.method === 'GET' && pathOf(request) === `${mountPath}/invites`) {
-        if (when === 'cleanup') project = 'prj_replacement'
-        if (when === 'read-back') project = null
-      }
-      return response
-    }
-    // Only discovery differs, as when a mount is pointed at a copy of the board.
-    const backend = {
-      ...inviteBackend(member, token),
-      async discovery(): Promise<Discovery> {
-        const info = await admin.discovery()
-        return project === null ? info : { ...info, project_id: project }
-      },
-    }
-    return board({ backend }).as(null)
-  }
-  const report = await conformance(admin, { channel: CHANNEL, withInviteToken })
-  expect(id).not.toBeNull()
-  const check = report.checks.find(({ name }) => name === INVITE_ACCESS)
-  if (when === 'unchanged') {
-    expect(await survives(admin, id!)).toEqual({ text: '', deleted: true })
-    expect(check?.status).toBe('passed')
-  } else {
-    expect(await survives(admin, id!)).toEqual({ text, deleted: false })
-    expect(check).toMatchObject({ status: 'failed', detail: expect.stringContaining('deleting the invitee posts: left 1') })
-  }
-})
 
 it.for(['missing', 'changed', 'paged'] as const)('uses the reply itself for cleanup when the reply is %s', { timeout: 60_000 }, async (view, { onTestFinished }) => {
   const team = localBoard()
@@ -230,35 +165,6 @@ it('leaves and reports a post whose cleanup read returns 404', async ({ onTestFi
   expect(await survives(await handle(team.fetch), id!)).toEqual({ text, deleted: false })
   expect(report.checks.find(({ name }) => name === 'holds a long-poll open until the next event')).toMatchObject({
     status: 'failed', detail: expect.stringContaining('HTTP 404'),
-  })
-}, 60_000)
-
-it('keeps echoed credentials out of the invite cleanup report', async ({ onTestFinished }) => {
-  const team = localBoard()
-  onTestFinished(() => team.close())
-  const text = 'conformance: joined caller'
-  const echoed = 'vbj_fake-bearer-in-provenance'
-  let id: string | null = null
-  let echo = false
-  const fetch: Fetch = async (request) => {
-    const sent = request.method === 'POST' ? await request.clone().text() : ''
-    const response = await team.fetch(request)
-    id ??= await madeBy(sent, response, text)
-    // Change the view only after the invitee tests its lack of admin access.
-    if (pathOf(request) === `${mountPath}/invites` && request.method === 'GET' && response.status === 403) echo = true
-    if (echo && id !== null && request.method === 'GET' && pathOf(request) === messagePath(id) && response.ok) {
-      const thread: ThreadView = await response.json()
-      const { message } = thread
-      return Response.json({ ...thread, message: { ...message, channel: echoed, createdAt: echoed, by: { ...message.by, principal: echoed } } })
-    }
-    return response
-  }
-  const report = await conformance(await handle(fetch), { channel: CHANNEL, withInviteToken: (token) => invitee(fetch, token) })
-  expect(JSON.stringify(report)).not.toContain(echoed)
-  expect(id).not.toBeNull()
-  expect(await survives(await handle(team.fetch), id!)).toEqual({ text, deleted: false })
-  expect(report.checks.find(({ name }) => name === INVITE_ACCESS)).toMatchObject({
-    status: 'failed', detail: 'deleting the invitee posts: left 1 (could not confirm the post)',
   })
 }, 60_000)
 

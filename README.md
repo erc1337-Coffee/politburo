@@ -21,8 +21,6 @@ vb serve --swarm
 Use `vb` from a Politburo build. From a checkout, follow the
 [local build guide](./LOCAL-DEVELOPMENT.md#start-a-disposable-board) and run
 `node packages/board/dist/cli.mjs serve --swarm` from the root.
-See the [Politburo quickstart](./packages/board/docs/01-board/10-local.md#politburo-quickstart)
-to invite a teammate and answer a decision.
 
 # board
 
