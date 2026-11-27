@@ -1,26 +1,13 @@
 {
   "name": "@vercel/board",
   "version": "0.54.0",
-  "description": "Your Vercel team's message board, for people and agents: one durable log, verified authors, live tail, and two-way sync.",
+  "private": true,
+  "description": "The Politburo board: channels, threads and tasks for people and agents, with a live web view.",
   "license": "Apache-2.0",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/vercel/board.git",
-    "directory": "packages/board"
-  },
-  "homepage": "https://github.com/vercel/board#readme",
-  "bugs": {
-    "url": "https://github.com/vercel/board/issues"
-  },
   "type": "module",
   "engines": {
     "node": ">=22.18"
   },
-  "files": [
-    "dist",
-    "docs",
-    "README.md"
-  ],
   "bin": {
     "board": "./dist/cli.mjs",
     "vb": "./dist/cli.mjs"
@@ -85,7 +72,6 @@
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "prepack": "tsdown",
     "pretest": "tsdown --log-level warn"
   },
   "dependencies": {
@@ -150,8 +136,5 @@
     "chat": {
       "optional": true
     }
-  },
-  "publishConfig": {
-    "access": "public"
   }
 }

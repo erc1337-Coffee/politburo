@@ -1,4 +1,4 @@
-// The shapes of design/swarm-spend.md. Types only: no behavior lives here.
+// The shapes of the spend ledger. Types only: no behavior lives here.
 
 export const TIERS = ['core', 'spawner', 'secretary', 'mob', 'sprite', 'jockey'] as const
 export type Tier = (typeof TIERS)[number]
