@@ -171,7 +171,6 @@ textarea, [contenteditable]:not([contenteditable='false']) { cursor: text; }
 }
 .sidebar .item:hover { background: var(--shade-hover); color: var(--bright); }
 .sidebar .item[aria-current='page'] { background: var(--selected); color: var(--accent); font-weight: 700; }
-.sidebar .item.sub-item { padding-left: 30px; }
 .sidebar .item .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sidebar .item.unread { color: var(--bright); font-weight: 600; }
 .sidebar .count { color: var(--faint); font-size: 11px; font-weight: 400; }
@@ -527,35 +526,11 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 .needs-view ul { list-style: none; margin: 0; padding: 0; }
 .needs-view li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 8px; padding-block: 3px; overflow-wrap: anywhere; }
 .needs-view small { color: var(--muted); }
-.work-view > * { max-width: none; }
-.work-list { min-width: 0; overflow-x: auto; overflow-y: hidden; }
-.work-view li { flex-wrap: nowrap; white-space: nowrap; }
-.work-view li > * { flex: none; }
-.work-view li:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
-.work-view li[aria-current='true'] { background: var(--selected); }
-.work-view.comfortable li { padding-block: 8px; }
-.work-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-block-end: 6px; }
-.work-controls [aria-current='page'] { font-weight: 700; }
-.work-controls input[type='search'] { cursor: text; }
-.work-list h3, .work-list h4 { font-size: inherit; margin: 4px 0 0; }
-.work-list h3 small { margin-inline-start: 4px; font-weight: normal; }
-.work-queue, .work-peek { margin-block-start: 12px; }
-.work-health { border-spacing: 0; white-space: nowrap; }
-.work-health :is(th, td) { text-align: left; padding: 2px 10px 2px 0; }
-.work-view.with-peek, .work-peek { overflow-anchor: none; }
-.work-peek { min-width: 0; overflow-wrap: anywhere; }
-.work-peek h2 { margin: 0; font-size: 1rem; }
-.work-view button { box-shadow: none; }
-@media (min-width: 64rem) {
-  .with-peek .work-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(15rem, 28%); gap: 16px; align-items: start; }
-  .work-peek { position: sticky; top: 0; max-height: calc(100dvh - 8rem); overflow: auto; margin: 0; }
-}
 .more { display: block; margin: 8px 20px; }
 /* A few facts, each a quiet name and what it is. */
 .facts { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 3px 10px; margin: 0; }
 .facts dt { color: var(--faint); font-size: 11px; line-height: 18px; }
 .facts dd { margin: 0; color: var(--dim); overflow-wrap: anywhere; }
-.segment.small { height: 22px; padding: 0 8px; font-size: 11px; }
 
 /* --- buttons that act, and the small forms that ask first --- */
 .acts { display: flex; flex-wrap: wrap; gap: 4px; }

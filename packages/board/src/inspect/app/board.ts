@@ -18,11 +18,8 @@ import { toast } from './chrome.ts'
 import { listing } from './listing.ts'
 import { base, currentPath, route } from './nav.tsx'
 import { identitiesOf, type Shown } from './identity.ts'
-import { groupingOf } from './routes.ts'
 import * as store from './store.ts'
 import { refusal, said } from './words.ts'
-import { fixtureRecords } from './work-fixtures.ts'
-import type { SwarmRecords } from './work.ts'
 
 // The page's data: one handle on the board, and every read and write the page makes through it.
 
@@ -635,15 +632,13 @@ let needsVisit: symbol | undefined
 
 function taskQuery() {
   const view = route(currentPath()).view
-  // Task views share one read, so a later read can drop a task it omits. Work grouped by
-  // board state, or not grouped, shows finished tasks too, so it reads every state.
-  const all = view === 'work' ? groupingOf(new URLSearchParams(location.search)) !== 'swarm'
-    : view !== 'inbox' && view !== 'cell' && state.taskScope === store.taskScope()
+  // Task views share one read, so a later read can drop a task it omits.
+  const all = view !== 'inbox' && state.taskScope === store.taskScope()
   return { state: all ? 'all' : 'open' } as const
 }
 
 /** The views that start their own task read and revalidate it themselves (`openNeeds`). */
-const opensTaskRead = (view: string) => view === 'inbox' || view === 'work' || view === 'cell'
+const opensTaskRead = (view: string) => view === 'inbox'
 
 const scopeOf = (query: ReturnType<typeof taskQuery>) => query.state === 'open' ? 'open' : store.taskScope()
 
@@ -691,7 +686,7 @@ function refreshOpenTasks(revalidate = false) {
   const handle = team
   const current = () => read.identity === identity && !read.superseded
   set((s) => ({ ...s, tasksLoading: 0 }))
-  // The Inbox and Work read permissions alongside their task snapshot. Other views read
+  // The Inbox reads permissions alongside its task snapshot. Other views read
   // permissions after the last page so a revocation during paging is also reflected.
   const needsMe = needsVisit ? handle.me().then((me) => ({ me }), (error: unknown) => ({ error })) : undefined
   void (async () => {
@@ -777,7 +772,7 @@ export function watchTaskReads() {
     }
     const changed = taskURL(next) !== taskURL(previous)
     previous = next
-    // A Work grouping that reads every state, or one that doesn't, needs its own read.
+    // A view whose read scope differs from the current read needs its own read.
     if (changed && state.me && state.taskScope !== null && scopeOf(taskQuery()) !== state.taskScope) refreshOpenTasks(true)
   }
   window.addEventListener('popstate', navigateRead)
@@ -788,10 +783,6 @@ export function watchTaskReads() {
     window.removeEventListener('focus', revalidate)
     document.removeEventListener('visibilitychange', visible)
   }
-}
-
-export function swarmRecords(): SwarmRecords | null {
-  return new URLSearchParams(location.search).get('swarm') === 'fixtures' ? fixtureRecords : null
 }
 
 export function openNeeds() {

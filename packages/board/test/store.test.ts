@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { AttentionView, BoardEventView, MessageView, ScheduleView, SchemaView, TaskView } from '../src/api/routes.ts'
 import { block } from '../src/contract/blocks.ts'
 import * as attentionStore from '../src/inspect/app/attention-store.ts'
-import { projectWork } from '../src/inspect/app/work.ts'
+import { inboxRows } from '../src/inspect/app/inbox-rows.ts'
 import * as store from '../src/inspect/app/store.ts'
 import { continues } from '../src/inspect/app/store.ts'
 import { boardWords, cadence, laterFields, localInput, principalName, refusal, span, timingWords, until } from '../src/inspect/app/words.ts'
@@ -392,8 +392,7 @@ it('shows only open decisions, oldest first, from readable task roots', () => {
     state = withRead(state, canceled, here(request(canceled, 'canceled')))
     const prior = withRead(seeded([absent]), absent, here(request(absent)))
     state = { ...state, attention: { ...prior.attention, ...state.attention } }
-    const { groups } = projectWork(state, null, viewer([], { may: (perm, channel) => perm === 'read' && channel === 'work' }), NOW)
-    const needs = groups.find(({ group }) => group === 'needs')!.rows.filter(({ reason }) => reason === 'attention answer needed')
+    const needs = inboxRows(state, NOW).get('needs')!.filter(({ reason }) => reason === 'attention answer needed')
     expect(needs.map(({ root }) => root.id)).toEqual(['9', '2'])
   })
 

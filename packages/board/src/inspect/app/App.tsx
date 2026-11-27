@@ -8,7 +8,7 @@ import { Feed, Toasts } from './feed.tsx'
 import { Inbox } from './inbox.tsx'
 import { HomeEmblem } from './home-emblem.tsx'
 import { Messages, Pendings, type RowOptions } from './message.tsx'
-import { here, isTypingTarget, Link, navigate, RelativeTime, route, useLocation, useNow, useTypeToFocus } from './nav.tsx'
+import { here, isTypingTarget, navigate, RelativeTime, route, useLocation, useNow, useTypeToFocus } from './nav.tsx'
 import { Settings } from './settings.tsx'
 import { Sidebar } from './sidebar.tsx'
 import { actorFor, TaskCard, taskIds } from './task.tsx'
@@ -16,8 +16,6 @@ import { FilterButton, FilterChips } from './filters.tsx'
 import { byWritten, channelRows, channelThreads, facesOf, filtering, isTask, knownLabels, listingOf, matches, mayCancelSchedule, pauseBanner, profilesOf, thread as threadOf, threadSchedules, type Filter, type State, type Viewer } from './store.ts'
 import { Ask, AskForm, Header, HeaderActions, nativeMenu, Panel, ResizeHandle, type KnownLabels } from './ui.tsx'
 import { boardWords, cadence, firstLine, shownName, until } from './words.ts'
-import { cellHasThread, isWorkRoute, workTitle } from './work-scope.ts'
-import { Work } from './work-view.tsx'
 import { IdentitiesContext, nameFor } from './identity.ts'
 import { Operations } from './operations-view.tsx'
 
@@ -200,7 +198,7 @@ export function App() {
       if (element && element.isConnected && element.getClientRects().length && !element.closest('[inert]')) element.focus({ preventScroll: true })
       else focus(fallback)
     }
-    const mainFocus = isWorkRoute(route(where.path)) ? '.main .work-list' : '.main [data-view-title]'
+    const mainFocus = '.main [data-view-title]'
     if (nav) focus('.sidebar')
     else if (old?.nav && old.path === where.path && old.thread === where.thread && narrow) {
       restore(navOpener.current, `${where.thread === null ? '.main' : '.pane'} .header [aria-label="Show sidebar"]`)
@@ -248,8 +246,7 @@ export function App() {
   const current = route(where.path)
   // The tab says which board too, so two inspectors side by side tell apart.
   const named = boardWords(state.discovery).name
-  const title = isWorkRoute(current) ? workTitle(current)
-    : current.view === 'channel' ? `#${current.channel}`
+  const title = current.view === 'channel' ? `#${current.channel}`
     : current.view === 'settings' ? `${current.section} · settings`
     : current.view === 'missing' ? 'nothing here'
     : current.view === 'inbox' ? 'Inbox'
@@ -292,13 +289,10 @@ export function App() {
     </>
   ) : null
   const identity = board.getIdentity()
-  const cellPaneStatus = current.view === 'cell' && where.thread !== null
-    ? state.tasksRefused ?? (!state.tasksCounted ? 'loading…' : cellHasThread(state, current.cell, where.thread) ? null : 'not in this cell')
-    : null
   const paneIsFront = narrow && where.thread !== null
   const expand = paneIsFront ? null : headerLead
   const banner = pauseBanner(state, now)
-  const control = current.view !== 'cell' && viewer.manages && viewer.person && viewer.profile === null && state.status
+  const control = viewer.manages && viewer.person && viewer.profile === null && state.status
     ? <PauseControl key={viewer.actor} paused={state.status.paused} /> : null
   const headerActions = <>
     {(narrow ? !nav : sidebar.collapsed) && <span className="meta" title={state.me.actor}>acting as {nameFor(state.identities, state.me.actor, shownName(state.me))}</span>}
@@ -336,7 +330,6 @@ export function App() {
             {current.view === 'channel' && (
               <Channel key={current.channel} channel={current.channel} state={state} options={options} known={known} lead={expand} filters={filters} />
             )}
-            {isWorkRoute(current) && <Work key={`${identity}:${where.path}`} route={current} state={state} now={now} lead={expand} />}
             {current.view === 'operations' && <Operations lead={expand} identities={state.identities} />}
             {current.view === 'settings' && <Settings state={state} viewer={viewer} now={now} lead={expand} where={where} section={current.section} open={current.open} />}
             {current.view === 'missing' && (
@@ -351,16 +344,8 @@ export function App() {
           <aside className="pane" aria-label="Thread" inert={nav}>
             <ResizeHandle side="left" label="resize the thread" onDrag={pane.drag} onDone={pane.done} onStep={pane.step} />
             <HeaderActions.Provider value={paneIsFront ? headerActions : null}>
-              {cellPaneStatus === null ? (
-                <ThreadPane key={`${identity}:${where.thread}`} id={where.thread} state={state} viewer={viewer} now={now} known={known}
-                  lead={narrow ? headerLead : null} readOnly={current.view === 'cell'} />
-              ) : (
-                <div className="view-body">
-                  <p className="empty" role="status" data-view-title tabIndex={-1}>{cellPaneStatus}{' '}
-                    <Link className="text-link" to={here({ thread: null })}>close</Link>
-                  </p>
-                </div>
-              )}
+              <ThreadPane key={`${identity}:${where.thread}`} id={where.thread} state={state} viewer={viewer} now={now} known={known}
+                lead={narrow ? headerLead : null} />
             </HeaderActions.Provider>
           </aside>
         )}
@@ -497,9 +482,8 @@ function Channel(props: { channel: string; state: State; options: RowOptions; kn
   )
 }
 
-function ThreadPane(props: { id: string; state: State; viewer: Viewer; now: number; known: KnownLabels; lead: ReactNode; readOnly: boolean }) {
-  const { id, state, readOnly } = props
-  const viewer: Viewer = readOnly ? { ...props.viewer, may: (permission, channel) => permission === 'read' && props.viewer.may(permission, channel) } : props.viewer
+function ThreadPane(props: { id: string; state: State; viewer: Viewer; now: number; known: KnownLabels; lead: ReactNode }) {
+  const { id, state, viewer } = props
   const fileDraft = useState<File[]>([])
   useTypeToFocus('thread')
   const identity = board.getIdentity()
@@ -532,7 +516,7 @@ function ThreadPane(props: { id: string; state: State; viewer: Viewer; now: numb
         </button>
       </Header>
       <div className="view-body">
-      {t && !readOnly && isTask(t.root) && <TaskCard key={identity} root={t.root} state={state} viewer={viewer} />}
+      {t && isTask(t.root) && <TaskCard key={identity} root={t.root} state={state} viewer={viewer} />}
       {t && scheduled.length > 0 && (
         <dl className="facts thread-facts" {...nativeMenu}>
           {scheduled.map((schedule) => (
@@ -559,7 +543,7 @@ function ThreadPane(props: { id: string; state: State; viewer: Viewer; now: numb
             <Messages messages={[t.root]} now={props.now} options={options} />
             <div className="divider">{t.replies.length === 1 ? '1 reply' : `${t.replies.length} replies`}</div>
             <Messages messages={t.replies} now={props.now} options={options} after={t.root} />
-            {!readOnly && <Pendings posts={t.pending} me={state.me!} after={t.replies.at(-1)} chat />}
+            <Pendings posts={t.pending} me={state.me!} after={t.replies.at(-1)} chat />
           </>
         )}
       </Feed>
