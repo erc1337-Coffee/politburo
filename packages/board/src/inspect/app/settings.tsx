@@ -185,7 +185,7 @@ function Watchers({ state }: { state: State }) {
           <section key={registration.owner} className="registration" {...nativeMenu}>
             <h3>
               <b>{nameOf(state, registration.owner)}</b>
-              {registration.path ? ` · woken at ${registration.path}${registration.branch ? ` (${registration.branch})` : ''}` : registration.url ? ` · woken at ${registration.url}` : ' · pulls on its own'}
+              {' · pulls on its own'}
             </h3>
             {Object.entries(registration.watch).map(([id, watcher]) => (
               <div key={id} className="watch-row">

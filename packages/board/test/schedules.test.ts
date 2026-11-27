@@ -164,7 +164,7 @@ describe('scheduled messages', () => {
     expect(body.messages).toMatchObject([{ text: 'standup time', re: null, labels: { kind: 'standup' } }])
   })
 
-  it('keep sending after a deploy: a timer an earlier deployment armed goes only to it', async () => {
+  it('keep sending after a restart: the first request arms a send from before again', async () => {
     // A schedule from before, whose first send waits on the earlier deployment's queue.
     const store = memory()
     const by = { actor: 'vercel:user:u_julian', principal: 'vercel:user:u_julian', profile: null }
@@ -248,7 +248,7 @@ describe('scheduled messages', () => {
     expect((await julian('GET', '/messages?channel=dev')).body.messages).toEqual([])
   })
 
-  it('keep sending after a deploy when a schedule has already sent: its next send is armed, not its first', async () => {
+  it('keep sending after a restart when a schedule has already sent: its next send is armed, not its first', async () => {
     // A daily schedule from before that sent once, its second send waiting on the earlier deployment's queue.
     const store = memory()
     const by = { actor: 'vercel:user:u_julian', principal: 'vercel:user:u_julian', profile: null }
@@ -278,178 +278,6 @@ describe('scheduled messages', () => {
       expect(body.messages.map((m: { text: string }) => m.text)).toEqual(['standup'])
     })
     expect((await julian('GET', '/schedules')).body.schedules).toMatchObject([{ sent: 2, next: new Date(T0 + HOUR + 2 * DAY).toISOString() }])
-  })
-
-  it('move to each new deployment on its first request: the earlier one stops sending', async () => {
-    const store = memory()
-    const deploy = (id: string) => {
-      vi.stubEnv('VERCEL_DEPLOYMENT_ID', id)
-      const queue = fakeQueue()
-      const deployed = testBoard({ store, scheduler: queue.scheduler })
-      vi.unstubAllEnvs()
-      return { queue, julian: fresh(deployed.fetch, 'u_julian', {}) }
-    }
-    const settle = () => new Promise((resolve) => setTimeout(resolve, 20))
-    const before = deploy('dpl_before')
-    await before.julian('POST', '/schedules', { channel: 'dev', text: 'standup', in: '1h', every: '1d' })
-    const after = deploy('dpl_after')
-    await after.julian('GET', '/me')
-    await vi.waitFor(() => expect(after.queue.timers).toHaveLength(1))
-    const standups = async () => (await after.julian('GET', '/messages?channel=dev')).body.messages.map((m: { text: string }) => m.text)
-
-    vi.setSystemTime(T0 + HOUR)
-    await before.queue.fire()
-    await settle()
-    expect(await standups()).toEqual([])
-    expect(await after.queue.fire()).toBe(1)
-    await vi.waitFor(async () => expect(await standups()).toEqual(['standup']))
-    await vi.waitFor(() => expect(after.queue.timers).toHaveLength(1))
-
-    vi.setSystemTime(T0 + HOUR + DAY)
-    await before.queue.fire()
-    expect(await after.queue.fire()).toBe(1)
-    await vi.waitFor(async () => expect(await standups()).toEqual(['standup', 'standup']))
-    await settle()
-    expect(await standups()).toEqual(['standup', 'standup'])
-  })
-
-  it("send when the earlier deployment's timer for the same send lands at the same moment", async () => {
-    const store = memory()
-    const deploy = (id: string) => {
-      vi.stubEnv('VERCEL_DEPLOYMENT_ID', id)
-      const queue = fakeQueue()
-      const deployed = testBoard({ store, scheduler: queue.scheduler })
-      vi.unstubAllEnvs()
-      return { queue, julian: fresh(deployed.fetch, 'u_julian', {}) }
-    }
-    const settle = () => new Promise((resolve) => setTimeout(resolve, 20))
-    const before = deploy('dpl_before')
-    await before.julian('POST', '/schedules', { channel: 'dev', text: 'standup', in: '1h', every: '1d' })
-    const after = deploy('dpl_after')
-    await after.julian('GET', '/me')
-    await vi.waitFor(() => expect(after.queue.timers).toHaveLength(1))
-    const standups = async () => (await after.julian('GET', '/messages?channel=dev')).body.messages.map((m: { text: string }) => m.text)
-
-    // Both queues deliver the send together, the earlier deployment's first: its run mustn't take the later one's.
-    vi.setSystemTime(T0 + HOUR)
-    await Promise.all([before.queue.fire(), after.queue.fire()])
-    await vi.waitFor(async () => expect(await standups()).toEqual(['standup']))
-    await settle()
-    expect(await standups()).toEqual(['standup'])
-  })
-
-  it("stay on the newest deployment when an earlier one's timer starts a fresh instance there", async () => {
-    const store = memory()
-    const deploy = (id: string, queue = fakeQueue()) => {
-      vi.stubEnv('VERCEL_DEPLOYMENT_ID', id)
-      const deployed = testBoard({ store, scheduler: queue.scheduler })
-      vi.unstubAllEnvs()
-      return { queue, scheduler: deployed.scheduler, julian: fresh(deployed.fetch, 'u_julian', {}) }
-    }
-    const settle = () => new Promise((resolve) => setTimeout(resolve, 20))
-    const before = deploy('dpl_before')
-    await before.julian('POST', '/schedules', { channel: 'dev', text: 'standup', in: '1h', every: '1d' })
-    const after = deploy('dpl_after')
-    await after.julian('GET', '/me')
-    await vi.waitFor(() => expect(after.queue.timers).toHaveLength(1))
-    const standups = async () => (await after.julian('GET', '/messages?channel=dev')).body.messages.map((m: { text: string }) => m.text)
-
-    // Nobody visits the earlier deployment any more: its own timer cold-starts an instance there, through the scheduler route.
-    const revived = deploy('dpl_before', before.queue)
-    vi.setSystemTime(T0 + HOUR)
-    await before.queue.fire(revived.scheduler)
-    await settle()
-    await before.queue.fire(revived.scheduler)
-    await settle()
-    expect(await standups()).toEqual([])
-
-    // The later deployment still sends once, and keeps the next one.
-    await before.queue.fire(revived.scheduler)
-    await after.queue.fire()
-    await vi.waitFor(async () => expect(await standups()).toEqual(['standup']))
-    await vi.waitFor(() => expect(after.queue.timers).toHaveLength(1))
-    await settle()
-    expect(await standups()).toEqual(['standup'])
-    expect(before.queue.timers).toEqual([])
-  })
-
-  it("send from the newest deployment when a scheduler brings an earlier one's timer there", async () => {
-    const store = memory()
-    const deploy = (id: string) => {
-      vi.stubEnv('VERCEL_DEPLOYMENT_ID', id)
-      const queue = fakeQueue()
-      const deployed = testBoard({ store, scheduler: queue.scheduler })
-      vi.unstubAllEnvs()
-      return { queue, scheduler: deployed.scheduler, julian: fresh(deployed.fetch, 'u_julian', {}) }
-    }
-    const before = deploy('dpl_before')
-    await before.julian('POST', '/schedules', { channel: 'dev', text: 'standup', in: '1h', every: '1d' })
-    const after = deploy('dpl_after')
-    await after.julian('GET', '/me')
-    await vi.waitFor(() => expect(after.queue.timers).toHaveLength(1))
-    const standups = async () => (await after.julian('GET', '/messages?channel=dev')).body.messages.map((m: { text: string }) => m.text)
-
-    // A scheduler that delivers to one URL, the production alias, as qstash does.
-    vi.setSystemTime(T0 + HOUR)
-    await before.queue.fire(after.scheduler)
-    await vi.waitFor(async () => expect(await standups()).toEqual(['standup']))
-  })
-
-  it('arm a send more than a hop out once, however many instances take over', async () => {
-    const store = memory()
-    const queue = fakeQueue()
-    const instance = () => {
-      vi.stubEnv('VERCEL_DEPLOYMENT_ID', 'dpl_after')
-      const deployed = testBoard({ store, scheduler: queue.scheduler })
-      vi.unstubAllEnvs()
-      return fresh(deployed.fetch, 'u_julian', {})
-    }
-    const first = instance()
-    // The first instance takes over before the schedule exists. Its first call starts the takeover
-    // without waiting for it, and a takeover that reads the schedules after one was created arms
-    // its send again, under the takeover's name, beside the timer its creation armed.
-    await first('GET', '/me')
-    const takeovers = async () => (await store.log.read(`board-schedules\u001f${SCHEDULES_SESSION}`)).filter((e) => e.type === 'schedule.takeover')
-    await vi.waitFor(async () => expect(await takeovers()).toHaveLength(1))
-    await first('POST', '/schedules', { channel: 'dev', text: 'a week later', in: '8d' })
-    await vi.waitFor(() => expect(queue.timers).toHaveLength(1))
-    const settle = () => new Promise((resolve) => setTimeout(resolve, 20))
-    // The next instance arms it again under the takeover's name, which every instance after it shares.
-    vi.setSystemTime(T0 + MINUTE)
-    await instance()('GET', '/me')
-    await vi.waitFor(() => expect(queue.timers).toHaveLength(2))
-    vi.setSystemTime(T0 + 2 * MINUTE)
-    await instance()('GET', '/me')
-    await settle()
-    expect(queue.timers).toHaveLength(2)
-  })
-
-  it('send one created on the newest deployment when an earlier one catches up on it first', async () => {
-    const store = memory()
-    const deploy = (id: string, drains = true) => {
-      vi.stubEnv('VERCEL_DEPLOYMENT_ID', id)
-      const queue = fakeQueue()
-      // Without `drains`, the schedules session waits for another deployment to drain it.
-      const scheduler: typeof queue.scheduler = {
-        ...queue.scheduler,
-        schedule: async (task) => (drains || task.kind !== 'drain' || task.sessionId !== 'schedules' ? queue.scheduler.schedule(task) : undefined),
-      }
-      const deployed = testBoard({ store, scheduler })
-      vi.unstubAllEnvs()
-      return { queue, deployed, julian: fresh(deployed.fetch, 'u_julian', {}) }
-    }
-    const before = deploy('dpl_before')
-    await before.julian('GET', '/me')
-    const after = deploy('dpl_after', false)
-    await after.julian('GET', '/me')
-    await after.julian('POST', '/schedules', { channel: 'dev', text: 'standup', in: '1h' })
-    await before.deployed.servers[2]!.drain('schedules')
-    const standups = async () => (await after.julian('GET', '/messages?channel=dev')).body.messages.map((m: { text: string }) => m.text)
-
-    vi.setSystemTime(T0 + HOUR)
-    await before.queue.fire()
-    await after.queue.fire()
-    await vi.waitFor(async () => expect(await standups()).toEqual(['standup']))
   })
 
   it('keep repeating when arming the next send failed after one went out', async () => {

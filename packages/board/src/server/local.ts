@@ -1,6 +1,5 @@
 // A board kept in this process, which `@vercel/board/backend-local` exports: on the board's log and its
 // engine, with its pieces chosen here.
-import { createHash } from 'node:crypto'
 import { join, resolve } from 'node:path'
 import { a2 } from './a2.ts'
 import type { Backend, BoardBinding, Caller, ProtocolMethods, Trust } from './backend.ts'
@@ -16,9 +15,8 @@ import type { WorkLifecycleOptions } from './tasks.ts'
 
 export type LocalOptions = {
   /**
-   * Where it keeps its files: `.board` under the working directory by default. Each board is one
-   * SQLite file there, `local.db` for the default board and one named for the board otherwise,
-   * whatever its team, with its attachments in the folder of the same name.
+   * Where it keeps its files: `.board` under the working directory by default. The board is one
+   * SQLite file there, `local.db`, with its attachments in the folder `local`.
    */
   dir?: string
   /** Keeps the board in memory, attachments too, for tests: nothing is written, and it's gone with the process. */
@@ -41,25 +39,6 @@ export type LocalOptions = {
 export type LocalBackend = Backend & {
   /** Stops its timers and closes the board's file. What was still to send doesn't, as after a restart. */
   close(): Promise<void>
-}
-
-/** A board's name that is its own file's: lowercase letters, digits, `_`, and `-`, and no device name Windows keeps. */
-const PLAIN = /^[a-z0-9][a-z0-9_-]{0,63}$/
-const RESERVED = /^(con|prn|aux|nul|com\d|lpt\d)$/
-
-/**
- * The file a board keeps, without its extension, from its name alone: `local` for the default
- * board, a plain name as it is (whatever its case: names match that way), and any other name,
- * `Security Team` say, as letters and dashes, a `.`, and a hash of it. No plain name has a `.`,
- * and the hash is long enough that no one finds two names that share it, so no two names
- * share a file, and none is `local`'s.
- */
-export function localFile(name: string | null): string {
-  if (name === null) return 'local'
-  const lower = name.toLowerCase()
-  if (PLAIN.test(lower) && lower !== 'local' && !RESERVED.test(lower)) return lower
-  const slug = lower.replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'board'
-  return `${slug}.${createHash('sha256').update(lower).digest('hex').slice(0, 32)}`
 }
 
 /** Why a file couldn't be opened, in a few words. */
@@ -108,7 +87,7 @@ export function local(options: LocalOptions = {}): LocalBackend {
     const bound = binding
     if (opening) return opening
     const opened = (async () => {
-      const file = localFile(bound.name)
+      const file = 'local'
       let store: BoardStore
       let unlock: (() => void) | null = null
       if (options.memory) store = (await import('../store/memory.ts')).memory()

@@ -30,8 +30,9 @@ async function pageOf(): Promise<string> {
   return found
 }
 
-/** The hosts `--allow-host`, or `--tailscale`, names: each a host, with its port when that isn't its scheme's default. */
-export function allowedHosts({ flags, usage }: Pick<CommandContext, 'flags' | 'usage'>, flag: 'allow-host' | 'tailscale' = 'allow-host'): string[] {
+/** The hosts `--allow-host` names: each a host, with its port when that isn't its scheme's default. */
+export function allowedHosts({ flags, usage }: Pick<CommandContext, 'flags' | 'usage'>): string[] {
+  const flag = 'allow-host'
   const hosts = flags[flag] ?? []
   const team = flags['team-tokens'] !== undefined
   const bad = hosts.find((host) => {
@@ -39,7 +40,7 @@ export function allowedHosts({ flags, usage }: Pick<CommandContext, 'flags' | 'u
     return match === null || (team && (!URL.canParse(`https://${host}`) || match[1]!.split('.').some((label) => label.length > 63)))
   })
   if (bad !== undefined)
-    throw usage(`--${flag} takes a host, with a port if it isn't the default, like box.tailnet.ts.net${team ? '.' : `: not ${bad}.`}`)
+    throw usage(`--${flag} takes a host, with a port if it isn't the default, like box.example.com${team ? '.' : `: not ${bad}.`}`)
   // Written with a scheme's own port, it's the host without it too: that's how a browser sends it.
   return [...new Set(hosts.flatMap((host) => [host, host.replace(/:(443|80)$/, '')]))]
 }

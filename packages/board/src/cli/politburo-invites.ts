@@ -9,7 +9,7 @@ import { conformance } from '../conformance/index.ts'
 import type { Failure } from './failure.ts'
 import { formatConformance, grantCan } from './format.ts'
 import { grantCanOf } from './grants.ts'
-import { client, connection, current, doing, Failed, flags, io, out, result, sent, usage, vercelBoard } from './main.ts'
+import { client, connection, current, doing, Failed, flags, io, out, result, sent, usage } from './main.ts'
 
 /** Public metadata (an invite name, a principal, a channel) must not echo a credential. */
 export const redactCredentials = (text: string) => text.replace(/vb[ij]_[A-Za-z0-9_-]{43}/g, '[redacted]')
@@ -128,7 +128,7 @@ export async function runInvite([verb, subject, extra]: string[]): Promise<numbe
 
 export async function runJoin([given, invite, extra]: string[]): Promise<number> {
   if (given === undefined || invite === undefined || extra !== undefined) throw usage('Pass a board URL and one invite, or - to read it from stdin.')
-  if (flags.url !== undefined || flags.scope !== undefined || flags.team !== undefined || flags.name !== undefined || flags.ensure || flags.as !== undefined || flags.avatar !== undefined)
+  if (flags.url !== undefined || flags.as !== undefined || flags.avatar !== undefined)
     throw usage('join takes the board URL as an argument, without board or profile options.')
   const url = canonicalJoinUrl(given)
   if (!url) throw usage('Use an HTTPS board URL without userinfo, query, or fragment. HTTP is only allowed on loopback.', { reason: 'invalid_board_url' })
@@ -169,7 +169,7 @@ export async function checkConformance(): Promise<number> {
   const board = connected?.board ?? client()
   const at = connected?.url
   // Use the URL this run opened, not a URL from discovery or an injected handle we can't reopen.
-  const mount = at && !vercelBoard(at) ? canonicalJoinUrl(at) : null
+  const mount = at ? canonicalJoinUrl(at) : null
   // Open the board first: one it can't reach (no room for it, no grant, a lapsed login) is this run's error, not a check the board failed.
   await board.me()
   const report = await conformance(board, {

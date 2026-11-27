@@ -458,7 +458,7 @@ export async function createServe(context: BoardContext): Promise<Serve> {
     if (options.url) return options.url.replace(/\/+$/, '')
     if (hostTrusted(options)) return at
     if (typeof process !== 'undefined' && process.env.NODE_ENV === 'production')
-      throw new HttpError(500, 'no_board_url', "this board has no URL to check a token's audience against, and outside Vercel a request's Host is its sender's to choose", {
+      throw new HttpError(500, 'no_board_url', "this board has no URL to check a token's audience against, and a request's Host is its sender's to choose", {
         hint: "Pass board({ url: 'https://<host>/api/board' }), the URL people reach it at.",
       })
     if (!warned) console.warn(`[board] no url: verifying tokens for ${at}, the host requests name. Pass board({ url }) before this serves in production.`)
@@ -467,11 +467,11 @@ export async function createServe(context: BoardContext): Promise<Serve> {
   }
 
   /**
-   * What a board that serves no requests answers them: one that uses another board's. One on
-   * Vercel's still takes wake-ups and webhooks; one at `BOARD_URL` has neither.
+   * What a board that serves no requests answers them: one that uses another board's. One that
+   * syncs still takes webhooks; one at `BOARD_URL` has none.
    */
   const servesOnly = () =>
-    new HttpError(404, 'not_found', `${ownUrl() ?? 'this board'} answers ${backend.routes.length > 0 || engine ? 'only wake-ups and webhooks' : 'nothing itself'}`)
+    new HttpError(404, 'not_found', `${ownUrl() ?? 'this board'} answers ${backend.routes.length > 0 || engine ? 'only webhooks' : 'nothing itself'}`)
 
   /**
    * A sync target as the board that syncs it resolves it. One for an entry this board doesn't

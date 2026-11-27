@@ -151,39 +151,6 @@ function withoutPath(fetch: Fetch): Fetch {
   }
 }
 
-/**
- * A board in front of `fetch` that wakes by path, as the team board does: it refuses a path from a
- * person, and keeps each owner's path (and a preview's branch) itself, beside the registration the
- * board under it holds, which wakes nothing.
- */
-function wakingByPath(fetch: Fetch): Fetch {
-  const paths = new Map<string, { path: string; branch?: string }>()
-  const shown = (found: { owner: string }) => ({ ...found, ...paths.get(found.owner) })
-  return async (request) => {
-    const url = new URL(request.url)
-    if (request.method === 'POST' && url.pathname.endsWith('/watchers')) {
-      const { path, branch, ...body } = await request.json()
-      const claims = JSON.parse(Buffer.from(request.headers.get('authorization')!.split('.')[1]!, 'base64url').toString())
-      if (path && claims.user_id) return Response.json({ error: { code: 'not_a_project', message: "a path is on the caller's own project" } }, { status: 403 })
-      const response = await fetch(new Request(request, { body: JSON.stringify(body) }))
-      if (!response.ok) return response
-      const made = await response.json()
-      if (path) paths.set(made.owner, { path, ...(branch ? { branch } : {}) })
-      else paths.delete(made.owner)
-      return Response.json(shown(made))
-    }
-    const response = await fetch(request)
-    if (!response.headers.get('content-type')?.includes('application/json')) return response
-    if (request.method === 'GET' && url.pathname.endsWith('/watchers')) {
-      const { watchers } = await response.json()
-      return Response.json({ watchers: watchers.map(shown) }, { status: response.status })
-    }
-    if (request.method === 'GET' && url.pathname.replace(/\/$/, '') === new URL(BOARD_URL).pathname)
-      return Response.json({ wake_by_path: true, ...(await response.json()) }, { status: response.status })
-    return response
-  }
-}
-
 /** The watcher and sync checks' statuses, in order. */
 const watcherStatuses = (report: Awaited<ReturnType<typeof conformance>>) =>
   report.checks.filter((check) => check.group === 'watchers' || check.group === 'sync').map((check) => check.status)
@@ -718,46 +685,6 @@ describe('the conformance kit', () => {
     const report = await conformance(asV0, narrowedV0)
     expect(watcherStatuses(report)).toEqual(['passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed'])
     expect(await registered()).toEqual([empty])
-  })
-
-  it('replaces nothing on a board from before `path`, which reads one as a registration with nothing in it', async () => {
-    const older = withoutPath((await grantingV0()).fetch)
-    const v0 = caller(older, await deploymentToken('v0', 'prj_v0', 'production'))
-    const asV0 = await clientAs(older, () => deploymentToken('v0', 'prj_v0', 'production'))
-    const narrowedV0 = { withCan: withCan(older, () => deploymentToken('v0', 'prj_v0', 'production')) }
-    const watching = { url: null, watch: { fix: { tail: 'feedback' } }, sync: [] }
-    expect((await v0('POST', '/watchers', watching)).status).toBe(200)
-    expect(watcherStatuses(await conformance(asV0, narrowedV0))).toEqual(['skipped', 'skipped', 'passed', 'skipped', 'skipped', 'skipped', 'skipped', 'skipped', 'passed', 'skipped'])
-    expect((await v0('GET', '/watchers')).body.watchers).toMatchObject([watching])
-    // An empty one fails the check, since the board took the path, and is left as it was.
-    expect((await v0('POST', '/watchers', { watch: {} })).status).toBe(200)
-    const report = await conformance(asV0, narrowedV0)
-    expect(report.checks.filter((check) => check.status === 'failed')).toMatchObject([
-      { name: 'wakes by path only where its discovery says so, and only a Vercel project', detail: 'a path, on a board that wakes nothing: expected 501 no_wake_by_path, and it succeeded' },
-    ])
-    expect((await v0('GET', '/watchers')).body.watchers).toMatchObject([{ url: null, watch: {} }])
-  })
-
-  it("passes a board that wakes by path, which a project registers on and gets back, and refuses anyone else's", async () => {
-    const byPath = wakingByPath((await grantingV0()).fetch)
-    const v0 = caller(byPath, await deploymentToken('v0', 'prj_v0', 'production'))
-    expect((await v0('POST', '/watchers', { path: '/api/board', watch: {} })).status).toBe(200)
-    const report = await conformance(await clientAs(byPath, () => deploymentToken('v0', 'prj_v0', 'production')), { withCan: withCan(byPath, () => deploymentToken('v0', 'prj_v0', 'production')) })
-    expect(watcherStatuses(report)).toEqual(['passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed'])
-    expect((await v0('GET', '/watchers')).body.watchers).toMatchObject([{ url: null, path: '/api/board', watch: {} }])
-    // A person's token names no project to wake.
-    const personal = wakingByPath(testBoard({ scheduler: fakeQueue().scheduler }).fetch)
-    const person = await conformance(await clientOf(personal), { withCan: withCan(personal) })
-    expect(watcherStatuses(person)).toEqual(['passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed'])
-  })
-
-  it("checks a preview's path with its branch, and gives the branch back", async () => {
-    const byPath = wakingByPath((await grantingV0('preview')).fetch)
-    const preview = caller(byPath, await deploymentToken('v0', 'prj_v0', 'preview'))
-    expect((await preview('POST', '/watchers', { path: '/api/board', branch: 'jb/watchers', watch: {} })).status).toBe(200)
-    const report = await conformance(await clientAs(byPath, () => deploymentToken('v0', 'prj_v0', 'preview')), { withCan: withCan(byPath, () => deploymentToken('v0', 'prj_v0', 'preview')) })
-    expect(watcherStatuses(report)).toEqual(['passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed', 'passed'])
-    expect((await preview('GET', '/watchers')).body.watchers).toMatchObject([{ url: null, path: '/api/board', branch: 'jb/watchers', watch: {} }])
   })
 
   it('skips paging back on a board from before `older`, and fails one that lists a thread twice', async () => {

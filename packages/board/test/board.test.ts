@@ -539,25 +539,6 @@ describe('writes', () => {
 })
 
 describe('its URL', () => {
-  it("learns its mount from requests, and none that only makes the path look longer moves it", async () => {
-    vi.stubEnv('VERCEL_ENV', 'preview')
-    vi.stubEnv('VERCEL_URL', 'board-abc.vercel.app')
-    try {
-      const board = testBoard({ url: undefined })
-      const at = (path: string, token?: string) =>
-        board.fetch(new Request(`https://board-abc.vercel.app${path}`, token ? { headers: { authorization: `Bearer ${token}` } } : {}))
-      // No one's request first: the handler is mounted at /api/board, so this one's path only looks deeper.
-      expect((await at('/api/board/x/messages/1')).status).toBe(401)
-      await at('/api/board/me', await personToken('u_julian', 'https://board-abc.vercel.app/api/board'))
-      expect(board.url).toBe('https://board-abc.vercel.app/api/board')
-      // Nor after: wherever it says the mount is, it stays where requests show it is.
-      expect((await at('/api/board/elsewhere/deeper/messages/1')).status).toBe(401)
-      expect(board.url).toBe('https://board-abc.vercel.app/api/board')
-    } finally {
-      vi.unstubAllEnvs()
-    }
-  })
-
   // A board mounted in a server of your own, behind a proxy that passes any Host on.
   const selfHosted = () => {
     const board = mount({ auth: { ...testAuth, local: testLocal } })
@@ -567,7 +548,6 @@ describe('its URL', () => {
   }
 
   it("verifies no token in production without url, since a request's sender names its Host", async () => {
-    vi.stubEnv('VERCEL', '')
     vi.stubEnv('NODE_ENV', 'production')
     try {
       const { board, at } = selfHosted()
@@ -582,7 +562,6 @@ describe('its URL', () => {
   })
 
   it('lets a request with no token through to who verifies it in production without url, since there is no audience to check', async () => {
-    vi.stubEnv('VERCEL', '')
     vi.stubEnv('NODE_ENV', 'production')
     try {
       // A host whose page signs people in with a cookie of its own.
@@ -597,18 +576,7 @@ describe('its URL', () => {
     }
   })
 
-  it('takes its URL from requests on Vercel, which routes only its own domains to it', async () => {
-    vi.stubEnv('VERCEL', '1')
-    vi.stubEnv('NODE_ENV', 'production')
-    try {
-      expect((await selfHosted().at('board-abc.vercel.app')).status).toBe(200)
-    } finally {
-      vi.unstubAllEnvs()
-    }
-  })
-
   it('takes its URL from requests in development, and says once to set url', async () => {
-    vi.stubEnv('VERCEL', '')
     vi.stubEnv('NODE_ENV', 'development')
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {

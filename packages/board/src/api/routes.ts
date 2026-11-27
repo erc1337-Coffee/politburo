@@ -574,7 +574,7 @@ export const InboxQuery = z.object({
   channel: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(500).optional(),
 })
-/** How many watchers one registration holds on the local engine, which matches every event against every tail. Vercel's API sets its own. */
+/** How many watchers one registration holds on the local engine, which matches every event against every tail. */
 export const REGISTERED_WATCHERS_MAX = 64
 
 /** What every registration carries: its watchers' tails, and its sync entries. */
@@ -588,45 +588,9 @@ const Registering = z.object({
   sync: z.array(z.object({ key: z.string().min(1).max(64), platform: z.string().min(1).max(64) })).max(32).optional(),
 })
 
-/**
- * What a board on `http()` registers with the board it uses: its watchers, and where to wake it,
- * at a URL or at a path on its own project, never both.
- */
-export const RegisterBody = z.union([
-  Registering.extend({
-    /** Without one, the board pulls on its own instead of being woken. */
-    url: z
-      .string()
-      .url()
-      .max(500)
-      .refine((url) => /^https:\/\//.test(url), 'wake-ups go over https')
-      .transform((url) => url.replace(/\/+$/, ''))
-      .nullable()
-      .optional(),
-    path: z.null({ error: 'register a url or a path, not both' }).optional(),
-    branch: z.null({ error: 'a branch goes with a path' }).optional(),
-  }),
-  Registering.extend({
-    url: z.null({ error: 'register a url or a path, not both' }).optional(),
-    /**
-     * Where to wake the caller on its own Vercel project, on a board whose discovery says
-     * `wake_by_path`. The board takes the project and environment from the caller's token and
-     * finds the deployment, so a project can only register itself, and anyone else gets 403
-     * `not_a_project`.
-     */
-    path: z
-      .string()
-      .max(300)
-      .regex(/^\/[^?#]*$/, 'a path starts with / and has no query or fragment')
-      .transform((path) => path.replace(/(.)\/+$/, '$1')),
-    /**
-     * From a preview: the branch whose latest ready preview is woken, since a token says which
-     * project and environment called but not which deployment. Production names none.
-     */
-    branch: z.string().min(1).max(255).nullable().optional(),
-  }),
-])
-/** A registration as a board on `http()` sends it: `{ url?, watch, sync? }` or `{ path, branch?, watch, sync? }`. */
+/** What a board on `http()` registers with the board it uses: its watchers, which pull their matches. */
+export const RegisterBody = Registering
+/** A registration as a board on `http()` sends it: `{ watch, sync? }`. */
 export type RegisterInput = z.input<typeof RegisterBody>
 
 /** A pull of the caller's matches: at most `limit`, waiting up to `wait` seconds for one. */
@@ -1085,7 +1049,6 @@ const DiscoveryResponse = z.object({
   team_id: z.string().nullable(),
   project_id: z.string().nullable(),
   sync: z.array(z.object({ key: z.string(), platform: z.string() })),
-  wake_by_path: z.boolean().optional(),
   workLifecycle: z.literal(1).optional(),
   accessFence: z.literal(1).optional(),
   accessFenceScope: z.literal('process').optional(),
@@ -1104,11 +1067,6 @@ export type Discovery = z.infer<typeof DiscoveryResponse> & {
   name?: string
   /** The board's sync entries: `key` names its webhook and inbox, `platform` is e.g. `slack`. */
   sync: { key: string; platform: string }[]
-  /**
-   * Whether `POST /watchers` takes a `path`: the board wakes the caller's own Vercel project there,
-   * through its Deployment Protection. A board that can't find a project's deployments leaves it out.
-   */
-  wake_by_path?: boolean
   workEvidence?: { version: 1; gates: Gate[]; releaseDependencies: boolean }
   /** True when the board enforces bound claims, parking, and handoffs. */
   task_authority?: boolean
@@ -1122,33 +1080,16 @@ export type Discovery = z.infer<typeof DiscoveryResponse> & {
   task_claim_hold?: true
 }
 
-/**
- * Watchers a board on `http()` registered here: one registration per principal, woken at a URL
- * or at a path on its own project, never both.
- */
+/** Watchers a board on `http()` registered here: one registration per principal, which pulls its matches. */
 export type RegistrationView = {
   /** The principal that registered. Its watchers write as it, with their IDs as profiles. */
   owner: string
   watch: Record<string, { tail: string }>
   /** Its sync entries. With any, its sync gets every event it delivers to platforms, as matches of watcher `@sync`. */
   sync: { key: string; platform: string }[]
-  /** Every wake-up carries it, so the board can tell its registration is stale. */
+  /** What tells the board its registration is stale. */
   hash: string
-} & (
-  | {
-      /** Where it's woken: `<url>/wake`. `null` when it pulls on its own. */
-      url: string | null
-      path?: undefined
-      branch?: undefined
-    }
-  | {
-      url: null
-      /** Where it's woken on its own Vercel project, on a board with `wake_by_path`. */
-      path: string
-      /** The branch whose latest ready preview a preview's `path` wakes. */
-      branch?: string
-    }
-)
+}
 
 /** One match, leased to the registrant that pulled it. */
 export type MatchView = {

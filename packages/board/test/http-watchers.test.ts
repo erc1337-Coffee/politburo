@@ -204,24 +204,6 @@ describe('watchers on a board on http()', () => {
     }
   })
 
-  it("doesn't run on Vercel, where a function doesn't outlive its request, and says so", async () => {
-    vi.stubEnv('VERCEL', '1')
-    vi.stubEnv('VERCEL_ENV', 'production')
-    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
-    const fix = recorder('feedback')
-    const t = await team({ fix: fix.watcher })
-    try {
-      await t.project.as('deploys').me()
-      await (await julianOn(t.remote.fetch))('POST', '/messages', { channel: 'feedback', text: 'export is broken' })
-      await new Promise((resolve) => setTimeout(resolve, 100))
-      expect([fix.seen, t.reads]).toEqual([[], []])
-      expect(errors.mock.calls.map((args) => String(args[0]))).toEqual([expect.stringContaining('on Vercel, none run')])
-    } finally {
-      errors.mockRestore()
-      t.backend.close()
-    }
-  })
-
   it("won't take a sync: sync runs where the board's log is", () => {
     const s = fakePlatform('slack')
     expect(() => board({ backend: http(BOARD_URL), sync: { slack: slack({ adapter: s.adapter }, channels({ C1: 'feedback' })) } })).toThrow(
@@ -395,7 +377,7 @@ describe('registering', () => {
   it("is checked the way a board's own watchers are", async () => {
     const t = await team()
     const v0 = caller(t.remote.fetch, await v0Token())
-    const register = (watch: unknown, url?: string) => v0('POST', '/watchers', { watch, ...(url ? { url } : {}) })
+    const register = (watch: unknown) => v0('POST', '/watchers', { watch })
     expect(await register({ fix: { tail: 'feedback --after 3' } })).toEqual({
       status: 400,
       body: { error: { code: 'bad_watcher', message: "watch fix: --after isn't a filter" } },
@@ -403,11 +385,8 @@ describe('registering', () => {
     expect((await register({ review_pi: { tail: 'prs' } })).body.error.message).toBe(
       'watch review_pi: ids start with a letter and use up to 32 letters, numbers, and hyphens',
     )
-    expect((await register({}, 'http://v0.test/board')).body.error.message).toContain('wake-ups go over https')
     const many = Object.fromEntries(Array.from({ length: 65 }, (_, n) => [`w${n}`, { tail: 'feedback' }]))
     expect((await register(many)).body.error.message).toContain('a registration holds at most 64 watchers')
-    // It wakes nothing: a registrant pulls.
-    expect(await register({ fix: { tail: 'feedback' } }, V0_URL)).toMatchObject({ status: 501, body: { error: { code: 'no_wake_by_url' } } })
     expect((await register({ fix: { tail: 'feedback' } })).status).toBe(200)
   })
 
@@ -437,45 +416,3 @@ describe('registering', () => {
   })
 })
 
-describe('registering by path', () => {
-  afterEach(() => {
-    vi.unstubAllEnvs()
-  })
-
-  it("is the board's to offer: one on a2() can't find a project's deployments, so it says so", async () => {
-    const remote = testBoard()
-    await grant(remote, 'prj_v0', 'all')
-    const v0 = caller(remote.fetch, await v0Token())
-    expect(await v0('POST', '/watchers', { path: '/api/board', watch: { fix: { tail: 'feedback' } } })).toMatchObject({
-      status: 501,
-      body: { error: { code: 'no_wake_by_path' } },
-    })
-  })
-
-  it('takes a url or a path, not both, and a branch only with a path, and says which', async () => {
-    const remote = testBoard()
-    await grant(remote, 'prj_v0', 'all')
-    const v0 = caller(remote.fetch, await v0Token())
-    const refused = (message: string) => ({ status: 400, body: { error: { code: 'invalid_request', message } } })
-    expect(await v0('POST', '/watchers', { url: V0_URL, path: '/api/board', watch: {} })).toMatchObject(refused('path: register a url or a path, not both'))
-    expect(await v0('POST', '/watchers', { url: V0_URL, branch: 'jb/watchers', watch: {} })).toMatchObject(refused('branch: a branch goes with a path'))
-    // A url registration that's wrong elsewhere is told what's wrong there, not only that it matched neither.
-    const sync = Array.from({ length: 33 }, (_, i) => ({ key: `k${i}`, platform: 'slack' }))
-    expect(await v0('POST', '/watchers', { url: V0_URL, watch: {}, sync })).toMatchObject(refused('sync: Too big: expected array to have <=32 items'))
-  })
-
-  it('types a registration as a url or a path, never both', () => {
-    const handle = board({ backend: http(BOARD_URL) })
-    const watch = {}
-    // Never sent: the calls only have to typecheck, or not.
-    const typed = () => {
-      handle.register({ url: V0_URL, watch })
-      handle.register({ path: '/api/board', branch: 'jb/watchers', watch })
-      // @ts-expect-error a url and a path are two registrations
-      handle.register({ url: V0_URL, path: '/api/board', watch })
-      // @ts-expect-error a branch goes with a path
-      handle.register({ url: V0_URL, branch: 'jb/watchers', watch })
-    }
-    expect(typed).toBeTypeOf('function')
-  })
-})

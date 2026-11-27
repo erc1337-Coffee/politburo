@@ -6,7 +6,6 @@ import { board, type Discovery } from '../src/server/index.ts'
 import { http } from '../src/backend-http/index.ts'
 import { conformance } from '../src/conformance/index.ts'
 import { local } from '../src/backend-local/index.ts'
-import { localFile } from '../src/server/local.ts'
 import { bearer, BOARD_URL, localBoard, personToken } from './harness.ts'
 
 const made: string[] = []
@@ -70,55 +69,24 @@ describe('local()', () => {
     }
   })
 
-  it("keeps each name's board in its own file, its files beside it, and finds it again after a restart", async () => {
+  it('keeps the board in its own file, its files beside it, and finds it again after a restart', async () => {
     const dir = await scratch()
-    const open = (name?: string) => {
+    const open = () => {
       const backend = local({ dir })
-      return { backend, team: board({ backend, ...(name !== undefined ? { name } : {}) }) }
+      return { backend, team: board({ backend }) }
     }
-    const first = open('security')
+    const first = open()
     const shot = await first.team.upload({ data: new TextEncoder().encode('pixels'), name: 'shot.txt' })
     const posted = await first.team.post('dev', { text: 'rotate the keys', attachments: [shot] })
-    const general = open()
-    await general.team.post('dev', 'on the default board')
-    await Promise.all([first.backend.close(), general.backend.close()])
+    await first.backend.close()
     // A board's files folder is there once it keeps a file.
-    expect((await readdir(dir)).filter((name) => !name.startsWith('.') && !/-(wal|shm)$/.test(name)).sort()).toEqual(['local.db', 'security', 'security.db'])
+    expect((await readdir(dir)).filter((name) => !name.startsWith('.') && !/-(wal|shm)$/.test(name)).sort()).toEqual(['local', 'local.db'])
 
-    // Another process, by the same name in another case: the same board, its file included.
-    const again = open('SECURITY')
+    // Another process: the same board, its file included.
+    const again = open()
     expect((await again.team.channel('dev').messages()).messages.map((m) => m.text)).toEqual(['rotate the keys'])
     expect(await (await again.team.download(posted.attachments[0]!.id)).text()).toBe('pixels')
     await again.backend.close()
-  })
-
-  it("names a file for any other name so that none is another's or the default board's", async () => {
-    const dir = await scratch()
-    for (const name of ['Security Team', 'local', 'con']) {
-      const backend = local({ dir })
-      await board({ backend, name }).post('dev', `on ${name}`)
-      await backend.close()
-    }
-    const files = (await readdir(dir)).filter((name) => name.endsWith('.db')).sort()
-    expect(files).toEqual([expect.stringMatching(/^con\.[0-9a-f]{32}\.db$/), expect.stringMatching(/^local\.[0-9a-f]{32}\.db$/), expect.stringMatching(/^security-team\.[0-9a-f]{32}\.db$/)])
-  })
-
-  it("keeps a name apart from a plain name that reads like the file another's would be", async () => {
-    const dir = await scratch()
-    // Before, Security Team's file was security-team-83f2a9a1.db, the plain name's file too. Its
-    // file's name now, taken as a name, is no plain name either.
-    const names = ['Security Team', 'security-team-83f2a9a1', localFile('Security Team')]
-    for (const name of names) {
-      const backend = local({ dir })
-      await board({ backend, name }).post('dev', `only on ${name}`)
-      await backend.close()
-    }
-    for (const name of names) {
-      const backend = local({ dir })
-      expect((await board({ backend, name }).channel('dev').messages()).messages.map((m) => m.text)).toEqual([`only on ${name}`])
-      await backend.close()
-    }
-    expect((await readdir(dir)).filter((file) => file.endsWith('.db')).length).toBe(3)
   })
 
   it("stops its timers when it's closed, so nothing runs against the closed file", async () => {
@@ -136,20 +104,6 @@ describe('local()', () => {
     } finally {
       failed.mockRestore()
     }
-  })
-
-  it("keeps one board per name whatever its team: there's one team here", async () => {
-    const dir = await scratch()
-    const acme = local({ dir })
-    await board({ backend: acme, team: 'acme', name: 'security' }).post('dev', 'from acme')
-    await acme.close()
-    const ours = local({ dir })
-    expect((await board({ backend: ours, name: 'security' }).channel('dev').messages()).messages.map((m) => m.text)).toEqual(['from acme'])
-    await ours.close()
-    const other = local({ dir })
-    expect((await board({ backend: other, team: 'acme' }).channel('dev').messages()).messages).toEqual([])
-    await other.close()
-    expect((await readdir(dir)).filter((name) => name.endsWith('.db')).sort()).toEqual(['local.db', 'security.db'])
   })
 
   it('keeps nothing on disk in memory, and nothing outlives the backend', async () => {

@@ -29,7 +29,7 @@ export const storedPrincipal = (principal: Pick<Principal, 'id' | 'kind' | 'hand
 })
 
 /** What a registration shows: the principal's token facts stay on the board. */
-export const viewOf = ({ principal: _principal, ...view }: Registration): RegistrationView => view
+export const viewOf = ({ owner, watch, sync, hash }: Registration): RegistrationView => ({ owner, watch, sync, hash })
 
 /**
  * The same on both ends: a board on `http()` hashes its watchers, and whether its sync subscribes,
@@ -41,9 +41,9 @@ export function watchersHash(watch: Record<string, WatcherSpec>, sync: readonly 
 
 function foldRegistry(state: RegistryState, event: ContractEvent<RegistryEvents>): RegistryState {
   if (event.type === 'watchers.registered') {
-    const { owner, principal, url, watch, sync, hash } = event.payload
+    const { owner, principal, watch, sync, hash } = event.payload
     const copied = Object.fromEntries(Object.entries(watch).map(([id, spec]) => [id, { tail: spec.tail }]))
-    state.byOwner[owner] = { owner, principal: structuredClone(principal), url, watch: copied, sync: (sync ?? []).map((entry) => ({ ...entry })), hash }
+    state.byOwner[owner] = { owner, principal: structuredClone(principal), watch: copied, sync: (sync ?? []).map((entry) => ({ ...entry })), hash }
   }
   return state
 }
@@ -71,17 +71,17 @@ export function createRegistry(options: { store?: A2Store | undefined; scheduler
      * Replaces `principal`'s registration. One that changes nothing writes nothing, so asking
      * again is free, unless the principal's token facts changed: those decide what it may read.
      */
-    async register(principal: StoredPrincipal, input: { url: string | null; watch: Record<string, WatcherSpec>; sync: SyncEntrySpec[] }): Promise<RegistrationView> {
+    async register(principal: StoredPrincipal, input: { watch: Record<string, WatcherSpec>; sync: SyncEntrySpec[] }): Promise<RegistrationView> {
       const owner = principal.id
       const hash = watchersHash(input.watch, input.sync)
       const current = (await state()).byOwner[owner]
-      if (current && current.url === input.url && current.hash === hash && JSON.stringify(current.principal) === JSON.stringify(principal))
+      if (current && current.hash === hash && JSON.stringify(current.principal) === JSON.stringify(principal))
         return viewOf(current)
       await session.append({
         type: 'watchers.registered',
-        payload: { owner, principal, url: input.url, watch: input.watch, ...(input.sync.length > 0 ? { sync: input.sync } : {}), hash },
+        payload: { owner, principal, url: null, watch: input.watch, ...(input.sync.length > 0 ? { sync: input.sync } : {}), hash },
       })
-      return { owner, url: input.url, watch: input.watch, sync: input.sync, hash }
+      return { owner, watch: input.watch, sync: input.sync, hash }
     },
     async list(): Promise<RegistrationView[]> {
       return Object.values((await state()).byOwner)

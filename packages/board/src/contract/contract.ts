@@ -162,7 +162,7 @@ export const registryContract = contract({
       owner: z.string().min(1).max(200),
       /** It, to work out what it may read at each match: a watcher sees only what its registrant can. */
       principal: StoredPrincipal,
-      /** Where to wake it: `<url>/wake`. Without one, it pulls on its own. */
+      /** Null: a registrant pulls its matches. */
       url: z.string().url().max(500).nullable(),
       watch: z.record(RemoteWatcherId, WatcherSpec),
       /**
@@ -170,7 +170,7 @@ export const registryContract = contract({
        * where it may sync. Older registrations have none.
        */
       sync: z.array(z.object({ key: z.string().min(1).max(64), platform: z.string().min(1).max(64) })).max(32).optional(),
-      /** `watchersHash(watch)`, which every wake-up carries so the board can tell it's stale. */
+      /** `watchersHash(watch)`, which tells the board a registration is stale. */
       hash: z.string().min(1).max(100),
     }),
   },
@@ -256,8 +256,6 @@ export const schedulesContract = contract({
       message: MessageId,
       next: Millis.nullable(),
     }),
-    /** (server) The Vercel deployment `deployment` took over every send: an earlier one's timers no longer post. */
-    'schedule.takeover': z.object({ deployment: z.string().min(1) }),
   },
 })
 

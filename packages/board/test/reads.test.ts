@@ -6,7 +6,6 @@ import { BOARD_SESSION } from '../src/contract/events.ts'
 // The engine itself, as a2() starts it.
 import { mount as board } from './harness.ts'
 import { createReads, tablesConsumer } from '../src/server/reads.ts'
-import { waitUntil } from '../src/server/wait-until.ts'
 import { sqlTables } from '../src/store/sql.ts'
 import { sqliteDb } from '../src/store/sqlite-db.ts'
 import { BOARD_URL, caller, PROJECT_ID, personToken, TEAM_ID, testAuth } from './harness.ts'
@@ -44,21 +43,6 @@ describe('list reads', () => {
       ])
     })
     expect(await tables.position()).toBe(3)
-  })
-
-  it('keep their catch-up running after the response on Vercel, and run it on elsewhere', async () => {
-    const task = Promise.resolve()
-    expect(() => waitUntil(task)).not.toThrow()
-    const kept: Promise<unknown>[] = []
-    const context = Symbol.for('@vercel/request-context')
-    Reflect.set(globalThis, context, { get: () => ({ waitUntil: (task: Promise<unknown>) => void kept.push(task) }) })
-    try {
-      waitUntil(task)
-    } finally {
-      Reflect.deleteProperty(globalThis, context)
-    }
-    expect(kept).toHaveLength(1)
-    expect(kept[0]).toBe(task)
   })
 
   it("keep the board session's place, whatever another session of its contract holds", async () => {

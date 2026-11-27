@@ -600,8 +600,8 @@ it('shows only open decisions, oldest first, from readable task roots', () => {
   })
 
   it('says which board it is: its name and host where it has a name, else its host and where on it', () => {
-    // A team's board in Vercel's API has a name, and every one is on the same host.
-    expect(boardWords({ url: 'https://api.vercel.com/v1/messageboard/boards/brd_1?teamId=team_1', name: 'General' })).toEqual({ name: 'General', at: 'api.vercel.com' })
+    // A board with a name is known by it, on its host.
+    expect(boardWords({ url: 'https://board.acme.com/api/board', name: 'General' })).toEqual({ name: 'General', at: 'board.acme.com' })
     // A board mounted on a deployment is known by its host, and where it's mounted there.
     expect(boardWords({ url: 'https://board.acme.com/api/board' })).toEqual({ name: 'board.acme.com', at: '/api/board' })
     expect(boardWords({ url: 'http://localhost:4000/' })).toEqual({ name: 'localhost:4000', at: null })

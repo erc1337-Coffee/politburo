@@ -43,7 +43,6 @@ export function board(options: BoardOptions): Board {
     },
     sync: () => import('../src/sync/engine.ts'),
     serving: environment,
-    sandbox: async (url, token) => (await import('../src/client/node.ts')).sandboxHeaders(url, url, token),
   })
 }
 

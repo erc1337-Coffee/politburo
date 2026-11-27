@@ -4,7 +4,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { slack } from '../src/sync/slack.ts'
 import { channels } from '../src/sync/fn.ts'
 import { fakePlatform } from './sync-fixtures.ts'
-import { BOARD_URL, caller, personToken, PROJECT_ID, TEAM_ID, testAuth, testBoard } from './harness.ts'
+import { BOARD_URL, caller, personToken, testAuth, testBoard } from './harness.ts'
+import { localUserToken, testLocal } from './tokens.ts'
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3])
 
@@ -104,11 +105,9 @@ describe('local() from the build', () => {
     const { local } = await built<typeof import('../src/backend-local/index.ts')>('@vercel/board/backend-local')
     const { board: mounted } = await built<typeof import('../src/server/index.ts')>('@vercel/board')
     const { oidcTokens } = await built<typeof import('../src/access/index.ts')>('@vercel/board/access')
-    // In the test project, as a deployment of it finds itself.
-    vi.stubEnv('VERCEL_PROJECT_ID', PROJECT_ID)
-    vi.stubEnv('VERCEL_ORG_ID', TEAM_ID)
-    const board = mounted({ backend: local({ memory: true }), authenticate: oidcTokens(testAuth), url: BOARD_URL })
-    const julian = caller(board.fetch, await personToken())
+    // Its local user, as `vb serve` signs a token for it.
+    const board = mounted({ backend: local({ memory: true }), authenticate: oidcTokens({ ...testAuth, local: testLocal }), url: BOARD_URL })
+    const julian = caller(board.fetch, await localUserToken())
     const { body } = await julian('POST', '/messages', { channel: 'dev', text: 'PR #12 is open' })
     expect((await julian('POST', '/schedules', { re: body.message.id, text: 'friendly ping: review?', in: '1s' })).status).toBe(201)
     await vi.waitFor(

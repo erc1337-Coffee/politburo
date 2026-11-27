@@ -5,7 +5,6 @@ export type { CallerRequest, Claims } from './auth.ts'
 export type { Method, Protocol } from '../api/protocol.ts'
 export { HttpError } from './errors.ts'
 export type { Watcher, WatcherContext } from './watcher.ts'
-export type { SandboxMatch, SandboxMatcher, SandboxPolicy, SandboxPolicyOptions, SandboxRule } from './sandbox.ts'
 export {
   DroppedError,
   type Middleware,

@@ -159,12 +159,6 @@ async function narrowedOut(attempt: Promise<unknown>, what: string) {
   throw new Mismatch(`${what}, by a caller narrowed with x-board-can: expected 403 forbidden, and it succeeded`)
 }
 
-/** Where a registration is woken, to put back after a check replaces it: its path (and branch) on a board that wakes by path, or nowhere. */
-function wokenAt(registered: RegistrationView | undefined): { path?: undefined } | { path: string; branch?: string } {
-  if (!registered?.path) return {}
-  return { path: registered.path, ...(registered.branch ? { branch: registered.branch } : {}) }
-}
-
 /** An ID or cursor as the protocol shapes them: a string of 1 to 128 characters. */
 function isRef(value: unknown, what: string) {
   check(typeof value === 'string' && value.length >= 1 && value.length <= 128, `${what} should be a string of 1 to 128 characters, got ${show(value)}`)
@@ -437,18 +431,17 @@ const SYNC_KEY = 'conformance'
  * Registers a sync on `SYNC_KEY` for a check, and says where to put the token's registration back
  * after: or why it can't, since registering replaces the token's watchers.
  */
-async function registerSync(ctx: Context): Promise<{ where: ReturnType<typeof wokenAt> } | { skip: string }> {
+async function registerSync(ctx: Context): Promise<{ registered: true } | { skip: string }> {
   const registered = (await ctx.board.watchers()).find((registration) => registration.owner === ctx.me.principal)
   if (registered && (Object.keys(registered.watch).length > 0 || (registered.sync?.length ?? 0) > 0))
     return { skip: 'this token has watchers or a sync registered here, which registering would replace' }
-  const where = wokenAt(registered)
   try {
     await ctx.board.register({ watch: {}, sync: [{ key: SYNC_KEY, platform: SYNC_KEY }] })
   } catch (error) {
     if (error instanceof BoardError && error.status === 403) return { skip: "this token can't register a sync here" }
     throw error
   }
-  return { where }
+  return { registered: true }
 }
 
 async function post(ctx: Context, text: string, extra: { id?: string; attachments?: string[] } = {}) {
@@ -2319,7 +2312,7 @@ const CHECKS: Check[] = [
           origin: { channel: `${key}:${ctx.labels.conformance}`, thread, subthread: null, message: '1', context: null },
         }))
       } catch (error) {
-        await ctx.board.register({ ...registered.where, watch: {} }).catch(() => {})
+        await ctx.board.register({ watch: {} }).catch(() => {})
         if (error instanceof BoardError && error.status === 403) return `this token can't sync in ${ctx.channel}`
         throw error
       }
@@ -2337,7 +2330,7 @@ const CHECKS: Check[] = [
       } finally {
         // Its author is the platform user: only an import can take it down.
         await ctx.board.syncImport({ op: 'delete', author, from: key, origin }).catch(() => {})
-        await ctx.board.register({ ...registered.where, watch: {} }).catch(() => {})
+        await ctx.board.register({ watch: {} }).catch(() => {})
       }
     },
   },
@@ -2790,8 +2783,6 @@ const CHECKS: Check[] = [
       // Registering replaces a principal's watchers: never on one that has some.
       if (registered && (Object.keys(registered.watch).length > 0 || (registered.sync?.length ?? 0) > 0))
         return 'this token has watchers or a sync registered here, and checking would replace them'
-      // Nothing's woken while it checks, and an empty one gets back where it's woken after.
-      const where = wokenAt(registered)
       await ctx.board.register({ watch: { conformance: { tail: `${ctx.channel} --label conformance=${ctx.labels.conformance}` } } })
       try {
         const message = await post(ctx, 'conformance: for a watcher')
@@ -2803,35 +2794,7 @@ const CHECKS: Check[] = [
         await ctx.board.ack(match.id, { lease: match.lease })
         await rejects(ctx.board.ack(match.id, { lease: match.lease }), 404, 'no_match', 'acking a match twice')
       } finally {
-        await ctx.board.register({ ...where, watch: {} })
-      }
-    },
-  },
-  {
-    group: 'watchers',
-    name: 'wakes by path only where its discovery says so, and only a Vercel project',
-    run: async (ctx) => {
-      // Even a refusal can replace them: a board that doesn't know `path` reads one as a registration with nothing in it.
-      const registered = (await ctx.board.watchers()).find((r) => r.owner === ctx.me.principal)
-      if (registered && (Object.keys(registered.watch).length > 0 || (registered.sync?.length ?? 0) > 0))
-        return 'this token has watchers or a sync registered here, and checking would replace them'
-      const byPath = (await ctx.board.discovery()).wake_by_path
-      // A path wakes a project's deployment in any environment, a preview's by its branch when it names one.
-      const environment = /^vercel:project:[^:]+:(.+)$/.exec(ctx.me.principal)?.[1] ?? null
-      const where = wokenAt(registered)
-      const branch = environment === 'preview' ? { branch: 'conformance' } : {}
-      const attempt = () => ctx.board.register({ path: '/conformance', ...branch, watch: {} })
-      try {
-        if (!byPath) await rejects(attempt(), 501, 'no_wake_by_path', 'a path, on a board that wakes nothing')
-        else if (environment === null) await rejects(attempt(), 403, 'not_a_project', "a path, from a token that isn't a Vercel project's")
-        else {
-          const view = await attempt()
-          same(view.path, '/conformance', "the registration's path")
-          same(view.url, null, "the registration's url")
-          same(view.branch ?? null, environment === 'preview' ? 'conformance' : null, "the registration's branch")
-        }
-      } finally {
-        await ctx.board.register({ ...where, watch: {} })
+        await ctx.board.register({ watch: {} })
       }
     },
   },
@@ -2843,7 +2806,7 @@ const CHECKS: Check[] = [
       const narrowed = ctx.withCan(`${ctx.channel}=all`)
       const registered = (await ctx.board.watchers()).find((r) => r.owner === ctx.me.principal)
       // What's registered now, so a board that wrongly takes it leaves the registration as it was.
-      const now = { ...wokenAt(registered), watch: registered?.watch ?? {}, ...(registered?.sync ? { sync: registered.sync } : {}) }
+      const now = { watch: registered?.watch ?? {}, ...(registered?.sync ? { sync: registered.sync } : {}) }
       await narrowedOut(narrowed.register(now), 'registering watchers')
       await narrowedOut(narrowed.matches(), 'pulling matches')
       await narrowedOut(narrowed.ack(`conformance-${ctx.labels.conformance}`, { lease: 'conformance' }), 'acking a match')
@@ -2860,7 +2823,6 @@ const CHECKS: Check[] = [
       // A sync names its entries when it registers.
       const registered = await registerSync(ctx)
       if ('skip' in registered) return registered.skip
-      const { where } = registered
       let imported: { message: string | null }
       try {
         imported = await ctx.board.syncImport({
@@ -2869,7 +2831,7 @@ const CHECKS: Check[] = [
           id: `conformance-sync-${ctx.labels.conformance}`,
         })
       } catch (error) {
-        await ctx.board.register({ ...where, watch: {} }).catch(() => {})
+        await ctx.board.register({ watch: {} }).catch(() => {})
         if (error instanceof BoardError && error.status === 403) return `this token can't sync in ${ctx.channel}`
         throw error
       }
@@ -2912,7 +2874,7 @@ const CHECKS: Check[] = [
         await ctx.board.syncImport({ op: 'delete', author, from: key, origin }).catch(() => {})
         // And a second root, on a board that took one.
         await ctx.board.syncImport({ op: 'delete', author, from: key, origin: { thread, message: '3' } }).catch(() => {})
-        await ctx.board.register({ ...where, watch: {} }).catch(() => {})
+        await ctx.board.register({ watch: {} }).catch(() => {})
       }
     },
   },
@@ -2928,7 +2890,6 @@ const CHECKS: Check[] = [
       const origin = { thread, message: '1' }
       const registered = await registerSync(ctx)
       if ('skip' in registered) return registered.skip
-      const { where } = registered
       try {
         let imported: { message: string | null }
         try {
@@ -2950,7 +2911,7 @@ const CHECKS: Check[] = [
         same(met?.name, cc.name, "the mentioned user's name")
       } finally {
         await ctx.board.syncImport({ op: 'delete', author, from: key, origin }).catch(() => {})
-        await ctx.board.register({ ...where, watch: {} }).catch(() => {})
+        await ctx.board.register({ watch: {} }).catch(() => {})
       }
     },
   },
@@ -2985,7 +2946,7 @@ const CHECKS: Check[] = [
         }
         same((await lease()).length, 0, 'the events leased once both are acked')
       } finally {
-        await ctx.board.register({ ...registered.where, watch: {} }).catch(() => {})
+        await ctx.board.register({ watch: {} }).catch(() => {})
       }
     },
   },
@@ -3022,7 +2983,7 @@ const CHECKS: Check[] = [
           await ctx.board.inboxAck(SYNC_KEY, item.id, { lease: item.lease })
         }
       } finally {
-        await ctx.board.register({ ...registered.where, watch: {} }).catch(() => {})
+        await ctx.board.register({ watch: {} }).catch(() => {})
       }
     },
   },
@@ -3045,7 +3006,7 @@ const CHECKS: Check[] = [
         same(match.event.type, 'message.posted', "the sync's match")
         await ctx.board.ack(match.id, { lease: match.lease })
       } finally {
-        await ctx.board.register({ ...registered.where, watch: {} }).catch(() => {})
+        await ctx.board.register({ watch: {} }).catch(() => {})
       }
     },
   },
@@ -3087,7 +3048,7 @@ const CHECKS: Check[] = [
       } finally {
         // An import a board wrongly took: only an import can take it down.
         await ctx.board.syncImport({ op: 'delete', author, from: SYNC_KEY, origin: { thread, message: '1' } }).catch(() => {})
-        await ctx.board.register({ ...registered.where, watch: {} }).catch(() => {})
+        await ctx.board.register({ watch: {} }).catch(() => {})
       }
     },
   },

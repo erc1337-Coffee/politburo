@@ -1,5 +1,5 @@
 // `@vercel/board/cli/commands`: board's CLI as data. Its parser and its help read this, and so can
-// another CLI that runs it (`vercel board` renders board's help with its own renderer). It runs no
+// another CLI that runs it (rendering board's help with its own renderer). It runs no
 // command and imports only command specs, so a host can load it on every start.
 
 import * as fork from './politburo-command-specs.ts'
@@ -71,10 +71,6 @@ export const options = {
   after: { type: 'string', value: 'id', description: 'only what came after a message or a cursor (read and wait print one)' },
   // Global: every command takes them.
   url: { type: 'string', value: 'url', description: "the board at this URL, not the one the environment points at" },
-  scope: { type: 'string', value: 'team', description: "a team's board in Vercel's API, by its slug or ID" },
-  name: { type: 'string', value: 'board', description: "the team's board with this name, on --scope's team" },
-  ensure: { type: 'boolean', description: 'with --name: make that board if the team has none by that name' },
-  team: { type: 'string', value: 'team', description: 'the same as --scope', hidden: true },
   as: { type: 'string', value: 'profile', description: "write as a profile, such as an agent's name" },
   avatar: { type: 'string', value: 'url', description: "the profile's avatar, with --as" },
   json: { type: 'boolean', description: 'JSON, for programs' },
@@ -102,7 +98,6 @@ export const options = {
   timeout: { type: 'string', value: 'duration', description: 'how long to wait: 30s, 10m, or a bare number of seconds (default: 30m)' },
   'no-open': { type: 'boolean', description: "don't open the browser" },
   'allow-host': { type: 'string', multiple: true, value: 'host', description: 'also answer requests for this host, from a proxy in front: whoever reaches it there acts as you' },
-  tailscale: { type: 'string', multiple: true, value: 'host', description: "also answer requests for this host, the board's name on your tailnet behind tailscale serve: whoever Tailscale says is calling is a person on the board" },
   in: { type: 'string', value: 'duration', description: 'once, this long from now, e.g. 90s, 5m, 1d' },
   at: { type: 'string', value: 'time', description: 'at a time: once, or with --every, the first' },
   every: { type: 'string', value: 'duration', description: 'repeating at this interval, e.g. 30m' },
@@ -192,7 +187,7 @@ export const option = (name: OptionName, description?: string, value?: string): 
 export const filters: readonly CliOption[] = (['re', 'by', 'source', 'label', 'text', 'mentions', 'after'] as const).map((name) => option(name))
 
 /** What every command takes. */
-export const globalOptions: readonly CliOption[] = (['url', 'scope', 'name', 'ensure', 'team', 'as', 'avatar', 'json', 'help', 'version'] as const).map((name) =>
+export const globalOptions: readonly CliOption[] = (['url', 'as', 'avatar', 'json', 'help', 'version'] as const).map((name) =>
   option(name),
 )
 
@@ -401,12 +396,11 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
       {
         name: 'channel|id|link',
         required: false,
-        description: "a channel (every channel without one, but not on Vercel's board), a message's ID, or a Slack or GitHub link the board synced",
+        description: "a channel (every channel without one), a message's ID, or a Slack or GitHub link the board synced",
       },
     ],
     options: [option('limit', 'threads to list (default: 50, at most 500)'), option('before')],
     filters: true,
-    filtersNote: "Vercel's board reads one channel or thread here, with only --re, --label, and --after, or on a channel --mentions and --text, which look through one page of its threads: it keeps no search index",
     examples: [
       { name: "list a channel's latest threads", value: 'read dev' },
       { name: 'read one thread, every message', value: 'read 812' },
@@ -422,7 +416,7 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
     brief: '[--label k=v]... [--attach file]...',
     description: 'a new thread in a channel, or with an ID, a reply in its thread',
     arguments: [{ name: 'channel|id', required: true, description: 'a channel, or a message ID to reply in its thread' }, text()],
-    options: [option('label', 'label it', 'k=v'), option('file', 'the text, from a file: - reads stdin'), option('schema'), option('attach'), option('sync', "sync the new thread to a target too, e.g. slack:#incidents (not on Vercel's board yet)"), option('no-sync'), option('idempotency-key'), option('after', AFTER)],
+    options: [option('label', 'label it', 'k=v'), option('file', 'the text, from a file: - reads stdin'), option('schema'), option('attach'), option('sync', "sync the new thread to a target too, e.g. slack:#incidents"), option('no-sync'), option('idempotency-key'), option('after', AFTER)],
     examples: [
       { name: 'start a thread', value: 'post dev "deploys are green again"' },
       { name: 'start a labeled thread', value: 'post dev "checkout times out" --label kind=bug' },
@@ -447,7 +441,7 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
     brief: '(--in 5m | --at time | --every 30m)',
     description: 'post later, as you: once (--in or --at), or repeating (--every) until a stop or until canceled',
     arguments: [{ name: 'channel|id', required: true, description: 'a channel, or a message ID to reply in its thread' }, text()],
-    options: [option('in'), option('at'), option('every'), option('until'), option('for'), option('times'), option('label', 'label it', 'k=v'), option('file', 'the text, from a file: - reads stdin'), option('schema'), option('attach', "attach a file to what it posts (not on Vercel's board yet)"), option('no-sync')],
+    options: [option('in'), option('at'), option('every'), option('until'), option('for'), option('times'), option('label', 'label it', 'k=v'), option('file', 'the text, from a file: - reads stdin'), option('schema'), option('attach', 'attach a file to what it posts'), option('no-sync')],
     examples: [
       { name: 'reply in a thread tomorrow', value: 'schedule 812 "still broken?" --in 1d' },
       { name: 'post every morning', value: 'schedule dev "standup" --at 2026-11-02T09:00:00Z --every 1d' },

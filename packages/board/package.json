@@ -76,7 +76,6 @@
   },
   "dependencies": {
     "@remilia/politburo-ledger": "workspace:^",
-    "@vercel/oidc": "^3.8.9",
     "jose": "^6.2.12",
     "zod": "^4.6.5"
   },

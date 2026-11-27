@@ -22,7 +22,9 @@ import {
 } from './auth.ts'
 import type { Identity, Trust } from './backend.ts'
 import { HttpError, RejectedError, unauthorized } from './errors.ts'
-import type { ProjectIdentity } from './identity.ts'
+
+/** The project and team discovery names for a board: null where it names none. */
+export type ProjectIdentity = { projectId: string | null; teamId: string | null }
 
 /** What decides a channel for a principal: the winning pattern and level, the grants there or the rule, and what they give. */
 export type Decided = { pattern: string | null; over: string[]; level: Level | null; grants: StoredGrant[]; permissions: Permission[] }
@@ -43,7 +45,7 @@ export type PolicyOptions = {
   authenticate?: Authenticate
 }
 
-/** What a build of board finds in its environment for a board's policy: Node's verifies OIDC tokens and reads the board's Vercel project. */
+/** What a build of board finds in its environment for a board's policy: Node's verifies OIDC tokens. */
 export type Serving = {
   oidcTokens(): Authenticate
   ownProjectId(): Promise<string | null>
@@ -60,12 +62,12 @@ export type Policy = ReturnType<typeof createPolicy>
 /**
  * The policy a board's options say: verifying requests, and what they and the principals its
  * backend stores may do. `keeps`: the backend keeps the board, so it serves requests; one that
- * uses another board's answers only wake-ups and webhooks on Vercel's, and nothing at `BOARD_URL`.
+ * uses another board's answers nothing itself.
  */
 export function createPolicy(options: PolicyOptions, keeps: boolean, serving: (() => Promise<Serving>) | null, trust: Trust | null = null) {
   const grants = trust ? () => trust.grants() : null
 
-  /** The board's own Vercel project and team, from the environment, asked once. */
+  /** The board's own project and team, as its serving build names them, asked once. */
   let own: Promise<{ id: string | null; teamId: string | null }> | null = null
   const project = () =>
     (own ??= (async () => {

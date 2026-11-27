@@ -1,18 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import { board } from '../src/server/index.ts'
 import { http } from '../src/backend-http/index.ts'
-import { vercel } from '../src/backend-vercel/index.default.ts'
 import { vb } from '../src/cli/embedded.ts'
 import { BOARD_URL, deploymentToken, PROJECT_ID, testBoard } from './harness.ts'
-import { as, fakeMessageboard } from './messageboard.ts'
 import { fakePlatform, withSlackClient } from './sync-fixtures.ts'
 import { slack, type SlackClient } from '../src/sync/slack.ts'
 import { channels } from '../src/sync/fn.ts'
 
-// `as(profile, { can })`: a handle the board holds to a can, as it holds a sandbox to its policy's
-// x-board-can, on each backend: kept here, over HTTP, and in Vercel's API.
+// `as(profile, { can })`: a handle the board holds to a can, as it holds a request to its
+// x-board-can, on each backend: kept here, and over HTTP.
 
-const API = 'http://localhost:4000'
 const DEV = { 'dev/': ['read', 'post'] } as const
 
 /** Slack sync whose app reads and joins channel CKIT, which `readSource` and `joinSource` go through. */
@@ -65,25 +62,16 @@ describe('as(profile, { can }) on a board this deployment keeps', () => {
     await expect(team.as('fixer', { can: 'all' }).joinSource('slack', 'CKIT')).rejects.toMatchObject({ status: 403 })
   })
 
-  it("stays inside its can through as() and sandboxPolicy(), which only narrow it further", async () => {
+  it('stays inside its can through as(), which only narrows it further', async () => {
     const team = testBoard({ url: BOARD_URL })
     const fixer = team.as('fixer', { can: DEV })
     const other = fixer.as('triage', { can: 'all' })
     await expect(other.post('ops', 'not here')).rejects.toMatchObject({ status: 403 })
     expect((await other.post('dev', 'here')).by.actor).toBe('board:client:triage')
     await expect(fixer.as('triage', { can: { 'dev/': ['read'] } }).post('dev', 'read only')).rejects.toMatchObject({ status: 403 })
-    const token = await deploymentToken('board', PROJECT_ID, 'production', { audience: BOARD_URL })
-    const headers = (policy: Awaited<ReturnType<typeof fixer.sandboxPolicy>>) =>
-      Object.values(policy.allow)
-        .flat()
-        .flatMap((rule) => ('transform' in rule ? rule.transform : []))
-        .map((transform) => transform.headers['x-board-can'])
-    expect(new Set(headers(await fixer.sandboxPolicy({ token, can: 'all' })))).toEqual(new Set(['dev/=read,post']))
-    // Its default, read, post, react, and label, within what the handle holds.
-    expect(new Set(headers(await fixer.sandboxPolicy({ token })))).toEqual(new Set(['dev/=read,post']))
   })
 
-  it("refuses a can that doesn't parse, as sandboxPolicy() does", () => {
+  it("refuses a can that doesn't parse", () => {
     const team = testBoard()
     expect(() => team.as('fixer', { can: 'dev/=fly' })).toThrow(expect.objectContaining({ code: 'invalid_scope' }))
   })
@@ -103,33 +91,5 @@ describe('as(profile, { can }) on a board over HTTP', () => {
     expect((await fixer.post('dev', 'on it')).by.actor).toBe(`vercel:project:${PROJECT_ID}:production+fixer`)
     await expect(fixer.post('ops', 'not here')).rejects.toMatchObject({ status: 403 })
     expect((await team.as('fixer').post('ops', 'here, yes')).by.profile).toBe('fixer')
-  })
-})
-
-describe("as(profile, { can }) on a team's board in Vercel's API", () => {
-  it('sends its can, which the API holds it to', async () => {
-    const api = fakeMessageboard()
-    const team = board({ backend: vercel({ team: 'team_test', api: API, fetch: as(api, 'project:prj_pong:production'), files: api.files }) })
-    const fixer = team.as('fixer', { can: DEV })
-    expect((await fixer.post('dev', 'on it')).by.actor).toBe('vercel:project:prj_pong:production+fixer')
-    await expect(fixer.post('ops', 'not here')).rejects.toMatchObject({ status: 403 })
-    await expect(fixer.inbox('slack')).rejects.toMatchObject({ status: 403 })
-    expect((await team.as('fixer').post('ops', 'here, yes')).by.profile).toBe('fixer')
-  })
-
-  it("reads and joins no source, which the platform's app does past any can", async () => {
-    const api = fakeMessageboard()
-    const team = board({ backend: vercel({ team: 'team_test', api: API, fetch: as(api, 'project:prj_pong:production'), files: api.files }), sync: slackSync() })
-    expect((await team.as('fixer').readSource('slack', 'CKIT')).messages).toHaveLength(1)
-    await expect(team.as('fixer', { can: 'all' }).readSource('slack', 'CKIT')).rejects.toMatchObject({ status: 403 })
-    await expect(team.as('fixer', { can: 'all' }).joinSource('slack', 'CKIT')).rejects.toMatchObject({ status: 403 })
-  })
-
-  it('shows typing only where its can posts, since typing is a reply about to come', async () => {
-    const api = fakeMessageboard()
-    const team = board({ backend: vercel({ team: 'team_test', api: API, fetch: as(api, 'project:prj_pong:production'), files: api.files }), sync: slackSync() })
-    const root = await team.post('dev', 'a thread')
-    await expect(team.as('fixer', { can: { 'dev/': ['read'] } }).typing(root.id, 'looking')).rejects.toMatchObject({ status: 403 })
-    await team.as('fixer', { can: DEV }).typing(root.id, 'looking')
   })
 })

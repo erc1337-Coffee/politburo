@@ -1,5 +1,4 @@
 import type { ModelRoute, RepositoryView } from '../contract/channel-settings.ts'
-import type { SandboxInput, SandboxReach } from './sandbox.ts'
 import type { Protocol } from '../api/protocol.ts'
 import type { MessageView, SourceJoin, SourceRead } from '../api/routes.ts'
 import type { ProfileOption } from '../client/client.ts'
@@ -86,16 +85,6 @@ export type InboxDelivery = { event: ExternalEvent; raw: unknown }
 
 /** What a backend gets from the board it serves: once, in memory, when board() is created. */
 export type BoardBinding = {
-  /**
-   * Which of the team's boards this is, as `board({ name })` says it: `security`, or null for the
-   * team's default board. A backend that keeps one board, or reaches one by its URL, may leave it
-   * unread.
-   */
-  name: string | null
-  /** Whose board it is, as `board({ team })` says it, by the team's ID or slug: null for the team the environment finds. */
-  team: string | null
-  /** Whether to make the board `name` names when the team has none by that name: `board({ ensure })`, true unless it says false. */
-  ensure: boolean
   /** Start a new board paused. A backend that uses another board leaves this unread. */
   initiallyPaused: boolean
   /** What runs on this board's events, by ID: this project's watchers, and sync's outbound at `SYNC` when it syncs. */
@@ -149,11 +138,11 @@ export type BoardBinding = {
   repositories?: (query: string | undefined, signal: AbortSignal) => Promise<RepositoryView[]>
   /** Which grants, or which rule, decide `channel` for a principal under board()'s `access`, and what they give: what `explain` answers. */
   explain(principal: Known, channel: string): Promise<Decided>
-  /** The board's own Vercel project and team, as board() knows them: what discovery names, for clients to mint tokens with. */
+  /** The board's own project and team, as board() knows them: what discovery names. */
   project(): Promise<{ id: string | null; teamId: string | null }>
   /**
-   * Whether board()'s verifier names people by their logins (`ada@example.com`), as a board behind
-   * Tailscale does: a grant then names a user by one, which is that user's ID.
+   * Whether board()'s verifier names people by their logins (`ada@example.com`): a grant then names
+   * a user by one, which is that user's ID.
    */
   logins: boolean
   /**
@@ -194,12 +183,12 @@ export interface Backend extends Omit<ProtocolMethods, InviteMethod | AgentOpsMe
   /**
    * Whether the board lives here. One that keeps it (`local()`) serves requests: its people, the
    * board's own deployments, and whoever its grants let in. One that uses another board
-   * answers no requests: on Vercel's, only wake-ups and webhooks, and at `BOARD_URL`, nothing.
+   * answers no requests: at `BOARD_URL`, nothing.
    */
   readonly keeps: boolean
   /**
    * Whether a schedule's sends come back through board(), as local()'s do, so its middleware screens
-   * each. A backend whose sends post elsewhere, as vercel()'s do from Vercel's API, says false, and
+   * each. A backend whose sends post elsewhere says false, and
    * board() screens a schedule's message once, when it's made. True when left out.
    */
   readonly sendsSchedulesHere?: boolean
@@ -227,12 +216,6 @@ export interface Backend extends Omit<ProtocolMethods, InviteMethod | AgentOpsMe
   syncedHere?(key: string): Promise<boolean>
   /** Its grants, for a backend that keeps them (`local()`): board() checks requests against them. */
   readonly trust?: Trust
-  /**
-   * How a sandbox reaches the board this backend uses, for `sandboxPolicy()`: its URL, and the
-   * headers every request of the sandbox's carries. One that keeps the board leaves it out: the
-   * board's own URL says, and board() adds its deployment's credential.
-   */
-  sandbox?(input: SandboxInput): Promise<SandboxReach>
   /**
    * board() calls it once, when it's created, before any request: what background work needs
    * from the board (its subscriptions, its sync, its policy, a handle through it). It does no I/O.

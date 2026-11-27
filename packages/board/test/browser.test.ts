@@ -57,45 +57,27 @@ async function bundle(lines: string[], check: (dir: string, files: Record<string
 }
 
 describe('board() in a browser', () => {
-  it('bundles board({ fetch }) and nothing from Node, as a browser resolves the package', async () => {
+  it('bundles board({ backend }) and nothing from Node, as a browser resolves the package', async () => {
     await bundle(
       [
-        "import { board } from '@vercel/board'",
-        "export const team = board({ fetch: (input, init) => fetch(input, { ...init, credentials: 'include' }) })",
+        "import { board, type Backend } from '@vercel/board'",
+        "const elsewhere = { routes: [], keeps: false, bind() {} } as unknown as Backend",
+        "export const team = board({ backend: elsewhere })",
         "export const posted = (text: string) => team.as('page').post('dev', text)",
       ],
       async (dir, files) => {
         expect(await nodeImports(dir)).toEqual([])
         // It's the default build it bundled: nothing finds a board in the environment, or verifies a token.
-        // sandboxPolicy()'s env names BOARD_TOKEN for a sandbox, so it's a read of it that's never here.
         const all = Object.values(files).join('\n')
         expect(all).not.toMatch(/env\s*(?:\.\s*BOARD_TOKEN|\[\s*["'`]BOARD_TOKEN)/)
         expect(all).not.toContain('jwtVerify')
-        // Nor A2: a handle on Vercel's board never loads the engine local() runs on.
+        // Nor A2: a handle on a board elsewhere never loads the engine local() runs on.
         expect(all).not.toContain('contract name must be a non-empty string')
         expect(all).not.toContain('reducer name must be a non-empty string')
         expect(all).not.toContain('createRemoteJWKSet')
         // The sync engine is a chunk of its own, which a board with no sync entries never loads.
         expect(files['app.js']).not.toContain('function createSyncEngine')
         expect(Object.values(files).some((text) => text.includes('function createSyncEngine'))).toBe(true)
-      },
-    )
-  }, 60_000)
-
-  it("bundles Vercel's board by its name, through a fetch of the page's own, with nothing from Node", async () => {
-    await bundle(
-      [
-        "import { board } from '@vercel/board'",
-        "export const team = board({ name: 'security', fetch: (input, init) => fetch(input, { ...init, credentials: 'include' }) })",
-        "export const posted = (text: string) => team.post('dev', text)",
-      ],
-      async (dir, files) => {
-        expect(await nodeImports(dir)).toEqual([])
-        const all = Object.values(files).join('\n')
-        // vercel()'s own default build: it finds no credentials or team in the environment.
-        expect(all).toContain('/v1/messageboard')
-        expect(all).not.toContain('VERCEL_OIDC_TOKEN')
-        expect(all).not.toContain('jwtVerify')
       },
     )
   }, 60_000)

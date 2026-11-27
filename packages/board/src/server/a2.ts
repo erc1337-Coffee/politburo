@@ -942,9 +942,6 @@ function build(options: A2Options, binding: BoardBinding) {
       return { watchers: principal.access.everywhere('manage') ? all : all.filter((found) => found.owner === principal.id) }
     },
     async register(caller, body) {
-      // This board wakes nothing: a registrant pulls its matches. A path wakes the caller's own Vercel project, which only Vercel's board can.
-      if (body.path) throw new HttpError(501, 'no_wake_by_path', "this board wakes nothing: register no path, and pull your matches")
-      if (body.url) throw new HttpError(501, 'no_wake_by_url', "this board wakes nothing: register no url, and pull your matches")
       const { principal } = (await identityOf(caller))
       ownWatchers(principal)
       // A registered watcher sees only what its registrant may read.
@@ -966,7 +963,7 @@ function build(options: A2Options, binding: BoardBinding) {
           throw badRequest((error as Error).message, 'bad_watcher')
         }
       }
-      return registry.register(storedPrincipal(principal), { url: null, watch: body.watch, sync: body.sync ?? [] })
+      return registry.register(storedPrincipal(principal), { watch: body.watch, sync: body.sync ?? [] })
     },
     async matches(caller, query, signal) {
       const { principal } = (await identityOf(caller))
@@ -1593,14 +1590,11 @@ export function a2(options: A2Options) {
     if (!built) throw new Error("this backend isn't serving a board yet: pass it to board({ backend })")
     return built
   }
-  /** A scheduler's delivery, through its callback, and everything it runs: watchers' writes too. */
-  const delivery = new AsyncLocalStorage<true>()
   const ready = async () => {
     const ran = now()
     await ran.work.ready()
-    // The first call on an instance starts the schedules catching up, and doesn't wait. Only a call
-    // that isn't a scheduler's delivery takes them over: an old instance's timers mustn't take them back.
-    ran.writer.detached(() => ran.schedules.catchUp({ takeOver: !delivery.getStore() }))
+    // The first call on an instance starts the schedules catching up, and doesn't wait.
+    ran.writer.detached(() => ran.schedules.catchUp())
     return ran
   }
   const methods = Object.fromEntries(
@@ -1638,7 +1632,7 @@ export function a2(options: A2Options) {
       built = build(options, given)
     },
     /** The scheduler's callback. A board without a scheduler answers 404. */
-    scheduler: (request: Request): Promise<Response> => delivery.run(true, async () => (await ready()).scheduler(request)),
+    scheduler: async (request: Request): Promise<Response> => (await ready()).scheduler(request),
     /** The A2 servers behind this board, to share one scheduler with other A2 servers. */
     get servers() {
       return now().servers

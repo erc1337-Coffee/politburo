@@ -209,20 +209,6 @@ describe("vb tasks, with the claim it keeps", () => {
     expect(await state(id)).toBe('ready')
   }, 60_000)
 
-  it('keeps --scope in the unpark suggestion', async () => {
-    const id = await create('parked', 'deploy to prod')
-    await ok(['tasks', 'park', id, 'deployment freeze'])
-
-    // --scope selects a Vercel board in the standalone CLI. Use the local board handle for the refusal.
-    const team = board({ backend: http(url, { fetch: bearer(fetch, env.BOARD_TOKEN!) }) })
-    const refused = await vbInProcess(team, ['tasks', 'claim', id, '--scope', 'acme', '--as', 'worker', '--json'])
-    expect(refused).toMatchObject({ code: 1, stdout: '' })
-    expect(failure(refused)).toMatchObject({ reason: 'task_blocked', next: [
-      { argv: ['vb', 'read', id, '--scope', 'acme', '--as', 'worker'] },
-      { argv: ['vb', 'tasks', 'unpark', id, 'resume work', '--scope', 'acme'] },
-    ] })
-  })
-
   it('suggests only a read when a hold is lifted after the claim refusal', async ({ onTestFinished }) => {
     const team = localBoard({ url: undefined })
     let id: string

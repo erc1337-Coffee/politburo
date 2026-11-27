@@ -64,8 +64,6 @@ describe('an inspector upload through a handle on another board over http()', ()
 
 describe("the Node transport, asked for a request's redirect itself", () => {
   const send = async (location: string | null, bodyOf: (url: string) => Response) => {
-    vi.stubEnv('VERCEL', '1')
-    vi.stubEnv('VERCEL_AUTOMATION_BYPASS_SECRET', '')
     const calls: string[] = []
     const fetch = (async (input: RequestInfo | URL) => {
       calls.push(new Request(input).url)
@@ -89,8 +87,6 @@ describe("the Node transport, asked for a request's redirect itself", () => {
   })
 
   it('still answers an unflagged GET that is redirected to a Location that is not a URL with that redirect', async () => {
-    vi.stubEnv('VERCEL', '1')
-    vi.stubEnv('VERCEL_AUTOMATION_BYPASS_SECRET', '')
     const fetch = (async () => new Response(null, { status: 307, headers: { location: 'http://[bad' } })) as typeof globalThis.fetch
     const url = 'https://board.example.com/api/board'
 

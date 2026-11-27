@@ -6,7 +6,7 @@ import { isIP, type AddressInfo } from 'node:net'
 import { userInfo } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from 'jose'
-import { BoardError, createBoardClient, type BoardClient } from '../client/client.ts'
+import { BoardError } from '../client/client.ts'
 import { localTokenFile } from '../client/node.ts'
 import { local, lockLocalDirectory } from '../server/local.ts'
 import { oidcTokens } from '../server/tokens.ts'
@@ -16,7 +16,6 @@ import type { Authenticate, HostPrincipal } from '../server/auth.ts'
 import { unauthorized } from '../server/errors.ts'
 import { Failed } from './main.ts'
 import { swarmOptions } from './swarm.ts'
-import { tailscale, tailscaleLogin } from './tailscale.ts'
 
 export const DEFAULT_SERVE_PORT = 4100
 /** Where the board is mounted on its server: every other path is the inspector's, when it's served. */
@@ -42,12 +41,6 @@ export type LocalBoard = ServingBoard & {
   mode: 'local'
   /** Answers every request outside the board's mount (`/api/board`) with `handler`: the inspector. Without one, the board answers them 404. */
   page(handler: Handler): void
-  /**
-   * Who a request to the page is, where Tailscale serves the board: a client on the board as the
-   * person Tailscale says sent it, or null when it names no one. Undefined at any other host, where
-   * the page is yours.
-   */
-  visitor(request: IncomingMessage): BoardClient | null | undefined
   /** Who you are on it: `local:user:<name>`. */
   principal: string
   handle: string
@@ -64,7 +57,6 @@ type ServeOptions = {
   teamTokens?: string
   handle?: string
   hosts?: readonly string[]
-  tailscale?: readonly string[]
   agentOps?: true
   modelRoutes?: string
   swarm?: true
@@ -100,10 +92,8 @@ async function carryOver(dir: string) {
 
 /** Validate the bind IP without ever including the supplied value in an error. */
 function bindHost(options: ServeOptions) {
-  const { host, teamTokens, tailscale } = options
+  const { host, teamTokens } = options
   const invalid = (message: string) => new Failed({ class: 'usage', reason: 'invalid_arguments', message })
-  if (teamTokens !== undefined && tailscale?.length)
-    throw invalid("--team-tokens can't be used with --tailscale.")
   if (host === undefined) return { ip: '127.0.0.1', hostname: '127.0.0.1' }
   if (teamTokens === undefined) throw invalid('--host requires --team-tokens.')
   const version = isIP(host)
@@ -173,8 +163,8 @@ async function localIssuer() {
 /**
  * A standalone `local()` board with SQLite and attachments under `dir` and no sync. `hosts` adds
  * proxy names for discovery and auth. Normally it listens on loopback and writes a local JWT for
- * you; `tailscale` names the proxies it can also trust for identity. With `teamTokens` it serves
- * only the API and trusts only that file's credentials, even on loopback.
+ * you. With `teamTokens` it serves only the API and trusts only that file's credentials, even on
+ * loopback.
  */
 export async function serveLocal(options: ServeOptions): Promise<LocalBoard | TeamBoard> {
   const { ip, hostname } = bindHost(options)
@@ -190,8 +180,7 @@ export async function serveLocal(options: ServeOptions): Promise<LocalBoard | Te
   const modelRoutes = options.modelRoutes === undefined ? [] : readModelRoutes(options.modelRoutes)
   const githubToken = process.env.GITHUB_TOKEN?.trim()
 
-  const tailnet = new Set((options.tailscale ?? []).map((host) => host.toLowerCase()))
-  const hosts = new Set([...(options.hosts ?? []).map((host) => host.toLowerCase()), ...tailnet])
+  const hosts = new Set((options.hosts ?? []).map((host) => host.toLowerCase()))
   // Its own address, once the port is known: where every request reaches it but one for a host you allowed.
   let origin = ''
   let handler: ((request: Request) => Promise<Response>) | null = null
@@ -222,12 +211,10 @@ export async function serveLocal(options: ServeOptions): Promise<LocalBoard | Te
   const team = board(hostCheckedBy({
     // Its timers live in this process, which runs as long as the board does.
     backend,
-    // At a host Tailscale serves it on, a request's URL is that host's, since `originOf` allowed it.
-    authenticate: tailnet.size > 0 ? tailscale(auth.authenticate, (audience) => servedAt(tailnet, audience)) : auth.authenticate,
+    authenticate: auth.authenticate,
     // No `url`: the board is at the URL a request reaches it at, a token's audience there, and
     // `originOf` lets a request name only this server's own or a host you allowed. So this handle
-    // knows no URL of its own: its `url` is the in-process one, and `sandboxPolicy()` has none to
-    // give. It only serves requests here: hand it nothing that needs either.
+    // knows no URL of its own: its `url` is the in-process one. It only serves requests here.
     basePath: MOUNT,
     modelRoutes,
     ...(githubToken ? { repositories: githubRepositories(githubToken) } : {}),
@@ -265,36 +252,11 @@ export async function serveLocal(options: ServeOptions): Promise<LocalBoard | Te
     unlock?.()
   }
 
-  // One client a person at each host: the page's requests reach the board in this process, as Tailscale named them.
-  const visitors = new Map<string, BoardClient>()
   return {
     mode: 'local',
     ...serving,
     page(handler) {
       page = handler
-    },
-    visitor(request) {
-      const at = originOf(request, origin, hosts)
-      // Only this server's own address is yours. At a host Tailscale serves, the page is whoever
-      // Tailscale names, or no one; and on a board behind Tailscale, so is it at any other host, so
-      // nothing about how a host is written, a port added or left out, makes a caller you.
-      if (at === origin) return undefined
-      if (!servedAt(tailnet, at)) return tailnet.size > 0 ? null : undefined
-      const login = tailscaleLogin(request.headers['tailscale-user-login'])
-      if (login === null) return null
-      const key = `${at} ${login}`
-      const known = visitors.get(key)
-      if (known) return known
-      const client = createBoardClient({
-        url: `${at}${MOUNT}`,
-        fetch: ((input: RequestInfo | URL, init?: RequestInit) => {
-          const sent = new Request(input, init)
-          sent.headers.set('tailscale-user-login', login)
-          return team.fetch(sent)
-        }) as typeof fetch,
-      })
-      visitors.set(key, client)
-      return client
     },
     principal,
     handle,
@@ -336,22 +298,6 @@ function originOf(request: IncomingMessage, own: string, hosts: ReadonlySet<stri
   if (!hosts.has(host)) return own
   const scheme = String(request.headers['x-forwarded-proto'] ?? '').split(',')[0]!.trim().toLowerCase()
   return `${scheme === 'https' ? 'https' : 'http'}://${host}`
-}
-
-/**
- * Whether `url` is at one of `hosts`, however each was written: a URL leaves its scheme's own port
- * out of its host (`box:443` over https is `box`), so each is compared as that URL would write it.
- */
-function servedAt(hosts: ReadonlySet<string>, url: string): boolean {
-  const { protocol, host } = new URL(url)
-  for (const named of hosts) {
-    try {
-      if (new URL(`${protocol}//${named}`).host === host) return true
-    } catch {
-      // Not a host a URL can hold: it names nothing.
-    }
-  }
-  return false
 }
 
 async function forward(handler: (request: Request) => Promise<Response>, origin: string, req: IncomingMessage, res: ServerResponse) {

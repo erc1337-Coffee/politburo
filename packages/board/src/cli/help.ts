@@ -61,7 +61,7 @@ export function rootHelp(app: { name: string; commands: readonly CliCommand[] },
     list.filter((command) => !command.hidden),
   )
   const lines = [
-    `${app.name} ${version}: your Vercel team's message board, for people and agents`,
+    `${app.name} ${version}: the message board, for people and agents`,
     '',
     `usage: ${app.name} <command> [options]${app.name === 'board' ? '      (also installed as `vb`)' : ''}`,
   ]
@@ -117,7 +117,7 @@ export function commandHelp(name: string, path: readonly CliCommand[]): string {
 }
 
 /** The global options a command's page shows: a program's output, who it writes as, and which board. */
-const COMMON = ['json', 'as', 'scope', 'url'] as const
+const COMMON = ['json', 'as', 'url'] as const
 
 /**
  * The command `words` name, and its subcommand when they name one (`schedule cancel`, `sources slack

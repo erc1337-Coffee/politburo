@@ -8,38 +8,15 @@ import type { Middleware } from './middleware.ts'
 import { createPolicy, type Policy, type PolicyOptions, type Serving } from './policy.ts'
 import { createServe, type PlatformCaller, type Serve } from './serve.ts'
 import type { Watcher } from './watcher.ts'
-import { HttpError } from './errors.ts'
-import { canText, compileAccess, InvalidCan, parseCan, type Can } from './access.ts'
-import { formatProfileHeader } from '../contract/profile-header.ts'
-import { boardPolicy, canHeader, PROTOCOL_ROUTES, withoutToken, type SandboxInput, type SandboxPolicy, type SandboxPolicyOptions, type SandboxReach } from './sandbox.ts'
+import { canHeader, canText, compileAccess, InvalidCan, parseCan, type Can } from './access.ts'
 
 /**
  * `board()`'s options: where the board lives, who may use it and what its writes go through, and
  * what runs here. The backend keeps or reaches the log; the policy is the board's.
  */
 export type BoardOptions = PolicyOptions & (BackendOptions | DefaultOptions) & {
-  /**
-   * Which of the team's boards this is, by its name: `security` is the team's board named
-   * security. Without one, the team's default board. A name is 1 to 64 characters with no `/`, and
-   * matches whatever its case. The backend reads it when board() binds it: `vercel()` finds that
-   * board, a board on `http()` is the one at its URL, whatever its name.
-   */
-  name?: string
-  /**
-   * With `name`: whether to make that board when the team has none by that name, whoever calls (a
-   * deployment, or a person: `next dev` with a login, a script). It does by default; `ensure: false`
-   * only finds one, and a name the team has none for fails with 404 `no_board`. `vb` passes false
-   * unless `--ensure` is given, so a typo at a terminal makes no board.
-   */
-  ensure?: boolean
   /** Start a local board with an empty log paused. Defaults to false and never changes a board with log history. */
   initiallyPaused?: boolean
-  /**
-   * Whose board this is: another team's, by its ID (`team_…`) or its slug, with `name` or without
-   * it for that team's default board. Without one, the team the environment finds: in Node, the
-   * deployment's, `VERCEL_ORG_ID`, or the linked project's.
-   */
-  team?: string
   /**
    * Runs on every post and edit before it reaches the backend, whatever it came from: requests (a
    * board on `http()` using this one included), watchers, schedules, the handle, and sync's imports.
@@ -66,9 +43,8 @@ export type BoardOptions = PolicyOptions & (BackendOptions | DefaultOptions) & {
   sync?: Record<string, SyncProvider>
   /**
    * The board's public URL, which every token's audience must equal. Inferred from requests
-   * otherwise only on Vercel, which routes a request to a deployment only for its own domains, and
-   * in development: elsewhere a request's sender chooses its Host, so a production board without
-   * one verifies no tokens.
+   * otherwise only behind a server that checks Host (`vb serve`), and in development: elsewhere a
+   * request's sender chooses its Host, so a production board without one verifies no tokens.
    */
   url?: string
   /** The mount path, e.g. `/api/board`. Inferred from requests otherwise: the shallowest one they show. */
@@ -97,16 +73,6 @@ export type Board = BoardClient & {
    * change grants. A narrowed handle's own `as()` and `sandboxPolicy()` stay inside its `can`.
    */
   as(profile: ProfileOption, options?: AsOptions): Board
-  /**
-   * A Vercel Sandbox network policy that hands this board, and nothing else, to a sandboxed agent:
-   * `Sandbox.create({ networkPolicy })` takes it. The sandbox's proxy adds the credential (this
-   * deployment's own OIDC token, or `token`), the profile (`profile`, or this handle's from `as()`),
-   * and `x-board-can` (`can`, or read, post, react, and label everywhere) to its requests for the
-   * board's own routes, so none of them enters the sandbox; every other host is blocked. Spread
-   * `allow` beside your own hosts' rules to merge them. An OIDC token dies with the function that got
-   * it: hand the sandbox a new policy (`sandbox.update({ networkPolicy })`) before it expires.
-   */
-  sandboxPolicy(options?: SandboxPolicyOptions): Promise<SandboxPolicy>
 }
 
 /** What `as()` takes beside the profile. */
@@ -124,37 +90,24 @@ export type AsOptions = {
 type BackendOptions = {
   /**
    * Where the board lives: `local()` from `@vercel/board/backend-local` keeps it in this process,
-   * or a backend of your own. By default, Vercel's board for your team, the one `name` names, or
-   * with `BOARD_URL` set (in Node), the board at that URL.
+   * `http()` uses another board, or a backend of your own. By default, in Node, the board at `BOARD_URL`.
    */
   backend: Backend
-  fetch?: never
 }
 
-/** A board on the backend board() picks: Vercel's, or with `BOARD_URL` set, the board at that URL. */
+/** A board on the backend board() picks: in Node, the board at `BOARD_URL`. */
 type DefaultOptions = {
   backend?: undefined
-  /**
-   * How requests reach Vercel's API, with credentials it takes: a token for the team. In Node it
-   * defaults to the deployment's OIDC token, `BOARD_TOKEN`, a GitHub Actions job's OIDC token, or your Vercel login,
-   * never `VERCEL_TOKEN`; elsewhere, a browser say, pass one. A board at `BOARD_URL` gets the credentials `vb` sends it instead.
-   */
-  fetch?: typeof fetch
 }
 
-/** What a build of board gives board(): Node's finds boards, tokens, and the board's project in the environment. */
+/** What a build of board gives board(): Node's finds the board at `BOARD_URL` and verifies tokens. */
 export type Runtime = {
-  /**
-   * The backend for a board() given none: Vercel's board, through `fetch` when it's given, or in
-   * Node with `BOARD_URL` set, `http()` to that board.
-   */
-  backend(fetch: typeof globalThis.fetch | undefined): Backend
+  /** The backend for a board() given none: in Node, `http()` to the board at `BOARD_URL`. */
+  backend(): Backend
   /** Loads the sync engine, only for a board that syncs. */
   sync: () => Promise<typeof import('../sync/engine.ts')>
   /** Loads what the policy finds in the environment, the first time a board serves: null where nothing does, so pass `authenticate`. */
   serving: (() => Promise<Serving>) | null
-  /** What a sandbox's requests to this board, at `url`, carry from this deployment: `token`, or its own OIDC token. Null where nothing finds one. */
-  sandbox: ((url: string, token: string | undefined) => Promise<Record<string, string>>) | null
 }
 
 /** What the board's pipeline shares with its handle. */
@@ -181,9 +134,8 @@ export function hostCheckedBy<T extends BoardOptions>(options: T): T {
   return options
 }
 
-/** Whether a board without `url` can take it from a request's Host: on Vercel, or behind a server that checks Host. */
-export const hostTrusted = (options: BoardOptions): boolean =>
-  hostChecked.has(options) || (typeof process !== 'undefined' && process.env.VERCEL === '1')
+/** Whether a board without `url` can take it from a request's Host: behind a server that checks Host. */
+export const hostTrusted = (options: BoardOptions): boolean => hostChecked.has(options)
 
 /** A handle's own, with every request it makes ended by a signal: what `vb()` runs a command on. Global, so another copy of board finds it. */
 const STOPPED_BY = Symbol.for('@vercel/board/stopped-by')
@@ -243,35 +195,14 @@ function until<T>(signal: AbortSignal, work: Promise<T>): Promise<T> {
 /** How long a handle's live events wait for the next, in seconds, before asking again. */
 const EVENTS_WAIT_S = 25
 
-/** A profile's name, as the board takes one in `x-board-profile`. */
-const SANDBOX_PROFILE = /^[A-Za-z][A-Za-z0-9-]{0,31}$/
-
-/** An avatar the board takes: an https URL, or http on localhost. */
-const avatarUrl = (value: string) => {
-  const url = URL.parse(value)
-  return url !== null && (url.protocol === 'https:' || (url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname)))
-}
-
-/** A board's name: 1 to 64 characters, no `/`. */
-const BOARD_NAME = /^[^/]{1,64}$/
-/** A team, by its ID or its slug. */
-const TEAM = /^[^\s/]+$/
-
-/** Whether `name` is a board's name, such as `security`, counted as Vercel's API counts it: trimmed and NFC-normalized. */
-export const isBoardName = (name: string): boolean => BOARD_NAME.test(name.trim().normalize('NFC'))
-
 /**
- * A board for this project, on `backend`: Vercel's board for the team by default, `local()` in this
- * process, or one of your own. What it returns is the handle: its
+ * A board on `backend`: `local()` in this process, `http()` for another board (in Node, the one at
+ * `BOARD_URL` by default), or one of your own. What it returns is the handle: its
  * methods act as the board's caller, and `fetch` serves the protocol over HTTP. Create it once,
  * at module scope, or one per tenant for a host.
  */
 export function createBoard(options: BoardOptions, runtime: Runtime): Board {
-  if (options.name !== undefined && !isBoardName(options.name))
-    throw new Error(`board: ${JSON.stringify(options.name)} isn't a board's name: one is 1 to 64 characters with no /, and another team's board takes its team apart, board({ team, name })`)
-  if (options.team !== undefined && !TEAM.test(options.team)) throw new Error(`board: ${JSON.stringify(options.team)} isn't a team: pass its ID (team_…) or its slug`)
-  if (options.ensure && options.name === undefined) throw new Error('board: ensure makes the board `name` names: pass name too')
-  const backend = options.backend ?? runtime.backend(options.fetch)
+  const backend = options.backend ?? runtime.backend()
   const policy = createPolicy(options, backend.keeps, runtime.serving, backend.trust ?? null)
   const inboxRolesByPrincipal = new Map<string, Set<string>>()
   for (const [role, principals] of Object.entries(options.inboxRoles ?? {})) {
@@ -287,16 +218,9 @@ export function createBoard(options: BoardOptions, runtime: Runtime): Board {
   /** Under the configured mount, so the router accepts the paths an in-process client builds. */
   const inProcess = `http://in-process.board${(options.basePath ?? '').replace(/\/+$/, '')}`
 
-  /**
-   * This board's own URL, where a board elsewhere wakes it: `url`, or on Vercel its production
-   * domain (a preview's own URL there), and never a request's Host, which its sender chooses.
-   */
+  /** This board's own URL: `url`, and never a request's Host, which its sender chooses. */
   function ownUrl(): string | null {
-    if (options.url) return options.url.replace(/\/+$/, '')
-    const env = typeof process === 'undefined' ? undefined : process.env
-    const domain = env?.VERCEL_ENV === 'production' ? env.VERCEL_PROJECT_PRODUCTION_URL : env?.VERCEL_URL
-    const base = options.basePath ?? state.learned
-    return domain && base !== null ? `https://${domain}${base}`.replace(/\/+$/, '') : null
+    return options.url ? options.url.replace(/\/+$/, '') : null
   }
 
   let loading: Promise<Serve> | null = null
@@ -327,16 +251,8 @@ export function createBoard(options: BoardOptions, runtime: Runtime): Board {
 
   const serve = async (request: Request): Promise<Response> => (await server()).dispatch(request, null)
 
-  /** How a sandbox reaches this board, where it keeps the board itself: at its own URL, with this deployment's credential. */
-  async function ownReach({ profile, can, token }: SandboxInput): Promise<SandboxReach> {
-    const url = ownUrl()
-    if (url === null) throw new HttpError(400, 'no_url', "A sandbox reaches this board at its URL, and it doesn't know it yet.", { hint: 'Pass board({ url }).', origin: 'handle' })
-    const credential = runtime.sandbox ? await runtime.sandbox(url, token) : token === undefined ? withoutToken(url) : { authorization: `Bearer ${token}` }
-    return { url, headers: { ...credential, 'x-board-profile': formatProfileHeader(profile), 'x-board-can': can }, routes: PROTOCOL_ROUTES }
-  }
-
   /** `can`'s header text, read as the board reads one: a 400 `invalid_scope` for one it doesn't. */
-  function canOf(can: Can | string | undefined): string {
+  function canOf(can: Can | string): string {
     try {
       return canHeader(can)
     } catch (error) {
@@ -351,30 +267,9 @@ export function createBoard(options: BoardOptions, runtime: Runtime): Board {
   /** The `can` a handle as `caller` holds: what `as(profile, { can })` gave it. */
   const heldBy = (caller: Caller): string | undefined => ('self' in caller ? caller.can : undefined)
 
-  /** The policy that hands this board to a sandbox, for a handle as `caller`. */
-  async function sandboxPolicy(caller: Caller, options: SandboxPolicyOptions = {}): Promise<SandboxPolicy> {
-    const own = 'profile' in caller ? caller.profile : null
-    const named = options.profile ?? (own === null || own === undefined ? null : typeof own === 'string' ? { name: own } : own)
-    if (named === null)
-      throw new BoardError('invalid_profile', "A sandbox writes as a profile of this deployment, and this names none: the sandbox could send its own, and write as any.", 400, {
-        hint: "Name one: sandboxPolicy({ profile: { name } }), or team.as('<name>').sandboxPolicy().",
-      })
-    if (!SANDBOX_PROFILE.test(named.name)) throw new BoardError('invalid_profile', `${named.name} isn't a profile's name: one starts with a letter and uses up to 32 letters, numbers, and hyphens.`, 400)
-    if (named.avatar !== undefined && !avatarUrl(named.avatar)) throw new BoardError('invalid_profile', `${named.avatar} isn't an avatar: one is an https URL, or http on localhost.`, 400)
-    // A narrowed handle hands a sandbox no more than it holds itself.
-    const can = within(heldBy(caller), canOf(options.can))
-    const input: SandboxInput = { profile: named, can, token: options.token }
-    try {
-      return boardPolicy(backend.sandbox ? await backend.sandbox(input) : await ownReach(input))
-    } catch (error) {
-      if (error instanceof HttpError) throw new BoardError(error.code, error.message, error.status, { ...(error.hint !== undefined ? { hint: error.hint } : {}), origin: error.origin })
-      throw error
-    }
-  }
-
   /** A handle on `client`, which `as` gives other profiles of. */
   function handle(client: BoardClient, url: (() => string) | null, caller: Caller, trigger: string | null, stop: AbortSignal | undefined, writes: { made: number }): Board {
-    const made = { ...client, fetch: serve, as: asFrom(caller, stop), sandboxPolicy: (options?: SandboxPolicyOptions) => sandboxPolicy(caller, options) } as Board
+    const made = { ...client, fetch: serve, as: asFrom(caller, stop) } as Board
     if (url) Object.defineProperty(made, 'url', { get: url, enumerable: true })
     Object.defineProperty(made, STOPPED_BY, { value: (signal: AbortSignal) => handleOf(caller, trigger, signal, writes) })
     return made
@@ -446,9 +341,6 @@ export function createBoard(options: BoardOptions, runtime: Runtime): Board {
   /** This board's sync entries, as its sync and discovery see them. */
   const ownEntries: SyncEntry[] = Object.entries(entries).map(([key, entry]) => ({ key, platform: entry.platform }))
   const binding: BoardBinding = {
-    name: options.name ?? null,
-    team: options.team ?? null,
-    ensure: options.ensure ?? true,
     initiallyPaused: options.initiallyPaused ?? false,
     subscriptions,
     run: async (id, event, meta) => (await server()).run(id, event, meta),

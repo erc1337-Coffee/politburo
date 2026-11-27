@@ -10,34 +10,25 @@ import { type Backend, type BoardBinding, type Caller, type ProtocolMethods, typ
 import { HttpError, noAgentOps } from './errors.ts'
 import { isAgentIntentMethod, isAgentOpsMethod, METHODS, type AgentOpsMethod } from './routing.ts'
 import { compileWatcher } from './watch-spec.ts'
-import { deployedOnVercel } from './registrant.ts'
 import { tailWatchers } from './tails.ts'
-import { PROTOCOL_ROUTES, withoutToken, type SandboxInput, type SandboxReach } from './sandbox.ts'
-import { formatProfileHeader } from '../contract/profile-header.ts'
 
 export type HttpOptions = {
   /**
    * How requests reach the board, with the credentials it recognizes. In Node it defaults to what
-   * `vb` uses: a token from `BOARD_TOKEN`, `vb serve`'s, GitHub Actions, Vercel, or `vercel login`,
-   * through Deployment Protection. In a browser, `fetch`, sending the page's own session (a cookie,
-   * say), which the board's `authenticate` recognizes.
+   * `vb` uses: a token from `BOARD_TOKEN`, or `vb serve`'s. In a browser, `fetch`, sending the
+   * page's own session (a cookie, say), which the board's `authenticate` recognizes.
    */
   fetch?: typeof fetch
 }
 
-/**
- * What finds a board and reaches it, in the Node build: the environment, its files, and
- * `vercel login`. A browser has none.
- */
+/** What finds a board and reaches it, in the Node build: the environment and its files. A browser has none. */
 export type Environment = {
   /** The board the environment points at. Throws `no_board` when it points at none. */
   url(): string
-  /** The fetch for the board at `url` when none is given: the credentials `vb` uses, through Deployment Protection. */
+  /** The fetch for the board at `url` when none is given: the credentials `vb` uses. */
   fetch(url: string): typeof fetch
   /** The profile the environment names: `BOARD_PROFILE`, with `BOARD_AVATAR`. */
   profile(): ProfileOption
-  /** What a sandbox's requests to the board at `url` carry from this deployment: `token`, or its own OIDC token, and what gets them through Deployment Protection. */
-  sandbox(url: string, token: string | undefined): Promise<Record<string, string>>
 }
 
 /** A watcher's or client's name is the profile its writes are by. */
@@ -161,7 +152,7 @@ export function createHttp(url: string | undefined, options: HttpOptions, enviro
       url: remote,
       fetch: doFetch,
       profile: profile !== undefined ? profile : () => environment?.profile() ?? null,
-      // A handle `as(profile, { can })` narrowed: the board it uses holds it to that, as it does a sandbox.
+      // A handle `as(profile, { can })` narrowed: the board it uses holds it to that.
       ...(can !== undefined ? { headers: { 'x-board-can': can } } : {}),
     })
 
@@ -382,20 +373,14 @@ export function createHttp(url: string | undefined, options: HttpOptions, enviro
   }
 
   let running: ReturnType<typeof tailWatchers> | null = null
-  /** Whether they won't run, or won't again: on Vercel, or once closed. */
+  /** Whether they won't run again: once closed. */
   let stopped = false
   /**
    * On first use, this board's watchers start following the board it uses, in this process, as
-   * `vb tail` does. Nothing wakes a board on http(). A deployment's function doesn't outlive its
-   * request, so on Vercel none run.
+   * `vb tail` does. Nothing wakes a board on http().
    */
   function start() {
     if (running || stopped || Object.keys(tails).length === 0) return
-    if (deployedOnVercel()) {
-      stopped = true
-      console.error(`[board] watchers on a board that uses ${remote} run only in a process that stays up: on Vercel, none run`)
-      return
-    }
     running = tailWatchers({
       watchers: tails,
       events: async (query, signal) => (await call(own, 'events', query, signal)).json() as Promise<EventsPage>,
@@ -412,14 +397,10 @@ export function createHttp(url: string | undefined, options: HttpOptions, enviro
     // The log is the board it uses'.
     keeps: false,
     settlesMentions: true,
-    async sandbox({ profile, can, token }: SandboxInput): Promise<SandboxReach> {
-      const credential = environment ? await environment.sandbox(remote, token) : token === undefined ? withoutToken(remote) : { authorization: `Bearer ${token}` }
-      return { url: remote, headers: { ...credential, 'x-board-profile': formatProfileHeader(profile), 'x-board-can': can }, routes: PROTOCOL_ROUTES }
-    },
     bind(next: BoardBinding) {
       if (binding) throw new Error('http: this backend already serves a board: create one http() per board()')
       for (const [id, spec] of Object.entries(next.subscriptions)) {
-        // Sync runs where the board keeps its log: the board it uses' own config, or Vercel's board.
+        // Sync runs where the board keeps its log: the board it uses' own config.
         if (spec.kind === 'sync') throw new Error(`http: sync doesn't run on a board that uses ${remote}: sync from that board's own config`)
         if (!PROFILE.test(id)) throw new Error(`watch ${id}: ${PROFILE_RULE}`)
         const { filters, all } = compileWatcher(id, spec)

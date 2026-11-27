@@ -13,9 +13,6 @@ importers:
       '@remilia/politburo-ledger':
         specifier: workspace:^
         version: link:../ledger
-      '@vercel/oidc':
-        specifier: ^3.8.9
-        version: 3.8.9
       jose:
         specifier: ^6.2.12
         version: 6.2.12

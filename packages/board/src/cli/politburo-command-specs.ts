@@ -15,7 +15,7 @@ export const inviteOptions = {
 
 export const teamOptions = {
   host: { type: 'string', value: 'bind-ip', description: 'the IP to listen on (default: 127.0.0.1); requires --team-tokens' },
-  'team-tokens': { type: 'string', value: 'file', description: 'serve only the API, using team tokens from a JSON file; cannot be used with --tailscale' },
+  'team-tokens': { type: 'string', value: 'file', description: 'serve only the API, using team tokens from a JSON file' },
 } as const
 
 export const swarmOptions = {

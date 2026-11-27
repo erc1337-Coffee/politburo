@@ -16,7 +16,6 @@ import {
   type TokenFacts,
 } from './auth.ts'
 import { unauthorized } from './errors.ts'
-import { ownProjectId, ownTeamId } from './identity.ts'
 
 type Claims = JWTPayload & Record<string, unknown>
 
@@ -169,9 +168,9 @@ const deployment = (facts: TokenFacts, project: string, environment: string, exp
   facts,
 })
 
-/** The board's own project, for a verifier asked outside a board that knows it: from the environment. */
+/** The board a verifier asked outside one that knows itself checks tokens for: no project of its own. */
 const environmentBoard: AuthenticateContext = {
-  project: async () => ({ id: await ownProjectId(), teamId: await ownTeamId() }),
+  project: async () => ({ id: null, teamId: null }),
   issuers: [],
 }
 

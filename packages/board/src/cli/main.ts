@@ -7,12 +7,9 @@ import { everyChannel } from '../client/channels.ts'
 import { withMentions } from '../api/tail.ts'
 import { BoardError, type ClaimedTask, type Filters, type ProfileOption, type Written } from '../client/client.ts'
 import type { Mentioned } from '../contract/mentions.ts'
-import { boardUrl, connect, environmentProfile, handFetch, handLogin, handToken, JOINED, PASSED, vercelProjectFile } from '../client/node.ts'
+import { boardUrl, connect, environmentProfile, JOINED } from '../client/node.ts'
 import { http } from '../backend-http/index.ts'
-import { credentialed, credentialSource, handTeam, vercel } from '../backend-vercel/index.ts'
 import { board as boardAt, type Board } from '../server/index.ts'
-import { isBoardName } from '../server/board.ts'
-import { apiThreadRoot, isApiMessageId } from '../server/backend-vercel.ts'
 import { normalizeEmoji } from '../contract/emoji.ts'
 import { AttestationGate, Commit, Verdict } from '../contract/evidence.ts'
 import { AgentRole, ATTACHMENTS_PER_MESSAGE_MAX, DIRECT_UPLOAD_BYTES_MAX, IntentOutcome, IntentVerb, MESSAGE_TEXT_MAX, type AgentIntent, type Attachment, AttachmentId, TaskPriority, WorkStageTarget } from '../contract/schemas.ts'
@@ -36,7 +33,7 @@ import { AttentionAnswerBody } from '../contract/attention.ts'
 import { attentionFrom, createPlan, doingTasks, heldBy, priorityOf, readyLabels, resetTaskBoard } from './politburo-tasks.ts'
 
 // Internal live bindings for the fork's command modules. They read these only when called.
-export { cli, client, connection, current, doing, failureOf, flags, io, isMessageRef, labelPairs, messageId, messageRef, named, onSameBoard, onThisBoard, ordered, out, profileFlag, ref, rerun, rerunWithout, result, seconds, sent, setSentLength, specOf, stateCommand, stopOn, taskId, typed, usage, vercelBoard }
+export { cli, client, connection, current, doing, failureOf, flags, io, isMessageRef, labelPairs, messageId, messageRef, named, onSameBoard, onThisBoard, ordered, out, profileFlag, ref, rerun, rerunWithout, result, seconds, sent, setSentLength, specOf, stateCommand, stopOn, taskId, typed, usage }
 
 /** A failure this run says in its own words: what a command throws to stop with it. */
 export class Failed extends Error {
@@ -58,7 +55,7 @@ function usage(message: string, options: { reason?: string; next?: Recovery[] } 
 /** A command's help page, which says how to use it. */
 const helpRecovery = (command = current.command): Recovery => ({ instruction: 'See how to use it', argv: [...cli(), ...(command ? [command] : []), '--help'] })
 
-/** This CLI's name as argv, to build a command a person runs: `['vb']`, `['vercel', 'board']`. */
+/** This CLI's name as argv, to build a command a person runs: `['vb']`. */
 const cli = () => named().split(' ')
 
 /** This run's command as typed, with `extra` where options go: before any `--`, after which everything is text. */
@@ -139,7 +136,7 @@ function removedCommand(word: string): Failed | undefined {
   const gone = (next: Recovery[], why = '') => usage(`\`${named()} ${word}\` is gone.${why}`, { reason: 'unknown_command', next })
   const url: Recovery[] = [
     { instruction: "Pass the board's URL", argv: [...cli(), 'read', 'dev', '--url', '<URL>'] },
-    { instruction: "Or, in a Vercel project, its team's board needs no URL" },
+    { instruction: 'Or set BOARD_URL' },
   ]
   const removed: Record<string, () => Failed> = {
     update: () =>
@@ -199,43 +196,14 @@ export type CommandContext = {
   openBrowser: (url: string) => void
 }
 
-/**
- * The CLI an app runs: its name, as help, usage, and errors say it (`board`, `vercel board`),
- * and its own commands.
- */
+/** The CLI an app runs: its name, as help, usage, and errors say it (`board`), and its own commands. */
 export type App = {
   name: string
   commands: Record<string, Command>
-  /**
-   * With no board URL, it talks to the team's board in Vercel's API even outside a Vercel project:
-   * your login's team, as `vercel board` does. Without it, only in one (or with `--scope`).
-   */
-  teamBoard?: boolean
   /** Shows a failure as this app shows its own; without it, the CLI prints `error: …`, or with `--json`, its JSON document. */
   onError?: (failure: Failure, mode: { json: boolean }) => void
   /** Shows a warning, outside `--json` (where it's in the result's `warnings`); without it, the CLI prints `warning: …`. */
   onWarning?: (warning: Warning) => void
-  /**
-   * Your Vercel login, asked for only when a request needs it: the app's own, refreshed when it's
-   * asked. It's who every command runs as, wherever the app runs: nothing the environment holds
-   * goes ahead of it, a deployment's own token and `BOARD_TOKEN` included.
-   */
-  login?: () => Promise<string>
-  /**
-   * A Vercel token someone passed the app for this run (`vercel board --token`): the login to use
-   * in place of `login`. Board sends it itself, as a Bearer token, never through `fetch`.
-   */
-  token?: string
-  /**
-   * How board's requests to Vercel's API go with that login: the app's own fetch, which adds the
-   * login's credentials (a DPoP proof, say). Without it, board sends the login as a Bearer token.
-   */
-  fetch?: typeof fetch
-  /**
-   * The team whose board to use when `--scope` names none, as the app resolves its own (its link,
-   * its saved team), asked for only when a request needs it. Null is your login's default team.
-   */
-  team?: () => Promise<string | null>
 }
 
 type Flags = ReturnType<typeof parseAll>['values']
@@ -254,8 +222,6 @@ let typed: string[] = []
 let warnings: Warning[] = []
 /** The board this run reached by its URL, for a failure to name. */
 let reached: string | null = null
-/** The team whose default board this run reached, nothing naming one of its boards: `--scope`'s, or the one the environment finds. */
-let teamDefault: { team: string | undefined } | null = null
 /** Where the credential this run sent came from, as `whoami` says it, for a refusal to say which to replace. */
 let sent: () => string | null = () => null
 /** How long the message text this run sends is, for a backend's refusal of it to say what to do instead. */
@@ -459,7 +425,7 @@ function messageId(value: string | undefined, what = 'message ID'): string {
   if (value === undefined) throw usage(`Missing the ${what}.`, { reason: 'missing_arguments' })
   if (!/^[^\s/]+$/.test(id)) throw usage(`${value} isn't a ${what}.`)
   // A thread's own ID, as a message's `thread` gives it, names its root.
-  return apiThreadRoot(id) ?? id
+  return id
 }
 
 /** Characters that change how a name reads without showing: invisible formatting (bidi overrides, zero-width), and line and paragraph separators. */
@@ -476,8 +442,8 @@ const exists = (path: string) =>
 const tooLarge = (path: string) =>
   new Failed({ class: 'limit', reason: 'payload_too_large', message: `Can't attach ${path}. It's over ${DIRECT_UPLOAD_BYTES_MAX / 1024 / 1024} MB, the most an attachment can be.` })
 
-/** Whether an ID goes in and out bare: a number, or one Vercel's API hands out (`msg_…`, or a thread's `thr_…`), a message even where a channel has its name. */
-const bareId = (value: string) => /^\d+$/.test(value) || isApiMessageId(value) || apiThreadRoot(value) !== null
+/** Whether an ID goes in and out bare: a number, a message even where a channel has its name. */
+const bareId = (value: string) => /^\d+$/.test(value)
 
 /** Whether an argument names a message rather than a channel: `#<id>`, or an ID that goes bare. */
 const isMessageRef = (value: string) => /^#[^\s/]+$/.test(value) || bareId(value)
@@ -657,11 +623,7 @@ async function namingSelf(error: unknown): Promise<never> {
 }
 
 /** The options that say which board this run acts on, as it was given them: a command suggested for the same board carries them. */
-const onSameBoard = (): string[] => [
-  ...(flags.url !== undefined ? ['--url', flags.url] : []),
-  ...(flags.scope !== undefined || flags.team !== undefined ? ['--scope', (flags.scope ?? flags.team)!] : []),
-  ...(flags.name !== undefined ? ['--name', flags.name] : []),
-]
+const onSameBoard = (): string[] => (flags.url !== undefined ? ['--url', flags.url] : [])
 
 /**
  * The ways out of a grant change the board refused as a lockout. A new grant: first, the grant
@@ -732,25 +694,20 @@ function filters(channel?: string): Filters & { after?: string } {
   }
 }
 
-/**
- * The board the environment points at. With none, the team's board for an app that has one
- * (null), or else how to point at one, with the commands this app has.
- */
-function configuredUrl(): string | null {
+/** The board the environment points at (`BOARD_URL`), or how to point at one. */
+function configuredUrl(): string {
   try {
     return boardUrl()
   } catch (error) {
     if (!(error instanceof BoardError) || error.code !== 'no_board') throw error
-    // In a Vercel project, its team's board.
-    if (app.teamBoard || process.env.VERCEL_ORG_ID || vercelProjectFile()) return null
     throw new Failed({
       class: 'missing_input',
-      reason: 'missing_scope',
+      reason: 'missing_board',
       actionRequired: true,
-      message: "No board to use. Nothing sets one, and this directory isn't in a Vercel project.",
+      message: 'No board to use. Nothing sets one.',
       next: [
-        { instruction: "Use a team's board", argv: rerun('--scope', '<TEAM>') },
-        { instruction: 'Or a board at a URL', argv: rerun('--url', '<URL>') },
+        { instruction: 'Use a board at a URL', argv: rerun('--url', '<URL>') },
+        { instruction: 'Or set BOARD_URL' },
       ],
     })
   }
@@ -904,7 +861,7 @@ function missing(): string | undefined {
 }
 
 /**
- * What `error` means for this run, in the Vercel CLI's terms. What the handle raised itself says
+ * What `error` means for this run. What the handle raised itself says
  * what and why, and its hint what fixes it. What a board answered is said by what this run was
  * doing, with the board's words under it and in `data`, never in what to run: a board can answer
  * with any code, the handle's own included.
@@ -925,52 +882,20 @@ function failureOf(error: unknown, hold: TaskHold = 'unknown'): Failure {
       class: kind, reason, message, ...(next.length ? { next } : {}), data: said,
     })
     switch (code) {
-      case 'not_logged_in':
-        return { class: 'auth', reason: 'login_required', message: "You're not logged in to Vercel.", next: [{ instruction: 'Log in', argv: ['vercel', 'login'] }], data: said }
-      case 'no_access':
-        return own('permission', 'permission_denied')
-      case 'wrong_project':
-        return own('permission', 'wrong_project')
-      case 'protected':
-        return own('permission', 'deployment_protected')
-      case 'no_project':
-        return own('platform', 'no_project')
       case 'no_token':
         return own('auth', 'token_unavailable')
       case 'no_agent_ops':
         return own('platform', code)
       case 'no_board':
-        // A person's named board that isn't there, or that they can't see: this command again makes it.
-        return own('not_found', 'board_not_found', [{ instruction: 'Check the name, or make it', argv: rerun('--ensure') }])
-      case 'board_name_taken':
+        return own('not_found', 'board_not_found')
       case 'board_dir_locked':
         return own('conflict', code)
-      case 'board_not_granted':
-        return own('permission', 'board_not_granted')
-      case 'watchers_need_project':
-        return own('permission', 'watchers_need_project')
-      case 'missing_team':
-        return {
-          // A CI log is read widely: this names the option without the command's text.
-          ...own('missing_input', 'missing_scope', [
-            { instruction: "Use a team's board: add --scope <TEAM_ID>" },
-            { instruction: 'Or set VERCEL_ORG_ID to its ID' },
-          ]),
-          actionRequired: true,
-        }
-      case 'invalid_board_name':
-        return own('usage', 'invalid_arguments', [helpRecovery()])
       case 'too_many_redirects':
         return own('network', 'network_error')
       case 'invalid_duration':
         return own('usage', 'invalid_arguments', [helpRecovery()])
-      case 'wrong_audience':
-      case 'redirected':
-        return own('usage', 'wrong_url')
       case 'too_large':
         return { ...own('limit', 'payload_too_large'), message: `Can't ${doing()}. ${sentence(message)}` }
-      case 'no_team':
-        return { ...own('platform', 'api_error'), message: "Couldn't tell which team's board to use.", details: [message] }
       case 'upload_failed':
         return { ...own('platform', 'upload_failed'), message: `Failed to ${doing()}.`, details: [message] }
       case 'channel_exists':
@@ -1009,8 +934,7 @@ function failureOf(error: unknown, hold: TaskHold = 'unknown'): Failure {
   if (status === 400 && code === 'schema_not_found' && current.command !== 'schemas')
     return theirs('usage', code, `Can't ${doing()}.`, [{ instruction: 'See the schemas this board has', argv: [...cli(), 'schemas'] }])
   // Too much text: what it can't hold goes in a file, on a message that can take one (an edit can't).
-  // Vercel's API says it as `invalid_message`, which also means empty text: only text over the limit is too long.
-  if (status === 400 && (code === 'text_too_long' || (code === 'invalid_message' && sentLength > MESSAGE_TEXT_MAX)))
+  if (status === 400 && code === 'text_too_long')
     return {
       ...theirs('limit', 'payload_too_large', `Can't ${doing()}. A message's text is at most ${MESSAGE_TEXT_MAX.toLocaleString('en-US')} characters.`, [
         // A task's root takes no file, and neither does an edit: the long part goes in a reply that does.
@@ -1025,28 +949,6 @@ function failureOf(error: unknown, hold: TaskHold = 'unknown'): Failure {
       ]),
       details: [],
     }
-  // A limit on the team's boards, which the team's plan sets: no argument fixes it, and the team's own board is still there.
-  if (code === 'too_many_boards')
-    return theirs(
-      'limit',
-      code,
-      `Can't ${doing()}. The team has all the boards it can.`,
-      current.command === 'conformance'
-        ? [
-            // It refuses the team's board unnamed: another board by its URL, or the team's own by its name, which it posts to and changes the grants of.
-            { instruction: 'Check a board by its URL, such as one from vb serve', argv: [...rerunWithout(['--name', '--scope']).filter((arg) => arg !== '--ensure'), '--url', '<URL>'] },
-            { instruction: "Or the team's own board, which it posts to and changes the grants of", argv: [...rerunWithout(['--name']).filter((arg) => arg !== '--ensure'), '--name', 'General'] },
-          ]
-        : flags.name !== undefined
-        ? [{ instruction: "Use the team's board instead", argv: rerunWithout(['--name']).filter((arg) => arg !== '--ensure') }]
-        : process.env.BOARD_NAME
-          ? [{ instruction: "Use the team's board instead: unset BOARD_NAME, then run", argv: rerunWithout([]).filter((arg) => arg !== '--ensure') }]
-          : [],
-    )
-  if (code === 'private_boards_unavailable')
-    return theirs('limit', code, `Can't ${doing()}. This team's plan has no private boards.`, [
-      { instruction: 'Keep the board open to the whole team, or move the team to a plan with private boards' },
-    ])
   // What the board said is what to fix.
   if (status === 400) return theirs('usage', specific('invalid_arguments'), `Can't ${doing()}.`)
   if (status === 401)
@@ -1054,17 +956,14 @@ function failureOf(error: unknown, hold: TaskHold = 'unknown'): Failure {
       'auth',
       'login_required',
       "The board didn't accept your credentials.",
-      // A token you passed is yours to replace, and so is BOARD_TOKEN: logging in changes nothing while either is the one
-      // sent, or a workflow's own, where there's no login.
-      sent() === PASSED
-        ? [{ instruction: 'Pass a token it accepts' }]
-        : sent() === 'BOARD_TOKEN'
-          ? [{ instruction: 'Pass a token it accepts in BOARD_TOKEN, or unset it' }]
-          : sent() === JOINED
-            ? [{ instruction: 'Ask for a new invite and join again' }]
-            : sent() === 'GitHub Actions OIDC'
-              ? [{ instruction: 'Pass a token it accepts in BOARD_TOKEN' }]
-              : [{ instruction: 'Log in again', argv: ['vercel', 'login'] }],
+      // A token in BOARD_TOKEN is yours to replace, and a joined credential comes from a new invite.
+      sent() === 'BOARD_TOKEN'
+        ? [{ instruction: 'Pass a token it accepts in BOARD_TOKEN, or unset it' }]
+        : sent() === JOINED
+          ? [{ instruction: 'Ask for a new invite and join again' }]
+          : sent() === 'vb serve'
+            ? [{ instruction: 'Restart vb serve, which writes a new token' }]
+            : [{ instruction: 'Pass a token it accepts in BOARD_TOKEN' }],
     )
   if (status === 403) return theirs('permission', 'permission_denied', `You can't ${doing()}.`, refusedRecoveries())
   if (status === 404) {
@@ -1173,39 +1072,6 @@ function report(failure: Failure, json: boolean): number {
   return exitCode(failure)
 }
 
-/**
- * A team's board in Vercel's API, by the URL its discovery names it with
- * (`https://api.vercel.com/v1/messageboard/boards/<board>?teamId=<team>`): its board and team.
- */
-function vercelBoard(url: string): { board: string; team?: string } | null {
-  let parsed: URL
-  try {
-    parsed = new URL(url)
-  } catch {
-    return null
-  }
-  const found = /^\/v1\/messageboard\/boards\/([^/]+)\/?$/.exec(parsed.pathname)
-  if (parsed.origin !== 'https://api.vercel.com' || !found) return null
-  const team = parsed.searchParams.get('teamId')
-  return { board: decodeURIComponent(found[1]!), ...(team ? { team } : {}) }
-}
-
-/**
- * Whether this run's board is a team's board in Vercel's API, as its flags and environment say,
- * without a request: undefined when they don't say (an in-process handle, or no board to use).
- */
-function onTeamBoard(): boolean | undefined {
-  if (io.board) return undefined
-  try {
-    if (flags.url !== undefined) return vercelBoard(flags.url) !== null
-    if (flags.scope !== undefined || flags.team !== undefined || flags.name !== undefined) return true
-    const url = configuredUrl()
-    return url === null || vercelBoard(url) !== null
-  } catch {
-    return undefined
-  }
-}
-
 /** Who the handle writes as: `--as`'s profile (with `--avatar`), or what the environment says (`BOARD_PROFILE`), else yourself. */
 function profileFlag(): ProfileOption | undefined {
   if (flags.avatar !== undefined && !flags.as) throw usage('--avatar is the avatar of the profile --as names: pass --as too.', { reason: 'missing_arguments' })
@@ -1214,85 +1080,18 @@ function profileFlag(): ProfileOption | undefined {
 }
 
 /**
- * The board this command talks to, as `--as` says: a handle on it, where it is (null until its
- * discovery says, for a team's board), and how it reaches it. It's `--url`'s; a team's board in
- * Vercel's API for `--scope` or `--team`; the one the environment points at; or the team's board
- * of the Vercel project it runs in, or, for an app with a team board, your login's.
+ * The board this command talks to, as `--as` says: a handle on it, where it is, and how it reaches
+ * it. It's `--url`'s, or the one the environment points at (`BOARD_URL`).
  */
 function connection(url: string | undefined = flags.url, options: { token?: string; can?: string; headers?: Record<string, string> } = {}) {
   const profile = profileFlag()
-  const team = flags.scope ?? flags.team
-  const name = boardNameFlag(url, team)
-  // A name names a team's board as --scope does, so it goes before BOARD_URL too.
-  const configured = url ?? (team === undefined && name === undefined ? configuredUrl() : null)
-  if (configured === null) {
-    if (name === undefined) teamDefault = { team }
-    const board = boardAt({ backend: vercel({ ...(team !== undefined ? { team } : {}), ...sending(options.token, options.can, options.headers) }), ...(name !== undefined ? { name, ensure: flags.ensure === true } : {}) })
-    sent = credentialSource
-    return { url: null, transport: { source: credentialSource }, board: profile !== undefined ? board.as(profile) : board }
-  }
-  const at = configured.replace(/\/+$/, '')
+  const at = (url ?? configuredUrl()).replace(/\/+$/, '')
   reached = at
-  // A team's board in Vercel's API (what `whoami` prints for one) is reached through the API, as `--scope` is.
-  const onVercel = vercelBoard(at)
-  if (onVercel) {
-    const board = boardAt({ backend: vercel({ ...onVercel, ...sending(options.token, options.can, options.headers) }) })
-    sent = credentialSource
-    return { url: at as string | null, transport: { source: credentialSource }, board: profile !== undefined ? board.as(profile) : board }
-  }
   const extra = { ...options.headers, ...(options.can !== undefined ? { 'x-board-can': options.can } : {}) }
   const transport = connect(at, { ...(options.token !== undefined ? { token: options.token } : {}), ...(Object.keys(extra).length > 0 ? { fetch: withHeaders(extra) } : {}) })
   const board = boardAt({ backend: http(at, { fetch: transport.fetch }) })
   sent = transport.source
   return { url: at as string | null, transport: transport as { source(): string | null }, board: profile !== undefined ? board.as(profile) : board }
-}
-
-/**
- * The team's board this run names: `--name`, or `BOARD_NAME`, on `--scope`'s team or the one the
- * environment finds. A URL names a board itself, its team included. `BOARD_NAME` is read only
- * where it picks the board: beside `BOARD_URL`, which names another, nothing says which one.
- */
-function boardNameFlag(url: string | undefined, team: string | undefined): string | undefined {
-  if (flags.name !== undefined && flags.url !== undefined)
-    throw usage("--name names a team's board, and --url a board by its URL: pass one of them.", { reason: 'conflicting_options' })
-  if (team !== undefined && flags.url !== undefined)
-    throw usage("--url names its board, its team included, and --scope a team's board: pass one of them.", { reason: 'conflicting_options' })
-  if (flags.ensure && flags.url !== undefined)
-    throw usage("--ensure makes a team's board by its name, and --url names a board by its URL: pass one of them.", { reason: 'conflicting_options' })
-  if (url !== undefined) return undefined
-  const named = process.env.BOARD_NAME || undefined
-  if (flags.name === undefined && team === undefined && named !== undefined && process.env.BOARD_URL?.trim())
-    throw usage("BOARD_NAME names a team's board, and BOARD_URL a board by its URL: unset one.", { reason: 'conflicting_options' })
-  const given = flags.name ?? named
-  if (given === undefined && flags.ensure) throw usage('--ensure makes the board --name names: pass --name too.', { reason: 'missing_arguments' })
-  if (given === undefined) return undefined
-  const from = flags.name !== undefined ? '--name' : 'BOARD_NAME'
-  if (given.includes('/')) {
-    // Another team's board is its team, with --scope, and its name.
-    const [owner, ...rest] = given.split('/')
-    const argv = rerunWithout(['--name', '--scope', '--team'], '--scope', owner || '<TEAM>', '--name', rest.join('/') || '<NAME>')
-    throw usage(`${from} takes a board's name alone, not its team's.`, {
-      next: [flags.name !== undefined ? { instruction: 'Pass its team with --scope', argv } : { instruction: 'Set BOARD_NAME to the name alone, and pass its team with --scope' }],
-    })
-  }
-  if (!isBoardName(given)) throw usage(`${from} ${given} isn't a board's name: one is 1 to 64 characters.`)
-  return given
-}
-
-/** For Vercel's API, `token` in place of your own credentials, `can` narrowing them, and `headers` beside them. */
-function sending(token: string | undefined, can?: string, extra: Record<string, string> = {}): { fetch?: typeof fetch } {
-  if (token === undefined && can === undefined && Object.keys(extra).length === 0) return {}
-  return {
-    fetch: (input, init = {}) => {
-      // The headers go in init: vercel()'s own fetch builds its credentials onto init's, and a Request's would be lost.
-      const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined))
-      if (token !== undefined) headers.set('authorization', `Bearer ${token}`)
-      if (can !== undefined) headers.set('x-board-can', can)
-      for (const [name, value] of Object.entries(extra)) headers.set(name, value)
-      // Without a token of its own, it goes with the credentials vercel() would find.
-      return (token === undefined ? credentialed() : globalThis.fetch)(input, { ...init, headers })
-    },
-  }
 }
 
 /** A fetch that adds `headers` to each request to a board on HTTP, as a proxy holding its credentials would: `x-board-can`, say. */
@@ -1442,15 +1241,12 @@ async function run(command: string | undefined, args: string[]): Promise<number>
 
     case 'conformance': {
       if (args.length > 0) throw usage('conformance takes no arguments: pass its channel with --channel.')
-      // It posts and changes grants, so it checks a board someone named, never the team's by default.
-      const named = flags.name !== undefined || flags.url !== undefined || Boolean(process.env.BOARD_URL?.trim()) || Boolean(process.env.BOARD_NAME)
+      // It posts and changes grants, so it checks a board someone named.
+      const named = flags.url !== undefined || Boolean(process.env.BOARD_URL?.trim())
       if (!io.board && !named)
         throw usage('conformance posts and changes grants, so name a scratch board for it.', {
           reason: 'needs_scratch_board',
-          next: [
-            { instruction: 'Check a scratch board on this team, by its name', argv: rerun('--name', '<BOARD>') },
-            { instruction: 'Or a board by its URL', argv: rerun('--url', '<URL>') },
-          ],
+          next: [{ instruction: 'Check a board by its URL', argv: rerun('--url', '<URL>') }],
         })
       return checkConformance()
     }
@@ -1610,14 +1406,8 @@ async function run(command: string | undefined, args: string[]): Promise<number>
             class: 'not_found',
             reason: 'channel_not_found',
             message: `Couldn't find channel ${target}.${guess ? ` Did you mean ${guess}?` : ''}`,
-            details: [
-              'A channel appears with its first post: one nobody has posted in yet is not there to read.',
-              ...(teamDefault ? [`This is ${teamDefault.team ?? 'the team'}'s default board: --name reads another of its boards.`] : []),
-            ],
-            next: [
-              { instruction: 'See its channels', argv: [...cli(), 'channels', ...(teamDefault?.team !== undefined ? ['--scope', teamDefault.team] : [])] },
-              ...(teamDefault ? [{ instruction: "Read it on another of the team's boards", argv: rerun('--name', '<BOARD>') }] : []),
-            ],
+            details: ['A channel appears with its first post: one nobody has posted in yet is not there to read.'],
+            next: [{ instruction: 'See its channels', argv: [...cli(), 'channels'] }],
           })
         }
       }
@@ -2119,8 +1909,7 @@ function unknownCommand(command: string): Failed {
   const guess = closest(command, commandNames())
   // What people and agents type for a command that goes by another name here.
   const other = Object.hasOwn(OTHER_NAMES, command.toLowerCase()) ? OTHER_NAMES[command.toLowerCase()] : undefined
-  // On a team's board, what works there; where nothing says which board, what works on every one.
-  const said = other?.teams && onTeamBoard() !== false ? other.teams : other
+  const said = other
   return usage(`Unknown command ${command} for ${named()}.${said ? '' : guess ? ` Did you mean ${guess}?` : ''}`, {
     reason: 'unknown_command',
     next: [
@@ -3065,19 +2854,12 @@ function stateCommand(): Recovery[] {
   return []
 }
 
-type OtherName = { instruction: string; argv: string[]; teams?: { instruction: string; argv: string[] } }
+type OtherName = { instruction: string; argv: string[] }
 
-/** Search: a filter on read. Vercel's board keeps no index of text, so there it looks through a page of a channel's threads. */
-const SEARCH: OtherName = {
-  instruction: 'Search is a filter on read',
-  argv: ['read', '<CHANNEL>', '--text', '<PHRASE>'],
-  teams: { instruction: "Search a channel's latest threads, a page at a time, since this board keeps no text search", argv: ['read', '<CHANNEL>', '--text', '<PHRASE>'] },
-}
+/** Search: a filter on read. */
+const SEARCH: OtherName = { instruction: 'Search is a filter on read', argv: ['read', '<CHANNEL>', '--text', '<PHRASE>'] }
 
-/**
- * Words for a command this CLI names otherwise, and the command they mean: on a team's board in
- * Vercel's API, `teams`, where it reads one channel's page (or when nothing says which board).
- */
+/** Words for a command this CLI names otherwise, and the command they mean. */
 const OTHER_NAMES: Record<string, OtherName> = {
   search: SEARCH,
   find: SEARCH,
@@ -3107,11 +2889,7 @@ const OTHER_NAMES: Record<string, OtherName> = {
   assign: { instruction: "Keep a task for one of its owner's profiles", argv: ['tasks', 'assign', '<ID>', '<PROFILE>'] },
   tag: { instruction: 'Set labels on a message', argv: ['label', '<ID>', '<KEY=VALUE>'] },
   labels: { instruction: 'Set labels on a message', argv: ['label', '<ID>', '<KEY=VALUE>'] },
-  mentions: {
-    instruction: 'Mentions are a filter on read and wait',
-    argv: ['read', '--mentions'],
-    teams: { instruction: "Read what mentions you in a channel's latest threads, then wait from where it stops", argv: ['read', '<CHANNEL>', '--mentions'] },
-  },
+  mentions: { instruction: 'Mentions are a filter on read and wait', argv: ['read', '--mentions'] },
   watch: { instruction: 'Block for the next match with wait, or follow live with tail', argv: ['wait', '<CHANNEL>', '--after', '<CURSOR>'] },
   follow: { instruction: 'Block for the next match with wait, or follow live with tail', argv: ['wait', '<CHANNEL>', '--after', '<CURSOR>'] },
   subscribe: { instruction: 'Block for the next match with wait, or follow live with tail', argv: ['wait', '<CHANNEL>', '--after', '<CURSOR>'] },
@@ -3156,22 +2934,6 @@ const context = (): CommandContext => ({
  * stopped.
  */
 export async function main(argv: string[], options: App): Promise<number> {
-  // The app's login and team are the run's, and only the run's.
-  handLogin(options.login ?? null)
-  handToken(options.token ?? null)
-  handTeam(options.team ?? null)
-  handFetch(options.fetch ?? null)
-  try {
-    return await runOnce(argv, options)
-  } finally {
-    handLogin(null)
-    handToken(null)
-    handTeam(null)
-    handFetch(null)
-  }
-}
-
-async function runOnce(argv: string[], options: App): Promise<number> {
   app = options
   typed = argv
   flags = {} as Flags
@@ -3179,7 +2941,6 @@ async function runOnce(argv: string[], options: App): Promise<number> {
   warnings = []
   reached = null
   resetTaskBoard()
-  teamDefault = null
   sent = () => null
   sentLength = 0
   self = null
@@ -3199,7 +2960,7 @@ async function runOnce(argv: string[], options: App): Promise<number> {
     const command = canonical(word)
     current = { command, args }
     if (io.board) {
-      const given = flags.url ? 'url' : flags.name !== undefined ? 'name' : flags.ensure ? 'ensure' : null
+      const given = flags.url ? 'url' : null
       if (given) throw usage(`--${given} doesn't apply in-process: the board handle you pass says which board and who.`, { next: [] })
       if (command !== undefined && MACHINE.has(command))
         throw usage(`${command} isn't available in-process: it's about the machine ${named()} runs on.`, { reason: 'not_available', next: [] })

@@ -231,8 +231,6 @@ for (const kind of ['guarded', 'joined']) it(`the ${kind} Node transport returns
   const elsewhere = await listen((_, respond) => respond.ok())
   const configured = await listen((_, respond) => respond.redirect(`${elsewhere.url}/sso-api`))
   onTestFinished(() => { vi.unstubAllEnvs() })
-  vi.stubEnv('VERCEL', '1')
-  vi.stubEnv('VERCEL_AUTOMATION_BYPASS_SECRET', '')
   if (kind === 'joined') {
     const home = await mkdtemp(join(tmpdir(), 'board-claim-redirect-'))
     onTestFinished(() => rm(home, { recursive: true, force: true }))
