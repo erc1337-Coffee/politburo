@@ -322,6 +322,30 @@ ${overrides}
     }
   })
 
+  test('worker acknowledgements reach the operations view, and a failed setup loses the attempt at once', async () => {
+    const run = await setup('setup_failure', async (command, send) => {
+      if (command.type !== 'start') return
+      await send('phase', { phase: 'started', round: 0 })
+      await send('phase', { phase: 'setup_started', round: 0 })
+      await send('phase', { phase: 'setup_failed', round: 0, duration_seconds: 4, detail: 'npm cannot reach the registry' })
+    }, 'limits: { attempts_per_task: 1 }')
+    const { task } = await run.team.tasks.create('work/app', 'Setup fails')
+    await run.orchestrator.start()
+    try {
+      const message = await run.done(task.id, ['failed'])
+      assert.match(String(message.task?.result ?? message.task?.reason ?? ''), /setup failed: npm cannot reach the registry/)
+      const phases = run.logs.filter((entry) => entry.event === 'worker_phase').map((entry) => entry.phase)
+      assert.deepEqual(phases, ['started', 'setup_started', 'setup_failed'])
+      const snapshot = run.monitor.snapshot({ actor: 'a', live: [], liveLimit: 1, outbox: 0, sweepSeconds: 1, watchdogDue: () => null })
+      const attempt = snapshot.attempts.find((row) => row.task_id === task.id)
+      assert.equal(attempt?.phase?.phase, 'setup_failed')
+      assert.equal(attempt?.phase?.detail, 'npm cannot reach the registry')
+    } finally {
+      await run.orchestrator.stop()
+      run.state.close()
+    }
+  })
+
   test('a bundle whose digest differs from the result is never pushed', async () => {
     const run = await setup('tampered', async (command, send) => {
       if (command.type !== 'start') return

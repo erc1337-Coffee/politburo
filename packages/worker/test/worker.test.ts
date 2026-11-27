@@ -8,6 +8,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { after, before, describe, test } from 'node:test'
 import { createRelay, generateSigningKeys, MessageStore, signToken, type Relay } from '../../relay/src/index.ts'
 import { envelope, parseTelemetry, type StartData, type Telemetry } from '../../relay/src/messages.ts'
+import { configuredPackages, type PiSetup } from '../src/setup.ts'
 import { WorkerFiles } from '../src/state.ts'
 import { tokenExpiry } from '../src/transport.ts'
 import { EXIT, Worker } from '../src/worker.ts'
@@ -80,11 +81,62 @@ describe('worker', () => {
     })
   }
 
-  function worker(channel: string, ttlSeconds = 600, contactTimeoutSeconds = 900) {
+  function worker(channel: string, ttlSeconds = 600, contactTimeoutSeconds = 900, prepare?: () => Promise<PiSetup>) {
     const files = new WorkerFiles(channel, join(directory, 'home'))
     const token = signToken(keys.privateKeyPem, { channel, role: 'worker', ttlSeconds })
-    return new Worker({ relayUrl, channel, files, checkout, contactTimeoutSeconds, extensions: [], piCommand: join(directory, 'slow-pi'), log: () => {} }, token)
+    const setup = prepare ? { prepare } : { extensions: [], piCommand: join(directory, 'slow-pi') }
+    return new Worker({ relayUrl, channel, files, checkout, contactTimeoutSeconds, ...setup, log: () => {} }, token)
   }
+
+  const phases = (messages: Telemetry[]) => messages.flatMap((message) => (message.type === 'phase' ? [message.data] : []))
+
+  test('the worker acknowledges its start, its setup and the work of a round, and the round waits for the setup', async () => {
+    const channel = 'worker-phases'
+    let setupDone = false
+    const prepare = async (): Promise<PiSetup> => {
+      await sleep(1_000)
+      setupDone = true
+      return { piCommand: join(directory, 'slow-pi'), extensions: [], installed: [] }
+    }
+    const running = worker(channel, 600, 900, prepare).run()
+    await command(channel, 'start', { ...start(channel), branch: 'claude/task-phases' })
+    await sleep(300)
+    assert.ok(!phases(telemetry(channel)).some((phase) => phase.phase === 'work_started'), 'a round started before the setup ended')
+    assert.ok(telemetry(channel).some((message) => message.type === 'heartbeat' && message.data.state === 'setting_up'))
+    for (let i = 0; i < 100 && !phases(telemetry(channel)).some((phase) => phase.phase === 'work_started'); i++) await sleep(100)
+    assert.ok(setupDone)
+    await sleep(500)
+    await command(channel, 'stop', { reason: 'enough', send_bundle: true })
+    assert.equal(await running, EXIT.finished)
+    const messages = telemetry(channel)
+    const seen = phases(messages)
+    assert.deepEqual(seen.map((phase) => phase.phase), ['started', 'setup_started', 'setup_finished', 'work_started', 'work_finished'])
+    assert.equal(seen[2]!.detail, 'nothing to install')
+    assert.equal(typeof seen[2]!.duration_seconds, 'number')
+    assert.equal(seen[3]!.round, 1)
+    assert.equal(seen[4]!.detail, 'stopped')
+    const finished = messages.findIndex((message) => message.type === 'phase' && message.data.phase === 'work_finished')
+    assert.ok(finished < messages.findIndex((message) => message.type === 'result'))
+  })
+
+  test('a failed setup is acknowledged, no round runs, and the worker exits with a configuration error', async () => {
+    const channel = 'worker-setup-failure'
+    const running = worker(channel, 600, 900, async () => { throw new Error('npm cannot reach the registry') }).run()
+    await command(channel, 'start', { ...start(channel), branch: 'claude/task-setup-failure' })
+    assert.equal(await running, EXIT.configuration)
+    const messages = telemetry(channel)
+    const seen = phases(messages)
+    assert.deepEqual(seen.map((phase) => phase.phase), ['started', 'setup_started', 'setup_failed'])
+    assert.match(seen[2]!.detail ?? '', /npm cannot reach the registry/)
+    assert.ok(!messages.some((message) => message.type === 'result'))
+  })
+
+  test('the configured Pi packages are read from the settings file, as text or as objects with a source', () => {
+    const file = join(directory, 'pi-settings.json')
+    writeFileSync(file, JSON.stringify({ packages: ['npm:@pi-plugins/claude-cli@0.3.0', { source: 'npm:@ifi/pi-provider-cursor@0.5.1' }, 7] }))
+    assert.deepEqual(configuredPackages(file), ['npm:@pi-plugins/claude-cli@0.3.0', 'npm:@ifi/pi-provider-cursor@0.5.1'])
+    assert.deepEqual(configuredPackages(join(directory, 'missing.json')), [])
+  })
 
   test('a stop command during a round commits the partial work, sends the bundle and the result, and exits 0', async () => {
     const channel = 'worker-stop'

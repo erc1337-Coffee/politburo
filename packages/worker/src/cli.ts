@@ -48,18 +48,10 @@ async function run(argv: string[]): Promise<number> {
   const files = new WorkerFiles(channel)
   writeFileSync(files.path('pid'), String(process.pid))
   const log = (line: string) => process.stderr.write(`politburo-worker: ${line}\n`)
-  let setup
-  try {
-    setup = await preparePi(log)
-  } catch (error) {
-    files.status(`setup failed: ${(error as Error).message}`)
-    files.writeJson('exit.json', { code: EXIT.configuration, at: Date.now() })
-    return EXIT.configuration
-  }
   const worker = new Worker({
     relayUrl, channel, files, checkout: process.cwd(),
     contactTimeoutSeconds: Number(values['contact-timeout-seconds'] ?? 900),
-    extensions: setup.extensions, piCommand: setup.piCommand, log,
+    prepare: preparePi, log,
   }, token)
   try {
     return await worker.run()

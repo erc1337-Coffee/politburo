@@ -10,6 +10,7 @@ export type OperationsEventBody =
   | { kind: 'tick'; sources: WakeSource[]; live: number; duration_ms: number }
   | { kind: 'command'; channel: string; task: string; type: string; bytes: number; outcome: 'sent' | 'failed' }
   | { kind: 'telemetry'; channel: string; task: string; type: string; bytes: number; relay_seq: number }
+  | { kind: 'phase'; channel: string; task: string; phase: string; round: number; duration_seconds?: number }
   | { kind: 'board'; action: 'claim' | 'renew' | 'reply' | 'complete' | 'fail' | 'release' | 'block'; task: string; channel?: string }
   | { kind: 'github'; action: 'push' | 'draft_pr'; repository: string; task: string; channel: string }
   | { kind: 'launch'; task: string; channel: string; outcome: string }
@@ -27,6 +28,15 @@ export interface WorkerHeartbeat {
   round: number
   elapsed_seconds: number
   pi_alive: boolean
+}
+
+/** The worker's latest acknowledged step. */
+export interface WorkerPhase {
+  at: number
+  phase: string
+  round: number
+  detail?: string
+  duration_seconds?: number
 }
 
 export interface AttemptView {
@@ -49,6 +59,7 @@ export interface AttemptView {
   cost_usd: number
   pr_url: string | null
   heartbeat: WorkerHeartbeat | null
+  phase: WorkerPhase | null
   progress: Record<string, number>
   messages: { commands: number; telemetry: number; last_at: number | null }
   /** The model the attempt's final decision waits on now; null when no decision runs. */
@@ -122,6 +133,7 @@ export class OperationsMonitor {
   readonly #channels = new Map<string, string>()
   readonly #listeners = new Set<(event: OperationsEvent) => void>()
   readonly #heartbeats = new Map<string, WorkerHeartbeat>()
+  readonly #phases = new Map<string, WorkerPhase>()
   readonly #progress = new Map<string, Record<string, number>>()
   readonly #messages = new Map<string, { commands: number; telemetry: number; last_at: number | null }>()
   readonly #settled: AttemptRecord[] = []
@@ -169,6 +181,10 @@ export class OperationsMonitor {
     this.#heartbeats.set(attemptId, { ...beat, at: this.#now() })
   }
 
+  phase(attemptId: string, phase: Omit<WorkerPhase, 'at'>): void {
+    this.#phases.set(attemptId, { ...phase, at: this.#now() })
+  }
+
   /** The model the attempt's final decision waits on now, or null when the decision ended. */
   deciding(attemptId: string, model: 'kev' | 'claude' | null): void {
     if (model) this.#deciding.set(attemptId, model)
@@ -190,6 +206,7 @@ export class OperationsMonitor {
       const dropped = this.#settled.shift()!
       this.#byAttempt.delete(dropped.attemptId)
       this.#heartbeats.delete(dropped.attemptId)
+      this.#phases.delete(dropped.attemptId)
       this.#progress.delete(dropped.attemptId)
       this.#messages.delete(dropped.attemptId)
       this.#deciding.delete(dropped.attemptId)
@@ -254,6 +271,7 @@ export class OperationsMonitor {
         watchdog_due: liveIds.has(attempt.attemptId) ? input.watchdogDue(attempt) : null,
         cost_usd: attempt.costUsd, pr_url: attempt.prUrl,
         heartbeat: this.#heartbeats.get(attempt.attemptId) ?? null,
+        phase: this.#phases.get(attempt.attemptId) ?? null,
         progress: this.#progress.get(attempt.attemptId) ?? {},
         messages: this.#messages.get(attempt.attemptId) ?? { commands: 0, telemetry: 0, last_at: null },
         decision_model: this.#deciding.get(attempt.attemptId) ?? null,

@@ -10,7 +10,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { BoardError, type board as openBoard, type MessageView } from '@vercel/board'
-import { envelope, parseTelemetry, type BundlePartData, type Command, type ResultData, type StartData, type Telemetry } from '@remilia/politburo-relay/messages'
+import { envelope, parseTelemetry, type BundlePartData, type Command, type PhaseData, type ResultData, type StartData, type Telemetry } from '@remilia/politburo-relay/messages'
 import type { OrchestratorConfig } from './config.ts'
 import { isLocalRepository, LOCAL_BRANCH, localRepository, type GitRepositories } from './git.ts'
 import type { UsageLedger } from './usage-ledger.ts'
@@ -581,7 +581,7 @@ export class Orchestrator {
     if (!attempt || !LIVE_STATES.includes(attempt.state) || seq <= attempt.telemetrySeq) return
     const parsed = parseTelemetry(body)
     // Before the start command arrives, the worker does not know its task and names it `unknown`.
-    const task = parsed.ok && (parsed.message.task === attempt.taskId || (parsed.message.type === 'heartbeat' && parsed.message.task === 'unknown'))
+    const task = parsed.ok && (parsed.message.task === attempt.taskId || ((parsed.message.type === 'heartbeat' || parsed.message.type === 'phase') && parsed.message.task === 'unknown'))
     const valid = parsed.ok && task && parsed.message.channel === attempt.channel
     const fresh = valid && this.#d.state.markSeen(attempt.channel, parsed.message.id)
     this.#transition(attempt, { telemetrySeq: seq })
@@ -605,11 +605,21 @@ export class Orchestrator {
         if (public_key && this.#sealedFor.get(attempt.attemptId) !== public_key) await this.#sendCredentials(attempt, public_key)
         return
       }
+      case 'phase': return this.#onPhase(attempt, message.data)
       case 'progress': return this.#onProgress(attempt, message, now)
       case 'question': return this.#onQuestion(attempt, message, now)
       case 'bundle_part': return this.#onBundlePart(attempt, message.data)
       case 'result': return this.#onResult(attempt, message.data)
     }
+  }
+
+  async #onPhase(attempt: AttemptRecord, data: PhaseData): Promise<void> {
+    const { phase, round, detail, duration_seconds } = data
+    const text = detail === undefined ? undefined : workerText(detail, 300)
+    this.#d.monitor?.phase(attempt.attemptId, { phase, round, ...(text === undefined ? {} : { detail: text }), ...(duration_seconds === undefined ? {} : { duration_seconds }) })
+    this.#emit({ kind: 'phase', task: attempt.taskId, channel: attempt.channel, phase, round, ...(duration_seconds === undefined ? {} : { duration_seconds }) })
+    this.#d.log({ event: 'worker_phase', task: attempt.taskId, channel: attempt.channel, phase, round, ...(duration_seconds === undefined ? {} : { duration_seconds }) })
+    if (phase === 'setup_failed' && attempt.state !== 'stopping') await this.#lost(attempt, `the worker setup failed${text ? `: ${text}` : ''}`)
   }
 
   async #onProgress(attempt: AttemptRecord, message: Extract<Telemetry, { type: 'progress' }>, now: number): Promise<void> {

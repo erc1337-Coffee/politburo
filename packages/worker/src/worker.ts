@@ -1,16 +1,19 @@
-// The worker of one task attempt. It reads commands from the relay, runs Pi round by round
-// in the task worktree, sends heartbeats, progress, questions, the commits as a git bundle and
-// one result per round, and stops safely on a stop command, lost contact or token expiry.
+// The worker of one task attempt. It connects to the relay first, then sets up Pi, and
+// acknowledges each step (start, setup, work of each round). It reads commands from the relay,
+// runs Pi round by round in the task worktree, sends heartbeats, progress, questions, the commits
+// as a git bundle and one result per round, and stops safely on a stop command, lost contact or
+// token expiry.
 import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
 import {
   BUNDLE_PART_MAX, envelope, parseCommand,
-  type Command, type ExitReason, type ResultData, type StartData, type Telemetry, type WorkerState,
+  type Command, type ExitReason, type PhaseData, type ResultData, type StartData, type Telemetry, type WorkerState,
 } from '../../relay/src/messages.ts'
 import { open, workerKeyPair } from '../../relay/src/sealed.ts'
 import { commitAll, createBundle, diffStat, head, prepareWorktree } from './git.ts'
 import { PiRound, type ModelUsage, type PiRoundResult, type ProgressItem } from './pi.ts'
+import type { PiSetup } from './setup.ts'
 import type { WorkerFiles } from './state.ts'
 import { CommandStream, TelemetrySender, tokenExpiry } from './transport.ts'
 
@@ -24,9 +27,11 @@ export interface WorkerOptions {
   checkout: string
   /** Stop when the relay is unreachable this long. */
   contactTimeoutSeconds: number
-  /** Pi extension files loaded in every round. */
-  extensions: string[]
+  /** Pi extension files loaded in every round; `prepare` replaces them with its own. */
+  extensions?: string[]
   piCommand?: string
+  /** Sets up Pi after the relay connection starts; the first round waits for it. */
+  prepare?: (log: (line: string) => void) => Promise<PiSetup>
   thinking?: string
   now?: () => number
   log?: (line: string) => void
@@ -90,9 +95,15 @@ export class Worker {
   readonly #keys = workerKeyPair()
   #credentials: Record<string, string> | null = null
   #credentialsArrived: () => void = () => undefined
+  #extensions: string[]
+  #piCommand: string | undefined
+  #ready: Promise<boolean> = Promise.resolve(true)
+  #roundStartedAt = 0
 
   constructor(options: WorkerOptions, token: string) {
     this.#o = options
+    this.#extensions = options.extensions ?? []
+    this.#piCommand = options.piCommand
     this.#now = options.now ?? Date.now
     this.#log = options.log ?? ((line) => process.stderr.write(`politburo-worker: ${line}\n`))
     const saved = options.files.readToken()
@@ -122,6 +133,8 @@ export class Worker {
   /** Runs until the attempt ends; resolves with the process exit code. */
   async run(): Promise<number> {
     this.#status(`connected to channel ${this.#o.channel}, token valid until ${new Date(this.#tokenExp * 1000).toISOString()}`)
+    this.#phase({ phase: 'started', round: this.#round })
+    this.#ready = this.#setUp()
     this.#stream.start()
     this.#timers.push(setInterval(() => this.#watch(), 5_000))
     this.#timers.push(setInterval(() => this.#flushProgress(), PROGRESS_INTERVAL_MS))
@@ -147,6 +160,36 @@ export class Worker {
 
   #send(type: Telemetry['type'], data: unknown): void {
     this.#sender.send(envelope(type, this.#start?.task_id ?? 'unknown', this.#o.channel, data, this.#now()) as Telemetry)
+  }
+
+  #phase(data: PhaseData): void {
+    this.#send('phase', data)
+    this.#status(`${data.phase.replace('_', ' ')}${data.detail ? `: ${data.detail}` : ''}`)
+  }
+
+  /** Runs `prepare` with acknowledgements; false when it failed and the worker stops. */
+  async #setUp(): Promise<boolean> {
+    const prepare = this.#o.prepare
+    if (!prepare) return true
+    const before = this.#state
+    const began = this.#now()
+    const seconds = () => Math.round((this.#now() - began) / 1000)
+    this.#state = 'setting_up'
+    this.#phase({ phase: 'setup_started', round: this.#round })
+    try {
+      const setup = await prepare((line) => this.#status(line))
+      this.#extensions = setup.extensions
+      this.#piCommand = setup.piCommand
+      this.#state = this.#state === 'setting_up' ? before : this.#state
+      this.#phase({ phase: 'setup_finished', round: this.#round, duration_seconds: seconds(), detail: setup.installed.length ? `installed ${setup.installed.join(', ')}` : 'nothing to install' })
+      this.#heartbeat()
+      return true
+    } catch (error) {
+      const detail = clip((error as Error).message, 1_000)
+      this.#phase({ phase: 'setup_failed', round: this.#round, duration_seconds: seconds(), detail })
+      await this.#safeStop('worker_error', `setup failed: ${detail}`, EXIT.configuration, false)
+      return false
+    }
   }
 
   #status(line: string): void {
@@ -336,6 +379,10 @@ export class Worker {
     const start = this.#start
     if (!start || this.#roundRunning || this.#stopping) return
     this.#roundRunning = true
+    if (!(await this.#ready) || this.#stopping) {
+      this.#roundRunning = false
+      return
+    }
     if (start.credentials && !this.#credentials) {
       this.#status('waiting for credentials')
       const arrived = await new Promise<boolean>((resolve) => {
@@ -351,17 +398,18 @@ export class Worker {
     this.#round = round
     this.#state = 'running'
     this.#o.files.writeJson('start.json', { start, round })
-    this.#status(`round ${round} started`)
+    this.#roundStartedAt = this.#now()
+    this.#phase({ phase: 'work_started', round })
     const tiers = JSON.stringify(start.model.fallback_tiers)
     this.#pi = new PiRound({
-      ...(this.#o.piCommand ? { command: this.#o.piCommand } : {}),
+      ...(this.#piCommand ? { command: this.#piCommand } : {}),
       cwd: this.#worktree(),
       prompt,
       model: start.model.pi_model,
       thinking: this.#o.thinking ?? process.env.PI_THINKING ?? 'medium',
       sessionDirectory: this.#o.files.path('pi_session'),
       sessionId: `task-${start.task_id}-attempt-${start.attempt}`,
-      extensions: this.#o.extensions,
+      extensions: this.#extensions,
       env: {
         ...piEnvironment(process.env),
         ...this.#credentials,
@@ -436,6 +484,7 @@ export class Worker {
       diff_stat: stat, checks: checks.slice(0, 20), models: outcome.models.slice(0, 20) as ModelUsage[],
       cost_usd: outcome.costUsd, duration_seconds: Math.round((this.#now() - this.#startedAt) / 1000), truncated,
     }
+    this.#phase({ phase: 'work_finished', round: this.#round, detail: exitReason, duration_seconds: Math.round((this.#now() - (this.#roundStartedAt || this.#startedAt)) / 1000) })
     this.#send('result', result)
     this.#o.files.writeJson(`result_round_${this.#round}.json`, result)
     this.#status(`round ${this.#round} result sent: ${exitReason}, ${stat.files} files, checks ${checks.map((check) => `${check.name}=${check.exit_code}`).join(' ') || 'none'}`)
