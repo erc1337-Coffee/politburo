@@ -1,36 +1,48 @@
-/** The inspector's maroon-and-gold chrome and conversation surfaces. */
+/**
+ * The inspector's ink-on-paper themes: blue ink on cream, or red ink on near-black. Each color is
+ * `light-dark(light, dark)`; the page follows the system until you pick a theme (`theme.ts`), which
+ * sets `data-theme` on the root.
+ */
 export const CSS = `
 :root {
-  color-scheme: dark;
-  --bg: #2a0a10;
-  --panel: #340d15;
-  --rail: #3a0f17;
-  --chrome: #4a1018;
-  --chrome-pressed: #37090f;
-  --bright: #fff1d6;
-  --dim: #f1dcc5;
-  --muted: #dcc2b0;
-  --faint: #cfae9d;
-  --hairline: #7a3038;
-  --shade: #3d1019;
-  --shade-hover: #5a1b27;
-  --selected: #5e1a26;
-  --accent: #ffdb8a;
-  --gold: #d9ac5d;
-  --gold-text: #ffdb8a;
-  --focus: #ffdb8a;
-  --accent-transparent: #ffdb8a33;
-  --scrim: #140408b3;
-  --label: #fff8f4;
-  --action: #8a2236;
-  --action-hover: #a02a42;
-  --action-pressed: #651a2a;
-  --bevel-light: #a8793a;
-  --bevel-dark: #1c0509;
-  --raised: 0 1px 1px #0006;
-  --shadow: #0007;
-  --red: #ff8f86;
-  --warning: #ff9d6c;
+  color-scheme: light dark;
+  --bg: light-dark(#fffdf7, #0b0b0e);
+  --panel: light-dark(#fffdf7, #140e0f);
+  --rail: light-dark(#f5f5f5, #121218);
+  --chrome: light-dark(#f5f5f5, #121218);
+  --chrome-pressed: light-dark(#e6e5e9, #0b0b0e);
+  /* The ink rules and frames are drawn in; text takes the steps below, each readable on every surface. */
+  --ink: light-dark(#2c3382, #af5353);
+  --bright: light-dark(#1f2566, #f0f0f0);
+  --dim: light-dark(#2c3382, #e6e0e0);
+  --muted: light-dark(#454b91, #cbbfbf);
+  --faint: light-dark(#5d6070, #ab9f9f);
+  --hairline: light-dark(#2c338240, #af535359);
+  /* A rule drawn by hand: thick enough that its wobble never breaks it. */
+  --rule: light-dark(#2c338273, #af53538c);
+  /* Ink over the panel, solid so text contrast holds on it. */
+  --shade: light-dark(#f2f1f0, #241516);
+  --shade-hover: light-dark(#e6e5e9, #301a1b);
+  --selected: light-dark(#dddde4, #3c2021);
+  --accent: light-dark(#2c3382, #e27b7b);
+  --gold: var(--accent);
+  --gold-text: light-dark(#fffdf7, #ffffff);
+  --focus: var(--accent);
+  --accent-transparent: light-dark(#2c338233, #af535340);
+  --scrim: light-dark(#1f256680, #0b0b0eb3);
+  --label: light-dark(#fffdf7, #ffffff);
+  --action: light-dark(#2c3382, #9c4646);
+  --action-hover: light-dark(#3a42a3, #af5353);
+  --action-pressed: light-dark(#222868, #7f3838);
+  --bevel-light: light-dark(#ffffff, #2a1c1d);
+  --bevel-dark: light-dark(#c9cadb, #000000);
+  --raised: 0 1px 1px light-dark(#1f25661a, #0006);
+  --shadow: light-dark(#1f256626, #0009);
+  --red: light-dark(#a3231d, #ff7aa8);
+  --warning: light-dark(#8a4a00, #ffa45c);
+  /* The page's duotone, and the wobble its rules take; \`shell.ts\` holds the filters. */
+  --tint: url(#tint-light);
+  --boil: url(#boil);
   --display: 'Avenir Next Condensed', 'Bahnschrift', 'Arial Narrow', 'Liberation Sans Narrow', 'Helvetica Neue', sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
   --metadata: .75rem/1rem var(--mono);
@@ -38,40 +50,11 @@ export const CSS = `
   --overlay-layer: 30;
   --nav-layer: 41;
 }
-@media (prefers-color-scheme: light) {
-  :root {
-    color-scheme: light;
-    --bg: #f6ecd9;
-    --panel: #fff8ea;
-    --rail: #f1e4cc;
-    --chrome: #f2e4c8;
-    --chrome-pressed: #e3cfa8;
-    --bright: #3a0d14;
-    --dim: #4a1a20;
-    --muted: #5e2f33;
-    --faint: #6f4543;
-    --hairline: #d1b78f;
-    --shade: #f1e4cc;
-    --shade-hover: #e8d6b5;
-    --selected: #efd9a6;
-    --accent: #7a1430;
-    --gold: #8a5c0a;
-    --gold-text: #ffdb8a;
-    --focus: #8a5c0a;
-    --accent-transparent: #7a143030;
-    --scrim: #2a0a1080;
-    --label: #fff8f4;
-    --action: #7a1c2c;
-    --action-hover: #8f2a3c;
-    --action-pressed: #5e1422;
-    --bevel-light: #fff6df;
-    --bevel-dark: #b8975c;
-    --raised: 0 1px 1px #2a0a101a;
-    --shadow: #2a0a1026;
-    --red: #a3231d;
-    --warning: #8a4a00;
-  }
-}
+:root[data-theme='light'] { color-scheme: light; }
+:root[data-theme='dark'] { color-scheme: dark; --tint: url(#tint-dark); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme]) { --tint: url(#tint-dark); } }
+@media (prefers-reduced-motion: reduce) { :root { --boil: url(#boil-still); } }
+.shaders { position: absolute; width: 0; height: 0; overflow: hidden; }
 * { box-sizing: border-box; }
 html { scroll-behavior: auto; -webkit-tap-highlight-color: var(--accent-transparent); }
 body {
@@ -82,7 +65,16 @@ body {
   font: .875rem/1.25rem system-ui, sans-serif;
   font-variant-numeric: tabular-nums;
   cursor: default;
+  filter: var(--tint);
 }
+/* Rules drawn by hand: a header's hairline and a card's frame wobble, on a layer of their own so
+   what they hold stays still and sharp. */
+:is(.brand, .header, .tabs:not(.plain), .ops-card) { position: relative; }
+:is(.brand, .header, .tabs:not(.plain), .ops-card)::after {
+  content: ''; position: absolute; inset: 0; border-bottom: 2px solid var(--rule); border-radius: inherit;
+  filter: var(--boil); pointer-events: none;
+}
+.ops-card::after { border: 2px solid var(--rule); }
 a { color: inherit; text-decoration: none; cursor: default; }
 button { cursor: default; font: inherit; color: inherit; background: none; border: 0; padding: 0; letter-spacing: inherit; }
 input, textarea { font: inherit; color: var(--bright); letter-spacing: inherit; }
@@ -131,7 +123,6 @@ textarea, [contenteditable]:not([contenteditable='false']) { cursor: text; }
   align-items: center;
   justify-content: space-between;
   padding: 0 var(--inset);
-  border-bottom: 1px solid var(--hairline);
   background: var(--chrome);
   color: var(--bright);
   font-weight: 600;
@@ -156,6 +147,15 @@ textarea, [contenteditable]:not([contenteditable='false']) { cursor: text; }
 .sidebar h2 .tool:not(:disabled, [aria-disabled='true']):hover { color: var(--bright); }
 .sidebar .item.settings { gap: 8px; color: var(--faint); font-size: 12px; }
 .sidebar .item.settings:hover, .sidebar .item.settings[aria-current='page'] { color: var(--bright); }
+/* Dark mode, as a box the ink fills. */
+.sidebar .item.theme-toggle { gap: 8px; color: var(--faint); font-size: 12px; }
+.sidebar .item.theme-toggle:hover { color: var(--bright); }
+.theme-toggle input {
+  appearance: none; display: grid; place-content: center; width: 14px; height: 14px; margin: 0 0 0 0;
+  border: 2px solid var(--ink); border-radius: 2px; background: none;
+}
+.theme-toggle input::before { content: ''; width: 6px; height: 6px; background: var(--ink); transform: scale(0); }
+.theme-toggle input:checked::before { transform: scale(1); }
 .new-channel { display: flex; align-items: center; gap: 2px; margin: 2px 0 4px; }
 .new-channel input { flex: 1; min-width: 0; height: 28px; padding: 0 8px; border: 0; background: var(--shade); font-size: 12px; }
 .sidebar .item {
@@ -227,7 +227,6 @@ textarea, [contenteditable]:not([contenteditable='false']) { cursor: text; }
   align-items: center;
   gap: 10px;
   padding: 0 var(--inset);
-  border-bottom: 1px solid var(--hairline);
   white-space: nowrap;
 }
 .header { background: var(--chrome); }
@@ -244,8 +243,8 @@ textarea, [contenteditable]:not([contenteditable='false']) { cursor: text; }
 .header.flat { border-bottom: 0; }
 
 /* --- tabs: plain text, the current one underlined. Under a flat header they carry its hairline. --- */
-.tabs { flex-shrink: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 0 18px; min-height: 34px; padding: 0 20px; border-bottom: 1px solid var(--hairline); }
-.tabs.plain { border-bottom: 0; padding-top: 4px; }
+.tabs { flex-shrink: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 0 18px; min-height: 34px; padding: 0 20px; }
+.tabs.plain { padding-top: 4px; }
 .tab { padding: 7px 0; margin-bottom: -1px; border-bottom: 1px solid transparent; color: var(--muted); white-space: nowrap; cursor: default; }
 .tab:hover { color: var(--bright); }
 .tab[aria-current='page'] { border-bottom: 2px solid var(--accent); color: var(--accent); font-weight: 600; }
@@ -894,16 +893,14 @@ details.turn-action { display: block; }
 
 /* operations: a live schematic beside the ledger and each component's details */
 .operations-view {
-  --ops-command: #f2c879; --ops-telemetry: #9fd0a4; --ops-result: #c9a9e6; --ops-external: #eba3a8; --ops-ok: #9fd0a4;
+  --ops-command: light-dark(#8a5c0a, #f2c879); --ops-telemetry: light-dark(#2f6b3d, #9fd0a4); --ops-result: light-dark(#6a3d8f, #c9a9e6);
+  --ops-external: light-dark(#9a2f45, #eba3a8); --ops-ok: light-dark(#2f6b3d, #9fd0a4);
   overflow: hidden; padding: 12px var(--inset) 14px;
-}
-@media (prefers-color-scheme: light) {
-  .operations-view { --ops-command: #8a5c0a; --ops-telemetry: #2f6b3d; --ops-result: #6a3d8f; --ops-external: #9a2f45; --ops-ok: #2f6b3d; }
 }
 .ops-layout { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(17rem, 21rem); gap: 12px; }
 .ops-main { display: flex; flex-direction: column; gap: 12px; min-width: 0; min-height: 0; }
 .ops-side { display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow: auto; padding-right: 2px; scrollbar-width: thin; }
-.ops-card { border: 1px solid var(--hairline); border-radius: 8px; background: var(--panel); min-width: 0; }
+.ops-card { border-radius: 8px; background: var(--panel); min-width: 0; }
 .ops-card-head { display: flex; align-items: baseline; gap: 10px; padding: 9px 12px 8px; border-bottom: 1px solid var(--shade); }
 .ops-card-head h2 { margin: 0; font: 600 13px var(--display); letter-spacing: .02em; color: var(--bright); white-space: nowrap; }
 .ops-card-head .spacer { flex: 1; }

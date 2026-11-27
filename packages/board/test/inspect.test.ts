@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { createServer, request } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -84,6 +85,15 @@ describe('inspect', () => {
     const app = await fetch(`${inspector.url}/app.js`)
     expect(app.status).toBe(200)
     expect(app.headers.get('content-type')).toContain('javascript')
+  })
+
+  it('lets the page run its one inline script, the theme boot, and no other', async () => {
+    const response = await fetch(`${inspector.url}/`)
+    const policy = response.headers.get('content-security-policy')!
+    const inline = [...(await response.text()).matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]!)
+    expect(inline).toHaveLength(1)
+    const hash = `'sha256-${createHash('sha256').update(inline[0]!).digest('base64')}'`
+    expect(policy.split('; ').find((directive) => directive.startsWith('script-src'))).toBe(`script-src 'self' ${hash}`)
   })
 
   it('uploads attachments through the proxy, name and all, and serves them back', async () => {
