@@ -306,9 +306,10 @@ describe('scheduled messages', () => {
     await vi.waitFor(() => expect(refused).toBe(true))
 
     // The failed attempt runs again, and arms the next send this time.
+    const schedules = board.servers.find((server) => server.contract.name === 'board-schedules')!
     await vi.waitFor(async () => {
-      await board.skipHold(board.servers[2]!, 'schedules')
-      await board.servers[2]!.drain('schedules')
+      await board.skipHold(schedules, 'schedules')
+      await schedules.drain('schedules')
       expect(queue.timers.map((t) => (t.events[0]!.payload as { n: number }).n)).toContain(1)
     })
     vi.setSystemTime(T0 + HOUR + DAY)
