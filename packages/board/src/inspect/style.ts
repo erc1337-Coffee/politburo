@@ -644,6 +644,9 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 /* Each item carries its own separator, and the row clips the ones at its left edge: none starts a line. */
 .task-line > *, .task-head > * { position: relative; padding-left: 15px; }
 .task-line > *::before, .task-head > *::before { content: '\\00b7'; position: absolute; left: 4px; color: var(--faint); font-weight: 400; }
+/* The decision mark is a bordered tag beside the state: a gap, not a separator inside its border. */
+.task-line > .decision-mark, .task-head > .decision-mark { margin-left: 8px; padding-left: 5px; }
+.task-line > .decision-mark::before, .task-head > .decision-mark::before { content: none; }
 .task-line { margin-top: 3px; color: var(--muted); font-size: 12px; }
 .task-note { color: var(--dim); overflow-wrap: anywhere; }
 .lease { font-variant-numeric: tabular-nums; }
