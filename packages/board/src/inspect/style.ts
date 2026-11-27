@@ -119,7 +119,8 @@ textarea, [contenteditable]:not([contenteditable='false']) { cursor: text; }
 }
 
 /* --- sidebar: an opaque navigation rail --- */
-.sidebar { display: none; background: var(--rail); }
+/* One column as wide as the rail, never its widest row: a long channel name truncates instead. */
+.sidebar { display: none; grid-template-columns: minmax(0, 1fr); background: var(--rail); }
 /* What's said on the board scrolls; its settings and who you are stay put under it. */
 .sidebar-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 8px 12px; }
 .sidebar-foot { flex-shrink: 0; padding: 4px 8px 12px; }
