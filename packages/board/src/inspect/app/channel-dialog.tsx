@@ -126,11 +126,6 @@ function ChannelForm(props: { channel?: string; done: () => void }) {
     if (creating) navigate(`/c/${path}`)
   }
 
-  // The hint says what the input does not: the repository is already in it.
-  const where = repository ? null : 'local'
-  const outcome = creating
-    ? path ? [`#${path}`, where].filter(Boolean).join(' · ') : null
-    : notRepository ? null : where
 
   return (
     <form className="ask channel-form" onSubmit={(event) => { event.preventDefault(); void save() }}>
@@ -167,7 +162,7 @@ function ChannelForm(props: { channel?: string; done: () => void }) {
             ))}
           </ul>
         )}
-        {outcome && <span className="hint">{outcome}</span>}
+        {/* Under the input, only what went wrong: the input already says what the channel is. */}
         {searchError && <span className="hint">{searchError}</span>}
       </div>
 

@@ -4,10 +4,11 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, expect, it, vi } from 'vitest'
 
 // The dialog reads the channel's settings and the board's models from the page's data layer.
+const findRepositories = vi.hoisted(() => vi.fn(() => Promise.resolve([])))
 vi.mock('../src/inspect/app/board.ts', () => ({
   getState: () => ({ channels: { web: { settings: { repository: 'https://github.com/acme/web', routes: [] } }, notes: { settings: { repository: null, routes: [] } } } }),
   loadModelRoutes: () => Promise.resolve([]),
-  findRepositories: () => Promise.resolve([]),
+  findRepositories,
   saveChannel: () => Promise.resolve(null),
 }))
 const { ChannelDialog } = await import('../src/inspect/app/channel-dialog.tsx')
@@ -35,7 +36,7 @@ function type(input: HTMLInputElement, text: string) {
   })
 }
 
-it("says nothing of a channel's repository under the input that shows it", () => {
+it('says nothing under the input that the input already shows', () => {
   const { input, hint } = open('web')
   expect(input.value).toBe('acme/web')
   expect(hint()).toBeNull()
@@ -43,15 +44,22 @@ it("says nothing of a channel's repository under the input that shows it", () =>
   expect(hint()).toBeNull()
 })
 
-it('says a channel without a repository is local', () => {
+it('says nothing under the input of a channel without a repository', () => {
   const { hint } = open('notes')
-  expect(hint()).toBe('local')
+  expect(hint()).toBeNull()
 })
 
-it("names a new channel, and not the repository it was typed from", () => {
+it("says nothing under the input of a new channel's name", () => {
   const { input, hint } = open()
   type(input, 'https://github.com/acme/web.git')
-  expect(hint()).toBe('#web')
+  expect(hint()).toBeNull()
   type(input, 'Release notes')
-  expect(hint()).toBe('#release-notes · local')
+  expect(hint()).toBeNull()
+})
+
+it('says under the input why the repository search failed', async () => {
+  findRepositories.mockRejectedValueOnce(new Error('GitHub answered 401'))
+  const { input, hint } = open()
+  type(input, 'acme')
+  await vi.waitFor(() => expect(hint()).toBe('GitHub answered 401'), { timeout: 2_000 })
 })
