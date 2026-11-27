@@ -2218,12 +2218,12 @@ async function tasks(args: string[]): Promise<number> {
       one(reopening ? rest[2] : rest[1], reopening ? 'a task and an optional reason, quoted' : 'one task')
       const why = reopening && rest[1] !== undefined ? reason('why it is reopening') : undefined
       // Legacy writes can succeed without a change. A staged reopen only succeeds if it moves.
-      const from = reopening ? 'failed' : 'blocked'
+      const from = reopening ? ['failed', 'completed', 'canceled'] : ['blocked']
       const { message: root } = await board.thread(id)
       const task = reopening ? await board.tasks.reopen(id, why, { ifVersion: root.version }) : await board.tasks.unblock(id)
-      if ((reopening && task.task?.work) || root.task?.state === from) printTask(task, reopening ? 'reopened' : 'unblocked')
+      if ((reopening && task.task?.work) || from.includes(root.task?.state ?? '')) printTask(task, reopening ? 'reopened' : 'unblocked')
       else if (flags.json) result({ task, outcome: 'unchanged' })
-      else out(`${messageRef(id)} wasn't ${from}`)
+      else out(`${messageRef(id)} wasn't ${reopening ? 'finished' : 'blocked'}`)
       return 0
     }
     case 'assign': {

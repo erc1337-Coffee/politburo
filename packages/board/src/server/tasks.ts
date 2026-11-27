@@ -1195,7 +1195,7 @@ export function createTasks(options: {
       return { task: await shown(identity, root) }
     },
 
-    /** Legacy failed work retries in place. Staged work must be scoped again. */
+    /** A failed, completed or canceled task is ready again in place, for a retry or a follow-up. Staged work must be scoped again. */
     async reopen(identity: Identity, id: number, reason?: string, ifVersion?: number): Promise<{ task: MessageView }> {
       const task = await taskOf(identity.principal.access, id)
       if (!task.task.work) owns(identity, task)
@@ -1219,8 +1219,7 @@ export function createTasks(options: {
         }
 
         const { task } = found
-        if (task.state === 'completed' || task.state === 'canceled') throw conflict('task_finished', `#${id} is ${task.state}`)
-        if (task.state !== 'failed') return []
+        if (task.state !== 'failed' && task.state !== 'completed' && task.state !== 'canceled') return []
         const needsDone = await satisfied(task, position)
         return [{ type: 'task.reopened', payload: { id, thread: found.thread, by: identity.author, ...(!needsDone ? { waiting: true as const } : {}) } }]
       })

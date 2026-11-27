@@ -633,7 +633,7 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
       },
       {
         name: 'reopen',
-        description: 'return done or rejected work to proposed as a scoper, or retry a failed legacy task',
+        description: 'return done or rejected work to proposed as a scoper, or make a failed, completed or canceled legacy task ready again',
         arguments: [task(), { name: 'reason', required: false, description: 'why, required for staged work' }],
         options: [],
         examples: [

@@ -322,7 +322,8 @@ describe('a claim', () => {
     const done = await bo('POST', `/tasks/${id}/complete`, { ...third, result: 'fixed in a1b2c3, tests pass' })
     expect(done.body.task).toMatchObject({ labels: { 'board.task': 'completed' }, task: { state: 'completed', epoch: 3, claim: null, result: 'fixed in a1b2c3, tests pass' } })
     expect(code(await ada('POST', `/tasks/${id}/claim`, {}))).toEqual([409, 'task_finished'])
-    expect(code(await ada('POST', `/tasks/${id}/reopen`))).toEqual([409, 'task_finished'])
+    // A completed task reopens too, for more work in the same thread.
+    expect((await ada('POST', `/tasks/${id}/reopen`)).body.task.task).toMatchObject({ state: 'ready', reason: null, result: null })
     // A result is optional, and a reason isn't.
     const quiet = await task(ada, 'tidy up')
     expect((await ada('POST', `/tasks/${quiet.id}/complete`, await claim(ada, quiet.id))).body.task.task).toMatchObject({ state: 'completed', result: null })
@@ -1814,11 +1815,13 @@ describe("the fold, for whoever folds the board's events themselves", () => {
     // A claim that skips an epoch, or lands on a task someone holds, isn't a claim.
     expect(folded(created, claimed(2)).byId[1]!.task).toMatchObject({ state: 'ready', epoch: 0, claim: null })
     expect(folded(created, claimed(1), claimed(2, other)).byId[1]!.task).toMatchObject({ epoch: 1, claim: { actor: ADA } })
-    // A completed task stays completed, whatever is written to it after.
-    const done = folded(created, claimed(1), ['task.completed', { ...about, epoch: 1, result: 'fixed', by }], ['task.canceled', { ...about, reason: 'deleted', by }], ['task.blocked', { ...about, kind: null, reason: 'hold', by }], ['task.reopened', { ...about, by }], ['task.failed', { ...about, epoch: 1, reason: 'no', by }])
+    // A completed task stays completed, whatever is written to it after, until it is reopened.
+    const done = folded(created, claimed(1), ['task.completed', { ...about, epoch: 1, result: 'fixed', by }], ['task.canceled', { ...about, reason: 'deleted', by }], ['task.blocked', { ...about, kind: null, reason: 'hold', by }], ['task.failed', { ...about, epoch: 1, reason: 'no', by }])
     expect(done.byId[1]).toMatchObject({ labels: { 'board.task': 'completed' }, task: { state: 'completed', result: 'fixed', reason: null, blocked: null } })
-    // Only a failed task reopens, and a thread is made a task once, by whoever did first.
-    expect(folded(created, ['task.canceled', { ...about, reason: 'no', by }], ['task.reopened', { ...about, by }]).byId[1]!.task?.state).toBe('canceled')
+    const reopened = folded(created, claimed(1), ['task.completed', { ...about, epoch: 1, result: 'fixed', by }], ['task.reopened', { ...about, by }])
+    expect(reopened.byId[1]).toMatchObject({ labels: { 'board.task': 'ready' }, task: { state: 'ready', result: null, reason: null } })
+    // A canceled task reopens too, and a thread is made a task once, by whoever did first.
+    expect(folded(created, ['task.canceled', { ...about, reason: 'no', by }], ['task.reopened', { ...about, by }]).byId[1]!.task?.state).toBe('ready')
     expect(folded(created, ['task.created', { ...about, needs: [], for: null, by: other }]).byId[1]!.task?.owner).toBe(ADA)
   })
 
