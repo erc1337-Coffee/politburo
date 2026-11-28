@@ -138,7 +138,7 @@ describe('local listeners', () => {
   })
 
   test('tar append keeps the files before it', () => {
-    const tar = execFileSync('git', ['archive', '--format=tar', 'HEAD:packages/orchestrator/templates'], { cwd: join(import.meta.dirname, '..', '..', '..') })
+    const tar = execFileSync('tar', ['-cf', '-', '-C', join(import.meta.dirname, '..', 'templates'), 'listener.Dockerfile'])
     const files = tarFiles(appendTarFile(tar, 'extra.txt', 'x'.repeat(700)))
     assert.ok(files['listener.Dockerfile']!.includes('FROM node'))
     assert.equal(files['extra.txt']!.length, 700)
