@@ -595,7 +595,7 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 .dialog-head .popover-title { margin: 0; }
 .channel-form { gap: 12px; }
 .channel-tabs { padding: 0; margin-bottom: 10px; }
-.dialog.channel-settings { width: min(720px, calc(100vw - 32px)); height: min(640px, calc(100dvh - 32px)); display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; }
+.dialog.channel-dialog.channel-settings { width: min(720px, calc(100vw - 32px)); height: min(640px, calc(100dvh - 32px)); display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; }
 .channel-tab-body { flex: 1; min-height: 0; overflow: hidden auto; padding-bottom: 14px; }
 .channel-tab-body :is(input, select, textarea) { min-width: 0; max-width: 100%; }
 .railway { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
@@ -608,6 +608,7 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 .railway-status:is(.failed, .crashed) { color: var(--danger, #e5534b); }
 .railway-status.stopped { color: var(--faint); }
 .railway-log { margin: 0; max-width: 100%; max-height: 260px; overflow: auto; padding: 8px; font-size: 11px; line-height: 1.45; background: var(--sunken, rgba(0,0,0,0.25)); white-space: pre-wrap; word-break: break-all; }
+.railway-log.dockerfile-view { white-space: pre; word-break: normal; overflow-x: auto; }
 .railway-table { border-collapse: collapse; width: 100%; table-layout: fixed; }
 .railway-table td { padding: 2px 4px 2px 0; }
 .railway-table input { width: 100%; }

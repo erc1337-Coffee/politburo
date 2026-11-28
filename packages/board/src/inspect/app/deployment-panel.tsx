@@ -189,7 +189,7 @@ function LocalPanel(props: { channel: string; settings: ChannelSettings; local: 
           <button type="button" className="act" aria-pressed={showDockerfile} onClick={() => setShowDockerfile((now) => !now)}>Dockerfile</button></div>}
       {showDockerfile && (
         <>
-          <pre className="railway-log" title="read only">{local.dockerfile}</pre>
+          <pre className="railway-log dockerfile-view" title="read only">{local.dockerfile}</pre>
         </>
       )}
     </div>
