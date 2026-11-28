@@ -5,8 +5,10 @@ import { afterEach, expect, it, vi } from 'vitest'
 
 // The dialog reads the channel's settings and the board's models from the page's data layer.
 const findRepositories = vi.hoisted(() => vi.fn(() => Promise.resolve([])))
+const { channels } = vi.hoisted(() => ({ channels: { web: { settings: { repository: 'https://github.com/acme/web', routes: [] } }, notes: { settings: { repository: null, routes: [] } } } }))
 vi.mock('../src/inspect/app/board.ts', () => ({
-  getState: () => ({ channels: { web: { settings: { repository: 'https://github.com/acme/web', routes: [] } }, notes: { settings: { repository: null, routes: [] } } } }),
+  getState: () => ({ channels }),
+  useBoard: () => ({ channels }),
   loadModelRoutes: () => Promise.resolve([]),
   findRepositories,
   saveChannel: () => Promise.resolve(null),

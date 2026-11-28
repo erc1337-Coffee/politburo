@@ -245,6 +245,16 @@
   <li><b>Attempts.</b> Each follow-up request gives the task its attempts again: attempts before the newest request do not count.</li>
 </ul>
 
+<h2>Railway services</h2>
+<p>Railway is off for a channel until a project is chosen in the Railway tab of the channel settings. The orchestrator holds <code>RAILWAY_TOKEN</code> and calls the Railway GraphQL API outbound; the board and workers never get it. Only the project's production environment is used.</p>
+<ul>
+  <li><b>Services.</b> Status, domains and the latest deployment of each attached service, every 15 s while the tab is open. Start, stop, restart, redeploy and rollback. Deploy and build log lines, read only while shown. Attach services of the project, or create one from the channel's GitHub repository.</li>
+  <li><b>Variables.</b> Read when the subtab opens; values go through the board server to the orchestrator and are not stored on the board. A save sets the changed variables.</li>
+  <li><b>Settings.</b> Root directory, builder, Dockerfile, build, start and pre-deploy commands, health check, restart policy, replicas, region, sleep, cron schedule and watch patterns of each service.</li>
+</ul>
+<p>Nothing is deleted. A variable removal, or any removal a person asks for, becomes a task with the label <code>politburo.attention</code>, blocked for a person; the orchestrator never claims it. A service for a channel without a GitHub repository is refused the same way: the task asks for a private repository first.</p>
+<p>Each action posts a status line in the channel. In a channel with Railway services, the orchestrator model also reads the channel chat: it answers from the services' status and log tail, does restarts and deploys, and makes a new task for code work.</p>
+
 <h2>Status server</h2>
 <p><code>127.0.0.1:4780</code>, GET only. The board's operations page reads it through its own server.</p>
 <table>
@@ -284,7 +294,7 @@
   <tr><td><code>decision.kev_confidence</code> · <code>followup_depth</code></td><td>0.75 · 3</td></tr>
   <tr><td><code>decision.kev_timeout_seconds</code> · <code>claude_timeout_seconds</code></td><td>120 · 300</td></tr>
 </table>
-<p>Environment only: <code>RELAY_URL</code> (https), <code>KEV_URL</code>, <code>ORCHESTRATOR_DECISION_MODEL</code>, <code>GITHUB_TOKEN</code>, and the provider credentials passed to workers: <code>CLAUDE_CODE_OAUTH_TOKEN</code> for <code>claude-cli</code> routes, <code>&lt;PROVIDER&gt;_API_KEY</code> for others.</p>
+<p>Environment only: <code>RELAY_URL</code> (https), <code>KEV_URL</code>, <code>ORCHESTRATOR_DECISION_MODEL</code>, <code>GITHUB_TOKEN</code>, <code>RAILWAY_TOKEN</code> (an account token; without it the Railway tab answers 503), and the provider credentials passed to workers: <code>CLAUDE_CODE_OAUTH_TOKEN</code> for <code>claude-cli</code> routes, <code>&lt;PROVIDER&gt;_API_KEY</code> for others.</p>
 
 <h2>Failures</h2>
 <table>

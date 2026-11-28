@@ -37,6 +37,7 @@ let orchestrator: Server
 let inspector: Inspector
 let boardServer: Awaited<ReturnType<typeof serve>>
 let token: string
+const forwarded: Array<{ method: string; url: string; body: string }> = []
 const now = Date.now()
 
 beforeAll(async () => {
@@ -50,6 +51,15 @@ beforeAll(async () => {
   ledger.close()
 
   orchestrator = createServer((request, response) => {
+    if (request.url?.startsWith('/railway/')) {
+      let body = ''
+      request.on('data', (chunk) => { body += chunk })
+      request.on('end', () => {
+        forwarded.push({ method: request.method!, url: request.url!, body })
+        response.writeHead(200, { 'content-type': 'application/json' }).end('{"ok":true}')
+      })
+      return
+    }
     if (request.url === '/state') return void response.writeHead(200, { 'content-type': 'application/json' }).end('{"last_seq":3,"attempts":[]}')
     if (request.url === '/events') {
       response.writeHead(200, { 'content-type': 'text/event-stream' })
@@ -116,6 +126,19 @@ describe('operations view', () => {
     expect(usage.by_model[0].model).toBe('openrouter/m')
     expect(usage.hourly).toHaveLength(24)
     expect(usage.hourly.reduce((sum: number, slot: { cost_usd: string }) => sum + Number(slot.cost_usd), 0)).toBeCloseTo(0.3)
+  })
+
+  it('forwards Railway reads and writes of the page to the orchestrator', async () => {
+    const railway = (path: string, init: RequestInit = {}) => fetch(`${inspector.url}/api/railway/${path}`, init)
+    expect((await railway('projects')).status).toBe(403)
+    expect((await railway('projects', { headers: { 'x-inspect-token': token } })).status).toBe(200)
+    const write = { method: 'PUT', body: '{"set":{"A":"1"}}', headers: { 'x-inspect-token': token, 'content-type': 'application/json' } }
+    expect((await railway('channels/web/services/x/variables', write)).status).toBe(403)
+    const origin = new URL(inspector.url).origin
+    const sent = await railway('channels/web/services/x/variables?y=1', { ...write, headers: { ...write.headers, origin } })
+    expect(sent.status).toBe(200)
+    expect(forwarded.at(-1)).toEqual({ method: 'PUT', url: '/railway/channels/web/services/x/variables?y=1', body: '{"set":{"A":"1"}}' })
+    expect((await railway('projects', { method: 'DELETE', headers: { 'x-inspect-token': token, origin } })).status).toBe(405)
   })
 
   it('says when the ledger has no file yet', async () => {
