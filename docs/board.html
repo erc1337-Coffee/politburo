@@ -60,7 +60,7 @@
 <h2>Model</h2>
 <table>
   <tr><th>Item</th><th>Facts</th></tr>
-  <tr><td>Channel</td><td>Path of lowercase segments, for example <code>product/api</code>. Made by its first post. Settings: <code>repository</code> (https Git URL, or none for the channel's local repository) and <code>routes</code> (model routes with on and off, in fallback order, at most 32).</td></tr>
+  <tr><td>Channel</td><td>Path of lowercase segments, for example <code>product/api</code>. Made by its first post. Settings: <code>repository</code> (https Git URL, or none for the channel's local repository) <code>routes</code> (model routes with on and off, in fallback order, at most 32), and one deployment: <code>railway</code> (project, production environment, attached services) or <code>local</code> (Dockerfile and listeners), never both.</td></tr>
   <tr><td>Message</td><td>1 to 10,000 characters, up to 10 attachments. A reply names its thread root. Labels are key and value pairs; keys under <code>board.</code> belong to the board. Edit and delete only by the author; delete leaves a tombstone.</td></tr>
   <tr><td>Block</td><td>A fenced code block with info string <code>json#&lt;name&gt;@&lt;version&gt;</code> inside the text. The web view draws <code>worker_activity@1</code> and <code>final_decision@1</code> from the orchestrator.</td></tr>
   <tr><td>Task</td><td>A thread root with a state, an owner, a priority, needs (other tasks) and a claim lease. See <a href="task-lifecycle.html">Task lifecycle</a>.</td></tr>
@@ -99,12 +99,13 @@
   <li><b>Worker rounds.</b> A <code>worker_activity@1</code> block shows each thought as a folded line, each tool call as an action whose output unfolds, then "Worked for", the changed files and the checks. The worker's answer follows as text.</li>
   <li><b>Decision.</b> A <code>final_decision@1</code> block is one accent line: PASS, FOLLOWUP, RETRY or REVIEW, and who decided (rules, Kev with its confidence, or Claude). It unfolds to the reason, the correction and the follow-up tasks.</li>
   <li><b>Status lines.</b> Replies labelled <code>politburo.status</code> show as one quiet line.</li>
-  <li><b>Channel settings.</b> Repository search (with <code>GITHUB_TOKEN</code>), or a local channel; model routes with drag-and-drop order and on and off switches.</li>
+  <li><b>Channel settings.</b> Tab general: repository search (with <code>GITHUB_TOKEN</code>), or a local channel; model routes with drag-and-drop order and on and off switches. Tab deployment: none, local or railway. See <a href="orchestrator.html#local-listeners">local listeners</a> and <a href="orchestrator.html#railway-services">Railway services</a>.</li>
+  <li><b>Deployment line.</b> In a channel with a deployment, one line above the composer: each listener's addresses with open or closed and the time in that state, and each Railway service's state and domain. Refreshed every 15 s.</li>
   <li><b>Live.</b> The page follows <code>/events</code> and folds new events once per animation frame. It reconnects with backoff.</li>
 </ul>
 
 <h2>Operations view</h2>
-<p>The board server forwards <code>/api/operations/state</code>, <code>/events</code> and <code>/attempts/&lt;id&gt;/events</code> to the orchestrator's status server, read-only, and computes <code>/usage</code> from the spend ledger. The page draws the board, GitHub, the orchestrator, the relay and up to 8 workers; commands, telemetry, board writes and GitHub calls travel the links as packets. Side cards show reachability, relay latency, pause state and usage (today, last hour, total, by model). The log shows one row per task, or the events of the selected attempt.</p>
+<p>The board server forwards <code>/api/operations/state</code>, <code>/events</code> and <code>/attempts/&lt;id&gt;/events</code> to the orchestrator's status server, read-only, and computes <code>/usage</code> from the spend ledger. <code>/api/railway/…</code> and <code>/api/deployment/…</code> go to the same server for the channel settings and the deployment line; a write needs the page's origin. The page draws the board, GitHub, the orchestrator, the relay and up to 8 workers; commands, telemetry, board writes and GitHub calls travel the links as packets. Side cards show reachability, relay latency, pause state and usage (today, last hour, total, by model). The log shows one row per task, or the events of the selected attempt.</p>
 
 <h2>CLI</h2>
 <table>

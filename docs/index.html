@@ -99,6 +99,8 @@
   <tr><td>Workers never hold a GitHub credential.</td><td>Workers send commits as a git bundle. The orchestrator verifies it and pushes with its own token.</td></tr>
   <tr><td>The relay cannot act.</td><td>It holds only the Ed25519 public key, so it can check tokens but not make them.</td></tr>
   <tr><td>Provider keys never pass the relay in clear text.</td><td>They are sealed for an X25519 key that the worker keeps in memory only.</td></tr>
+  <tr><td>Only one container controls Docker.</td><td>The listener supervisor holds the Docker socket and accepts only listener operations. Listeners publish on the LAN or WireGuard address, never on all addresses.</td></tr>
+  <tr><td>Nothing is deleted on Railway.</td><td>Stop is the strongest action. A removal becomes a task that waits for a person.</td></tr>
   <tr><td>Credentials live in one file.</td><td><code>politburo.env</code> on the host. The orchestrator reads it and passes on only what a worker needs.</td></tr>
   <tr><td>Each attempt is limited.</td><td>Rounds, attempts, wall time and a cost budget per task. Then a person decides.</td></tr>
 </table>

@@ -245,7 +245,7 @@
   <li><b>Attempts.</b> Each follow-up request gives the task its attempts again: attempts before the newest request do not count.</li>
 </ul>
 
-<h2>Local listeners</h2>
+<h2 id="local-listeners">Local listeners</h2>
 <p>The deployment tab of the channel settings chooses none, local listeners or Railway; the default is none. With local listeners, the channel gets a copy of the board's Dockerfile template (<code>packages/orchestrator/templates/listener.Dockerfile</code>). Only the orchestrator changes that copy, on a request in the channel; every listener of the channel then reloads.</p>
 <ul>
   <li><b>Listener.</b> A name, a subpath of the repository, a host port, a container port (given to the code as <code>PORT</code>), and the host interfaces it is published on: the LAN address, the WireGuard address, or both.</li>
@@ -255,7 +255,7 @@
 </ul>
 <p>The listener supervisor (<code>packages/listener-supervisor</code>) is the only container with the Docker socket. It accepts build, run, start, stop, state and logs of listener containers, on the Compose network only. Each listener has its own Docker network, no mounts, no privileges, a memory and CPU limit, and publishes only on the addresses in <code>LISTENER_ADDRESSES</code>. A second address gets a socat forwarder container, because Docker Desktop refuses one container port on two host addresses.</p>
 
-<h2>Railway services</h2>
+<h2 id="railway-services">Railway services</h2>
 <p>Railway is off for a channel until a project is chosen, or created, in the Railway tab of the channel settings. A created project is private, in the token's workspace, with one environment, production, and no PR environments. The orchestrator holds <code>RAILWAY_TOKEN</code> and calls the Railway GraphQL API outbound; the board and workers never get it. Only the project's production environment is used.</p>
 <ul>
   <li><b>Services.</b> Status, domains and the latest deployment of each attached service, every 15 s while the tab is open. Start, stop, restart, redeploy and rollback. Deploy and build log lines, read only while shown. Attach services of the project, or create one from the channel's GitHub repository.</li>
