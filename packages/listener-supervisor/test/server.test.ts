@@ -27,7 +27,14 @@ function fakeDocker(socket: string) {
       containers.set(created, { labels: config.Labels, running: false, config })
       return send(201, { Id: created })
     }
-    if (path.startsWith('/containers/json')) return send(200, [...containers.values()].filter((entry) => entry.labels[LABEL]).map((entry) => ({ Labels: entry.labels })))
+    if (path.startsWith('/networks/create')) return send(201, { Id: 'network' })
+    if (path.startsWith('/networks/')) return send(404, { message: 'no such network' })
+    if (path.startsWith('/containers/json')) {
+      const wanted = (JSON.parse(new URL(path, 'http://d').searchParams.get('filters')!) as { label: string[] }).label[0]!
+      const [key, value] = wanted.split('=')
+      return send(200, [...containers].filter(([, entry]) => key! in entry.labels && (value === undefined || entry.labels[key!] === value))
+        .map(([containerName, entry]) => ({ Names: [`/${containerName}`], Labels: entry.labels })))
+    }
     const container = name ? containers.get(name) : undefined
     if (!container) return send(404, { message: 'no such container' })
     if (path.endsWith('/json')) return send(200, {
@@ -80,6 +87,13 @@ describe('listener supervisor', () => {
     assert.equal(run.status, 200)
     assert.equal(run.body.running, true)
     assert.deepEqual(run.body.ports, [{ address: '192.168.1.10', port: 8080 }])
+    const both = await call('/listeners/shop-web/run', { method: 'POST', body: JSON.stringify({ port: 8080, container_port: 3000, addresses: ['192.168.1.10', '10.77.0.4'] }) })
+    assert.deepEqual(both.body.ports, [{ address: '192.168.1.10', port: 8080 }, { address: '10.77.0.4', port: 8080 }])
+    const forwarder = docker.containers.get('politburo-listener-shop-web-forward-1')!.config
+    assert.deepEqual(forwarder.Cmd, ['TCP-LISTEN:3000,fork,reuseaddr', 'TCP:politburo-listener-shop-web:3000'])
+    assert.equal(forwarder.HostConfig.NetworkMode, 'politburo-listener-shop-web')
+    assert.equal((await call('/listeners/shop-web/stop', { method: 'POST' })).status, 200)
+    assert.equal(docker.containers.get('politburo-listener-shop-web-forward-1')!.running, false)
     const config = docker.containers.get('politburo-listener-shop-web')!.config
     assert.deepEqual(config.Env, ['PORT=3000'])
     assert.equal(config.HostConfig.Privileged, false)

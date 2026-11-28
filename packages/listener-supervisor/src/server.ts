@@ -34,10 +34,15 @@ export interface SupervisorOptions {
   memoryBytes?: number
   /** CPU limit of each listener container, in CPUs; 0 for none. */
   cpus?: number
+  /** The image of the forwarders, with socat: each address after the first gets one. */
+  forwarderImage?: string
 }
 
+export const ROLE_LABEL = 'politburo.listener.role'
 export const imageOf = (id: string) => `politburo-listener-${id}:latest`
 export const containerOf = (id: string) => `politburo-listener-${id}`
+export const networkOf = (id: string) => `politburo-listener-${id}`
+export const forwarderOf = (id: string, n: number) => `politburo-listener-${id}-forward-${n}`
 
 export interface ListenerState {
   id: string
@@ -150,7 +155,9 @@ export class ListenerSupervisor {
   async state(id: string): Promise<ListenerState> {
     const container = await this.#inspect(this.#id(id))
     if (!container) return { id, exists: false, state: null, running: false, started_at: null, finished_at: null, exit_code: null, restart_count: 0, image: null, ports: [] }
-    const bindings = (container.HostConfig?.PortBindings ?? {}) as Record<string, Array<{ HostIp: string; HostPort: string }>>
+    const forwarders = await Promise.all((await this.#containers(id)).slice(1).map(async (name) => (await this.#docker.json<Record<string, any>>('GET', `/containers/${name}/json`))))
+    const bindings = [container, ...forwarders].map((entry) => (entry.HostConfig?.PortBindings ?? {}) as Record<string, Array<{ HostIp: string; HostPort: string }>>)
+      .reduce<Record<string, Array<{ HostIp: string; HostPort: string }>>>((all, entry, n) => ({ ...all, ...Object.fromEntries(Object.entries(entry).map(([key, value]) => [`${n}:${key}`, value])) }), {})
     return {
       id, exists: true, state: container.State?.Status ?? null, running: container.State?.Running === true,
       started_at: container.State?.StartedAt ?? null, finished_at: container.State?.FinishedAt ?? null,
@@ -162,7 +169,7 @@ export class ListenerSupervisor {
   async list(): Promise<ListenerState[]> {
     const filters = encodeURIComponent(JSON.stringify({ label: [LABEL] }))
     const containers = await this.#docker.json<Array<{ Labels: Record<string, string> }>>('GET', `/containers/json?all=1&filters=${filters}`)
-    const ids = [...new Set(containers.map((container) => container.Labels[LABEL]).filter((id): id is string => typeof id === 'string' && ID.test(id)))]
+    const ids = [...new Set(containers.filter((container) => container.Labels[ROLE_LABEL] !== 'forwarder').map((container) => container.Labels[LABEL]).filter((id): id is string => typeof id === 'string' && ID.test(id)))]
     return Promise.all(ids.map((id) => this.state(id)))
   }
 
@@ -182,7 +189,7 @@ export class ListenerSupervisor {
     if (!/^[A-Za-z0-9._-]{1,100}$/.test(dockerfile)) throw new SupervisorError(400, 'the Dockerfile name is not valid')
     return this.#exclusive(id, async () => {
       const image = imageOf(id)
-      const query = new URLSearchParams({ t: image, dockerfile, rm: '1', forcerm: '1', pull: '1', labels: JSON.stringify({ [LABEL]: id }) })
+      const query = new URLSearchParams({ t: image, dockerfile, rm: '1', forcerm: '1', labels: JSON.stringify({ [LABEL]: id }) })
       const answer = await this.#docker.call('POST', `/build?${query}`, context, 'application/x-tar')
       const output = buildOutput(answer.body)
       if (answer.status !== 200 || output.error) throw new SupervisorError(422, `the build failed: ${output.error ?? answer.status}\n${output.lines.slice(-40).join('\n')}`)
@@ -191,8 +198,10 @@ export class ListenerSupervisor {
   }
 
   /**
-   * Replaces the listener's container with a new one from its image, published on `addresses` at
-   * `port`. The container gets no mounts, no privileges and no host network.
+   * Replaces the listener's container with a new one from its image, published on the first of
+   * `addresses` at `port`; each further address gets a forwarder container, because Docker Desktop
+   * refuses one container port on two host addresses. The listener and its forwarders share a
+   * network of their own. No container gets mounts, privileges or the host network.
    */
   run(id: string, input: { port: unknown; container_port: unknown; addresses: unknown; environment?: unknown }): Promise<ListenerState> {
     this.#id(id)
@@ -209,37 +218,74 @@ export class ListenerSupervisor {
       .map(([name, value]) => `${name}=${value as string}`)
     return this.#exclusive(id, async () => {
       await this.#remove(id)
+      await this.#network(id)
       const memory = this.#o.memoryBytes ?? 0
       const cpus = this.#o.cpus ?? 0
+      const confined = {
+        RestartPolicy: { Name: 'unless-stopped' },
+        Privileged: false, CapDrop: ['ALL'], CapAdd: ['CHOWN', 'SETUID', 'SETGID', 'NET_BIND_SERVICE', 'DAC_OVERRIDE', 'FOWNER'],
+        SecurityOpt: ['no-new-privileges'], Binds: [], NetworkMode: networkOf(id),
+      }
+      const binding = (address: string) => ({ [`${containerPort}/tcp`]: [{ HostIp: address, HostPort: String(port) }] })
       await this.#docker.json('POST', `/containers/create?name=${containerOf(id)}`, {
         Image: imageOf(id),
-        Labels: { [LABEL]: id },
+        Labels: { [LABEL]: id, [ROLE_LABEL]: 'listener' },
         Env: [`PORT=${containerPort}`, ...environment],
         ExposedPorts: { [`${containerPort}/tcp`]: {} },
         HostConfig: {
-          PortBindings: { [`${containerPort}/tcp`]: addresses.map((address) => ({ HostIp: address, HostPort: String(port) })) },
-          RestartPolicy: { Name: 'unless-stopped' },
-          Privileged: false, CapDrop: ['ALL'], CapAdd: ['CHOWN', 'SETUID', 'SETGID', 'NET_BIND_SERVICE', 'DAC_OVERRIDE', 'FOWNER'],
-          SecurityOpt: ['no-new-privileges'], Binds: [], NetworkMode: 'bridge',
+          ...confined, PortBindings: binding(addresses[0]!),
           ...(memory > 0 ? { Memory: memory } : {}), ...(cpus > 0 ? { NanoCpus: Math.round(cpus * 1e9) } : {}),
         },
       })
-      await this.#docker.json('POST', `/containers/${containerOf(id)}/start`)
+      for (const [n, address] of addresses.slice(1).entries()) {
+        await this.#docker.json('POST', `/containers/create?name=${forwarderOf(id, n + 1)}`, {
+          Image: this.#o.forwarderImage ?? 'politburo_development:latest',
+          Labels: { [LABEL]: id, [ROLE_LABEL]: 'forwarder' },
+          Entrypoint: ['socat'],
+          Cmd: [`TCP-LISTEN:${containerPort},fork,reuseaddr`, `TCP:${containerOf(id)}:${containerPort}`],
+          User: '65534:65534',
+          ExposedPorts: { [`${containerPort}/tcp`]: {} },
+          HostConfig: { ...confined, CapAdd: [], PortBindings: binding(address), Memory: 64 * 1024 * 1024 },
+        })
+      }
+      await this.#each(id, 'start')
       return this.state(id)
     })
   }
 
-  /** The listener's container goes; its image stays for the next run. Only a run calls it. */
+  /** The listener's own network, made once. */
+  async #network(id: string): Promise<void> {
+    const answer = await this.#docker.call('GET', `/networks/${networkOf(id)}`)
+    if (answer.status === 200) return
+    await this.#docker.json('POST', '/networks/create', { Name: networkOf(id), Driver: 'bridge', Labels: { [LABEL]: id } }, [201, 409])
+  }
+
+  /** The names of the listener's containers: the listener first, then its forwarders. */
+  async #containers(id: string): Promise<string[]> {
+    const filters = encodeURIComponent(JSON.stringify({ label: [`${LABEL}=${id}`] }))
+    const rows = await this.#docker.json<Array<{ Names: string[]; Labels: Record<string, string> }>>('GET', `/containers/json?all=1&filters=${filters}`)
+    return rows.map((row) => ({ name: row.Names[0]!.replace(/^\//, ''), role: row.Labels[ROLE_LABEL] }))
+      .sort((a, b) => (a.role === 'forwarder' ? 1 : 0) - (b.role === 'forwarder' ? 1 : 0))
+      .map((row) => row.name)
+  }
+
+  async #each(id: string, action: 'start' | 'stop'): Promise<void> {
+    const names = await this.#containers(id)
+    for (const name of action === 'stop' ? names.reverse() : names) {
+      await this.#docker.json('POST', `/containers/${name}/${action === 'stop' ? 'stop?t=10' : 'start'}`)
+    }
+  }
+
+  /** The listener's containers go; its image and network stay for the next run. Only a run calls it. */
   async #remove(id: string): Promise<void> {
-    const container = await this.#inspect(id)
-    if (!container) return
-    await this.#docker.json('DELETE', `/containers/${containerOf(id)}?force=1`, undefined, [204, 404])
+    await this.#inspect(id)
+    for (const name of await this.#containers(id)) await this.#docker.json('DELETE', `/containers/${name}?force=1`, undefined, [204, 404])
   }
 
   start(id: string): Promise<ListenerState> {
     return this.#exclusive(this.#id(id), async () => {
       if (!(await this.#inspect(id))) throw new SupervisorError(404, `listener ${id} has no container; reload it`)
-      await this.#docker.json('POST', `/containers/${containerOf(id)}/start`)
+      await this.#each(id, 'start')
       return this.state(id)
     })
   }
@@ -247,7 +293,7 @@ export class ListenerSupervisor {
   stop(id: string): Promise<ListenerState> {
     return this.#exclusive(this.#id(id), async () => {
       if (!(await this.#inspect(id))) throw new SupervisorError(404, `listener ${id} has no container`)
-      await this.#docker.json('POST', `/containers/${containerOf(id)}/stop?t=10`)
+      await this.#each(id, 'stop')
       return this.state(id)
     })
   }
@@ -341,6 +387,7 @@ if (import.meta.main) {
   startSupervisor({
     socket: process.env.DOCKER_SOCKET ?? '/var/run/docker.sock', addresses, host, port,
     memoryBytes: Number(process.env.LISTENER_MEMORY_MEGABYTES ?? 1024) * 1024 * 1024, cpus: Number(process.env.LISTENER_CPUS ?? 2),
+    forwarderImage: process.env.LISTENER_FORWARDER_IMAGE ?? 'politburo_development:latest',
   })
   console.log(JSON.stringify({ at: new Date().toISOString(), event: 'listener_supervisor_started', host, port, addresses }))
 }
