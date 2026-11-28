@@ -65,3 +65,12 @@ it('says under the input why the repository search failed', async () => {
   type(input, 'acme')
   await vi.waitFor(() => expect(hint()).toBe('GitHub answered 401'), { timeout: 2_000 })
 })
+
+it('shows the deployment choice of a channel that was never configured', async () => {
+  open('fresh')
+  const tab = [...document.querySelectorAll<HTMLButtonElement>('.channel-tabs button')].find((button) => button.textContent === 'deployment')!
+  flushSync(() => tab.click())
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  expect(document.querySelector('.deployment-kinds')).not.toBeNull()
+  expect(document.querySelector<HTMLInputElement>('.deployment-kinds input')!.checked).toBe(true)
+})

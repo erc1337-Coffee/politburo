@@ -64,7 +64,17 @@ export function ChannelDialog(props: {
 /** An existing channel's settings: its repository and models, and its deployment. */
 function ChannelTabs(props: { channel: string; done: () => void }) {
   const [tab, setTab] = useState<'general' | 'deployment'>('general')
-  const settings = board.useBoard().channels[props.channel]?.settings
+  const saved = board.useBoard().channels[props.channel]?.settings
+  // A channel that was never configured has the defaults: local work and every model route, on.
+  const [defaults, setDefaults] = useState<ChannelSettings | null>(null)
+  useEffect(() => {
+    if (saved) return
+    board.loadModelRoutes().then(
+      (catalog) => setDefaults({ repository: null, routes: catalog.map((route) => ({ key: route.key, enabled: true })) }),
+      () => setDefaults({ repository: null, routes: [] }),
+    )
+  }, [saved === undefined])
+  const settings = saved ?? defaults ?? undefined
   return (
     <>
       <div className="dialog-head">
@@ -79,7 +89,7 @@ function ChannelTabs(props: { channel: string; done: () => void }) {
       <div className="channel-tab-body">
         {tab === 'general' ? <ChannelForm channel={props.channel} done={props.done} head={false} />
           : settings ? <DeploymentPanel channel={props.channel} settings={settings} />
-          : <p className="hint">save the channel first</p>}
+          : <p className="hint">loading…</p>}
       </div>
     </>
   )
