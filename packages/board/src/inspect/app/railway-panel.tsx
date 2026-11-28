@@ -39,8 +39,9 @@ const FIELDS: Array<{ key: string; label: string; kind: 'text' | 'number' | 'lis
 
 const token = () => document.querySelector<HTMLMetaElement>('meta[name="inspect-token"]')?.content ?? ''
 
-async function call<T>(path: string, init: { method?: 'GET' | 'POST' | 'PUT'; body?: unknown } = {}): Promise<T> {
-  const response = await fetch(`${location.origin}${base}/api/railway/${path}`, {
+/** A request of the page to the orchestrator, through the board server: its Railway or deployment routes. */
+export async function orchestratorCall<T>(scope: 'railway' | 'deployment', path: string, init: { method?: 'GET' | 'POST' | 'PUT'; body?: unknown } = {}): Promise<T> {
+  const response = await fetch(`${location.origin}${base}/api/${scope}/${path}`, {
     method: init.method ?? 'GET',
     headers: { 'x-inspect-token': token(), ...(init.body === undefined ? {} : { 'content-type': 'application/json' }) },
     ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
@@ -49,6 +50,8 @@ async function call<T>(path: string, init: { method?: 'GET' | 'POST' | 'PUT'; bo
   if (!response.ok) throw new Error(typeof body?.error === 'string' ? body.error : body?.error?.message ?? `status ${response.status}`)
   return body as T
 }
+
+const call = <T,>(path: string, init: { method?: 'GET' | 'POST' | 'PUT'; body?: unknown } = {}) => orchestratorCall<T>('railway', path, init)
 
 const channelPath = (channel: string) => `channels/${encodeURIComponent(channel)}`
 const said = (error: unknown) => (error instanceof Error ? error.message : String(error))

@@ -19,6 +19,7 @@ import { Orchestrator } from './service.ts'
 import { ThreadAssistant } from './thread-assistant.ts'
 import { RailwayClient } from './railway.ts'
 import { RailwayOperations } from './railway-operations.ts'
+import { ListenerOperations, SupervisorClient } from './listener-operations.ts'
 import { acquireLock, StateStore } from './state.ts'
 
 const usage = [
@@ -66,6 +67,12 @@ async function serve(config: OrchestratorConfig): Promise<number> {
     client: railwayToken ? new RailwayClient({ token: railwayToken }) : null, board,
     log: (entry) => console.log(JSON.stringify({ at: new Date().toISOString(), ...entry })),
   })
+  const git = new GitRepositories({ directory: join(config.stateDirectory, 'repositories'), localDirectory: join(config.stateDirectory, 'channel_repositories'), urlBase: 'https://github.com', token })
+  const supervisorUrl = process.env.LISTENER_SUPERVISOR_URL?.trim()
+  const listeners = new ListenerOperations({
+    supervisor: supervisorUrl ? new SupervisorClient(supervisorUrl) : null, board, git,
+    log: (entry) => console.log(JSON.stringify({ at: new Date().toISOString(), ...entry })),
+  })
   const orchestratorModel = config.decision.claudeModel
     ? claudeRunner({ model: config.decision.claudeModel, directory: join(config.stateDirectory, 'decision'), timeoutMs: config.decision.claudeTimeoutSeconds * 1000 })
     : null
@@ -74,9 +81,10 @@ async function serve(config: OrchestratorConfig): Promise<number> {
     monitor,
     board,
     railway,
+    listeners,
     relay: new RelayClient({ url: config.relay.url, signingKey: readFileSync(config.relay.signingKeyFile, 'utf8'), orchestratorTtlSeconds: config.tokens.orchestratorTtlSeconds }),
     github: new GitHubClient({ apiUrl: config.github.apiUrl, token }),
-    git: new GitRepositories({ directory: join(config.stateDirectory, 'repositories'), localDirectory: join(config.stateDirectory, 'channel_repositories'), urlBase: 'https://github.com', token }),
+    git,
     state,
     journal: openJournal(join(config.stateDirectory, 'journal')),
     routes: () => partyRoutes(config),
@@ -95,7 +103,7 @@ async function serve(config: OrchestratorConfig): Promise<number> {
   let operations: OperationsServer | null = null
   if (monitor) {
     try {
-      operations = await startOperationsServer({ monitor, port: config.operations.port, snapshot: () => orchestrator.operations()!, railway })
+      operations = await startOperationsServer({ monitor, port: config.operations.port, snapshot: () => orchestrator.operations()!, railway, listeners })
       console.error(`orchestrator: operations status at ${operations.url}`)
     } catch (error) {
       console.error(`orchestrator: the operations status server did not start: ${(error as Error).message}`)
@@ -103,6 +111,7 @@ async function serve(config: OrchestratorConfig): Promise<number> {
   }
   try {
     await orchestrator.start()
+    listeners.startMonitor()
   } catch (error) {
     await operations?.close()
     state.close()
@@ -113,6 +122,7 @@ async function serve(config: OrchestratorConfig): Promise<number> {
     process.once('SIGTERM', resolve)
     process.once('SIGINT', resolve)
   })
+  listeners.stopMonitor()
   await operations?.close()
   await orchestrator.stop()
   state.close()

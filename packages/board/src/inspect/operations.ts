@@ -6,9 +6,11 @@
 //   GET /api/operations/attempts/{attempt}/events   last events of one attempt
 //   GET /api/operations/usage                       usage from the spend ledger
 //
-// The Railway routes of the channel settings go to the same server, reads and writes:
+// The Railway and deployment routes of the channel settings and the channel view go to the same
+// server, reads and writes:
 //
 //   /api/railway/...                                -> {orchestrator}/railway/...
+//   /api/deployment/...                             -> {orchestrator}/deployment/...
 import { existsSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { SpendRecord } from '@remilia/politburo-ledger'
@@ -22,6 +24,7 @@ export type OperationsOptions = {
 
 export const OPERATIONS_PREFIX = '/api/operations/'
 export const RAILWAY_PREFIX = '/api/railway/'
+export const DEPLOYMENT_PREFIX = '/api/deployment/'
 const RAILWAY_BODY_MAX = 256 * 1024
 
 const ATTEMPT_ROUTE = /^attempts\/([0-9a-f-]{36})\/events$/
@@ -173,14 +176,15 @@ export function operationsRoutes(options: OperationsOptions) {
   }
 
   /**
-   * Forwards a Railway request of the channel settings to the orchestrator, which holds the
-   * Railway token; after the caller checked the page token and, for a write, the page's origin.
+   * Forwards a Railway or deployment request of the page to the orchestrator, which holds the
+   * Railway token and reaches the listener supervisor; after the caller checked the page token
+   * and, for a write, the page's origin. `scope` is railway or deployment.
    */
-  async function railway(request: IncomingMessage, response: ServerResponse, path: string, signal: AbortSignal): Promise<void> {
+  async function railway(request: IncomingMessage, response: ServerResponse, path: string, signal: AbortSignal, scope: 'railway' | 'deployment' = 'railway'): Promise<void> {
     const method = request.method ?? 'GET'
     if (!['GET', 'POST', 'PUT'].includes(method)) return json(response, 405, { error: { code: 'method_not_allowed', message: 'GET, POST or PUT' } })
     if (!/^[A-Za-z0-9._~%/-]{1,400}$/.test(path) || path.split('/').some((part) => part === '..' || part === '.')) {
-      return json(response, 400, { error: { code: 'bad_path', message: 'no such Railway route' } })
+      return json(response, 400, { error: { code: 'bad_path', message: 'no such route' } })
     }
     if (!options.url) return json(response, 503, { error: { code: 'no_orchestrator', message: 'no orchestrator status server is configured' } })
     let body: Buffer | undefined
@@ -197,7 +201,7 @@ export function operationsRoutes(options: OperationsOptions) {
     let upstream: Response
     try {
       const search = new URL(request.url ?? '/', 'http://inspector').search
-      upstream = await fetch(`${options.url.replace(/\/+$/, '')}/railway/${path}${search}`, {
+      upstream = await fetch(`${options.url.replace(/\/+$/, '')}/${scope}/${path}${search}`, {
         method, signal, redirect: 'error',
         ...(body ? { body: new Uint8Array(body), headers: { 'content-type': 'application/json' } } : {}),
       })

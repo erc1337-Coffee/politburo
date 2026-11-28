@@ -612,6 +612,19 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 .railway-setting { display: grid; grid-template-columns: 220px 1fr; align-items: center; gap: 8px; }
 .railway-create input { flex: 1 1 160px; }
 .railway-port { width: 9ch; }
+.deployment { display: flex; flex-direction: column; gap: 10px; min-width: min(640px, 86vw); }
+.deployment-kinds { display: flex; gap: 16px; }
+.deployment-kind { color: var(--muted); }
+.deployment-kind.on { color: var(--accent); }
+.deployment-local { display: flex; flex-direction: column; gap: 8px; }
+.endpoint-list { font-size: 11px; }
+.endpoint { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 11px; }
+.endpoint > i { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+.endpoint.open > i { background: var(--accent); }
+.endpoint.closed > i { background: var(--danger, #e5534b); }
+.deployment-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; padding: 5px 20px; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); }
+.deployment-item { display: inline-flex; align-items: center; gap: 8px; }
+.deployment-item a { color: inherit; }
 .channel-form .field { display: grid; gap: 6px; min-width: 0; margin: 0; padding: 0; border: 0; }
 .channel-form .field > input { width: 100%; }
 .channel-form .choice-row { display: flex; align-items: center; gap: 6px; min-width: 0; }

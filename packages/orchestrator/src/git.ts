@@ -136,6 +136,31 @@ export class GitRepositories {
   }
 
   /**
+   * The deployable code of a repository: `main`, else `master`, as a tar of the tree at `subpath`.
+   * A GitHub repository is fetched up to date first.
+   */
+  async deploymentArchive(repository: string, subpath: string): Promise<{ branch: string; commit: string; tar: Buffer }> {
+    const path = await this.#source(repository)
+    let branch = ''
+    let commit = ''
+    for (const candidate of ['main', 'master']) {
+      commit = await this.#git(['rev-parse', '--verify', '--quiet', `refs/heads/${candidate}^{commit}`], path).catch(() => '')
+      if (commit) { branch = candidate; break }
+    }
+    if (!commit) throw new GitError(`${repository} has no main or master branch`)
+    const directory = subpath.replace(/^\/+|\/+$/g, '')
+    if (directory.split('/').includes('..')) throw new GitError('the subpath leaves the repository')
+    const tree = directory ? `${commit}:${directory}` : commit
+    const tar = await new Promise<Buffer>((resolve, reject) => {
+      execFile('git', ['archive', '--format=tar', tree], { cwd: path, env: this.#env(), timeout: 5 * 60_000, maxBuffer: 512 * 1024 * 1024, encoding: 'buffer' }, (error, stdout, stderr) => {
+        if (error) reject(new GitError(`git archive failed: ${String(stderr).trim().split('\n').slice(-2).join(' ').slice(0, 300)}`))
+        else resolve(stdout)
+      })
+    })
+    return { branch, commit, tar }
+  }
+
+  /**
    * Applies a worker bundle and pushes it as `branch`. The bundle must hold `branch` at `head`,
    * and `base` must be an ancestor of `head`. The push never forces.
    */
