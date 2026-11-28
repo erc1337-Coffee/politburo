@@ -25,7 +25,7 @@ function fakeRailway() {
     calls.push({ query, variables: input })
     const data = (value: unknown) => new Response(JSON.stringify({ data: value }), { status: 200, headers: { 'content-type': 'application/json' } })
     if (query.includes('projects(')) return data({ projects: { edges: [{ node: {
-      id: PROJECT, name: 'shop', primaryEnvironmentId: ENVIRONMENT,
+      id: PROJECT, name: 'shop', workspaceId: 'workspace-1', primaryEnvironmentId: ENVIRONMENT,
       environments: { edges: [{ node: { id: ENVIRONMENT, name: 'production' } }, { node: { id: OTHER, name: 'pr-4' } }] },
       services: { edges: [{ node: { id: SERVICE, name: 'api' } }] },
     } }] } })
@@ -40,6 +40,13 @@ function fakeRailway() {
     if (query.includes('serviceInstanceDeployV2')) { active = [DEPLOYMENT]; return data({ id: '66666666-6666-4666-8666-666666666666' }) }
     if (query.includes('variableCollectionUpsert')) { Object.assign(variables, (input.input as { variables: Record<string, string> }).variables); return data({ variableCollectionUpsert: true }) }
     if (query.includes('variables(')) return data({ variables })
+    if (query.includes('projectCreate')) return data({ projectCreate: {
+      id: OTHER, name: (input.input as { name: string }).name, workspaceId: 'workspace-1', primaryEnvironmentId: ENVIRONMENT,
+      environments: { edges: [{ node: { id: ENVIRONMENT, name: 'production' } }] }, services: { edges: [] },
+    } })
+    if (query.includes('serviceDomainCreate')) return data({ serviceDomainCreate: { id: 'domain-1', domain: 'api-production.up.railway.app', targetPort: (input.input as { targetPort?: number }).targetPort ?? null } })
+    if (query.includes('serviceDomainUpdate')) return data({ serviceDomainUpdate: true })
+    if (query.includes('serviceDomains { id')) return data({ serviceInstance: { domains: { serviceDomains: [{ id: 'domain-1', domain: 'api-production.up.railway.app', targetPort: null }], customDomains: [] } } })
     if (query.includes('serviceCreate')) return data({ serviceCreate: { id: OTHER, name: (input.input as { name: string }).name } })
     return new Response(JSON.stringify({ errors: [{ message: `unexpected ${query.slice(0, 40)}` }] }), { status: 200 })
   }) as unknown as typeof fetch
@@ -121,6 +128,32 @@ describe('railway operations', () => {
     const operations = new RailwayOperations({ client: fakeRailway().client, board: await channelBoard(null) })
     const [project] = await operations.projects()
     assert.deepEqual(project!.production, { id: ENVIRONMENT, name: 'production' })
+  })
+
+  test('a new project is private, production only, in the workspace of the token', async () => {
+    const railway = fakeRailway()
+    const operations = new RailwayOperations({ client: railway.client, board: await channelBoard(null) })
+    await assert.rejects(operations.createProject({ name: 'Shop' }, 'tester'), /exists; attach it instead/)
+    const project = await operations.createProject({ name: 'blog' }, 'tester')
+    assert.equal(project.production?.name, 'production')
+    const create = railway.calls.find((call) => call.query.includes('projectCreate'))!
+    assert.deepEqual(create.variables.input, { name: 'blog', workspaceId: 'workspace-1', defaultEnvironmentName: 'production', prDeploys: false, isPublic: false })
+  })
+
+  test('a generated domain is posted in the channel, and its port can change', async () => {
+    const railway = fakeRailway()
+    const team = await channelBoard('https://github.com/owner/shop')
+    const posted: string[] = []
+    const post = team.post.bind(team)
+    team.post = ((path: string, input: { text: string }) => { posted.push(input.text); return post(path, input as never) }) as typeof team.post
+    const operations = new RailwayOperations({ client: railway.client, board: team })
+    const domain = await operations.createDomain('work/shop', SERVICE, { targetPort: '8080' }, 'tester')
+    assert.equal(domain.targetPort, 8080)
+    assert.ok(posted.some((text) => text.includes('https://api-production.up.railway.app (port 8080)')))
+    await assert.rejects(operations.createDomain('work/shop', SERVICE, { targetPort: '70000' }, 'tester'), /port from 1 to 65535/)
+    await operations.setDomainPort('work/shop', SERVICE, 'domain-1', { targetPort: 3000 }, 'tester')
+    const update = railway.calls.find((call) => call.query.includes('serviceDomainUpdate'))!
+    assert.deepEqual(update.variables.input, { serviceId: SERVICE, environmentId: ENVIRONMENT, serviceDomainId: 'domain-1', domain: 'api-production.up.railway.app', targetPort: 3000 })
   })
 
   test('the status server routes the Railway tab and refuses unknown routes', async () => {

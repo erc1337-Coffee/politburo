@@ -6,7 +6,7 @@
 import type { board as openBoard } from '@vercel/board'
 import { repositoryName } from './github.ts'
 import {
-  EDITABLE_SETTINGS, RailwayError, type EditableSetting, type RailwayClient, type RailwayLogLine, type RailwayProject,
+  EDITABLE_SETTINGS, RailwayError, type EditableSetting, type RailwayClient, type RailwayDomain, type RailwayLogLine, type RailwayProject,
   type RailwayServiceSettings, type RailwayServiceStatus,
 } from './railway.ts'
 
@@ -82,6 +82,46 @@ export class RailwayOperations {
 
   projects(): Promise<RailwayProject[]> {
     return this.#railway().projects()
+  }
+
+  /**
+   * A new project in the token's workspace, with production only. The workspace is the one of the
+   * projects the token reaches; a workspace with no project yet needs one made in Railway first.
+   */
+  async createProject(input: { name?: unknown }, by: string): Promise<RailwayProject> {
+    const name = typeof input.name === 'string' && /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,62}$/.test(input.name.trim()) ? input.name.trim() : null
+    if (!name) throw new RailwayRequestError(400, 'a project name of letters, digits, spaces, dots, dashes and underscores is expected')
+    const projects = await this.#railway().projects()
+    if (projects.some((project) => project.name.toLowerCase() === name.toLowerCase())) throw new RailwayRequestError(409, `a project named ${name} exists; attach it instead`)
+    const workspaces = [...new Set(projects.map((project) => project.workspaceId).filter((id): id is string => Boolean(id)))]
+    if (workspaces.length !== 1) throw new RailwayRequestError(409, workspaces.length === 0 ? 'the token reaches no project, so its workspace is not known' : 'the token reaches more than one workspace')
+    const project = await this.#railway().createProject(name, workspaces[0]!)
+    this.#log({ event: 'railway_project_created', project: project.id, name, by })
+    return project
+  }
+
+  async domains(path: string, serviceId: string): Promise<{ service: RailwayDomain[]; custom: string[] }> {
+    const { railway, service } = await this.#service(path, serviceId)
+    return this.#railway().domains(service.id, railway.environmentId)
+  }
+
+  /** A public railway.app domain for the service. */
+  async createDomain(path: string, serviceId: string, input: { targetPort?: unknown }, by: string): Promise<RailwayDomain> {
+    const { railway, service } = await this.#service(path, serviceId)
+    const port = portOf(input.targetPort)
+    const domain = await this.#railway().createDomain(service.id, railway.environmentId, port)
+    this.#statuses.delete(service.id)
+    await this.#statusLine(path, `Railway: ${service.name} is public at https://${domain.domain}${port ? ` (port ${port})` : ''}, on request of ${by}.`)
+    return domain
+  }
+
+  async setDomainPort(path: string, serviceId: string, domainId: string, input: { targetPort?: unknown }, by: string): Promise<void> {
+    const { railway, service } = await this.#service(path, serviceId)
+    const domain = (await this.#railway().domains(service.id, railway.environmentId)).service.find((entry) => entry.id === domainId)
+    if (!domain) throw new RailwayRequestError(404, `${service.name} has no such domain`)
+    const port = portOf(input.targetPort)
+    await this.#railway().setDomainPort(service.id, railway.environmentId, domain, port)
+    await this.#statusLine(path, `Railway: ${domain.domain} routes to ${port ? `port ${port}` : 'the service port'}, on request of ${by}.`)
   }
 
   async status(path: string, serviceId: string, fresh = false): Promise<RailwayServiceStatus> {
@@ -212,6 +252,13 @@ export class RailwayOperations {
     await this.#board.post(path, { text, labels: { [STATUS_LABEL]: 'orchestrator' } })
       .catch((error: Error) => this.#log({ event: 'railway_status_line_failed', channel: path, message: error.message }))
   }
+}
+
+function portOf(value: unknown): number | null {
+  if (value === undefined || value === null || value === '') return null
+  const port = Number(value)
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new RailwayRequestError(400, 'a port from 1 to 65535 is expected')
+  return port
 }
 
 /** The HTTP status and message of an error, for the status server. */

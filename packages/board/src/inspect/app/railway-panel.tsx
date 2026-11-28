@@ -9,6 +9,7 @@ import { base } from './nav.tsx'
 type Deployment = { id: string; status: string; createdAt: string; stopped: boolean; url: string | null; canRedeploy: boolean; canRollback: boolean; commit: string | null }
 type ServiceStatus = { id: string; name: string; domains?: string[]; latest?: Deployment | null; active?: string[]; error?: string }
 type Project = { id: string; name: string; production: { id: string; name: string } | null; services: Array<{ id: string; name: string }> }
+type Domain = { id: string; domain: string; targetPort: number | null }
 type LogLine = { timestamp: string; severity: string | null; message: string }
 type Settings = Record<string, unknown> & { source?: { repo: string | null; image: string | null; branch: string | null } }
 
@@ -80,6 +81,8 @@ function Attach({ save }: { save: (next: ChannelRailway | null) => Promise<strin
   const [project, setProject] = useState<string>('')
   const [chosen, setChosen] = useState<Set<string>>(new Set())
   useEffect(() => { call<{ projects: Project[] }>('projects').then((answer) => setProjects(answer.projects), (failed) => setError(said(failed))) }, [])
+  const [name, setName] = useState('')
+  const [creating, setCreating] = useState(false)
   const picked = projects?.find((entry) => entry.id === project) ?? null
   const turnOn = async () => {
     if (!picked?.production) return
@@ -88,6 +91,20 @@ function Attach({ save }: { save: (next: ChannelRailway | null) => Promise<strin
       services: picked.services.filter((service) => chosen.has(service.id)),
     })
     if (refused) setError(refused)
+  }
+  const create = async () => {
+    setCreating(true)
+    setError(null)
+    try {
+      const { project: made } = await call<{ project: Project }>('projects', { method: 'POST', body: { name } })
+      if (!made.production) throw new Error(`${made.name} was created without a production environment`)
+      const refused = await save({ projectId: made.id, projectName: made.name, environmentId: made.production.id, services: [] })
+      if (refused) setError(refused)
+    } catch (failed) {
+      setError(said(failed))
+    } finally {
+      setCreating(false)
+    }
   }
   return (
     <div className="railway field">
@@ -109,6 +126,11 @@ function Attach({ save }: { save: (next: ChannelRailway | null) => Promise<strin
           )}
           {error && <p className="error" role="alert">{error}</p>}
           <button type="button" className="send" disabled={!picked?.production} onClick={() => void turnOn()}>turn on Railway</button>
+          <p className="hint">or a new project, production only:</p>
+          <div className="railway-create">
+            <input type="text" value={name} placeholder="new project name" onChange={(event) => setName(event.target.value)} spellCheck={false} />
+            <button type="button" className="act" disabled={creating || !name.trim()} onClick={() => void create()}>{creating ? 'creating…' : 'create project'}</button>
+          </div>
         </>
       )}
     </div>
@@ -358,6 +380,7 @@ function ServiceSettings({ channel, railway }: { channel: string; railway: Chann
       <ServicePicker railway={railway} value={service} onChange={setService} />
       {loaded === null ? <span className="hint">{error ?? 'loading…'}</span> : (
         <>
+          <Domains channel={channel} service={service} />
           <p className="hint">source: {loaded.source?.repo ?? loaded.source?.image ?? 'none'}{loaded.source?.branch ? ` @ ${loaded.source.branch}` : ''}</p>
           {FIELDS.map((field) => (
             <label key={field.key} className="railway-setting">
@@ -375,5 +398,57 @@ function ServiceSettings({ channel, railway }: { channel: string; railway: Chann
         </>
       )}
     </div>
+  )
+}
+
+/** The service's public domains: generate a railway.app domain, and choose the port each routes to. */
+function Domains({ channel, service }: { channel: string; service: string }) {
+  const [domains, setDomains] = useState<{ service: Domain[]; custom: string[] } | null>(null)
+  const [ports, setPorts] = useState<Record<string, string>>({})
+  const [port, setPort] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const path = `${channelPath(channel)}/services/${service}/domains`
+  const load = () => call<{ service: Domain[]; custom: string[] }>(path).then((answer) => {
+    setDomains(answer)
+    setPorts(Object.fromEntries(answer.service.map((entry) => [entry.id, entry.targetPort === null ? '' : String(entry.targetPort)])))
+  }, (failed) => setError(said(failed)))
+  useEffect(() => { setDomains(null); void load() }, [service])
+  const run = async (work: () => Promise<unknown>) => {
+    setBusy(true)
+    setError(null)
+    try {
+      await work()
+      await load()
+    } catch (failed) {
+      setError(said(failed))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <fieldset className="field railway-domains">
+      <legend className="field-name">domains</legend>
+      {domains === null ? <span className="hint">{error ?? 'loading…'}</span> : (
+        <>
+          {domains.service.map((entry) => (
+            <div key={entry.id} className="railway-row">
+              <a href={`https://${entry.domain}`} target="_blank" rel="noreferrer">{entry.domain}</a>
+              <input type="text" inputMode="numeric" className="railway-port" value={ports[entry.id] ?? ''} placeholder="service port"
+                onChange={(event) => setPorts((current) => ({ ...current, [entry.id]: event.target.value }))} />
+              <button type="button" className="act" disabled={busy || (ports[entry.id] ?? '') === (entry.targetPort === null ? '' : String(entry.targetPort))}
+                onClick={() => void run(() => call(`${path}/${entry.id}`, { method: 'PUT', body: { targetPort: ports[entry.id] || null } }))}>set port</button>
+            </div>
+          ))}
+          {domains.custom.map((domain) => <div key={domain} className="railway-row"><a href={`https://${domain}`} target="_blank" rel="noreferrer">{domain}</a><span className="hint">custom</span></div>)}
+          {domains.service.length === 0 && domains.custom.length === 0 && <span className="hint">no public domain</span>}
+          <div className="railway-row">
+            <input type="text" inputMode="numeric" className="railway-port" value={port} placeholder="port (optional)" onChange={(event) => setPort(event.target.value)} />
+            <button type="button" className="act" disabled={busy} onClick={() => void run(() => call(path, { method: 'POST', body: port.trim() ? { targetPort: port.trim() } : {} }))}>generate domain</button>
+          </div>
+          {error && <p className="error" role="alert">{error}</p>}
+        </>
+      )}
+    </fieldset>
   )
 }

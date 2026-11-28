@@ -8,6 +8,7 @@
 //   GET /attempts/{attempt}/events   the last events of one attempt
 //
 //   GET  /railway/projects                                       projects, production environments, services
+//   POST /railway/projects                                       create a project, production only: { name }
 //   GET  /railway/channels/{channel}/services                    status of the channel's services
 //   POST /railway/channels/{channel}/services                    create a service from the channel's repository
 //   GET  /railway/channels/{channel}/services/{id}/logs          ?kind=deploy|build&limit=N
@@ -16,6 +17,9 @@
 //   PUT  /railway/channels/{channel}/services/{id}/variables     { set: {name: value}, remove: [name] }
 //   GET  /railway/channels/{channel}/services/{id}/settings
 //   PUT  /railway/channels/{channel}/services/{id}/settings      { rootDirectory, buildCommand, ... }
+//   GET  /railway/channels/{channel}/services/{id}/domains
+//   POST /railway/channels/{channel}/services/{id}/domains       generate a railway.app domain: { targetPort? }
+//   PUT  /railway/channels/{channel}/services/{id}/domains/{d}   { targetPort }
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import type { OperationsMonitor, OperationsSnapshot } from './operations.ts'
@@ -24,7 +28,8 @@ import { RAILWAY_ACTIONS, RailwayRequestError, railwayFailure, type RailwayActio
 const KEEPALIVE_MS = 15_000
 const STREAMS_MAX = 32
 const ATTEMPT_ROUTE = /^\/attempts\/([0-9a-f-]{36})\/events$/
-const RAILWAY_SERVICE = /^\/railway\/channels\/([^/]+)\/services\/([0-9a-f-]{36})\/(logs|variables|settings|start|stop|restart|redeploy|rollback)$/
+const RAILWAY_SERVICE = /^\/railway\/channels\/([^/]+)\/services\/([0-9a-f-]{36})\/(logs|variables|settings|domains|start|stop|restart|redeploy|rollback)$/
+const RAILWAY_DOMAIN = /^\/railway\/channels\/([^/]+)\/services\/([0-9a-f-]{36})\/domains\/([0-9A-Za-z_-]{1,64})$/
 const RAILWAY_SERVICES = /^\/railway\/channels\/([^/]+)\/services$/
 const BODY_MAX = 256 * 1024
 /** Who a request of the Railway tab is, in the channel's status lines. */
@@ -97,7 +102,17 @@ export async function startOperationsServer(options: {
     const operations = options.railway
     if (!operations) return reply(response, 503, { error: 'the orchestrator has no Railway operations' })
     const method = request.method ?? 'GET'
-    if (url.pathname === '/railway/projects' && method === 'GET') return reply(response, 200, { projects: await operations.projects() })
+    if (url.pathname === '/railway/projects') {
+      if (method === 'GET') return reply(response, 200, { projects: await operations.projects() })
+      if (method === 'POST') return reply(response, 201, { project: await operations.createProject(await body(request), TAB) })
+      return reply(response, 405, { error: 'method_not_allowed' })
+    }
+    const domain = RAILWAY_DOMAIN.exec(url.pathname)
+    if (domain) {
+      if (method !== 'PUT') return reply(response, 405, { error: 'method_not_allowed' })
+      await operations.setDomainPort(decodeURIComponent(domain[1]!), domain[2]!, domain[3]!, await body(request), TAB)
+      return reply(response, 200, { ok: true })
+    }
     const services = RAILWAY_SERVICES.exec(url.pathname)
     if (services) {
       const channel = decodeURIComponent(services[1]!)
@@ -117,6 +132,11 @@ export async function startOperationsServer(options: {
     if (what === 'variables') {
       if (method === 'GET') return reply(response, 200, { variables: await operations.variables(channel, service) })
       if (method === 'PUT') return reply(response, 200, await operations.setVariables(channel, service, await body(request), TAB))
+      return reply(response, 405, { error: 'method_not_allowed' })
+    }
+    if (what === 'domains') {
+      if (method === 'GET') return reply(response, 200, await operations.domains(channel, service))
+      if (method === 'POST') return reply(response, 201, { domain: await operations.createDomain(channel, service, await body(request), TAB) })
       return reply(response, 405, { error: 'method_not_allowed' })
     }
     if (what === 'settings') {

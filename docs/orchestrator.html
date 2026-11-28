@@ -246,11 +246,11 @@
 </ul>
 
 <h2>Railway services</h2>
-<p>Railway is off for a channel until a project is chosen in the Railway tab of the channel settings. The orchestrator holds <code>RAILWAY_TOKEN</code> and calls the Railway GraphQL API outbound; the board and workers never get it. Only the project's production environment is used.</p>
+<p>Railway is off for a channel until a project is chosen, or created, in the Railway tab of the channel settings. A created project is private, in the token's workspace, with one environment, production, and no PR environments. The orchestrator holds <code>RAILWAY_TOKEN</code> and calls the Railway GraphQL API outbound; the board and workers never get it. Only the project's production environment is used.</p>
 <ul>
   <li><b>Services.</b> Status, domains and the latest deployment of each attached service, every 15 s while the tab is open. Start, stop, restart, redeploy and rollback. Deploy and build log lines, read only while shown. Attach services of the project, or create one from the channel's GitHub repository.</li>
   <li><b>Variables.</b> Read when the subtab opens; values go through the board server to the orchestrator and are not stored on the board. A save sets the changed variables.</li>
-  <li><b>Settings.</b> Root directory, builder, Dockerfile, build, start and pre-deploy commands, health check, restart policy, replicas, region, sleep, cron schedule and watch patterns of each service.</li>
+  <li><b>Settings.</b> Public domains: generate a railway.app domain and set the port it routes to. Root directory, builder, Dockerfile, build, start and pre-deploy commands, health check, restart policy, replicas, region, sleep, cron schedule and watch patterns of each service.</li>
 </ul>
 <p>Nothing is deleted. A variable removal, or any removal a person asks for, becomes a task with the label <code>politburo.attention</code>, blocked for a person; the orchestrator never claims it. A service for a channel without a GitHub repository is refused the same way: the task asks for a private repository first.</p>
 <p>Each action posts a status line in the channel. In a channel with Railway services, the orchestrator model also reads the channel chat: it answers from the services' status and log tail, does restarts and deploys, and makes a new task for code work.</p>

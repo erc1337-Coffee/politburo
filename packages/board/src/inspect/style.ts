@@ -611,6 +611,7 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 .railway-table tr.removed input { text-decoration: line-through; opacity: 0.55; }
 .railway-setting { display: grid; grid-template-columns: 220px 1fr; align-items: center; gap: 8px; }
 .railway-create input { flex: 1 1 160px; }
+.railway-port { width: 9ch; }
 .channel-form .field { display: grid; gap: 6px; min-width: 0; margin: 0; padding: 0; border: 0; }
 .channel-form .field > input { width: 100%; }
 .channel-form .choice-row { display: flex; align-items: center; gap: 6px; min-width: 0; }

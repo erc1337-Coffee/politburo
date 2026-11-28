@@ -13,6 +13,7 @@ export class RailwayError extends Error {
 export interface RailwayProject {
   id: string
   name: string
+  workspaceId: string | null
   /** The production environment: the project's primary one, else the one named production. */
   production: { id: string; name: string } | null
   services: Array<{ id: string; name: string }>
@@ -37,6 +38,9 @@ export interface RailwayServiceStatus {
   /** The deployments that run now; a stop ends them. */
   active: string[]
 }
+
+/** A railway.app domain of a service; `targetPort` null routes to the port the service listens on. */
+export interface RailwayDomain { id: string; domain: string; targetPort: number | null }
 
 export interface RailwayLogLine { timestamp: string; severity: string | null; message: string }
 
@@ -81,6 +85,20 @@ const deploymentOf = (row: DeploymentJson | null | undefined): RailwayDeployment
   commit: typeof row.meta?.commitHash === 'string' ? row.meta.commitHash : null,
 } : null
 
+type Edges<T> = { edges: Array<{ node: T }> }
+interface ProjectJson {
+  id: string; name: string; workspaceId: string | null; primaryEnvironmentId: string | null
+  environments: Edges<{ id: string; name: string }>; services: Edges<{ id: string; name: string }>
+}
+const PROJECT = 'id name workspaceId primaryEnvironmentId environments { edges { node { id name } } } services { edges { node { id name } } }'
+
+function projectOf(node: ProjectJson): RailwayProject {
+  const environments = node.environments.edges.map((edge) => edge.node)
+  const production = environments.find((environment) => environment.id === node.primaryEnvironmentId)
+    ?? environments.find((environment) => environment.name.toLowerCase() === 'production') ?? null
+  return { id: node.id, name: node.name, workspaceId: node.workspaceId ?? null, production, services: node.services.edges.map((edge) => edge.node) }
+}
+
 export interface RailwayClientOptions { token: string; url?: string; fetch?: typeof fetch }
 
 export class RailwayClient {
@@ -111,17 +129,42 @@ export class RailwayClient {
 
   /** The projects the token reaches, each with its production environment and services. */
   async projects(): Promise<RailwayProject[]> {
-    type Edges<T> = { edges: Array<{ node: T }> }
-    const data = await this.#call<{ projects: Edges<{
-      id: string; name: string; primaryEnvironmentId: string | null
-      environments: Edges<{ id: string; name: string }>; services: Edges<{ id: string; name: string }>
-    }> }>(`query { projects(first: 100) { edges { node { id name primaryEnvironmentId
-      environments { edges { node { id name } } } services { edges { node { id name } } } } } } }`)
-    return data.projects.edges.map(({ node }) => {
-      const environments = node.environments.edges.map((edge) => edge.node)
-      const production = environments.find((environment) => environment.id === node.primaryEnvironmentId)
-        ?? environments.find((environment) => environment.name.toLowerCase() === 'production') ?? null
-      return { id: node.id, name: node.name, production, services: node.services.edges.map((edge) => edge.node) }
+    const data = await this.#call<{ projects: Edges<ProjectJson> }>(`query { projects(first: 100) { edges { node { ${PROJECT} } } } }`)
+    return data.projects.edges.map(({ node }) => projectOf(node))
+  }
+
+  /** A new private project in the workspace, with one environment, production, and no PR environments. */
+  async createProject(name: string, workspaceId: string): Promise<RailwayProject> {
+    const data = await this.#call<{ projectCreate: ProjectJson }>(`mutation($input: ProjectCreateInput!) { projectCreate(input: $input) { ${PROJECT} } }`, {
+      input: { name, workspaceId, defaultEnvironmentName: 'production', prDeploys: false, isPublic: false },
+    })
+    return projectOf(data.projectCreate)
+  }
+
+  async domains(serviceId: string, environmentId: string): Promise<{ service: RailwayDomain[]; custom: string[] }> {
+    const data = await this.#call<{ serviceInstance: { domains: {
+      serviceDomains: Array<{ id: string; domain: string; targetPort: number | null }>; customDomains: Array<{ domain: string }>
+    } } }>(`query($serviceId: String!, $environmentId: String!) { serviceInstance(serviceId: $serviceId, environmentId: $environmentId) {
+      domains { serviceDomains { id domain targetPort } customDomains { domain } } } }`, { serviceId, environmentId })
+    const domains = data.serviceInstance.domains
+    return {
+      service: domains.serviceDomains.map(({ id, domain, targetPort }) => ({ id, domain, targetPort: targetPort ?? null })),
+      custom: domains.customDomains.map((entry) => entry.domain),
+    }
+  }
+
+  /** A railway.app domain for the service, as the Generate Domain button makes. */
+  async createDomain(serviceId: string, environmentId: string, targetPort: number | null): Promise<RailwayDomain> {
+    const data = await this.#call<{ serviceDomainCreate: { id: string; domain: string; targetPort: number | null } }>(
+      `mutation($input: ServiceDomainCreateInput!) { serviceDomainCreate(input: $input) { id domain targetPort } }`,
+      { input: { serviceId, environmentId, ...(targetPort === null ? {} : { targetPort }) } })
+    const domain = data.serviceDomainCreate
+    return { id: domain.id, domain: domain.domain, targetPort: domain.targetPort ?? null }
+  }
+
+  async setDomainPort(serviceId: string, environmentId: string, domain: RailwayDomain, targetPort: number | null): Promise<void> {
+    await this.#call(`mutation($input: ServiceDomainUpdateInput!) { serviceDomainUpdate(input: $input) }`, {
+      input: { serviceId, environmentId, serviceDomainId: domain.id, domain: domain.domain, ...(targetPort === null ? {} : { targetPort }) },
     })
   }
 
