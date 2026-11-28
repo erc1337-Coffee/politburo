@@ -145,7 +145,7 @@ export class RailwayClient {
     const field = kind === 'build' ? 'buildLogs' : 'deploymentLogs'
     const data = await this.#call<Record<string, Array<{ timestamp: string; severity: string | null; message: string }>>>(
       `query($id: String!, $limit: Int) { logs: ${field}(deploymentId: $id, limit: $limit) { timestamp severity message } }`, { id: deploymentId, limit })
-    return (data.logs ?? []).map(({ timestamp, severity, message }) => ({ timestamp, severity: severity ?? null, message }))
+    return (data.logs ?? []).slice(-limit).map(({ timestamp, severity, message }) => ({ timestamp, severity: severity ?? null, message }))
   }
 
   /** Deploys the service's current commit; the start of a stopped service. Answers the new deployment's id. */
