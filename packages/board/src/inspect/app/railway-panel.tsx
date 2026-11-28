@@ -20,27 +20,28 @@ type Section = (typeof SECTIONS)[number]
 /** The build and deploy settings the tab edits, with how each is typed. */
 const FIELDS: Array<{ key: string; label: string; kind: 'text' | 'number' | 'list' | 'boolean' }> = [
   { key: 'rootDirectory', label: 'root directory', kind: 'text' },
-  { key: 'builder', label: 'builder (RAILPACK, NIXPACKS, HEROKU, PAKETO)', kind: 'text' },
+  { key: 'builder', label: 'builder', kind: 'text' },
   { key: 'dockerfilePath', label: 'Dockerfile path', kind: 'text' },
-  { key: 'railwayConfigFile', label: 'railway config file', kind: 'text' },
+  { key: 'railwayConfigFile', label: 'config file', kind: 'text' },
   { key: 'buildCommand', label: 'build command', kind: 'text' },
   { key: 'startCommand', label: 'start command', kind: 'text' },
-  { key: 'preDeployCommand', label: 'pre-deploy commands, one per line', kind: 'list' },
-  { key: 'healthcheckPath', label: 'health check path', kind: 'text' },
-  { key: 'healthcheckTimeout', label: 'health check timeout, seconds', kind: 'number' },
-  { key: 'restartPolicyType', label: 'restart policy (ALWAYS, ON_FAILURE, NEVER)', kind: 'text' },
+  { key: 'preDeployCommand', label: 'pre-deploy', kind: 'list' },
+  { key: 'healthcheckPath', label: 'health path', kind: 'text' },
+  { key: 'healthcheckTimeout', label: 'health timeout (s)', kind: 'number' },
+  { key: 'restartPolicyType', label: 'restart policy', kind: 'text' },
   { key: 'restartPolicyMaxRetries', label: 'restart retries', kind: 'number' },
   { key: 'numReplicas', label: 'replicas', kind: 'number' },
   { key: 'region', label: 'region', kind: 'text' },
-  { key: 'sleepApplication', label: 'sleep when idle', kind: 'boolean' },
-  { key: 'cronSchedule', label: 'cron schedule', kind: 'text' },
-  { key: 'watchPatterns', label: 'watch patterns, one per line', kind: 'list' },
+  { key: 'sleepApplication', label: 'sleep', kind: 'boolean' },
+  { key: 'cronSchedule', label: 'cron', kind: 'text' },
+  { key: 'watchPatterns', label: 'watch patterns', kind: 'list' },
 ]
 
 const token = () => document.querySelector<HTMLMetaElement>('meta[name="inspect-token"]')?.content ?? ''
 
-async function call<T>(path: string, init: { method?: 'GET' | 'POST' | 'PUT'; body?: unknown } = {}): Promise<T> {
-  const response = await fetch(`${location.origin}${base}/api/railway/${path}`, {
+/** A request of the page to the orchestrator, through the board server: its Railway or deployment routes. */
+export async function orchestratorCall<T>(scope: 'railway' | 'deployment', path: string, init: { method?: 'GET' | 'POST' | 'PUT'; body?: unknown } = {}): Promise<T> {
+  const response = await fetch(`${location.origin}${base}/api/${scope}/${path}`, {
     method: init.method ?? 'GET',
     headers: { 'x-inspect-token': token(), ...(init.body === undefined ? {} : { 'content-type': 'application/json' }) },
     ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
@@ -49,6 +50,8 @@ async function call<T>(path: string, init: { method?: 'GET' | 'POST' | 'PUT'; bo
   if (!response.ok) throw new Error(typeof body?.error === 'string' ? body.error : body?.error?.message ?? `status ${response.status}`)
   return body as T
 }
+
+const call = <T,>(path: string, init: { method?: 'GET' | 'POST' | 'PUT'; body?: unknown } = {}) => orchestratorCall<T>('railway', path, init)
 
 const channelPath = (channel: string) => `channels/${encodeURIComponent(channel)}`
 const said = (error: unknown) => (error instanceof Error ? error.message : String(error))
@@ -108,12 +111,11 @@ function Attach({ save }: { save: (next: ChannelRailway | null) => Promise<strin
   }
   return (
     <div className="railway field">
-      <p className="hint">Railway is off for this channel. Choose a project: its production environment is used.</p>
       {projects === null ? <span className="hint">{error ?? 'loading…'}</span> : (
         <>
           <select value={project} onChange={(event) => { setProject(event.target.value); setChosen(new Set()) }}>
             <option value="">project</option>
-            {projects.map((entry) => <option key={entry.id} value={entry.id} disabled={!entry.production}>{entry.name}{entry.production ? '' : ' (no production environment)'}</option>)}
+            {projects.map((entry) => <option key={entry.id} value={entry.id} disabled={!entry.production}>{entry.name}{entry.production ? '' : ' (no production)'}</option>)}
           </select>
           {picked && (
             <ul className="railway-choices">
@@ -121,14 +123,13 @@ function Attach({ save }: { save: (next: ChannelRailway | null) => Promise<strin
                 <li key={service.id}><label><input type="checkbox" checked={chosen.has(service.id)}
                   onChange={() => setChosen((current) => { const next = new Set(current); next.has(service.id) ? next.delete(service.id) : next.add(service.id); return next })} /> {service.name}</label></li>
               ))}
-              {picked.services.length === 0 && <li className="hint">no services yet: create them after turning Railway on</li>}
+              {picked.services.length === 0 && <li className="hint">no services</li>}
             </ul>
           )}
           {error && <p className="error" role="alert">{error}</p>}
-          <button type="button" className="send" disabled={!picked?.production} onClick={() => void turnOn()}>turn on Railway</button>
-          <p className="hint">or a new project, production only:</p>
+          <button type="button" className="send" disabled={!picked?.production} onClick={() => void turnOn()}>turn on</button>
           <div className="railway-create">
-            <input type="text" value={name} placeholder="new project name" onChange={(event) => setName(event.target.value)} spellCheck={false} />
+            <input type="text" value={name} placeholder="new project" onChange={(event) => setName(event.target.value)} spellCheck={false} />
             <button type="button" className="act" disabled={creating || !name.trim()} onClick={() => void create()}>{creating ? 'creating…' : 'create project'}</button>
           </div>
         </>
@@ -207,7 +208,7 @@ function Services({ channel, railway, save }: { channel: string; railway: Channe
       )}
       <div className="railway-footer">
         <button type="button" className="act" onClick={() => setEditing((now) => !now)} aria-pressed={editing}>attach or create</button>
-        <button type="button" className="act" onClick={() => void save(null)} title="detaches the channel from Railway; nothing on Railway changes">turn off Railway</button>
+        <button type="button" className="act" onClick={() => void save(null)} title="nothing changes on Railway">turn off</button>
       </div>
       {editing && <AttachServices channel={channel} railway={railway} save={save} />}
     </div>
@@ -254,11 +255,11 @@ function AttachServices({ channel, railway, save }: { channel: string; railway: 
           ))}
         </ul>
       )}
-      <button type="button" className="act" disabled={!project} onClick={() => void apply()}>attach the checked services</button>
+      <button type="button" className="act" disabled={!project} onClick={() => void apply()}>attach</button>
       <div className="railway-create">
-        <input type="text" value={name} placeholder="new service name" onChange={(event) => setName(event.target.value)} spellCheck={false} />
-        <input type="text" value={branch} placeholder="branch (default branch when empty)" onChange={(event) => setBranch(event.target.value)} spellCheck={false} />
-        <button type="button" className="act" disabled={busy || !name.trim()} onClick={() => void create()}>{busy ? 'creating…' : 'create from the channel repository'}</button>
+        <input type="text" value={name} placeholder="new service" onChange={(event) => setName(event.target.value)} spellCheck={false} />
+        <input type="text" value={branch} placeholder="branch" onChange={(event) => setBranch(event.target.value)} spellCheck={false} />
+        <button type="button" className="act" disabled={busy || !name.trim()} onClick={() => void create()}>{busy ? 'creating…' : 'create'}</button>
       </div>
       {error && <p className="error" role="alert">{error}</p>}
     </div>
@@ -297,7 +298,7 @@ function Variables({ channel, railway }: { channel: string; railway: ChannelRail
     const remove = rows.filter((row) => row.remove && row.was !== null).map((row) => row.name)
     try {
       const answer = await call<{ set: string[]; removal_task: string | null }>(`${channelPath(channel)}/services/${service}/variables`, { method: 'PUT', body: { set, remove } })
-      setNote([answer.set.length ? `set ${answer.set.join(', ')}` : '', answer.removal_task ? `removal asked in task #${answer.removal_task}` : ''].filter(Boolean).join(' · ') || 'nothing changed')
+      setNote([answer.set.length ? 'saved' : '', answer.removal_task ? `removal: task #${answer.removal_task}` : ''].filter(Boolean).join(' · ') || 'no change')
       load()
     } catch (failed) {
       setError(said(failed))
@@ -318,7 +319,7 @@ function Variables({ channel, railway }: { channel: string; railway: ChannelRail
                   onChange={(event) => setRows((current) => current && current.map((entry, j) => (j === i ? { ...entry, name: event.target.value } : entry)))} /></td>
                 <td><input type={shown ? 'text' : 'password'} value={row.value} spellCheck={false} autoComplete="off"
                   onChange={(event) => setRows((current) => current && current.map((entry, j) => (j === i ? { ...entry, value: event.target.value } : entry)))} /></td>
-                <td><button type="button" className="act" aria-pressed={row.remove} title="asks a person to remove it; the orchestrator removes nothing"
+                <td><button type="button" className="act" aria-pressed={row.remove} title="asks you in a task"
                   onClick={() => setRows((current) => current && current.map((entry, j) => (j === i ? { ...entry, remove: !entry.remove } : entry)))}>remove</button></td>
               </tr>
             ))}
@@ -369,7 +370,7 @@ function ServiceSettings({ channel, railway }: { channel: string; railway: Chann
     setError(null)
     try {
       const answer = await call<{ changed: string[] }>(`${channelPath(channel)}/services/${service}/settings`, { method: 'PUT', body: change })
-      setNote(answer.changed.length ? `changed ${answer.changed.join(', ')}; Railway uses them from the next deployment` : 'nothing changed')
+      setNote(answer.changed.length ? 'saved' : 'no change')
       load()
     } catch (failed) {
       setError(said(failed))
@@ -441,9 +442,9 @@ function Domains({ channel, service }: { channel: string; service: string }) {
             </div>
           ))}
           {domains.custom.map((domain) => <div key={domain} className="railway-row"><a href={`https://${domain}`} target="_blank" rel="noreferrer">{domain}</a><span className="hint">custom</span></div>)}
-          {domains.service.length === 0 && domains.custom.length === 0 && <span className="hint">no public domain</span>}
+          {domains.service.length === 0 && domains.custom.length === 0 && <span className="hint">none</span>}
           <div className="railway-row">
-            <input type="text" inputMode="numeric" className="railway-port" value={port} placeholder="port (optional)" onChange={(event) => setPort(event.target.value)} />
+            <input type="text" inputMode="numeric" className="railway-port" value={port} placeholder="port" onChange={(event) => setPort(event.target.value)} />
             <button type="button" className="act" disabled={busy} onClick={() => void run(() => call(path, { method: 'POST', body: port.trim() ? { targetPort: port.trim() } : {} }))}>generate domain</button>
           </div>
           {error && <p className="error" role="alert">{error}</p>}

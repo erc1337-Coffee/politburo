@@ -18,6 +18,7 @@ import { Ask, AskForm, Header, HeaderActions, nativeMenu, Panel, ResizeHandle, t
 import { boardWords, cadence, firstLine, shownName, until } from './words.ts'
 import { IdentitiesContext, nameFor } from './identity.ts'
 import { Operations } from './operations-view.tsx'
+import { DeploymentStatusLine } from './deployment-panel.tsx'
 
 const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`
 
@@ -464,6 +465,7 @@ function Channel(props: { channel: string; state: State; options: RowOptions; kn
         <Messages messages={roots} now={options.now} options={{ ...options, summary: (m) => summaries.get(m.id) }} {...(listed ? { at: activeAt } : {})} />
         <Pendings posts={pending} me={state.me!} after={roots.at(-1)} afterHasReplies={(summaries.get(roots.at(-1)?.id ?? '')?.count ?? 0) > 0} />
       </Feed>
+      <DeploymentStatusLine channel={channel} settings={info?.settings} />
       {canPost && <Composer
         scope={`channel:${channel}`}
         role="main"

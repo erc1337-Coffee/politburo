@@ -20,6 +20,7 @@ import { errorCode, type OperationsEventBody, type OperationsMonitor, type Opera
 import { repositoryName, type GitHubClient, type PullRequest, type PullRequestStatus } from './github.ts'
 import { applicableActions, type ThreadAction, type ThreadAnswer, type ThreadAssistant, type ThreadFacts } from './thread-assistant.ts'
 import { ATTENTION_LABEL, type RailwayAction, type RailwayOperations } from './railway-operations.ts'
+import type { ListenerAction, ListenerOperations } from './listener-operations.ts'
 import { launch, launchKey, recover, type Binding, type Journal, type Provider } from './launch.ts'
 import { workerPrompt } from './launcher.ts'
 import { workerFiles } from './worker-files.ts'
@@ -61,6 +62,8 @@ export interface OrchestratorDependencies {
   assistant?: ThreadAssistant | null
   /** The channels' Railway services; without it, Railway facts and actions are absent. */
   railway?: RailwayOperations | null
+  /** The channels' local listeners; without it, listener facts and actions are absent. */
+  listeners?: ListenerOperations | null
   /** A launch provider that sends an attempt's prompt to an existing cloud session; without it, every attempt gets a new session. */
   resume?: ((session: string, prompt: string, directory: string) => Provider) | null
   now?: () => number
@@ -131,7 +134,7 @@ export class Orchestrator {
     const log = (entry: Record<string, unknown>): void => {
       process.stdout.write(`${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`)
     }
-    this.#d = { policy: fixedRulesPolicy, now: Date.now, log, workerFiles: () => workerFiles(), usage: null, monitor: null, decider: null, assistant: null, resume: null, railway: null, ...dependencies }
+    this.#d = { policy: fixedRulesPolicy, now: Date.now, log, workerFiles: () => workerFiles(), usage: null, monitor: null, decider: null, assistant: null, resume: null, railway: null, listeners: null, ...dependencies }
   }
 
   /** Recovers live attempts, then follows board events and starts the sweep. */
@@ -354,8 +357,9 @@ export class Orchestrator {
     // A new task's own text is its brief, not a message to answer.
     if (message.id === root.id && root.task) return
     const railway = await this.#railwayFacts(root.channel)
-    // Outside a task, only a channel with Railway services has the orchestrator in its chat.
-    if (!root.task && !railway) return
+    const local = await this.#localFacts(root.channel)
+    // Outside a task, only a channel with a deployment has the orchestrator in its chat.
+    if (!root.task && !railway && !local) return
     const attempts = root.task ? this.#d.state.forTask(taskId) : []
     const live = attempts.find((attempt) => LIVE_STATES.includes(attempt.state)) ?? null
     const latest = attempts.at(-1) ?? null
@@ -379,6 +383,7 @@ export class Orchestrator {
         result: root.task.result ? workerText(root.task.result, 2_000) : null, decision: root.labels[DECISION_LABEL] ?? null,
       } : null,
       railway,
+      local,
       repository: { name: repository ?? 'none yet', kind: repository && isLocalRepository(repository) ? 'local' : 'github' },
       attempts: attempts.map((attempt) => ({
         no: attempt.attemptNo, state: attempt.state, outcome: attempt.outcome, round: attempt.round, phase: phaseOf(attempt), cost_usd: attempt.costUsd, branch: attempt.branch,
@@ -403,6 +408,26 @@ export class Orchestrator {
     }
     const by = name(message.by, message.author)
     await this.#serial(() => this.#actOnThreadAnswer(taskId, root.channel, root.task ? taskId : null, answer, pull, message.id, by))
+  }
+
+  /** The local deployment facts of a channel, or null. */
+  async #localFacts(channel: string): Promise<ThreadFacts['local']> {
+    const operations = this.#d.listeners
+    if (!operations?.available) return null
+    let dockerfile: string
+    try {
+      dockerfile = (await operations.channel(channel)).local.dockerfile
+    } catch {
+      return null
+    }
+    const statuses = await operations.statuses(channel).catch(() => [])
+    const listeners = await Promise.all(statuses.map(async (status) => ({
+      name: status.name, subpath: status.subpath || '.', port: status.port, running: status.container?.running ?? null,
+      endpoints: status.endpoints.map((endpoint) => `${endpoint.interface} ${endpoint.address}:${endpoint.port} ${endpoint.open ? `open ${endpoint.connect_ms} ms` : 'closed'} since ${endpoint.since}`),
+      last_build: status.last_build ? `${status.last_build.branch} ${status.last_build.commit.slice(0, 7)} at ${status.last_build.at}` : null,
+      log_tail: (await operations.logs(channel, status.id, 20).catch(() => [])).map((line) => workerText(line, 300)),
+    })))
+    return { dockerfile: workerText(dockerfile, 16_000), listeners }
   }
 
   /** The Railway facts of a channel with Railway services, or null. */
@@ -483,6 +508,18 @@ export class Orchestrator {
         return `Task #${await this.#attention(channel, action.text!)} waits for a person.`
       } catch (error) {
         return `Creating the task failed: ${(error as Error).message.slice(0, 300)}`
+      }
+    }
+    if (action.name.startsWith('listener_')) {
+      const operations = this.#d.listeners
+      if (!operations) return 'Local listeners are not set up for the orchestrator.'
+      try {
+        if (action.name === 'listener_dockerfile') return `Listener: ${await operations.setDockerfile(channel, action.text!, by)}.`
+        const listener = await operations.listenerNamed(channel, action.service!)
+        return `Listener: ${await operations.act(channel, listener.id, action.name.slice('listener_'.length) as ListenerAction, by)}.`
+      } catch (error) {
+        this.#d.log({ event: 'thread_action_failed', channel, action: action.name, message: (error as Error).message })
+        return `${action.name.replace('_', ' ')} failed: ${(error as Error).message.slice(0, 600)}`
       }
     }
     if (action.name.startsWith('railway_')) {

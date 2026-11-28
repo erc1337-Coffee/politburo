@@ -5,7 +5,7 @@ import type { Me } from '../api/routes.ts'
 import type { BoardClient, ProfileOption } from '../client/client.ts'
 import { InvalidProfileHeader, parseProfileHeader } from '../contract/profile-header.ts'
 import { ATTACHMENT_BYTES_MAX } from '../contract/schemas.ts'
-import { OPERATIONS_PREFIX, operationsRoutes, RAILWAY_PREFIX, type OperationsOptions } from './operations.ts'
+import { DEPLOYMENT_PREFIX, OPERATIONS_PREFIX, operationsRoutes, RAILWAY_PREFIX, type OperationsOptions } from './operations.ts'
 import { CSP, relative, shell } from './shell.ts'
 
 /** A browser UI for one board, on this machine, reading and writing as the client's identity. */
@@ -93,7 +93,8 @@ export async function createInspector(options: {
     streams.add(controller)
     response.on('close', () => controller.abort())
     try {
-      await operations.railway(request, response, url.pathname.slice(RAILWAY_PREFIX.length), controller.signal)
+      const deployment = url.pathname.startsWith(DEPLOYMENT_PREFIX)
+      await operations.railway(request, response, url.pathname.slice((deployment ? DEPLOYMENT_PREFIX : RAILWAY_PREFIX).length), controller.signal, deployment ? 'deployment' : 'railway')
     } finally {
       streams.delete(controller)
     }
@@ -169,7 +170,7 @@ export async function createInspector(options: {
       return void operationsRead(request, response, url).catch(() =>
         response.headersSent ? response.end() : send(response, 500, 'text/plain; charset=utf-8', 'error'),
       )
-    if (url.pathname.startsWith(RAILWAY_PREFIX))
+    if (url.pathname.startsWith(RAILWAY_PREFIX) || url.pathname.startsWith(DEPLOYMENT_PREFIX))
       return void railwayRequest(request, response, url).catch(() =>
         response.headersSent ? response.end() : send(response, 500, 'text/plain; charset=utf-8', 'error'),
       )

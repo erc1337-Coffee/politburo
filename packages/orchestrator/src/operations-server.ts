@@ -20,10 +20,17 @@
 //   GET  /railway/channels/{channel}/services/{id}/domains
 //   POST /railway/channels/{channel}/services/{id}/domains       generate a railway.app domain: { targetPort? }
 //   PUT  /railway/channels/{channel}/services/{id}/domains/{d}   { targetPort }
+//
+//   GET  /deployment/addresses                                   host addresses listeners publish on, by name
+//   GET  /deployment/template                                    the board's listener Dockerfile template
+//   GET  /deployment/channels/{channel}                          the channel's listeners, Railway services, health
+//   POST /deployment/channels/{channel}/listeners/{id}/{action}  start, stop, reload
+//   GET  /deployment/channels/{channel}/listeners/{id}/logs      ?tail=N
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import type { OperationsMonitor, OperationsSnapshot } from './operations.ts'
 import { RAILWAY_ACTIONS, RailwayRequestError, railwayFailure, type RailwayAction, type RailwayOperations } from './railway-operations.ts'
+import { LISTENER_ACTIONS, listenerFailure, type ListenerAction, type ListenerOperations } from './listener-operations.ts'
 
 const KEEPALIVE_MS = 15_000
 const STREAMS_MAX = 32
@@ -31,6 +38,8 @@ const ATTEMPT_ROUTE = /^\/attempts\/([0-9a-f-]{36})\/events$/
 const RAILWAY_SERVICE = /^\/railway\/channels\/([^/]+)\/services\/([0-9a-f-]{36})\/(logs|variables|settings|domains|start|stop|restart|redeploy|rollback)$/
 const RAILWAY_DOMAIN = /^\/railway\/channels\/([^/]+)\/services\/([0-9a-f-]{36})\/domains\/([0-9A-Za-z_-]{1,64})$/
 const RAILWAY_SERVICES = /^\/railway\/channels\/([^/]+)\/services$/
+const DEPLOYMENT_CHANNEL = /^\/deployment\/channels\/([^/]+)$/
+const DEPLOYMENT_LISTENER = /^\/deployment\/channels\/([^/]+)\/listeners\/([a-z0-9][a-z0-9_-]{0,62})\/(logs|start|stop|reload)$/
 const BODY_MAX = 256 * 1024
 /** Who a request of the Railway tab is, in the channel's status lines. */
 const TAB = 'the channel settings'
@@ -46,6 +55,7 @@ export async function startOperationsServer(options: {
   port: number
   host?: string
   railway?: RailwayOperations | null
+  listeners?: ListenerOperations | null
 }): Promise<OperationsServer> {
   const { monitor } = options
   const streams = new Set<() => void>()
@@ -61,6 +71,14 @@ export async function startOperationsServer(options: {
 
   function handle(request: IncomingMessage, response: ServerResponse): void {
     const url = new URL(request.url ?? '/', 'http://operations')
+    if (url.pathname.startsWith('/deployment/')) {
+      void deployment(request, response, url).catch((error: unknown) => {
+        const { status, message } = listenerFailure(error) ?? railwayFailure(error)
+        if (!response.headersSent) reply(response, status, { error: message })
+        else response.end()
+      })
+      return
+    }
     if (url.pathname.startsWith('/railway/')) {
       void railway(request, response, url).catch((error: unknown) => {
         const { status, message } = railwayFailure(error)
@@ -146,6 +164,38 @@ export async function startOperationsServer(options: {
     }
     if ((RAILWAY_ACTIONS as readonly string[]).includes(what) && method === 'POST') {
       return reply(response, 200, { outcome: await operations.act(channel, service, what as RailwayAction, TAB) })
+    }
+    return reply(response, 405, { error: 'method_not_allowed' })
+  }
+
+  /** The channel view's deployment status line and the local listeners of the channel settings. */
+  async function deployment(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
+    const listeners = options.listeners ?? null
+    const method = request.method ?? 'GET'
+    if (url.pathname === '/deployment/template' && method === 'GET') {
+      if (!listeners) return reply(response, 503, { error: 'the orchestrator has no listener operations' })
+      return reply(response, 200, { dockerfile: listeners.template() })
+    }
+    if (url.pathname === '/deployment/addresses' && method === 'GET') {
+      if (!listeners?.available) return reply(response, 503, { error: 'LISTENER_SUPERVISOR_URL is not set for the orchestrator' })
+      return reply(response, 200, { addresses: await listeners.addresses() })
+    }
+    const channelMatch = DEPLOYMENT_CHANNEL.exec(url.pathname)
+    if (channelMatch && method === 'GET') {
+      const channel = decodeURIComponent(channelMatch[1]!)
+      const local = listeners?.available ? await listeners.statuses(channel).catch(() => null) : null
+      const railway = options.railway?.available ? await options.railway.statuses(channel).catch(() => null) : null
+      return reply(response, 200, { listeners: local, railway })
+    }
+    const match = DEPLOYMENT_LISTENER.exec(url.pathname)
+    if (!match) return reply(response, 404, { error: 'not_found' })
+    if (!listeners) return reply(response, 503, { error: 'the orchestrator has no listener operations' })
+    const channel = decodeURIComponent(match[1]!)
+    const id = match[2]!
+    const what = match[3]!
+    if (what === 'logs' && method === 'GET') return reply(response, 200, { lines: await listeners.logs(channel, id, Number(url.searchParams.get('tail') ?? 200) || 200) })
+    if ((LISTENER_ACTIONS as readonly string[]).includes(what) && method === 'POST') {
+      return reply(response, 200, { outcome: await listeners.act(channel, id, what as ListenerAction, TAB) })
     }
     return reply(response, 405, { error: 'method_not_allowed' })
   }
