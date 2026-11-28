@@ -19,6 +19,7 @@ import type { UsageLedger } from './usage-ledger.ts'
 import { errorCode, type OperationsEventBody, type OperationsMonitor, type OperationsSnapshot, type WakeSource } from './operations.ts'
 import { repositoryName, type GitHubClient, type PullRequest, type PullRequestStatus } from './github.ts'
 import { applicableActions, type ThreadAction, type ThreadAnswer, type ThreadAssistant, type ThreadFacts } from './thread-assistant.ts'
+import { ATTENTION_LABEL, type RailwayAction, type RailwayOperations } from './railway-operations.ts'
 import { launch, launchKey, recover, type Binding, type Journal, type Provider } from './launch.ts'
 import { workerPrompt } from './launcher.ts'
 import { workerFiles } from './worker-files.ts'
@@ -58,6 +59,8 @@ export interface OrchestratorDependencies {
   decider?: FinalDecider | null
   /** Answers people's messages in task threads; without it, the orchestrator does not read them. */
   assistant?: ThreadAssistant | null
+  /** The channels' Railway services; without it, Railway facts and actions are absent. */
+  railway?: RailwayOperations | null
   /** A launch provider that sends an attempt's prompt to an existing cloud session; without it, every attempt gets a new session. */
   resume?: ((session: string, prompt: string, directory: string) => Provider) | null
   now?: () => number
@@ -128,7 +131,7 @@ export class Orchestrator {
     const log = (entry: Record<string, unknown>): void => {
       process.stdout.write(`${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`)
     }
-    this.#d = { policy: fixedRulesPolicy, now: Date.now, log, workerFiles: () => workerFiles(), usage: null, monitor: null, decider: null, assistant: null, resume: null, ...dependencies }
+    this.#d = { policy: fixedRulesPolicy, now: Date.now, log, workerFiles: () => workerFiles(), usage: null, monitor: null, decider: null, assistant: null, resume: null, railway: null, ...dependencies }
   }
 
   /** Recovers live attempts, then follows board events and starts the sweep. */
@@ -327,12 +330,15 @@ export class Orchestrator {
 
   // --- people's messages in task threads -------------------------------------
 
-  /** A reply in a task thread from anyone but the orchestrator goes to the orchestrator model. */
+  /**
+   * A message from anyone but the orchestrator goes to the orchestrator model: in a task thread,
+   * and in the chat of a channel with Railway services.
+   */
   #onBoardEvent(event: BoardEventView): void {
     if (!this.#d.assistant || event.type !== 'message.posted') return
     const message = event.message
-    const root = message?.re
-    if (!message || !root) return
+    if (!message) return
+    const root = message.re ?? message.id
     if (message.by.actor === this.#actor || message.by.principal === this.#actor) return
     if (message.labels[STATUS_LABEL] || message.blocks.length > 0 || !message.text.trim()) return
     // A worker's question takes the first reply as its answer.
@@ -345,8 +351,12 @@ export class Orchestrator {
   async #assist(taskId: string, message: MessageView): Promise<void> {
     const thread = await this.#d.board.thread(taskId)
     const root = thread.message
-    if (!root.task) return
-    const attempts = this.#d.state.forTask(taskId)
+    // A new task's own text is its brief, not a message to answer.
+    if (message.id === root.id && root.task) return
+    const railway = await this.#railwayFacts(root.channel)
+    // Outside a task, only a channel with Railway services has the orchestrator in its chat.
+    if (!root.task && !railway) return
+    const attempts = root.task ? this.#d.state.forTask(taskId) : []
     const live = attempts.find((attempt) => LIVE_STATES.includes(attempt.state)) ?? null
     const latest = attempts.at(-1) ?? null
     const repository = latest?.repository ?? null
@@ -363,10 +373,12 @@ export class Orchestrator {
     const phaseOf = (attempt: AttemptRecord) => snapshot?.attempts.find((row) => row.attempt_id === attempt.attemptId)?.phase?.phase ?? null
     const name = (by: MessageView['by'], author: MessageView['author']) => (by.actor === this.#actor ? 'orchestrator' : author?.name ?? by.actor)
     const base: Omit<ThreadFacts, 'actions'> = {
-      task: {
-        id: taskId, channel: root.channel, state: root.task.state, brief: workerText(root.text, 6_000),
+      channel: root.channel,
+      task: root.task ? {
+        id: taskId, state: root.task.state, brief: workerText(root.text, 6_000),
         result: root.task.result ? workerText(root.task.result, 2_000) : null, decision: root.labels[DECISION_LABEL] ?? null,
-      },
+      } : null,
+      railway,
       repository: { name: repository ?? 'none yet', kind: repository && isLocalRepository(repository) ? 'local' : 'github' },
       attempts: attempts.map((attempt) => ({
         no: attempt.attemptNo, state: attempt.state, outcome: attempt.outcome, round: attempt.round, phase: phaseOf(attempt), cost_usd: attempt.costUsd, branch: attempt.branch,
@@ -376,7 +388,7 @@ export class Orchestrator {
         url: pull.url, number: pull.number, title: pull.title, state: pull.state, draft: pull.draft, merged: pull.merged,
         mergeable: pull.mergeable, mergeable_state: pull.mergeableState, combined_status: pull.combinedStatus, checks: pull.checks.slice(0, 30),
       },
-      thread: thread.replies.filter((reply) => reply.id !== message.id).slice(-20)
+      thread: [...(root.task || root.id === message.id ? [] : [root]), ...thread.replies].filter((reply) => reply.id !== message.id).slice(-20)
         .map((reply) => ({ by: name(reply.by, reply.author), text: workerText(reply.text, 1_500) })),
       message: { by: name(message.by, message.author), text: workerText(message.text, 8_000) },
     }
@@ -389,34 +401,102 @@ export class Orchestrator {
       await this.#reply(taskId, `Orchestrator: the orchestrator model did not answer (${(error as Error).message.slice(0, 200)}).`)
       return
     }
-    await this.#serial(() => this.#actOnThreadAnswer(taskId, answer, pull, message.id))
+    const by = name(message.by, message.author)
+    await this.#serial(() => this.#actOnThreadAnswer(taskId, root.channel, root.task ? taskId : null, answer, pull, message.id, by))
   }
 
-  /** Does what the orchestrator model chose, then posts its reply with the outcome of each action. */
-  async #actOnThreadAnswer(taskId: string, answer: ThreadAnswer, pull: PullRequest | null, messageId: string): Promise<void> {
+  /** The Railway facts of a channel with Railway services, or null. */
+  async #railwayFacts(channel: string): Promise<ThreadFacts['railway']> {
+    const operations = this.#d.railway
+    if (!operations?.available) return null
+    let settings: Awaited<ReturnType<RailwayOperations['channel']>>
+    try {
+      settings = await operations.channel(channel)
+    } catch {
+      return null
+    }
+    const services = await Promise.all(settings.railway.services.map(async (service) => {
+      try {
+        const status = await operations.status(channel, service.id)
+        const logs = status.latest ? await operations.logs(channel, service.id, 'deploy', 20).catch(() => ({ lines: [] })) : { lines: [] }
+        return {
+          name: service.name, status: status.latest?.status ?? null, deployed_at: status.latest?.createdAt ?? null, stopped: status.active.length === 0,
+          domains: status.domains, log_tail: logs.lines.map((line) => workerText(line.message, 300)),
+        }
+      } catch (error) {
+        return { name: service.name, status: `unknown (${(error as Error).message.slice(0, 120)})`, deployed_at: null, stopped: false, domains: [], log_tail: [] }
+      }
+    }))
+    return { project: settings.railway.projectName, services }
+  }
+
+  /** Does what the orchestrator model chose, then posts its reply in the thread with the outcome of each action. */
+  async #actOnThreadAnswer(rootId: string, channel: string, taskId: string | null, answer: ThreadAnswer, pull: PullRequest | null, messageId: string, by: string): Promise<void> {
     const outcomes: string[] = []
-    const latest = this.#d.state.forTask(taskId).at(-1) ?? null
-    for (const action of answer.actions) outcomes.push(await this.#threadAction(taskId, action, pull, latest))
+    const latest = taskId ? this.#d.state.forTask(taskId).at(-1) ?? null : null
+    for (const action of answer.actions) outcomes.push(await this.#threadAction(channel, taskId, action, pull, latest, by))
     let work: 'worker' | 'followup' | null = null
-    if (answer.work) {
+    if (answer.work && taskId) {
       const outcome = await this.#threadWork(taskId, answer.work.text, answer.work.mode, messageId)
       work = outcome.work
       outcomes.push(outcome.text)
+    } else if (answer.work) {
+      outcomes.push(await this.#createChannelTask(channel, answer.work.text))
     }
+    const taskIdForEvents = taskId ?? rootId
     const text = [answer.reply ? workerText(answer.reply, 4_000) : '', ...outcomes].filter(Boolean).join('\n\n')
     if (text) {
       try {
-        await this.#d.board.reply(taskId, text)
-        this.#emit({ kind: 'board', action: 'reply', task: taskId })
+        await this.#d.board.reply(rootId, text)
+        this.#emit({ kind: 'board', action: 'reply', task: taskIdForEvents })
       } catch (error) {
-        this.#d.log({ event: 'board_reply_failed', task: taskId, message: (error as Error).message })
+        this.#d.log({ event: 'board_reply_failed', task: taskIdForEvents, message: (error as Error).message })
       }
     }
-    this.#emit({ kind: 'thread', task: taskId, ...(latest ? { channel: latest.channel } : {}), reply: answer.reply !== '', actions: answer.actions.map((action) => action.name), work })
-    this.#d.log({ event: 'thread_message', task: taskId, reply: answer.reply !== '', actions: answer.actions.map((action) => action.name), work })
+    this.#emit({ kind: 'thread', task: taskIdForEvents, ...(latest ? { channel: latest.channel } : {}), reply: answer.reply !== '', actions: answer.actions.map((action) => action.name), work })
+    this.#d.log({ event: 'thread_message', task: taskIdForEvents, reply: answer.reply !== '', actions: answer.actions.map((action) => action.name), work })
   }
 
-  async #threadAction(taskId: string, action: ThreadAction, pull: PullRequest | null, latest: AttemptRecord | null): Promise<string> {
+  /** A task of the channel from a request in its chat: the first line is its title. */
+  async #createChannelTask(channel: string, text: string): Promise<string> {
+    try {
+      const { task } = await this.#d.board.tasks.create(channel, { text: workerText(text, 8_000) })
+      this.wake('request')
+      return `Task #${task.id} is created for it.`
+    } catch (error) {
+      this.#d.log({ event: 'channel_task_create_failed', channel, message: (error as Error).message })
+      return `Creating the task failed: ${(error as Error).message.slice(0, 300)}`
+    }
+  }
+
+  /** A task in the channel that waits for a person; the orchestrator never claims it. */
+  async #attention(channel: string, text: string): Promise<string> {
+    const { task } = await this.#d.board.tasks.create(channel, { text: workerText(text, 8_000), labels: { [ATTENTION_LABEL]: 'orchestrator' } })
+    await this.#d.board.tasks.block(task.id, 'Needs a decision of a person.', { kind: 'needs_input' })
+      .catch((error: Error) => this.#d.log({ event: 'attention_block_failed', task: task.id, message: error.message }))
+    return task.id
+  }
+
+  async #threadAction(channel: string, taskIdOrNull: string | null, action: ThreadAction, pull: PullRequest | null, latest: AttemptRecord | null, by: string): Promise<string> {
+    if (action.name === 'needs_attention') {
+      try {
+        return `Task #${await this.#attention(channel, action.text!)} waits for a person.`
+      } catch (error) {
+        return `Creating the task failed: ${(error as Error).message.slice(0, 300)}`
+      }
+    }
+    if (action.name.startsWith('railway_')) {
+      const operations = this.#d.railway
+      if (!operations) return 'Railway is not set up for the orchestrator.'
+      try {
+        const service = await operations.serviceNamed(channel, action.service!)
+        return `Railway: ${await operations.act(channel, service.id, action.name.slice('railway_'.length) as RailwayAction, by)}.`
+      } catch (error) {
+        this.#d.log({ event: 'thread_action_failed', channel, action: action.name, message: (error as Error).message })
+        return `${action.name.replace('_', ' ')} failed: ${(error as Error).message.slice(0, 300)}`
+      }
+    }
+    const taskId = taskIdOrNull!
     const repository = latest?.repository ?? ''
     const github = (name: 'ready' | 'merge' | 'close' | 'reopen') =>
       this.#emit({ kind: 'github', action: name, repository, task: taskId, ...(latest ? { channel: latest.channel } : {}) })
@@ -450,6 +530,8 @@ export class Orchestrator {
           await this.#reopenForFollowups()
           this.wake('request')
           return 'The task starts again with a new worker.'
+        default:
+          return `${action.name} does not apply here.`
       }
     } catch (error) {
       this.#d.log({ event: 'thread_action_failed', task: taskId, action: action.name, message: (error as Error).message })
@@ -595,7 +677,7 @@ export class Orchestrator {
     const page = await this.#d.board.tasks.list({ state: 'ready' })
     const candidates = page.tasks
       .map((summary) => summary.message)
-      .filter((message) => !live.some((attempt) => attempt.taskId === message.id))
+      .filter((message) => !live.some((attempt) => attempt.taskId === message.id) && !message.labels[ATTENTION_LABEL])
       .sort((a, b) => (PRIORITY[a.task?.priority ?? 'normal']! - PRIORITY[b.task?.priority ?? 'normal']!) || Number(a.id) - Number(b.id))
     for (const message of candidates) {
       if (live.length >= admission.liveAttempts) return

@@ -17,6 +17,8 @@ import { RelayClient } from './relay-client.ts'
 import { readModelRoutes, type ModelRoute } from './model-routes.ts'
 import { Orchestrator } from './service.ts'
 import { ThreadAssistant } from './thread-assistant.ts'
+import { RailwayClient } from './railway.ts'
+import { RailwayOperations } from './railway-operations.ts'
 import { acquireLock, StateStore } from './state.ts'
 
 const usage = [
@@ -58,13 +60,20 @@ async function serve(config: OrchestratorConfig): Promise<number> {
   } catch (error) {
     console.error(`orchestrator: the spend ledger cannot be opened: ${(error as Error).message}`)
   }
+  const board = openBoard().as(config.boardProfile)
+  const railwayToken = process.env.RAILWAY_TOKEN?.trim()
+  const railway = new RailwayOperations({
+    client: railwayToken ? new RailwayClient({ token: railwayToken }) : null, board,
+    log: (entry) => console.log(JSON.stringify({ at: new Date().toISOString(), ...entry })),
+  })
   const orchestratorModel = config.decision.claudeModel
     ? claudeRunner({ model: config.decision.claudeModel, directory: join(config.stateDirectory, 'decision'), timeoutMs: config.decision.claudeTimeoutSeconds * 1000 })
     : null
   const orchestrator = new Orchestrator({
     config,
     monitor,
-    board: openBoard().as(config.boardProfile),
+    board,
+    railway,
     relay: new RelayClient({ url: config.relay.url, signingKey: readFileSync(config.relay.signingKeyFile, 'utf8'), orchestratorTtlSeconds: config.tokens.orchestratorTtlSeconds }),
     github: new GitHubClient({ apiUrl: config.github.apiUrl, token }),
     git: new GitRepositories({ directory: join(config.stateDirectory, 'repositories'), localDirectory: join(config.stateDirectory, 'channel_repositories'), urlBase: 'https://github.com', token }),
@@ -86,7 +95,7 @@ async function serve(config: OrchestratorConfig): Promise<number> {
   let operations: OperationsServer | null = null
   if (monitor) {
     try {
-      operations = await startOperationsServer({ monitor, port: config.operations.port, snapshot: () => orchestrator.operations()! })
+      operations = await startOperationsServer({ monitor, port: config.operations.port, snapshot: () => orchestrator.operations()!, railway })
       console.error(`orchestrator: operations status at ${operations.url}`)
     } catch (error) {
       console.error(`orchestrator: the operations status server did not start: ${(error as Error).message}`)

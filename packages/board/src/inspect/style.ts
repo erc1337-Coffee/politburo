@@ -594,6 +594,23 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 .dialog-head { display: flex; align-items: center; justify-content: space-between; }
 .dialog-head .popover-title { margin: 0; }
 .channel-form { gap: 12px; }
+.channel-tabs { padding: 0 16px; }
+.railway { display: flex; flex-direction: column; gap: 10px; min-width: min(640px, 86vw); }
+.railway-sections { padding: 0; }
+.railway-list, .railway-choices { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.railway-service { border: 1px solid var(--line); padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+.railway-service-head, .railway-actions, .railway-row, .railway-footer, .railway-create { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.railway-status { font-size: 11px; letter-spacing: 0.04em; color: var(--muted); }
+.railway-status.success { color: var(--accent); }
+.railway-status:is(.failed, .crashed) { color: var(--danger, #e5534b); }
+.railway-status.stopped { color: var(--faint); }
+.railway-log { margin: 0; max-height: 260px; overflow: auto; padding: 8px; font-size: 11px; line-height: 1.45; background: var(--sunken, rgba(0,0,0,0.25)); white-space: pre-wrap; word-break: break-all; }
+.railway-table { border-collapse: collapse; width: 100%; }
+.railway-table td { padding: 2px 4px 2px 0; }
+.railway-table input { width: 100%; }
+.railway-table tr.removed input { text-decoration: line-through; opacity: 0.55; }
+.railway-setting { display: grid; grid-template-columns: 220px 1fr; align-items: center; gap: 8px; }
+.railway-create input { flex: 1 1 160px; }
 .channel-form .field { display: grid; gap: 6px; min-width: 0; margin: 0; padding: 0; border: 0; }
 .channel-form .field > input { width: 100%; }
 .channel-form .choice-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
