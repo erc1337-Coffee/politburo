@@ -23,15 +23,30 @@ export const ChannelRouteKey = z.string().min(3).max(200).regex(/^[A-Za-z0-9._-]
 
 export const ChannelRoute = z.strictObject({ key: ChannelRouteKey, enabled: z.boolean() })
 
-/** `repository` null is local work. `routes` are tried in order. */
+export const CHANNEL_RAILWAY_SERVICES_MAX = 20
+
+/** A Railway project, environment or service id. */
+export const RailwayId = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/, 'expected a Railway id')
+
+/** The Railway services of a channel, in one project's production environment. The orchestrator holds the token. */
+export const ChannelRailway = z.strictObject({
+  projectId: RailwayId,
+  projectName: z.string().max(200),
+  environmentId: RailwayId,
+  services: z.array(z.strictObject({ id: RailwayId, name: z.string().max(200) })).max(CHANNEL_RAILWAY_SERVICES_MAX),
+})
+
+/** `repository` null is local work. `routes` are tried in order. `railway` absent or null: the channel uses no Railway. */
 export const ChannelSettings = z
   .strictObject({
     repository: ChannelRepository.nullable(),
     routes: z.array(ChannelRoute).max(CHANNEL_ROUTES_MAX),
+    railway: ChannelRailway.nullable().optional(),
   })
   .refine((settings) => new Set(settings.routes.map((route) => route.key)).size === settings.routes.length, 'a route is listed twice')
 
 export type ChannelRoute = z.output<typeof ChannelRoute>
+export type ChannelRailway = z.output<typeof ChannelRailway>
 export type ChannelSettings = z.output<typeof ChannelSettings>
 
 export const channelSettingsEvents = {

@@ -5,6 +5,10 @@
 //   GET /api/operations/events                      orchestrator events (SSE)
 //   GET /api/operations/attempts/{attempt}/events   last events of one attempt
 //   GET /api/operations/usage                       usage from the spend ledger
+//
+// The Railway routes of the channel settings go to the same server, reads and writes:
+//
+//   /api/railway/...                                -> {orchestrator}/railway/...
 import { existsSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { SpendRecord } from '@remilia/politburo-ledger'
@@ -17,6 +21,8 @@ export type OperationsOptions = {
 }
 
 export const OPERATIONS_PREFIX = '/api/operations/'
+export const RAILWAY_PREFIX = '/api/railway/'
+const RAILWAY_BODY_MAX = 256 * 1024
 
 const ATTEMPT_ROUTE = /^attempts\/([0-9a-f-]{36})\/events$/
 const USAGE_CACHE_MS = 5_000
@@ -166,7 +172,44 @@ export function operationsRoutes(options: OperationsOptions) {
     response.end()
   }
 
-  return { handle }
+  /**
+   * Forwards a Railway request of the channel settings to the orchestrator, which holds the
+   * Railway token; after the caller checked the page token and, for a write, the page's origin.
+   */
+  async function railway(request: IncomingMessage, response: ServerResponse, path: string, signal: AbortSignal): Promise<void> {
+    const method = request.method ?? 'GET'
+    if (!['GET', 'POST', 'PUT'].includes(method)) return json(response, 405, { error: { code: 'method_not_allowed', message: 'GET, POST or PUT' } })
+    if (!/^[A-Za-z0-9._~%/-]{1,400}$/.test(path) || path.split('/').some((part) => part === '..' || part === '.')) {
+      return json(response, 400, { error: { code: 'bad_path', message: 'no such Railway route' } })
+    }
+    if (!options.url) return json(response, 503, { error: { code: 'no_orchestrator', message: 'no orchestrator status server is configured' } })
+    let body: Buffer | undefined
+    if (method !== 'GET') {
+      const chunks: Buffer[] = []
+      let size = 0
+      for await (const chunk of request) {
+        size += (chunk as Buffer).length
+        if (size > RAILWAY_BODY_MAX) return json(response, 413, { error: { code: 'too_large', message: 'request body too large' } })
+        chunks.push(chunk as Buffer)
+      }
+      body = Buffer.concat(chunks)
+    }
+    let upstream: Response
+    try {
+      const search = new URL(request.url ?? '/', 'http://inspector').search
+      upstream = await fetch(`${options.url.replace(/\/+$/, '')}/railway/${path}${search}`, {
+        method, signal, redirect: 'error',
+        ...(body ? { body: new Uint8Array(body), headers: { 'content-type': 'application/json' } } : {}),
+      })
+    } catch (error) {
+      if (signal.aborted) return void response.end()
+      return json(response, 502, { error: { code: 'orchestrator_unreachable', message: `orchestrator unreachable (${(error as Error).name})` } })
+    }
+    response.writeHead(upstream.status, { 'content-type': upstream.headers.get('content-type') ?? 'application/json', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' })
+    response.end(Buffer.from(await upstream.arrayBuffer()))
+  }
+
+  return { handle, railway }
 }
 
 function emptySummary(now: number): UsageSummary {

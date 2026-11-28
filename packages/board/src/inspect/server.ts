@@ -5,7 +5,7 @@ import type { Me } from '../api/routes.ts'
 import type { BoardClient, ProfileOption } from '../client/client.ts'
 import { InvalidProfileHeader, parseProfileHeader } from '../contract/profile-header.ts'
 import { ATTACHMENT_BYTES_MAX } from '../contract/schemas.ts'
-import { OPERATIONS_PREFIX, operationsRoutes, type OperationsOptions } from './operations.ts'
+import { OPERATIONS_PREFIX, operationsRoutes, RAILWAY_PREFIX, type OperationsOptions } from './operations.ts'
 import { CSP, relative, shell } from './shell.ts'
 
 /** A browser UI for one board, on this machine, reading and writing as the client's identity. */
@@ -84,6 +84,21 @@ export async function createInspector(options: {
     }
   }
 
+  /** The channel settings' Railway requests: only for the page (its token), and a write only from its origin. */
+  async function railwayRequest(request: IncomingMessage, response: ServerResponse, url: URL) {
+    const reading = request.method === 'GET'
+    if (!sameSecret(String(request.headers['x-inspect-token'] ?? ''), token) || (!reading && !origins.has(String(request.headers.origin))))
+      return json(response, 403, { error: { code: 'forbidden', message: "Railway is reachable only from the inspector's own page" } })
+    const controller = new AbortController()
+    streams.add(controller)
+    response.on('close', () => controller.abort())
+    try {
+      await operations.railway(request, response, url.pathname.slice(RAILWAY_PREFIX.length), controller.signal)
+    } finally {
+      streams.delete(controller)
+    }
+  }
+
   async function proxy(request: IncomingMessage, response: ServerResponse, url: URL) {
     const reading = request.method === 'GET' || request.method === 'HEAD'
     if (!sameSecret(String(request.headers['x-inspect-token'] ?? ''), token) || (!reading && !origins.has(String(request.headers.origin))))
@@ -152,6 +167,10 @@ export async function createInspector(options: {
     if (!(forwarded ? proxied : hosts).has(named)) return send(response, 421, 'text/plain; charset=utf-8', 'wrong host')
     if (url.pathname.startsWith(OPERATIONS_PREFIX))
       return void operationsRead(request, response, url).catch(() =>
+        response.headersSent ? response.end() : send(response, 500, 'text/plain; charset=utf-8', 'error'),
+      )
+    if (url.pathname.startsWith(RAILWAY_PREFIX))
+      return void railwayRequest(request, response, url).catch(() =>
         response.headersSent ? response.end() : send(response, 500, 'text/plain; charset=utf-8', 'error'),
       )
     if (url.pathname === '/board' || url.pathname.startsWith('/board/'))

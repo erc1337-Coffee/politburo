@@ -6,6 +6,7 @@ import { ChannelPath } from '../../contract/schemas.ts'
 import * as board from './board.ts'
 import { modelSource } from './model-logos.ts'
 import { navigate } from './nav.tsx'
+import { RailwayPanel } from './railway-panel.tsx'
 
 type Row = ChannelRoute & { route: ModelRoute | null }
 
@@ -53,10 +54,35 @@ export function ChannelDialog(props: {
       <Dialog.Portal>
         <Dialog.Backdrop className="dialog-backdrop" />
         <Dialog.Popup className="dialog channel-dialog">
-          {open && <ChannelForm {...(props.channel ? { channel: props.channel } : {})} done={() => setOpen(false)} />}
+          {open && (props.channel ? <ChannelTabs channel={props.channel} done={() => setOpen(false)} /> : <ChannelForm done={() => setOpen(false)} />)}
         </Dialog.Popup>
       </Dialog.Portal>
     </Dialog.Root>
+  )
+}
+
+/** An existing channel's settings: its repository and models, and its Railway services. */
+function ChannelTabs(props: { channel: string; done: () => void }) {
+  const [tab, setTab] = useState<'general' | 'railway'>('general')
+  const settings = board.useBoard().channels[props.channel]?.settings
+  return (
+    <>
+      <nav className="tabs plain channel-tabs">
+        {(['general', 'railway'] as const).map((name) => (
+          <button key={name} type="button" className="tab" aria-current={name === tab ? 'page' : undefined} onClick={() => setTab(name)}>{name}</button>
+        ))}
+      </nav>
+      {tab === 'general' ? <ChannelForm channel={props.channel} done={props.done} />
+        : settings ? (
+          <div className="ask channel-form">
+            <div className="dialog-head">
+              <Dialog.Title className="popover-title">#{props.channel} · railway</Dialog.Title>
+              <Dialog.Close className="tool" aria-label="close" title="close (esc)"><X size={15} strokeWidth={1.75} /></Dialog.Close>
+            </div>
+            <RailwayPanel channel={props.channel} settings={settings} />
+          </div>
+        ) : <p className="hint">Save the channel's settings first.</p>}
+    </>
   )
 }
 
@@ -118,7 +144,8 @@ function ChannelForm(props: { channel?: string; done: () => void }) {
     if (notRepository) return setError('not a repository')
     setSaving(true)
     setError(null)
-    const next: ChannelSettings = { repository, routes: (rows ?? []).map(({ key, enabled }) => ({ key, enabled })) }
+    const current = props.channel ? board.getState().channels[props.channel]?.settings : undefined
+    const next: ChannelSettings = { repository, routes: (rows ?? []).map(({ key, enabled }) => ({ key, enabled })), ...(current?.railway ? { railway: current.railway } : {}) }
     const refused = await board.saveChannel(path, next, creating)
     setSaving(false)
     if (refused) return setError(refused)
