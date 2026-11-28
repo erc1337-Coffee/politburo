@@ -58,7 +58,7 @@ export function DeploymentPanel(props: { channel: string; settings: ChannelSetti
       <div className="deployment-kinds" role="radiogroup" aria-label="deployment">
         {(['none', 'local', 'railway'] as const).map((name) => (
           <label key={name} className={`deployment-kind${kind === name ? ' on' : ''}`}>
-            <input type="radio" name="deployment-kind" checked={kind === name} onChange={() => void choose(name)} /> {name === 'local' ? 'local listeners' : name}
+            <input type="radio" name="deployment-kind" checked={kind === name} onChange={() => void choose(name)} /> {name}
           </label>
         ))}
       </div>
@@ -67,7 +67,6 @@ export function DeploymentPanel(props: { channel: string; settings: ChannelSetti
       {kind === 'local' && (props.settings.local
         ? <LocalPanel channel={props.channel} settings={props.settings} local={props.settings.local} save={save} />
         : <TurnOnLocal settings={props.settings} save={save} />)}
-      {kind === 'none' && <p className="hint">The channel deploys nothing.</p>}
     </div>
   )
 }
@@ -88,9 +87,8 @@ function TurnOnLocal({ settings, save }: { settings: ChannelSettings; save: (nex
   }
   return (
     <div className="field">
-      <p className="hint">Each listener is a Docker container on this host, built from the channel's repository at main, else master, with the board's Dockerfile template. Only the orchestrator changes the channel's copy.</p>
       {error && <p className="error" role="alert">{error}</p>}
-      <button type="button" className="send" disabled={busy} onClick={() => void turnOn()}>{busy ? 'turning on…' : 'turn on local listeners'}</button>
+      <button type="button" className="send" disabled={busy} onClick={() => void turnOn()}>{busy ? 'turning on…' : 'turn on'}</button>
     </div>
   )
 }
@@ -168,12 +166,12 @@ function LocalPanel(props: { channel: string; settings: ChannelSettings; local: 
               {status?.error && <span className="hint">{status.error}</span>}
               <div className="railway-actions">
                 {(['start', 'stop', 'reload'] as const).map((action) => (
-                  <button key={action} type="button" className="act" disabled={busy !== null} title={action === 'reload' ? 'rebuild from the latest main, else master, and restart' : undefined}
+                  <button key={action} type="button" className="act" disabled={busy !== null} title={action === 'reload' ? 'rebuild and restart' : undefined}
                     onClick={() => void act(listener.id, action)}>{busy === `${listener.id}:${action}` ? `${action}…` : action}</button>
                 ))}
                 <button type="button" className="act" aria-pressed={logs?.id === listener.id} onClick={() => setLogs((now) => (now?.id === listener.id ? null : { id: listener.id, lines: null }))}>logs</button>
                 <button type="button" className="act" disabled={busy !== null} onClick={() => setEditing(listener)}>edit</button>
-                <button type="button" className="act" disabled={busy !== null} title="stops the listener and removes it from the channel; its container stays stopped on the host"
+                <button type="button" className="act" disabled={busy !== null} title="stops it"
                   onClick={() => void remove(listener)}>remove</button>
               </div>
               {logs?.id === listener.id && <pre className="railway-log">{logs.lines === null ? 'loading…' : logs.lines.length === 0 ? 'no lines' : logs.lines.join('\n')}</pre>}
@@ -191,8 +189,7 @@ function LocalPanel(props: { channel: string; settings: ChannelSettings; local: 
           <button type="button" className="act" aria-pressed={showDockerfile} onClick={() => setShowDockerfile((now) => !now)}>Dockerfile</button></div>}
       {showDockerfile && (
         <>
-          <p className="hint">The orchestrator changes this file; ask it in the channel. A change reloads every listener.</p>
-          <pre className="railway-log">{local.dockerfile}</pre>
+          <pre className="railway-log" title="read only">{local.dockerfile}</pre>
         </>
       )}
     </div>
@@ -228,12 +225,12 @@ function ListenerForm(props: {
     <div className="railway-settings field listener-form">
       <label className="railway-setting"><span className="field-name">name</span>
         <input type="text" value={name} disabled={props.listener !== null} onChange={(event) => setName(event.target.value)} spellCheck={false} /></label>
-      <label className="railway-setting"><span className="field-name">subpath in the repository</span>
-        <input type="text" value={subpath} placeholder="empty for the repository root" onChange={(event) => setSubpath(event.target.value)} spellCheck={false} /></label>
-      <label className="railway-setting"><span className="field-name">host port</span>
+      <label className="railway-setting"><span className="field-name">subpath</span>
+        <input type="text" value={subpath} placeholder="/" onChange={(event) => setSubpath(event.target.value)} spellCheck={false} /></label>
+      <label className="railway-setting"><span className="field-name">port</span>
         <input type="text" inputMode="numeric" value={port} onChange={(event) => setPort(event.target.value)} /></label>
-      <label className="railway-setting"><span className="field-name">container port (PORT)</span>
-        <input type="text" inputMode="numeric" value={containerPort} placeholder="same as the host port" onChange={(event) => setContainerPort(event.target.value)} /></label>
+      <label className="railway-setting"><span className="field-name">container port</span>
+        <input type="text" inputMode="numeric" value={containerPort} placeholder="= port" onChange={(event) => setContainerPort(event.target.value)} /></label>
       <fieldset className="railway-setting"><span className="field-name">interfaces</span>
         <span className="railway-row">
           {props.addresses === null ? <span className="hint">loading…</span> : Object.entries(props.addresses).map(([interfaceName, address]) => (
@@ -247,7 +244,6 @@ function ListenerForm(props: {
         <button type="button" className="send" onClick={() => void submit()}>{props.listener ? 'save' : 'add'}</button>
         <button type="button" className="act" onClick={props.cancel}>cancel</button>
       </div>
-      {!props.listener && <p className="hint">A new listener runs after its first reload.</p>}
     </div>
   )
 }

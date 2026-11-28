@@ -53,7 +53,7 @@ export function ChannelDialog(props: {
       )}
       <Dialog.Portal>
         <Dialog.Backdrop className="dialog-backdrop" />
-        <Dialog.Popup className="dialog channel-dialog">
+        <Dialog.Popup className={`dialog channel-dialog${props.channel ? ' channel-settings' : ''}`}>
           {open && (props.channel ? <ChannelTabs channel={props.channel} done={() => setOpen(false)} /> : <ChannelForm done={() => setOpen(false)} />)}
         </Dialog.Popup>
       </Dialog.Portal>
@@ -67,26 +67,25 @@ function ChannelTabs(props: { channel: string; done: () => void }) {
   const settings = board.useBoard().channels[props.channel]?.settings
   return (
     <>
+      <div className="dialog-head">
+        <Dialog.Title className="popover-title">#{props.channel}</Dialog.Title>
+        <Dialog.Close className="tool" aria-label="close" title="close (esc)"><X size={15} strokeWidth={1.75} /></Dialog.Close>
+      </div>
       <nav className="tabs plain channel-tabs">
         {(['general', 'deployment'] as const).map((name) => (
           <button key={name} type="button" className="tab" aria-current={name === tab ? 'page' : undefined} onClick={() => setTab(name)}>{name}</button>
         ))}
       </nav>
-      {tab === 'general' ? <ChannelForm channel={props.channel} done={props.done} />
-        : settings ? (
-          <div className="ask channel-form">
-            <div className="dialog-head">
-              <Dialog.Title className="popover-title">#{props.channel} · deployment</Dialog.Title>
-              <Dialog.Close className="tool" aria-label="close" title="close (esc)"><X size={15} strokeWidth={1.75} /></Dialog.Close>
-            </div>
-            <DeploymentPanel channel={props.channel} settings={settings} />
-          </div>
-        ) : <p className="hint">Save the channel's settings first.</p>}
+      <div className="channel-tab-body">
+        {tab === 'general' ? <ChannelForm channel={props.channel} done={props.done} head={false} />
+          : settings ? <DeploymentPanel channel={props.channel} settings={settings} />
+          : <p className="hint">save the channel first</p>}
+      </div>
     </>
   )
 }
 
-function ChannelForm(props: { channel?: string; done: () => void }) {
+function ChannelForm(props: { channel?: string; done: () => void; head?: boolean }) {
   const creating = props.channel === undefined
   const settings = props.channel ? board.getState().channels[props.channel]?.settings : undefined
   const kept = settings?.repository ?? null
@@ -156,10 +155,12 @@ function ChannelForm(props: { channel?: string; done: () => void }) {
 
   return (
     <form className="ask channel-form" onSubmit={(event) => { event.preventDefault(); void save() }}>
-      <div className="dialog-head">
-        <Dialog.Title className="popover-title">{creating ? 'new channel' : `#${props.channel}`}</Dialog.Title>
-        <Dialog.Close className="tool" aria-label="close" title="close (esc)"><X size={15} strokeWidth={1.75} /></Dialog.Close>
-      </div>
+      {props.head !== false && (
+        <div className="dialog-head">
+          <Dialog.Title className="popover-title">{creating ? 'new channel' : `#${props.channel}`}</Dialog.Title>
+          <Dialog.Close className="tool" aria-label="close" title="close (esc)"><X size={15} strokeWidth={1.75} /></Dialog.Close>
+        </div>
+      )}
 
       <div className="field">
         <input

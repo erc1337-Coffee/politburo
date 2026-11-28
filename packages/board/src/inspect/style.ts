@@ -594,8 +594,11 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 .dialog-head { display: flex; align-items: center; justify-content: space-between; }
 .dialog-head .popover-title { margin: 0; }
 .channel-form { gap: 12px; }
-.channel-tabs { padding: 0 16px; }
-.railway { display: flex; flex-direction: column; gap: 10px; min-width: min(640px, 86vw); }
+.channel-tabs { padding: 0; margin-bottom: 10px; }
+.dialog.channel-settings { width: min(720px, calc(100vw - 32px)); height: min(640px, calc(100dvh - 32px)); display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; }
+.channel-tab-body { flex: 1; min-height: 0; overflow: hidden auto; padding-bottom: 14px; }
+.channel-tab-body :is(input, select, textarea) { min-width: 0; max-width: 100%; }
+.railway { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .railway-sections { padding: 0; }
 .railway-list, .railway-choices { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .railway-service { border: 1px solid var(--line); padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
@@ -604,15 +607,15 @@ button.file:hover { background: var(--shade-hover); color: var(--bright); }
 .railway-status.success { color: var(--accent); }
 .railway-status:is(.failed, .crashed) { color: var(--danger, #e5534b); }
 .railway-status.stopped { color: var(--faint); }
-.railway-log { margin: 0; max-height: 260px; overflow: auto; padding: 8px; font-size: 11px; line-height: 1.45; background: var(--sunken, rgba(0,0,0,0.25)); white-space: pre-wrap; word-break: break-all; }
-.railway-table { border-collapse: collapse; width: 100%; }
+.railway-log { margin: 0; max-width: 100%; max-height: 260px; overflow: auto; padding: 8px; font-size: 11px; line-height: 1.45; background: var(--sunken, rgba(0,0,0,0.25)); white-space: pre-wrap; word-break: break-all; }
+.railway-table { border-collapse: collapse; width: 100%; table-layout: fixed; }
 .railway-table td { padding: 2px 4px 2px 0; }
 .railway-table input { width: 100%; }
 .railway-table tr.removed input { text-decoration: line-through; opacity: 0.55; }
-.railway-setting { display: grid; grid-template-columns: 220px 1fr; align-items: center; gap: 8px; }
-.railway-create input { flex: 1 1 160px; }
+.railway-setting { display: grid; grid-template-columns: minmax(0, 130px) minmax(0, 1fr); align-items: center; gap: 8px; border: 0; margin: 0; padding: 0; }
+.railway-create input { flex: 1 1 120px; }
 .railway-port { width: 9ch; }
-.deployment { display: flex; flex-direction: column; gap: 10px; min-width: min(640px, 86vw); }
+.deployment { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .deployment-kinds { display: flex; gap: 16px; }
 .deployment-kind { color: var(--muted); }
 .deployment-kind.on { color: var(--accent); }
